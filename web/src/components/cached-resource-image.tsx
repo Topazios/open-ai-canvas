@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
-import { getResourceAccess, resolveResourceAccessURL, resourceIdFromStorageKey } from "@/services/api/resources";
+import { getResourceAccess, refreshResourceAccess, resolveResourceAccessURL, resourceIdFromStorageKey, resourceStorageKeyFromURL } from "@/services/api/resources";
 import { resolveImageUrl } from "@/services/image-storage";
 
 type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
@@ -17,13 +17,15 @@ type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src">
  * `blob:http(s)://...` 泄露到节点、素材库和浏览器媒体链路中。
  */
 export function CachedResourceImage({ storageKey, src = "", fallback = null, loadingFallback = fallback, eager = false, onError, ...props }: CachedResourceImageProps) {
-    const resourceId = resourceIdFromStorageKey(storageKey);
+    const resolvedStorageKey = storageKey || resourceStorageKeyFromURL(src);
+    const resourceId = resourceIdFromStorageKey(resolvedStorageKey);
     const remoteResource = Boolean(resourceId);
     const localImageResource = Boolean(storageKey && storageKey.startsWith("image:"));
     const targetRef = useRef<HTMLSpanElement>(null);
     const [nearViewport, setNearViewport] = useState(eager || !remoteResource);
     const [cachedSrc, setCachedSrc] = useState(remoteResource ? "" : src);
     const [cacheFailed, setCacheFailed] = useState(false);
+    const refreshAttemptRef = useRef(0);
 
     useEffect(() => {
         if (!remoteResource || eager) {
@@ -50,6 +52,7 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, loa
 
     useEffect(() => {
         let cancelled = false;
+        refreshAttemptRef.current = 0;
         setCacheFailed(false);
 
         if (remoteResource && resourceId) {
@@ -59,7 +62,7 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, loa
                     cancelled = true;
                 };
             }
-            void getResourceAccess(storageKey, "display")
+            void getResourceAccess(resolvedStorageKey, "display")
                 .then((access) => {
                     if (!cancelled) setCachedSrc(resolveResourceAccessURL(access.url));
                 })
@@ -88,9 +91,21 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, loa
         return () => {
             cancelled = true;
         };
-    }, [localImageResource, nearViewport, remoteResource, resourceId, src, storageKey]);
+    }, [localImageResource, nearViewport, remoteResource, resolvedStorageKey, resourceId, src, storageKey]);
 
     const handleImgError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+        if (remoteResource && resolvedStorageKey && refreshAttemptRef.current === 0) {
+            refreshAttemptRef.current = 1;
+            setCachedSrc("");
+            setCacheFailed(false);
+            void refreshResourceAccess(resolvedStorageKey, "display")
+                .then((access) => setCachedSrc(resolveResourceAccessURL(access.url)))
+                .catch(() => {
+                    setCacheFailed(true);
+                    onError?.(e);
+                });
+            return;
+        }
         if (localImageResource && storageKey && cachedSrc.startsWith("blob:")) {
             void resolveImageUrl(storageKey)
                 .then((url) => {

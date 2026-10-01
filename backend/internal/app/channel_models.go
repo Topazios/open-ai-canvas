@@ -69,6 +69,18 @@ type AdminChannelModelImportRequest struct {
 	Models []string `json:"models"`
 }
 
+type AdminChannelModelBatchSettingsRequest struct {
+	ModelIDs     []string                  `json:"modelIds"`
+	Enabled      *bool                    `json:"enabled"`
+	DisplayName  *string                  `json:"displayName"`
+	ChannelLabel *string                  `json:"channelLabel"`
+	Description  *string                  `json:"description"`
+	Icon         *string                  `json:"icon"`
+	Tags         *[]model.ChannelModelTag `json:"tags"`
+	Capability   *string                  `json:"capability"`
+	Protocol     *string                  `json:"protocol"`
+}
+
 type AdminChannelModelTestResult struct {
 	DurationMs int64 `json:"durationMs"`
 }
@@ -872,6 +884,186 @@ func (s *Service) DeleteAdminChannelModel(actor *model.User, channelID string, i
 	return err
 }
 
+func (s *Service) UpdateAdminChannelModelsEnabled(actor *model.User, channelID string, ids []string, enabled bool) (int64, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return 0, err
+	}
+	if _, err := s.adminSystemChannel(channelID); err != nil {
+		return 0, err
+	}
+	modelIDs, err := normalizeAdminChannelModelSelection(ids)
+	if err != nil {
+		return 0, err
+	}
+	items, err := s.repo.ChannelModels(channelID, true)
+	if err != nil {
+		return 0, err
+	}
+	found := make(map[string]bool, len(items))
+	for _, item := range items {
+		found[item.ID] = true
+	}
+	for _, id := range modelIDs {
+		if !found[id] {
+			return 0, BadAuthRequest("所选模型已删除或不属于当前渠道，请刷新后重试")
+		}
+	}
+	updated, err := s.repo.UpdateChannelModelsEnabled(channelID, modelIDs, enabled, time.Now())
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, BadAuthRequest("所选模型已删除或不属于当前渠道，请刷新后重试")
+	}
+	if err == nil {
+		s.invalidateRouteCatalog()
+	}
+	return updated, err
+}
+
+// UpdateAdminChannelModelsSettings 批量更新模型公共参数及可选的能力与协议。
+// 所有字段均为可选，未提交的字段保持原值；整批校验失败时不写入任何记录。
+func (s *Service) UpdateAdminChannelModelsSettings(actor *model.User, channelID string, req AdminChannelModelBatchSettingsRequest) (int64, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return 0, err
+	}
+	channel, err := s.adminSystemChannel(channelID)
+	if err != nil {
+		return 0, err
+	}
+	modelIDs, err := normalizeAdminChannelModelSelection(req.ModelIDs)
+	if err != nil {
+		return 0, err
+	}
+	if req.Enabled == nil && req.DisplayName == nil && req.ChannelLabel == nil && req.Description == nil && req.Icon == nil && req.Tags == nil && req.Capability == nil && req.Protocol == nil {
+		return 0, BadAuthRequest("请至少选择一个要批量设置的参数")
+	}
+	if (req.Capability == nil) != (req.Protocol == nil) {
+		return 0, BadAuthRequest("批量设置模型能力时必须同时选择调用协议")
+	}
+	if req.DisplayName != nil && len([]rune(strings.TrimSpace(*req.DisplayName))) > 160 {
+		return 0, BadAuthRequest("模型展示名不能超过 160 字")
+	}
+	if req.ChannelLabel != nil && len([]rune(strings.TrimSpace(*req.ChannelLabel))) > 80 {
+		return 0, BadAuthRequest("渠道展示名不能超过 80 字")
+	}
+	if req.Description != nil && len([]rune(strings.TrimSpace(*req.Description))) > 500 {
+		return 0, BadAuthRequest("模型描述不能超过 500 字")
+	}
+	if req.Icon != nil && len([]rune(strings.TrimSpace(*req.Icon))) > 80 {
+		return 0, BadAuthRequest("模型 Logo 标识不能超过 80 字")
+	}
+
+	items, err := s.repo.ChannelModels(channelID, true)
+	if err != nil {
+		return 0, err
+	}
+	found := make(map[string]bool, len(items))
+	for _, item := range items {
+		found[item.ID] = true
+	}
+	for _, id := range modelIDs {
+		if !found[id] {
+			return 0, BadAuthRequest("所选模型已删除或不属于当前渠道，请刷新后重试")
+		}
+	}
+
+	updates := map[string]any{"updated_at": time.Now()}
+	if req.Enabled != nil {
+		updates["enabled"] = *req.Enabled
+	}
+	if req.DisplayName != nil {
+		updates["display_name"] = strings.TrimSpace(*req.DisplayName)
+	}
+	if req.ChannelLabel != nil {
+		updates["channel_label"] = strings.TrimSpace(*req.ChannelLabel)
+	}
+	if req.Description != nil {
+		updates["description"] = strings.TrimSpace(*req.Description)
+	}
+	if req.Icon != nil {
+		updates["icon"] = strings.TrimSpace(*req.Icon)
+	}
+	if req.Tags != nil {
+		tags, normalizeErr := normalizeChannelModelTags(*req.Tags)
+		if normalizeErr != nil {
+			return 0, normalizeErr
+		}
+		encoded, marshalErr := json.Marshal(tags)
+		if marshalErr != nil {
+			return 0, marshalErr
+		}
+		updates["tags"] = string(encoded)
+	}
+	var updatesByModel map[string]map[string]any
+	if req.Capability != nil && req.Protocol != nil {
+		targetCapability := strings.TrimSpace(*req.Capability)
+		targetProtocol := strings.TrimSpace(*req.Protocol)
+		if targetCapability == "" || targetProtocol == "" {
+			return 0, BadAuthRequest("模型能力和调用协议不能为空")
+		}
+		updatesByModel = make(map[string]map[string]any, len(modelIDs))
+		selectedIDs := make(map[string]bool, len(modelIDs))
+		for _, id := range modelIDs {
+			selectedIDs[id] = true
+		}
+		for _, item := range items {
+			if !selectedIDs[item.ID] {
+				continue
+			}
+			_, providerModelKey, capability, protocol, normalizeErr := s.normalizeChannelModelContract(channel, ChannelModelRequest{
+				ModelKey:         item.ModelKey,
+				ProviderModelKey: item.ProviderModelKey,
+				Capability:       targetCapability,
+				Protocol:         targetProtocol,
+			})
+			if normalizeErr != nil {
+				return 0, normalizeErr
+			}
+			if capability != targetCapability || string(protocol) != targetProtocol {
+				return 0, BadAuthRequest("所选能力与调用协议不匹配")
+			}
+			itemUpdates := make(map[string]any, len(updates)+4)
+			for key, value := range updates {
+				itemUpdates[key] = value
+			}
+			itemUpdates["capability"] = targetCapability
+			itemUpdates["protocol"] = targetProtocol
+			if targetCapability != "audio" {
+				profile := DefaultModelCapabilityConfigForModel(targetProtocol, providerModelKey)
+				normalized, normalizeErr := NormalizeModelCapabilityConfigForModel(targetCapability, targetProtocol, providerModelKey, profile)
+				if normalizeErr != nil {
+					return 0, normalizeErr
+				}
+				encoded, marshalErr := json.Marshal(normalized)
+				if marshalErr != nil {
+					return 0, marshalErr
+				}
+				itemUpdates["capability_config_json"] = string(encoded)
+				itemUpdates["capability_version"] = item.CapabilityVersion + 1
+			} else {
+				itemUpdates["capability_config_json"] = ""
+				itemUpdates["capability_version"] = 0
+			}
+			updatesByModel[item.ID] = itemUpdates
+		}
+	}
+	var updated int64
+	if updatesByModel != nil {
+		updated, err = s.repo.UpdateChannelModelsSettingsPerModel(channelID, updatesByModel)
+	} else {
+		updated, err = s.repo.UpdateChannelModelsSettings(channelID, modelIDs, updates)
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, BadAuthRequest("所选模型已删除或不属于当前渠道，请刷新后重试")
+	}
+	if err != nil {
+		return 0, err
+	}
+	s.invalidateRouteCatalog()
+	if err := s.syncChannelModelNames(channel); err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
 // DeleteAdminChannelModels validates the complete selection before asking the
 // repository to remove it atomically. This deliberately rejects partial success:
 // administrators can safely correct an in-use model and retry the same selection.
@@ -921,6 +1113,10 @@ func (s *Service) DeleteAdminChannelModels(actor *model.User, channelID string, 
 }
 
 func normalizeAdminChannelModelDeleteIDs(values []string) ([]string, error) {
+	return normalizeAdminChannelModelSelection(values)
+}
+
+func normalizeAdminChannelModelSelection(values []string) ([]string, error) {
 	result := make([]string, 0, len(values))
 	seen := make(map[string]bool, len(values))
 	for _, value := range values {
@@ -935,7 +1131,7 @@ func normalizeAdminChannelModelDeleteIDs(values []string) ([]string, error) {
 		return nil, BadAuthRequest("请至少选择一个要删除的渠道模型")
 	}
 	if len(result) > maxAdminChannelModelBatchDeleteCount {
-		return nil, BadAuthRequest("单次最多删除 100 个渠道模型")
+		return nil, BadAuthRequest("单次最多选择 100 个渠道模型")
 	}
 	return result, nil
 }

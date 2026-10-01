@@ -156,6 +156,65 @@ func (r *Repository) SaveChannelModel(item *model.ChannelModel) error {
 	return r.db.Save(item).Error
 }
 
+func (r *Repository) UpdateChannelModelsEnabled(channelID string, ids []string, enabled bool, now time.Time) (int64, error) {
+	var updated int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.ChannelModel{}).
+			Where("channel_id = ? AND id IN ?", channelID, ids).
+			Updates(map[string]any{"enabled": enabled, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != int64(len(ids)) {
+			return gorm.ErrRecordNotFound
+		}
+		updated = result.RowsAffected
+		return nil
+	})
+	return updated, err
+}
+
+func (r *Repository) UpdateChannelModelsSettings(channelID string, ids []string, updates map[string]any) (int64, error) {
+	var updated int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.ChannelModel{}).
+			Where("channel_id = ? AND id IN ?", channelID, ids).
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != int64(len(ids)) {
+			return gorm.ErrRecordNotFound
+		}
+		updated = result.RowsAffected
+		return nil
+	})
+	return updated, err
+}
+
+func (r *Repository) UpdateChannelModelsSettingsPerModel(channelID string, updatesByModel map[string]map[string]any) (int64, error) {
+	if len(updatesByModel) == 0 {
+		return 0, gorm.ErrRecordNotFound
+	}
+	var updated int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		for id, updates := range updatesByModel {
+			result := tx.Model(&model.ChannelModel{}).
+				Where("channel_id = ? AND id = ?", channelID, id).
+				Updates(updates)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return gorm.ErrRecordNotFound
+			}
+			updated += result.RowsAffected
+		}
+		return nil
+	})
+	return updated, err
+}
+
 // SaveChannelModelWithPriceTiers 原子保存系统模型与其活动价格档。移除价格档采用软删除，
 // 让已结算订单的 PriceTierID 仍能回溯到原始配置版本。
 func (r *Repository) SaveChannelModelWithPriceTiers(item *model.ChannelModel, tiers []model.ChannelModelPriceTier) error {
@@ -513,6 +572,9 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 }
 
 func enforceActiveTaskLimit(tx *gorm.DB, userID string, activeTaskLimit int) error {
+	if activeTaskLimit <= 0 {
+		return nil
+	}
 	var count int64
 	if err := tx.Model(&model.Task{}).Where("user_id = ? AND status IN ?", userID, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Count(&count).Error; err != nil {
 		return err

@@ -295,7 +295,7 @@ export function AiArtCritiqueModal({ node, upstreamNodes, open, onClose, onUpdat
             closable={false}
             width="min(1240px, calc(100vw - 32px))"
             centered
-            destroyOnClose={false}
+            destroyOnHidden={false}
             onCancel={close}
             footer={null}
             className="art-critique-modal"

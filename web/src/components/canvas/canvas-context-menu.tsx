@@ -1,6 +1,6 @@
 import { AnimatePresence } from "motion/react";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowLeft, AtSign, Check, ChevronRight, Clipboard, CloudUpload, Copy, FolderOpen, FolderPlus, Image as ImageIcon, Layers3, LayoutTemplate, Link2, Maximize2, PanelTop, Pencil, Plus, Redo2, Tags, Trash2, Undo2, Upload, UserRound } from "lucide-react";
+import { ArrowLeft, AtSign, Check, ChevronRight, Clipboard, CloudUpload, Copy, FolderOpen, FolderPlus, Image as ImageIcon, Images, Layers3, LayoutTemplate, Link2, Maximize2, PanelTop, Pencil, Plus, Redo2, Tags, Trash2, Undo2, Upload, UserRound } from "lucide-react";
 
 import { CanvasCreateMenu, type CanvasCreateCommand } from "@/components/canvas/canvas-create-menu";
 import { ASSET_CATEGORY_OPTIONS } from "@/lib/asset-category";
@@ -47,6 +47,7 @@ type CanvasNodeContextMenuProps = {
     onEditText: () => void;
     onOpenDrawing: () => void;
     onGenerateImage: () => void;
+    onBatchGenerateImages: () => void;
     onCopyContent: () => void;
     onCopyMediaUrl: () => void;
     onUploadToArkPrivateAsset: () => void;
@@ -87,6 +88,7 @@ export function CanvasNodeContextMenu({
     onEditText,
     onOpenDrawing,
     onGenerateImage,
+    onBatchGenerateImages,
     onCopyContent,
     onCopyMediaUrl,
     onUploadToArkPrivateAsset,
@@ -244,6 +246,7 @@ export function CanvasNodeContextMenu({
                                     {isText ? <MenuButton icon={<Maximize2 />} label="放大编辑" onClick={() => runAction(onEditText)} /> : null}
                                     {isDrawing ? <MenuButton icon={<Pencil />} label="打开绘图" onClick={() => runAction(onOpenDrawing)} /> : null}
                                     {isText ? <MenuButton icon={<ImageIcon />} label="用文本生图" disabled={!canGenerateFromText} onClick={() => runAction(onGenerateImage)} /> : null}
+                                    {isText ? <MenuButton icon={<Images />} label="拆分角色/场景并批量生图" disabled={!canGenerateFromText} onClick={() => runAction(onBatchGenerateImages)} /> : null}
                                     <MenuDivider />
                                     <MenuSection label="副本与内容" />
                                     <MenuButton icon={<AtSign />} label="发送到 Agent" disabled={!onSendToAgent} onClick={() => onSendToAgent && runAction(onSendToAgent)} />

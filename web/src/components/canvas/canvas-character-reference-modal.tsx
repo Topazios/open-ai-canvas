@@ -1,6 +1,7 @@
 
 import { AudioLines, BadgeCheck, Image as ImageIcon, UserRound, Volume2 } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
+import { CachedResourceImage } from "@/components/cached-resource-image";
 import type { ReactNode } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
@@ -36,11 +37,12 @@ export function CanvasCharacterReferenceModal({ node, open, onClose }: { node: C
                     </div>
                     {metadata?.characterCoverUrl ? (
                         <div className="flex h-full w-full items-center justify-center p-5 pt-16 md:p-8 md:pt-20">
-                            <img
+                            <CachedResourceImage
                                 src={metadata.characterCoverUrl}
                                 alt={`${name}人物三视图`}
                                 className="max-h-full max-w-full select-none object-contain drop-shadow-[0_22px_42px_rgba(0,0,0,.14)]"
                                 draggable={false}
+                                eager
                             />
                         </div>
                     ) : (

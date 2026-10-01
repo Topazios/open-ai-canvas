@@ -851,7 +851,8 @@ function ImageContent({
 }: Pick<CanvasNodeContentProps, "node" | "theme" | "isBatchRoot" | "batchCount" | "batchPreviewNodes" | "batchExpanded" | "batchOpening" | "batchRecovering" | "onToggleBatch">) {
     const imageContainerRef = useRef<HTMLDivElement>(null);
     const nearViewport = useNearViewport(imageContainerRef);
-    const { url, loading } = useNodeResourceUrl(node, nearViewport);
+    const remoteResource = Boolean(node.metadata?.storageKey?.startsWith("resource:"));
+    const { url, loading } = useNodeResourceUrl(node, nearViewport && !remoteResource);
     const importedFromLibTV = node.metadata?.importSource?.provider === "libtv";
     const { updateMediaNode } = useCanvasNodeActions();
     const measuredSizeRef = useRef<{ width: number; height: number } | null>(null);
@@ -894,8 +895,22 @@ function ImageContent({
     return (
         <BatchFrame batchPreviewNodes={batchPreviewNodes} batchCount={isBatchRoot ? batchCount : 0} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} theme={theme} onToggleBatch={onToggleBatch}>
             <div ref={imageContainerRef} className="h-full w-full overflow-hidden rounded-[var(--node-radius)]">
-                {url ? (
-                    <img
+                {remoteResource ? (
+                    <CachedResourceImage
+                        storageKey={node.metadata?.storageKey}
+                        src={node.metadata?.previewContent || node.metadata?.content}
+                        alt={node.title}
+                        eager={nearViewport}
+                        loading="lazy"
+                        decoding="async"
+                        draggable={false}
+                        onDragStart={(event) => event.preventDefault()}
+                        onLoad={(event) => fitToImage(event.currentTarget)}
+                        className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`}
+                    />
+                ) : url ? (
+                    <CachedResourceImage
+                        storageKey={node.metadata?.storageKey}
                         src={url}
                         alt={node.title}
                         loading="lazy"
@@ -1015,10 +1030,15 @@ export function CanvasNodeProducedModel({ stored }: { stored: string }) {
 function BatchPreviewImage({ node }: { node: CanvasNodeData }) {
     const ref = useRef<HTMLDivElement>(null);
     const nearViewport = useNearViewport(ref);
-    const { url } = useNodeResourceUrl(node, nearViewport);
+    const remoteResource = Boolean(node.metadata?.storageKey?.startsWith("resource:"));
+    const { url } = useNodeResourceUrl(node, nearViewport && !remoteResource);
     return (
         <div ref={ref} className="h-full w-full overflow-hidden rounded-[inherit]">
-            {url ? <img src={url} alt={`子图预览：${node.title}`} className="h-full w-full object-contain" draggable={false} /> : null}
+            {remoteResource ? (
+                <CachedResourceImage storageKey={node.metadata?.storageKey} src={node.metadata?.previewContent || node.metadata?.content} alt={`子图预览：${node.title}`} eager={nearViewport} loading="lazy" decoding="async" className="h-full w-full object-contain" draggable={false} />
+            ) : url ? (
+                <CachedResourceImage storageKey={node.metadata?.storageKey} src={url} alt={`子图预览：${node.title}`} className="h-full w-full object-contain" draggable={false} />
+            ) : null}
         </div>
     );
 }

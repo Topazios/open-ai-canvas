@@ -2,6 +2,7 @@ import { Button, Modal } from "antd";
 import { Check, Star } from "lucide-react";
 
 import { CanvasVideoPreviewImage } from "@/components/canvas/canvas-video-preview-image";
+import { CachedResourceImage } from "@/components/cached-resource-image";
 import { producedModelLabel } from "@/lib/canvas/produced-model";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useEffectiveConfig } from "@/stores/use-config-store";
@@ -24,7 +25,7 @@ export function CanvasVersionCompareModal({ open, versions, onClose, onSetPrimar
                             {node.metadata?.versionPrimary ? <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[var(--fs-tiny)] font-medium" style={{ color: theme.accent.primary }}><Check className="size-3" />主版本</span> : null}
                         </div>
                         <button type="button" className="block h-52 w-full overflow-hidden" style={{ background: theme.node.fill }} onClick={() => onFocus(node.id)}>
-                            {node.type === CanvasNodeType.Image && node.metadata?.content ? <img src={node.metadata.content} alt={node.title || "版本图片"} className="size-full object-contain" /> : node.type === CanvasNodeType.Video ? <CanvasVideoPreviewImage node={node} alt={node.title || "版本视频"} className="size-full object-contain" loading="lazy" decoding="async" fallback={<span className="grid size-full place-items-center px-4 text-center text-xs" style={{ color: theme.node.muted }}>暂无视频首帧</span>} /> : <span className="grid size-full place-items-center px-4 text-center text-xs" style={{ color: theme.node.muted }}>点击定位到画布节点</span>}
+                            {node.type === CanvasNodeType.Image && node.metadata?.content ? <CachedResourceImage storageKey={node.metadata.storageKey} src={node.metadata.content} alt={node.title || "版本图片"} className="size-full object-contain" eager /> : node.type === CanvasNodeType.Video ? <CanvasVideoPreviewImage node={node} alt={node.title || "版本视频"} className="size-full object-contain" loading="lazy" decoding="async" fallback={<span className="grid size-full place-items-center px-4 text-center text-xs" style={{ color: theme.node.muted }}>暂无视频首帧</span>} /> : <span className="grid size-full place-items-center px-4 text-center text-xs" style={{ color: theme.node.muted }}>点击定位到画布节点</span>}
                         </button>
                         <div className="space-y-2 p-3 text-[var(--fs-label)]">
                             {producedModelText ? <Info label="产出模型" value={producedModelText} /> : null}

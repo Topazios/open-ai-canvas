@@ -151,14 +151,19 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
         const resultWidth = image.storageKey && !hasReportedImageSize && requestedImageSize ? requestedImageSize.width : uploaded.width;
         const resultHeight = image.storageKey && !hasReportedImageSize && requestedImageSize ? requestedImageSize.height : uploaded.height;
         const normalizedImage = resultWidth === uploaded.width && resultHeight === uploaded.height ? uploaded : { ...uploaded, width: resultWidth, height: resultHeight };
-        const imageSize =
-            node.metadata?.generationType === "edit" && !requestedImageSize ? { width: node.width || imageConfig.width, height: node.height || imageConfig.height } : fitNodeSize(resultWidth, resultHeight, imageSizeBounds.width, imageSizeBounds.height);
+        const imageSize = node.metadata?.manualSize
+            ? { width: node.width || imageConfig.width, height: node.height || imageConfig.height }
+            : node.metadata?.generationType === "edit" && !requestedImageSize
+              ? { width: node.width || imageConfig.width, height: node.height || imageConfig.height }
+              : fitNodeSize(resultWidth, resultHeight, imageSizeBounds.width, imageSizeBounds.height);
         return {
             ...node,
             type: CanvasNodeType.Image,
             width: imageSize.width,
             height: imageSize.height,
-            position: { x: node.position.x + node.width / 2 - imageSize.width / 2, y: node.position.y + node.height / 2 - imageSize.height / 2 },
+            position: node.metadata?.manualSize
+                ? node.position
+                : { x: node.position.x + node.width / 2 - imageSize.width / 2, y: node.position.y + node.height / 2 - imageSize.height / 2 },
             metadata: applyGeneratedMediaResultMetadata(node, imageMetadata(normalizedImage), { prompt, ...completedTaskMetadata(task) }, task.model),
         };
     }

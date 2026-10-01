@@ -7888,6 +7888,26 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
         pointer-events: none;
     }
 
+    .canvas-node-toolbar.is-attached-to-panel {
+        z-index: calc(var(--z-modal-overlay) + 1);
+    }
+
+    .canvas-node-toolbar.is-attached-to-panel > [role="toolbar"] {
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+        box-shadow: var(--canvas-composer-shadow);
+    }
+
+    [data-canvas-node-panel][data-scale-with-node="true"] {
+        border-top-left-radius: 0;
+        border-top-right-radius: 0;
+    }
+
+    [data-canvas-node-panel][data-scale-with-node="true"] > .canvas-node-composer {
+        border-top-left-radius: 0;
+        border-top-right-radius: 0;
+    }
+
     .canvas-floating-dock {
         border: 0 !important;
         border-radius: var(--r-2xl) !important;
@@ -9645,15 +9665,41 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
     }
 
     .canvas-node-composer-references {
-        display: block;
+        display: flex;
         min-width: 0;
+        max-width: 100%;
+        align-items: center;
+        gap: 4px;
         flex-shrink: 0;
-        padding: 6px 12px 10px;
+        padding: 6px 4px 10px;
+    }
+
+    .canvas-node-composer-reference-nav {
+        display: grid;
+        width: 24px;
+        height: 36px;
+        flex: 0 0 24px;
+        place-items: center;
+        border: 0;
+        border-radius: var(--r-md);
+        background: var(--canvas-composer-control-surface);
+        color: var(--cn-text);
+    }
+
+    .canvas-node-composer-reference-nav:disabled {
+        opacity: 0.3;
+        cursor: default;
+    }
+
+    .canvas-node-composer-reference-nav:not(:disabled):hover {
+        background: var(--canvas-composer-control-hover);
     }
 
     .canvas-node-composer-references-track {
         display: flex;
+        width: 0;
         min-width: 0;
+        flex: 1 1 0;
         flex-wrap: nowrap;
         align-items: stretch;
         gap: 8px;
@@ -10381,6 +10427,18 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
 
     [data-canvas-viewport-interacting="true"] :where(.canvas-node-toolbar, [data-canvas-node-panel]) {
         will-change: transform;
+    }
+
+    /* 节点拖动开始时通过 DOM 状态立即隐藏工具栏和 Portal 弹层，
+       不等待 React 在下一次提交中卸载浮层。 */
+    html[data-canvas-node-dragging="true"] :where(
+        .canvas-node-toolbar,
+        .canvas-node-toolbar-menu,
+        [data-canvas-node-panel],
+        .canvas-grid-split-picker
+    ) {
+        visibility: hidden !important;
+        pointer-events: none !important;
     }
 
     [data-canvas-viewport-interacting="true"] :where(.canvas-node-toolbar, .canvas-node-toolbar > div, [data-canvas-node-panel], [data-canvas-node-panel] .canvas-floating-panel, [data-canvas-node-panel] .canvas-node-panel-placement-change) {
@@ -18827,4 +18885,61 @@ html:not(.dark) .creation-home .creation-user-message-copy-wrap { box-shadow: 0 
     border: 0 !important;
     background: color-mix(in srgb, var(--popover-foreground) 10%, var(--popover)) !important;
     color: var(--popover-foreground) !important;
+}
+
+/* 所有 Modal 的视口边界。内容较长时只滚动正文，标题和操作区始终留在可视范围内。 */
+:where(.ant-modal-root) .ant-modal-wrap {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+:where(.ant-modal-root) .ant-modal-wrap.ant-modal-centered::before {
+    display: none;
+}
+
+:where(.ant-modal-root) .ant-modal-wrap > .ant-modal {
+    top: 0;
+    max-width: 100%;
+    max-height: calc(100dvh - 32px);
+    margin: 0;
+}
+
+:where(.ant-modal-root) .ant-modal-wrap > .ant-modal > .ant-modal-container {
+    display: flex;
+    min-height: 0;
+    max-height: calc(100dvh - 32px);
+    flex-direction: column;
+    overflow: hidden;
+}
+
+:where(.ant-modal-root) .ant-modal-container > :where(.ant-modal-header, .ant-modal-body, .ant-modal-footer) {
+    min-width: 0;
+}
+
+:where(.ant-modal-root) .ant-modal-container > .ant-modal-header,
+:where(.ant-modal-root) .ant-modal-container > .ant-modal-footer {
+    flex: 0 0 auto;
+}
+
+:where(.ant-modal-root) .ant-modal-container > .ant-modal-body {
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+}
+
+@supports not (height: 100dvh) {
+    :where(.ant-modal-root) .ant-modal-wrap > .ant-modal {
+        max-height: calc(100vh - 32px);
+    }
+
+    :where(.ant-modal-root) .ant-modal-wrap > .ant-modal > .ant-modal-container {
+        max-height: calc(100vh - 32px);
+    }
+}
+
+.canvas-text-batch-generation-modal .ant-modal-body {
+    min-height: 0;
 }

@@ -60,6 +60,10 @@ func (s *Service) ResourceAccessBatch(userID string, requests []ResourceAccessRe
 }
 
 func (s *Service) resolveResourceAccess(resource *model.Resource, options ResourceAccessOptions) (*ResourceAccess, error) {
+	return s.resolveResourceAccessWithPublicURL(resource, options, false)
+}
+
+func (s *Service) resolveResourceAccessWithPublicURL(resource *model.Resource, options ResourceAccessOptions, publicURL bool) (*ResourceAccess, error) {
 	if resource == nil {
 		return nil, NotFound("资源不存在")
 	}
@@ -72,7 +76,7 @@ func (s *Service) resolveResourceAccess(resource *model.Resource, options Resour
 		}
 	}
 	return assets.ResolveAccess(resource, setting, options, time.Now().UTC(), func(variant assets.ResourceVariant, expires time.Time) (string, error) {
-		return s.signedResourceAccessURL(resource, variant, expires, options.Purpose == assets.PurposeProvider)
+		return s.signedResourceAccessURL(resource, variant, expires, publicURL || options.Purpose == assets.PurposeProvider)
 	})
 }
 
@@ -92,10 +96,14 @@ func (s *Service) PrepareResourceDelivery(userID, id string, options ResourceAcc
 }
 
 func (s *Service) prepareResourceDelivery(userID string, resource *model.Resource, options ResourceAccessOptions, rangeHeader string) (*ResourceDelivery, error) {
+	return s.prepareResourceDeliveryWithPublicURL(userID, resource, options, rangeHeader, false)
+}
+
+func (s *Service) prepareResourceDeliveryWithPublicURL(userID string, resource *model.Resource, options ResourceAccessOptions, rangeHeader string, publicURL bool) (*ResourceDelivery, error) {
 	if resource == nil || resource.UserID != userID {
 		return nil, Forbidden("资源不可访问")
 	}
-	access, err := s.resolveResourceAccess(resource, options)
+	access, err := s.resolveResourceAccessWithPublicURL(resource, options, publicURL)
 	if err != nil {
 		return nil, err
 	}
@@ -116,20 +124,23 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 }
 
 func (s *Service) signedResourceAccessURL(resource *model.Resource, variant assets.ResourceVariant, expires time.Time, public bool) (string, error) {
-	expiry := strconv.FormatInt(expires.Unix(), 10)
-	signature, err := s.signPublicResource(resource.ID+"\n"+string(variant), expiry)
-	if err != nil {
-		return "", err
-	}
-	u := &url.URL{Path: "/api/public/resources/" + url.PathEscape(resource.ID) + "/file"}
+	u := &url.URL{Path: "/api/resources/" + url.PathEscape(resource.ID) + "/file"}
 	q := u.Query()
-	q.Set("expires", expiry)
-	q.Set("signature", signature)
 	q.Set("variant", string(variant))
 	u.RawQuery = q.Encode()
 	if !public {
 		return u.String(), nil
 	}
+	expiry := strconv.FormatInt(expires.Unix(), 10)
+	signature, err := s.signPublicResource(resource.ID+"\n"+string(variant), expiry)
+	if err != nil {
+		return "", err
+	}
+	u.Path = "/api/public/resources/" + url.PathEscape(resource.ID) + "/file"
+	q = u.Query()
+	q.Set("expires", expiry)
+	q.Set("signature", signature)
+	u.RawQuery = q.Encode()
 	base, err := s.publicResourceBaseURL()
 	if err != nil {
 		return "", err
@@ -154,5 +165,5 @@ func (s *Service) PreparePublicResourceDelivery(id, expires, signature string, o
 	}
 	seconds, _ := strconv.ParseInt(expires, 10, 64)
 	options.ExpiresAt = time.Unix(seconds, 0)
-	return s.prepareResourceDelivery(resource.UserID, resource, options, rangeHeader)
+	return s.prepareResourceDeliveryWithPublicURL(resource.UserID, resource, options, rangeHeader, true)
 }

@@ -286,12 +286,12 @@ export function AdminTableSkeleton({ rows = 8, columns = 6 }: { rows?: number; c
 export function AdminBatchBar({ count, onClear, children }: { count: number; onClear: () => void; children: ReactNode }) {
     if (count <= 0) return null;
     return (
-        <div className="admin-batch-bar sticky top-0 z-20 flex min-h-11 flex-wrap items-center justify-between gap-3 px-3 py-2">
-            <div className="flex items-center gap-2 text-sm font-medium">
+        <div className="admin-batch-bar sticky top-0 z-20 flex min-h-11 flex-nowrap items-center gap-3 overflow-x-auto px-3 py-2">
+            <div className="flex shrink-0 items-center gap-2 text-sm font-medium">
                 <CheckSquare2 className="size-4" />
                 已选择 {count} 项
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap">
                 {children}
                 <Button type="text" size="small" icon={<X className="size-3.5" />} onClick={onClear}>
                     取消选择

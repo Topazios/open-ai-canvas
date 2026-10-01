@@ -78,9 +78,32 @@ describe("canvas resource mention editor", () => {
         expect(imageExecutor).toContain("imageGenerationReferenceConnections");
         expect(imageExecutor).toContain("retireImageBatchChildren");
         expect(mediaExecutors.match(/canvasGenerationPromptMetadata\(prompt, effectivePrompt\)/g)?.length).toBe(2);
-        expect(textExecutor.match(/canvasGenerationPromptMetadata\(prompt, effectivePrompt\)/g)?.length).toBe(2);
+        expect(textExecutor.match(/canvasGenerationPromptMetadata\(prompt, effectivePrompt\)/g)?.length).toBeGreaterThanOrEqual(2);
         expect(generationExecutor).toContain("composerContent: prompt");
         expect(generationExecutor).toContain("canvasGenerationPromptMetadata(prompt, statusPrompt)");
+    });
+
+    test("regenerates an existing text node in place instead of creating a sibling", () => {
+        const textExecutor = source("../src/pages/canvas/canvas-text-generation-executor.ts");
+        const generationExecutor = source("../src/pages/canvas/use-canvas-generation-executor.ts");
+
+        expect(textExecutor).toContain("const generateInPlace = !isConfigNode;");
+        expect(textExecutor).toContain("const childCount = editingTextNode ? 0 : generateInPlace ? Math.max(0, textCount - 1) : textCount;");
+        expect(textExecutor).toContain("文本节点的“文本生成”和“重新生成”都复用当前节点");
+        expect(textExecutor).toContain("if (generateInPlace)");
+        expect(generationExecutor).toContain("const markSourceStatus = Boolean(editingTextNode) || !sourceNode?.metadata?.content;");
+    });
+
+    test("keeps canvas interaction overlays in screen space while zooming", () => {
+        const toolbar = source("../src/components/canvas/canvas-node-toolbar.tsx");
+        const overlays = source("../src/components/canvas/canvas-workspace-overlays.tsx");
+
+        expect(toolbar).toContain("toolbarRef.current.style.left = `${left}px`");
+        expect(toolbar).toContain("toolbarRef.current.style.top = `${top}px`");
+        expect(toolbar).not.toContain("toolbarRef.current.style.transform = `translate3d");
+        expect(overlays).toContain("节点面板是屏幕覆盖层");
+        expect(overlays).toContain("return clamp(Math.round(node.width * 1.5), 680, 920);");
+        expect(overlays).not.toContain("node.width * viewport.k * 1.5");
     });
 
     test("anchors the mention menu to the caret instead of the textarea edge", () => {

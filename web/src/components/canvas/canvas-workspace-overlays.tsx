@@ -5,7 +5,7 @@ import { Clapperboard, Image as ImageIcon, List, Music2, Pencil, Table2, Video, 
 import { useCanvasOverlayLayer } from "@/components/canvas/canvas-overlay-layer";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { aceternityMotion } from "@/lib/aceternity-motion";
-import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasNodeDragPreview, subscribeCanvasViewportPreview } from "@/lib/canvas/canvas-live-viewport";
+import { subscribeCanvasNodeDragPreview, subscribeCanvasViewportPreview, subscribeCanvasViewportVisibilityPreview } from "@/lib/canvas/canvas-live-viewport";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type ConnectionHandle, type Position, type ViewportTransform } from "@/types/canvas";
 
@@ -15,6 +15,40 @@ export type PendingConnectionCreate = {
     quick?: boolean;
     batchSourceNodeIds?: string[];
 };
+
+export function resolveCanvasOverlayScale(viewportScale: number, scaleWithNode: boolean) {
+    // The world layer already owns the viewport transform. Overlay controls
+    // are screen-space UI and must never apply that scale a second time.
+    void viewportScale;
+    void scaleWithNode;
+    return 1;
+}
+
+export function getCanvasNodeScreenRect(node: CanvasNodeData, viewport: ViewportTransform, dragOffset?: Position | null) {
+    const offsetX = dragOffset?.x || 0;
+    const offsetY = dragOffset?.y || 0;
+    const left = viewport.x + (node.position.x + offsetX) * viewport.k;
+    const top = viewport.y + (node.position.y + offsetY) * viewport.k;
+    return {
+        left,
+        top,
+        right: left + node.width * viewport.k,
+        bottom: top + node.height * viewport.k,
+        width: node.width * viewport.k,
+        height: node.height * viewport.k,
+    };
+}
+
+export type CanvasRectBounds = Pick<DOMRect, "left" | "top" | "right" | "bottom" | "width" | "height">;
+
+export function isCanvasRectVisible(rect: CanvasRectBounds, viewportRect: CanvasRectBounds) {
+    return rect.width > 0
+        && rect.height > 0
+        && rect.right > viewportRect.left
+        && rect.left < viewportRect.right
+        && rect.bottom > viewportRect.top
+        && rect.top < viewportRect.bottom;
+}
 
 export function CanvasSelectionToolbar({ anchorRef, containerRef, count, children }: { anchorRef: RefObject<HTMLDivElement | null>; containerRef: RefObject<HTMLDivElement | null>; count: number; children: ReactNode }) {
     const theme = canvasThemes[useActiveTheme()];
@@ -36,12 +70,10 @@ export function CanvasSelectionToolbar({ anchorRef, containerRef, count, childre
             const toolbarWidth = toolbarRef.current?.offsetWidth || 320;
             const toolbarHeight = toolbarRef.current?.offsetHeight || 38;
             const halfWidth = Math.min(toolbarWidth / 2, Math.max(0, containerBounds.width / 2 - 12));
-            const center = bounds.left - containerBounds.left + bounds.width / 2;
-            const left = Math.min(Math.max(center, 12 + halfWidth), Math.max(12 + halfWidth, containerBounds.width - 12 - halfWidth));
-            const boundsTop = bounds.top - containerBounds.top;
-            const boundsBottom = bounds.bottom - containerBounds.top;
-            const placement = boundsTop - toolbarHeight - 8 >= 68 ? "above" : "below";
-            const top = placement === "above" ? boundsTop - 8 : Math.min(boundsBottom + 8, containerBounds.height - toolbarHeight - 12);
+            const center = bounds.left + bounds.width / 2;
+            const left = Math.min(Math.max(center, containerBounds.left + 12 + halfWidth), Math.max(containerBounds.left + 12 + halfWidth, containerBounds.right - 12 - halfWidth));
+            const placement = bounds.top - toolbarHeight - 8 >= containerBounds.top + 68 ? "above" : "below";
+            const top = placement === "above" ? bounds.top - 8 : Math.min(bounds.bottom + 8, containerBounds.bottom - toolbarHeight - 12);
             if (toolbarRef.current) {
                 toolbarRef.current.style.left = `${left}px`;
                 toolbarRef.current.style.top = `${top}px`;
@@ -74,7 +106,7 @@ export function CanvasSelectionToolbar({ anchorRef, containerRef, count, childre
         <div
             ref={toolbarRef}
             data-canvas-no-zoom
-            className={`absolute z-[var(--z-panel-floating)] max-w-[calc(100%_-_24px)] -translate-x-1/2 ${anchor.placement === "above" ? "-translate-y-full" : ""}`}
+            className={`fixed z-[var(--z-panel-floating)] max-w-[calc(100%_-_24px)] -translate-x-1/2 ${anchor.placement === "above" ? "-translate-y-full" : ""}`}
             style={{ left: anchor.left, top: anchor.top, color: theme.node.text, transformOrigin: anchor.placement === "above" ? "bottom center" : "top center" }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
@@ -106,6 +138,7 @@ export function CanvasNodePanelOverlay({
     dragOffset,
     isDragging = false,
     allowOverflow = false,
+    scaleWithNode = false,
     children,
 }: {
     node: CanvasNodeData;
@@ -116,12 +149,12 @@ export function CanvasNodePanelOverlay({
     dragOffset?: Position | null;
     isDragging?: boolean;
     allowOverflow?: boolean;
+    scaleWithNode?: boolean;
     children: ReactNode;
 }) {
     const panelRef = useRef<HTMLDivElement>(null);
     const { bringToFront, zIndex } = useCanvasOverlayLayer(`node-panel:${node.id}`, "var(--z-modal-overlay)");
     const initialWidth = resolveNodePanelWidth(node, viewport, panelWidth);
-    const initialPosition = getNodePanelPosition(node, viewport, { width: containerRef.current?.clientWidth || 0, height: containerRef.current?.clientHeight || 0 }, initialWidth, panelHeight, dragOffset);
 
     useLayoutEffect(() => {
         bringToFront();
@@ -133,40 +166,100 @@ export function CanvasNodePanelOverlay({
         if (!container || !panel) return;
         let liveViewport = viewport;
         let liveDragOffset = dragOffset;
+        let previousViewport = viewport;
+        let lastNodeVisibility: boolean | null = null;
         let viewportSize = { width: container.clientWidth, height: container.clientHeight };
-        const update = (nextViewport: ViewportTransform) => {
-            liveViewport = nextViewport;
-            const nextWidth = resolveNodePanelWidth(node, nextViewport, panelWidth);
-            panel.style.width = `${nextWidth}px`;
-            const nodeElement = container.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(node.id)}"]`);
-            const position = nodeElement ? getAttachedNodePanelPosition(nodeElement, container, nextWidth) : getNodePanelPosition(node, nextViewport, viewportSize, nextWidth, panelHeight, liveDragOffset);
-            panel.style.transform = `translate3d(${position.left}px, ${position.top}px, 0)`;
+        let panelSize = { width: panel.offsetWidth || initialWidth, height: panel.offsetHeight || panelHeight };
+        let observedNode: HTMLElement | null = null;
+        const findNodeElement = () => {
+            if (observedNode?.isConnected) return observedNode;
+            observedNode = container.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(node.id)}"]`);
+            return observedNode;
         };
-        update(viewport);
+        const updateVisibility = (nextViewport = liveViewport) => {
+            const nodeRect = getCanvasNodeScreenRect(node, nextViewport, liveDragOffset);
+            const nodeElement = findNodeElement();
+            const visible = Boolean(nodeElement?.isConnected && isCanvasRectVisible(nodeRect, {
+                left: 0,
+                top: 0,
+                right: viewportSize.width,
+                bottom: viewportSize.height,
+                width: viewportSize.width,
+                height: viewportSize.height,
+            }));
+            lastNodeVisibility = visible;
+            panel.style.visibility = visible ? "" : "hidden";
+            panel.style.pointerEvents = visible ? "" : "none";
+            panel.dataset.canvasNodeViewportVisible = visible ? "true" : "false";
+            return visible;
+        };
+        const updatePosition = (nextViewport: ViewportTransform) => {
+            liveViewport = nextViewport;
+            const overlayScale = resolveCanvasOverlayScale(nextViewport.k, scaleWithNode);
+            const requestedWidth = resolveNodePanelWidth(node, nextViewport, panelWidth);
+            const nextWidth = Math.min(requestedWidth, Math.max(320, (viewportSize.width - 24) / overlayScale));
+            if (panel.style.width !== `${nextWidth}px`) panel.style.width = `${nextWidth}px`;
+            panel.style.maxHeight = allowOverflow ? "none" : `${Math.max(120, viewportSize.height - 84)}px`;
+            const renderedWidth = panelSize.width || nextWidth;
+            const renderedHeight = panelSize.height || panelHeight;
+            const position = getAttachedNodePanelPosition(node, nextViewport, viewportSize, renderedWidth, renderedHeight, liveDragOffset, container.getBoundingClientRect());
+            panel.style.transform = `translate3d(${position.left}px, ${position.top}px, 0)`;
+            panel.style.transformOrigin = "top left";
+            panel.style.setProperty("--canvas-node-panel-scale", "1");
+            panel.dataset.scaleWithNode = "false";
+            updateVisibility(nextViewport);
+        };
+        updatePosition(viewport);
         const resizeObserver = new ResizeObserver(() => {
             viewportSize = { width: container.clientWidth, height: container.clientHeight };
-            update(liveViewport);
+            panelSize = { width: panel.offsetWidth || initialWidth, height: panel.offsetHeight || panelHeight };
+            updatePosition(liveViewport);
         });
         resizeObserver.observe(container);
-        const unsubscribeViewport = subscribeCanvasGraphicsViewportPreview(container, update);
+        resizeObserver.observe(panel);
+        const unsubscribeViewport = subscribeCanvasViewportVisibilityPreview(container, (nextViewport) => {
+            const verticalChanged = Math.abs(nextViewport.y - previousViewport.y) > 0.5;
+            const scaleChanged = Math.abs(nextViewport.k - previousViewport.k) > 0.001;
+            liveViewport = nextViewport;
+            previousViewport = nextViewport;
+            const wasVisible = lastNodeVisibility;
+            const visible = updateVisibility(nextViewport);
+            if (verticalChanged || scaleChanged || (visible && wasVisible === false)) updatePosition(nextViewport);
+        });
         const unsubscribeDrag = subscribeCanvasNodeDragPreview(container, (preview) => {
             liveDragOffset = preview?.nodeIds.has(node.id) ? { x: preview.x, y: preview.y } : null;
-            update(liveViewport);
+            updatePosition(liveViewport);
         });
+        const mutationObserver = new MutationObserver(() => {
+            const wasVisible = lastNodeVisibility;
+            const visible = updateVisibility(liveViewport);
+            if (visible && wasVisible === false) updatePosition(liveViewport);
+        });
+        mutationObserver.observe(container, { childList: true, subtree: true });
+        const handlePanelWheel = (event: WheelEvent) => {
+            event.stopPropagation();
+            const target = event.target instanceof Element ? event.target : null;
+            const horizontalIntent = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+            if (horizontalIntent && !target?.closest("[data-canvas-horizontal-scroll]")) event.preventDefault();
+        };
+        panel.addEventListener("wheel", handlePanelWheel, { capture: true, passive: false });
         return () => {
             resizeObserver.disconnect();
             unsubscribeViewport();
             unsubscribeDrag();
+            mutationObserver.disconnect();
+            panel.removeEventListener("wheel", handlePanelWheel, true);
         };
-    }, [containerRef, dragOffset?.x, dragOffset?.y, isDragging, node.height, node.id, node.position.x, node.position.y, node.width, panelHeight, panelWidth, viewport]);
+    }, [containerRef, dragOffset?.x, dragOffset?.y, isDragging, node.height, node.id, node.position.x, node.position.y, node.width, panelHeight, panelWidth, scaleWithNode, viewport.k, viewport.y]);
 
     return (
         <div
             ref={panelRef}
             data-canvas-no-zoom
             data-canvas-node-panel
-            className={`thin-scrollbar absolute max-w-[calc(100%_-_24px)] ${allowOverflow ? "overflow-visible" : "overflow-y-auto"}`}
-            style={{ left: 0, top: 0, transform: `translate3d(${initialPosition.left}px, ${initialPosition.top}px, 0)`, width: initialWidth, maxHeight: allowOverflow ? "none" : "calc(100% - 84px)", zIndex }}
+            data-canvas-node-panel-id={node.id}
+            className={`thin-scrollbar fixed max-w-[calc(100%_-_24px)] ${allowOverflow ? "overflow-visible" : "overflow-y-auto"}`}
+            style={{ left: 0, top: 0, transform: "translate3d(0px, 0px, 0)", transformOrigin: "top left", width: initialWidth, maxHeight: allowOverflow ? "none" : "calc(100% - 84px)", zIndex }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDownCapture={bringToFront}
             onFocusCapture={bringToFront}
@@ -179,7 +272,10 @@ export function CanvasNodePanelOverlay({
 
 function resolveNodePanelWidth(node: CanvasNodeData, viewport: ViewportTransform, requestedWidth?: number) {
     if (requestedWidth) return requestedWidth;
-    return clamp(Math.round(node.width * viewport.k * 1.5), 680, 920);
+    // 节点面板是屏幕覆盖层，尺寸不能随画布缩放变化；viewport 只参与
+    // 计算它相对于节点的屏幕位置。
+    void viewport;
+    return clamp(Math.round(node.width * 1.5), 680, 920);
 }
 
 export function CanvasConnectionCreateMenu({
@@ -217,6 +313,9 @@ export function CanvasConnectionCreateMenu({
     const menuHeight = canCreateDrawing ? 448 : 404;
     const gap = 12;
     const initialPosition = getConnectionMenuPosition(pending.position, viewport, viewportSize, menuWidth, menuHeight, gap);
+    const containerBounds = containerRef.current?.getBoundingClientRect();
+    const initialLeft = (containerBounds?.left || 0) + initialPosition.left;
+    const initialTop = (containerBounds?.top || 0) + initialPosition.top;
 
     useLayoutEffect(() => {
         bringToFront();
@@ -227,10 +326,10 @@ export function CanvasConnectionCreateMenu({
         const menu = menuRef.current;
         if (!container || !menu) return;
         const update = (nextViewport: ViewportTransform) => {
+            const position = getConnectionMenuPosition(pending.position, nextViewport, viewportSize, menu.offsetWidth || menuWidth, menu.offsetHeight || menuHeight, gap);
             const containerBounds = container.getBoundingClientRect();
-            const position = getConnectionMenuPosition(pending.position, nextViewport, { width: containerBounds.width, height: containerBounds.height }, menu.offsetWidth || menuWidth, menu.offsetHeight || menuHeight, gap);
-            menu.style.left = `${position.left}px`;
-            menu.style.top = `${position.top}px`;
+            menu.style.left = `${containerBounds.left + position.left}px`;
+            menu.style.top = `${containerBounds.top + position.top}px`;
         };
         update(viewport);
         return subscribeCanvasViewportPreview(container, update);
@@ -242,7 +341,7 @@ export function CanvasConnectionCreateMenu({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: aceternityMotion.duration.instant, ease: aceternityMotion.easing.enter }}
-            className="thin-scrollbar absolute origin-top-left overflow-x-hidden overflow-y-auto rounded-[var(--r-2xl)] border p-2"
+            className="thin-scrollbar fixed origin-top-left overflow-x-hidden overflow-y-auto rounded-[var(--r-2xl)] border p-2"
             data-canvas-no-zoom
             data-connection-create-menu
             aria-label="创建下一步"
@@ -252,12 +351,13 @@ export function CanvasConnectionCreateMenu({
                     onClose();
                 }
             }}
-            style={{ width: menuWidth, maxHeight: Math.max(120, viewportSize.height - 84), left: initialPosition.left, top: initialPosition.top, zIndex, background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text }}
+            style={{ width: menuWidth, maxHeight: Math.max(120, viewportSize.height - 84), left: initialLeft, top: initialTop, zIndex, background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDownCapture={bringToFront}
             onFocusCapture={(event) => {
                 bringToFront();
-                if (event.target.matches(":focus-visible")) setActiveOption(event.target.closest<HTMLElement>("[data-create-option]")?.dataset.createOption || null);
+                const target = event.target instanceof Element ? event.target : null;
+                if (target?.matches(":focus-visible")) setActiveOption(target.closest<HTMLElement>("[data-create-option]")?.dataset.createOption || null);
             }}
             onBlurCapture={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget)) setActiveOption(null);
@@ -268,7 +368,8 @@ export function CanvasConnectionCreateMenu({
                 // Layout changes can retarget a stationary pointer; only real movement selects a new row.
                 if (previous?.x === event.clientX && previous.y === event.clientY) return;
                 lastPointerRef.current = { x: event.clientX, y: event.clientY };
-                const option = (event.target as Element).closest<HTMLElement>("[data-create-option]")?.dataset.createOption;
+                const target = event.target instanceof Element ? event.target : null;
+                const option = target?.closest<HTMLElement>("[data-create-option]")?.dataset.createOption;
                 if (option) setActiveOption(option);
             }}
             onPointerLeave={() => {
@@ -427,14 +528,19 @@ function getConnectionMenuPosition(position: Position, viewport: ViewportTransfo
     };
 }
 
-function getAttachedNodePanelPosition(nodeElement: HTMLElement, container: HTMLElement, panelWidth: number) {
+export function getAttachedNodePanelPosition(node: CanvasNodeData, viewport: ViewportTransform, viewportSize: { width: number; height: number }, panelWidth: number, panelHeight: number, dragOffset?: Position | null, containerRect?: Pick<DOMRect, "left" | "top">) {
     const gap = 10;
-    const nodeRect = nodeElement.getBoundingClientRect();
-    const containerRect = container.getBoundingClientRect();
+    const margin = 12;
+    const topMargin = margin;
+    const nodeRect = getCanvasNodeScreenRect(node, viewport, dragOffset);
+    const below = nodeRect.bottom + gap;
+    const above = nodeRect.top - panelHeight - gap;
+    const top = viewportSize.height - below - margin < panelHeight && above >= topMargin ? above : below;
+    const offsetX = containerRect?.left || 0;
+    const offsetY = containerRect?.top || 0;
     return {
-        left: nodeRect.left - containerRect.left + nodeRect.width / 2 - panelWidth / 2,
-        top: nodeRect.bottom - containerRect.top + gap,
-        placement: "below" as const,
+        left: offsetX + clamp(nodeRect.left + nodeRect.width / 2 - panelWidth / 2, margin, Math.max(margin, viewportSize.width - panelWidth - margin)),
+        top: offsetY + clamp(top, topMargin, Math.max(topMargin, viewportSize.height - panelHeight - margin)),
     };
 }
 

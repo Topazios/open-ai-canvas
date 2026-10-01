@@ -10,6 +10,7 @@ import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from 
 import { flushAssetStorePersistence, useAssetStore } from "../src/stores/use-asset-store";
 import { useSyncProgressStore } from "../src/stores/use-sync-progress-store";
 import { CanvasNodeType } from "../src/types/canvas";
+import { resourceFileUrl } from "../src/services/api/resources";
 
 const originalWindow = globalThis.window;
 const originalAdapter = apiClient.defaults.adapter;
@@ -181,6 +182,27 @@ test("stale viewport, no-op restore and open do not submit old content", async (
     expect(latest.viewport).toEqual({ x: 100, y: 40, k: 2 });
     await saveRemoteUserDataNow();
     expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
+});
+
+test("remote sync preserves uploaded text bodies instead of replacing them with resource URLs", async () => {
+    const project = useCanvasStore.getState().openProject("canvas")!;
+    useCanvasStore.getState().updateProject("canvas", {
+        nodes: [...project.nodes, {
+            id: "script",
+            type: CanvasNodeType.Text,
+            title: "剧本.txt",
+            position: { x: 0, y: 0 },
+            width: 320,
+            height: 240,
+            metadata: { content: "第一场：开场", prompt: "第一场：开场", storageKey: "resource:text-file", mimeType: "text/plain" },
+        }],
+    });
+    await saveRemoteUserDataNow("canvas");
+    const text = remote.get("canvas")?.nodes.find((node) => node.id === "script");
+    expect(text?.metadata?.content).toBe("第一场：开场");
+    expect(text?.metadata?.prompt).toBe("第一场：开场");
+    expect(text?.metadata?.storageKey).toBe("resource:text-file");
+    expect(text?.metadata?.content).not.toBe(resourceFileUrl("text-file"));
 });
 
 test("load latest, save and reload stay synced when Agent history replays an unversioned delta", async () => {

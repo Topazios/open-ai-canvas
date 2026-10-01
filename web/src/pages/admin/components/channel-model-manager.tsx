@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { App, Button, Checkbox, Input, Modal, Popconfirm, Space } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Pencil, Plus, RefreshCw, Search, Settings2, Trash2 } from "lucide-react";
 
 import { PaginationBar } from "@/pages/admin/components/admin-ui";
 import { ModelIcon } from "@/components/model-picker";
@@ -14,7 +14,9 @@ import { AdminBatchBar, AdminDataTable, AdminFilterChip, AdminStatusBadge, Admin
 import { ChannelOrderDialog } from "./channel-order-dialog";
 import { ChannelModelCostSummary } from "./channel-model-cost-summary";
 import { ChannelModelRepriceDialog } from "./channel-model-reprice-dialog";
+import { ChannelModelBatchSettingsDialog } from "./channel-model-batch-settings-dialog";
 import { Select } from "@/components/ui/base/select";
+import { IconButton } from "@/pages/admin/ui/controls";
 
 export function ChannelModelManager({ channel, onChanged }: { channel: ModelChannel; onChanged: () => void | Promise<void> }) {
     const { message, modal } = App.useApp();
@@ -22,6 +24,7 @@ export function ChannelModelManager({ channel, onChanged }: { channel: ModelChan
     const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
     const [deletingSelected, setDeletingSelected] = useState(false);
     const [repriceItems, setRepriceItems] = useState<ChannelModel[]>([]);
+    const [batchSettingsItems, setBatchSettingsItems] = useState<ChannelModel[]>([]);
     const [editing, setEditing] = useState<ChannelModel | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState("");
@@ -74,6 +77,7 @@ export function ChannelModelManager({ channel, onChanged }: { channel: ModelChan
         setEditorOpen(false);
         setSelectedModelIds([]);
         setRepriceItems([]);
+        setBatchSettingsItems([]);
         resetFetchPreview();
         setKeyword("");
         setCapability("all");
@@ -218,10 +222,10 @@ export function ChannelModelManager({ channel, onChanged }: { channel: ModelChan
         { title: "状态", dataIndex: "enabled", width: 85, render: (enabled) => <AdminStatusBadge label={enabled ? "启用" : "停用"} tone={enabled ? "success" : "neutral"} /> },
         {
             title: "操作",
-            width: 120,
+            width: 160,
             fixed: "right",
             render: (_, item) => (
-                <Space>
+                <Space className="admin-channel-model-row-actions" size={8}>
                     <Button size="small" icon={<Pencil className="size-3.5" />} disabled={deletingSelected} onClick={() => startEdit(item)}>
                         编辑
                     </Button>
@@ -268,9 +272,10 @@ export function ChannelModelManager({ channel, onChanged }: { channel: ModelChan
                     <h3 className="admin-channel-model-heading">
                         模型管理 <span className="admin-channel-count">{items.length}</span>
                     </h3>
-                    <p className="admin-channel-model-hint">点击“自定义排序”调整模型展示顺序；规格展示成本价 / 销售价及利润率，勾选模型可统一调价</p>
+                    <p className="admin-channel-model-hint">点击“自定义排序”调整模型展示顺序；规格展示成本价 / 销售价及利润率，勾选模型可批量设置状态、能力、协议或统一调价</p>
                 </div>
                 <Space wrap>
+                    <IconButton icon={RefreshCw} size="md" loading={loading} title="刷新当前模型列表" aria-label="刷新当前模型列表" onClick={() => void reload()} />
                     <ChannelOrderDialog
                         channelId={channel.id}
                         onSaved={async () => {
@@ -389,6 +394,9 @@ export function ChannelModelManager({ channel, onChanged }: { channel: ModelChan
                         <Button size="small" disabled={deletingSelected || loading || Boolean(loadError)} onClick={() => setRepriceItems(items.filter((item) => selectedModelIds.includes(item.id)))}>
                             统一调价
                         </Button>
+                        <Button size="small" icon={<Settings2 className="size-3.5" />} disabled={deletingSelected || loading || Boolean(loadError)} onClick={() => setBatchSettingsItems(items.filter((item) => selectedModelIds.includes(item.id)))}>
+                            批量设置
+                        </Button>
                         <Button danger size="small" icon={<Trash2 className="size-3.5" />} loading={deletingSelected} onClick={confirmBatchRemove}>
                             批量删除
                         </Button>
@@ -411,7 +419,7 @@ export function ChannelModelManager({ channel, onChanged }: { channel: ModelChan
                     columns,
                     dataSource: pagedItems,
                     pagination: false,
-                    scroll: { x: 1090 },
+                    scroll: { x: 1220 },
                 }}
                 footer={
                     <PaginationBar
@@ -426,11 +434,35 @@ export function ChannelModelManager({ channel, onChanged }: { channel: ModelChan
                     />
                 }
             />
-            {repriceItems.length > 0 && <ChannelModelRepriceDialog channelId={channel.id} channelName={channel.name} items={repriceItems} onClose={() => setRepriceItems([])} onSaved={async () => {
-                setSelectedModelIds([]);
-                await reload();
-                await onChanged();
-            }} />}
+            {repriceItems.length > 0 && (
+                <ChannelModelRepriceDialog
+                    channelId={channel.id}
+                    channelName={channel.name}
+                    items={repriceItems}
+                    onClose={() => setRepriceItems([])}
+                    onSaved={async () => {
+                        setSelectedModelIds([]);
+                        await reload();
+                        await onChanged();
+                    }}
+                />
+            )}
+            {batchSettingsItems.length > 0 && (
+                <ChannelModelBatchSettingsDialog
+                    channelId={channel.id}
+                    items={batchSettingsItems}
+                    protocols={availableProtocols}
+                    protocolLoading={protocolLoading}
+                    protocolError={protocolError}
+                    onRetryProtocols={loadProtocols}
+                    onClose={() => setBatchSettingsItems([])}
+                    onSaved={async () => {
+                        setSelectedModelIds([]);
+                        await reload();
+                        await onChanged();
+                    }}
+                />
+            )}
             <Modal
                 title="选择要导入的模型"
                 open={fetchPreviewOpen}

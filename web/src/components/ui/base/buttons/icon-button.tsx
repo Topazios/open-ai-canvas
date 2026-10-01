@@ -1,4 +1,4 @@
-import { useState, type ButtonHTMLAttributes } from "react";
+import { forwardRef, useState, type ButtonHTMLAttributes } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { Loader2, type LucideIcon } from "lucide-react";
 
@@ -63,10 +63,11 @@ export type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
         active?: boolean;
     };
 
-export function IconButton({ variant, size, icon: Icon, loading = false, active = false, className, type = "button", disabled, onPointerDown, onKeyDown, onBlur, ...props }: IconButtonProps) {
+export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton({ variant, size, icon: Icon, loading = false, active = false, className, type = "button", disabled, onPointerDown, onKeyDown, onBlur, ...props }, ref) {
     const [inputModality, setInputModality] = useState<"pointer" | "keyboard">("pointer");
     return (
         <button
+            ref={ref}
             data-slot="icon-button"
             data-input-modality={inputModality}
             type={type}
@@ -91,4 +92,4 @@ export function IconButton({ variant, size, icon: Icon, loading = false, active 
             {loading ? <Loader2 aria-hidden className="animate-spin" /> : <Icon aria-hidden />}
         </button>
     );
-}
+});

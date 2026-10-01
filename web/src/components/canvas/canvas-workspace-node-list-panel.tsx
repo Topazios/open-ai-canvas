@@ -2,6 +2,7 @@ import { memo, useState } from "react";
 import { AudioLines, Clock3, FileText, Image, Layers, Pencil, Search, X } from "lucide-react";
 
 import { CanvasVideoPreviewImage } from "@/components/canvas/canvas-video-preview-image";
+import { CachedResourceImage } from "@/components/cached-resource-image";
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { canvasNodeMaterialSummary, canvasNodeSearchContext, canvasNodeSearchTimes } from "@/lib/canvas/canvas-node-search";
 import type { AiConfig } from "@/stores/use-config-store";
@@ -119,7 +120,7 @@ function CanvasNodeListThumbnail({ node }: { node: CanvasNodeData }) {
     }
 
     if (mediaSource && !failed) {
-        return <img src={mediaSource} alt="" width={44} height={36} loading="lazy" decoding="async" className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
+        return <CachedResourceImage storageKey={node.metadata?.storageKey} src={mediaSource} alt="" width={44} height={36} loading="lazy" decoding="async" className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
     }
 
     const textPreview = node.metadata?.previewContent || node.metadata?.composerContent || node.metadata?.prompt || node.metadata?.content;

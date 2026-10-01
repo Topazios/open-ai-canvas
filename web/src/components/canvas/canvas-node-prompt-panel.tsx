@@ -1,7 +1,7 @@
 import { Button, Image as AntImage, InputNumber, Modal, Popover } from "antd";
 import { Tooltip } from "@/components/ui/base/tooltip";
-import { useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { ArrowLeftRight, ArrowUp, AtSign, Boxes, ChevronDown, FileText, GripVertical, ImageIcon, ImagePlus, LayoutList, Link2, LoaderCircle, Maximize2, Music2, Pencil, SlidersHorizontal, UserRound, Video, WandSparkles, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { ArrowLeftRight, ArrowUp, AtSign, Boxes, ChevronDown, ChevronLeft, ChevronRight, FileText, GripVertical, ImageIcon, ImagePlus, LayoutList, Link2, LoaderCircle, Maximize2, Music2, Pencil, SlidersHorizontal, UserRound, Video, WandSparkles, X } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, modelOptionName, resolveModelChannel, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -757,6 +757,22 @@ function ConnectedReferenceShelf({
     const [imagePreview, setImagePreview] = useState<CanvasResourceReference | null>(null);
     const [draggedReferenceId, setDraggedReferenceId] = useState<string | null>(null);
     const [dropTargetReferenceId, setDropTargetReferenceId] = useState<string | null>(null);
+    const trackRef = useRef<HTMLDivElement>(null);
+    const [scrollEdges, setScrollEdges] = useState({ start: true, end: true });
+    const updateScrollEdges = () => {
+        const track = trackRef.current;
+        if (!track) return;
+        const next = { start: track.scrollLeft <= 1, end: track.scrollLeft + track.clientWidth >= track.scrollWidth - 1 };
+        setScrollEdges((current) => current.start === next.start && current.end === next.end ? current : next);
+    };
+    useLayoutEffect(() => {
+        const track = trackRef.current;
+        if (!track) return;
+        updateScrollEdges();
+        const observer = new ResizeObserver(updateScrollEdges);
+        observer.observe(track);
+        return () => observer.disconnect();
+    }, [activeReferences.length]);
     if (!activeReferences.length) return null;
 
     const moveReference = (sourceId: string, targetId: string) => {
@@ -780,7 +796,12 @@ function ConnectedReferenceShelf({
     return (
         <>
             <div className="canvas-node-composer-references" role="group" aria-label="已连接素材">
-                <div className="canvas-node-composer-references-track thin-scrollbar">
+                {activeReferences.length > 3 ? (
+                    <button type="button" className="canvas-node-composer-reference-nav" aria-label="查看前面的参考素材" disabled={scrollEdges.start} onClick={() => trackRef.current?.scrollBy({ left: -trackRef.current.clientWidth * 0.8, behavior: "smooth" })}>
+                        <ChevronLeft className="size-4" />
+                    </button>
+                ) : null}
+                <div ref={trackRef} data-canvas-horizontal-scroll className="canvas-node-composer-references-track thin-scrollbar" onScroll={updateScrollEdges}>
                     {activeReferences.map((reference, index) => {
                         const canPreview = Boolean(reference.previewUrl) && (reference.kind === "image" || reference.kind === "character" || reference.kind === "video");
                         const isDropTarget = dropTargetReferenceId === reference.id;
@@ -914,6 +935,11 @@ function ConnectedReferenceShelf({
                         );
                     })}
                 </div>
+                {activeReferences.length > 3 ? (
+                    <button type="button" className="canvas-node-composer-reference-nav" aria-label="查看后面的参考素材" disabled={scrollEdges.end} onClick={() => trackRef.current?.scrollBy({ left: trackRef.current.clientWidth * 0.8, behavior: "smooth" })}>
+                        <ChevronRight className="size-4" />
+                    </button>
+                ) : null}
             </div>
             {imagePreview?.previewUrl ? (
                 <AntImage

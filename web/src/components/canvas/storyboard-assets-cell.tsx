@@ -79,9 +79,9 @@ function AssetPreviewModal({ node, onClose }: { node: CanvasNodeData | null; onC
         <Modal title={node?.title || "资产预览"} open={Boolean(node)} onCancel={onClose} footer={null} width={880} centered destroyOnHidden>
             {node ? (
                 <div className="grid min-h-56 place-items-center overflow-hidden rounded-lg bg-black/[0.035] p-3 dark:bg-white/[0.035]" data-canvas-no-zoom>
-                    {node.type === CanvasNodeType.Video && source ? <video src={source} controls autoPlay playsInline className="max-h-[68vh] max-w-full rounded-md" />
+                    {node.type === CanvasNodeType.Video && source ? <video src={source} controls autoPlay playsInline className="max-h-[68dvh] max-w-full rounded-md" />
                         : node.type === CanvasNodeType.Audio && source ? <audio src={source} controls autoPlay className="w-full max-w-xl" />
-                            : source ? <img src={source} alt={node.title || "资产预览"} className="max-h-[68vh] max-w-full object-contain" />
+                            : source ? <img src={source} alt={node.title || "资产预览"} className="max-h-[68dvh] max-w-full object-contain" />
                                 : <span className="text-sm text-foreground/45">当前资产没有可预览的媒体内容</span>}
                 </div>
             ) : null}

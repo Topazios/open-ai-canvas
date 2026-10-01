@@ -82,10 +82,12 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const overlay = createOverlayScene(overlayHost);
         underlayRef.current = underlay;
         overlayRef.current = overlay;
+        let viewportSize = { width: 1, height: 1 };
 
         const resize = () => {
             const rect = container.getBoundingClientRect();
-            const size = { width: Math.max(1, rect.width), height: Math.max(1, rect.height), pixelRatio: canvasPixelRatio() };
+            viewportSize = { width: Math.max(1, rect.width), height: Math.max(1, rect.height) };
+            const size = { ...viewportSize, pixelRatio: canvasPixelRatio() };
             underlay.leafer.resize(size);
             overlay.leafer.resize(size);
             syncViewport(rasterViewportRef.current, size.width, size.height, underlay, overlay, propsRef.current);
@@ -98,10 +100,9 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         window.addEventListener("resize", resize);
         const unsubscribe = subscribeCanvasGraphicsViewportPreview(container, (next) => {
             viewportRef.current = next;
-            const rect = container.getBoundingClientRect();
             if (isViewportPreview(container, next, rasterViewportRef.current)) {
                 if (shouldRebaseCanvasRaster(next, rasterViewportRef.current)) {
-                    syncViewport(next, rect.width, rect.height, underlay, overlay, propsRef.current);
+                    syncViewport(next, viewportSize.width, viewportSize.height, underlay, overlay, propsRef.current);
                     rasterViewportRef.current = next;
                     forceSceneRender(underlay, overlay);
                     resetScenePreview(underlay, overlay);
@@ -112,7 +113,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
             }
             resetScenePreview(underlay, overlay);
             if (sameCanvasViewport(next, rasterViewportRef.current)) return;
-            syncViewport(next, rect.width, rect.height, underlay, overlay, propsRef.current);
+            syncViewport(next, viewportSize.width, viewportSize.height, underlay, overlay, propsRef.current);
             rasterViewportRef.current = next;
         });
         const unsubscribeSelection = subscribeCanvasSelectionPreview(container, (selection) => {
@@ -418,10 +419,10 @@ function applyScenePreview(viewport: ViewportTransform, rasterViewport: Viewport
     // 将已栅格画面的屏幕坐标映射到实时视口，缩放手势期间不触碰 Leafer 场景树。
     const { ratio, x, y } = calculateCanvasPreviewTransform(viewport, rasterViewport);
     for (const scene of scenes) {
-        scene.host.style.transformOrigin = "0 0";
+        if (scene.host.style.transformOrigin !== "0 0") scene.host.style.transformOrigin = "0 0";
         scene.host.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${ratio})`;
-        scene.host.style.willChange = "transform";
-        scene.host.dataset.canvasLeaferPreview = "true";
+        if (scene.host.style.willChange !== "transform") scene.host.style.willChange = "transform";
+        if (scene.host.dataset.canvasLeaferPreview !== "true") scene.host.dataset.canvasLeaferPreview = "true";
     }
 }
 

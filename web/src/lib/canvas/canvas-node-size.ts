@@ -61,12 +61,13 @@ export function ensureMediaNodeMinimumSize(node: CanvasNodeData) {
 
     // 如果未完成节点（生成中/失败/空节点）指定了目标比例（如 3:4, 9:16），按目标比例保持占位框尺寸，不能强制变成 16:9 横屏。
     const targetSize = node.metadata?.size ? nodeSizeFromRatio(node.metadata.size, emptyStage?.width || 720, emptyStage?.height || 405) : null;
-    if (targetSize && !node.metadata?.content && !node.metadata?.freeResize && !node.metadata?.locked) {
+    if (targetSize && !node.metadata?.content && !node.metadata?.freeResize && !node.metadata?.manualSize && !node.metadata?.locked) {
         width = targetSize.width;
         height = targetSize.height;
     } else {
         const shouldPromoteEmptyStage = !node.metadata?.content
             && !node.metadata?.freeResize
+            && !node.metadata?.manualSize
             && !node.metadata?.locked
             && emptyStage !== undefined
             && (width <= 0 || height <= 0);
@@ -83,7 +84,7 @@ export function ensureMediaNodeMinimumSize(node: CanvasNodeData) {
     const naturalRatio = naturalWidth / Math.max(1, naturalHeight);
     const nodeRatio = node.width / Math.max(1, node.height);
     // 修复旧版图生图无条件继承参考节点尺寸造成的比例错误，不覆盖自由拉伸或锁定布局。
-    if (requestedSize && naturalWidth > 0 && naturalHeight > 0 && !node.metadata?.freeResize && !node.metadata?.locked && Math.abs(naturalRatio - nodeRatio) > 0.01) {
+    if (requestedSize && naturalWidth > 0 && naturalHeight > 0 && !node.metadata?.freeResize && !node.metadata?.manualSize && !node.metadata?.locked && Math.abs(naturalRatio - nodeRatio) > 0.01) {
         const alignedSize = fitNodeSize(naturalWidth, naturalHeight, requestedSize.width, requestedSize.height);
         width = alignedSize.width;
         height = alignedSize.height;

@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 
 import { getActiveUserScope } from "@/lib/user-scope";
 import { captureVideoPoster, detectVideoAudioTrackFromBlob } from "@/lib/video-poster";
-import { getResourceAccess, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, ResourceUploadError, uploadResourceFile } from "@/services/api/resources";
+import { getResourceAccess, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, resourceStorageKeyFromURL, ResourceUploadError, uploadResourceFile } from "@/services/api/resources";
 import { uploadImage, type UploadedImage } from "@/services/image-storage";
 import { getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
 
@@ -112,18 +112,21 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
 }
 
 export async function resolveMediaUrl(storageKey?: string, fallback = "") {
-    if (!storageKey) return fallback;
-    const resourceId = resourceIdFromStorageKey(storageKey);
+    // Recover the stable key from legacy signed URLs before a video/audio
+    // element mounts the expired address.
+    const resolvedStorageKey = storageKey || resourceStorageKeyFromURL(fallback);
+    if (!resolvedStorageKey) return fallback;
+    const resourceId = resourceIdFromStorageKey(resolvedStorageKey);
     if (resourceId) {
         // 展示直接命中 OSS/CDN；平台资源文件接口只保留给私有源站代理或本地存储兜底。
-        return resolveResourceAccessURL((await getResourceAccess(storageKey, "display")).url);
+        return resolveResourceAccessURL((await getResourceAccess(resolvedStorageKey, "display")).url);
     }
-    const cached = objectUrls.get(storageKey);
+    const cached = objectUrls.get(resolvedStorageKey);
     if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
+    const blob = await store.getItem<Blob>(resolvedStorageKey);
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
+    objectUrls.set(resolvedStorageKey, url);
     return url;
 }
 

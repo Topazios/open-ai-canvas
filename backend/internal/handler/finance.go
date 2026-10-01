@@ -296,6 +296,51 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"deleted": deleted})
 	})
+	r.POST("/admin/channels/:id/models/batch-status", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
+		var req struct {
+			ModelIDs []string `json:"modelIds"`
+			Enabled  *bool    `json:"enabled"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		if req.Enabled == nil {
+			fail(c, http.StatusBadRequest, service.BadAuthRequest("请指定模型启用状态"))
+			return
+		}
+		updated, err := svc.UpdateAdminChannelModelsEnabled(user, c.Param("id"), req.ModelIDs, *req.Enabled)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"updated": updated})
+	})
+	r.POST("/admin/channels/:id/models/batch-settings", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
+		var req service.AdminChannelModelBatchSettingsRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		updated, err := svc.UpdateAdminChannelModelsSettings(user, c.Param("id"), req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"updated": updated})
+	})
 	r.POST("/admin/channels/:id/models/batch-reprice", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

@@ -45,12 +45,19 @@ type canvasGenerationInput struct {
 }
 
 type canvasTextOptions struct {
-	Stream   *bool `json:"stream"`
-	Thinking bool  `json:"thinking"`
+	Stream           *bool                 `json:"stream"`
+	Thinking         bool                  `json:"thinking"`
+	StructuredOutput *StructuredTextOutput `json:"structuredOutput,omitempty"`
 	// MaxOutputTokens 是本次调用的输出上限（思考 + 正文 + 工具参数）。
 	// 画布 Agent 的每一步都带上限：不设时上游按"剩余上下文"放行，思考模型可以把单步
 	// 拖到几分钟（实测 output_tokens 正好吃满可用预算、正文与工具调用皆空）；0 表示不限制。
 	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+}
+
+type StructuredTextOutput struct {
+	Name   string                 `json:"name"`
+	Schema map[string]interface{} `json:"schema"`
+	Strict *bool                  `json:"strict,omitempty"`
 }
 
 type agentToolRequests struct {
@@ -376,6 +383,13 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 		// estimates and Agent context budgeting. Never silently fall back to a
 		// transport-specific fixed token count when the model declares one.
 		input.MaxOutputTokens = input.Config.CapabilityConfig.Text.MaxOutputTokens
+	}
+	if input.Mode == "text" && input.TextOptions.MaxOutputTokens > 0 {
+		// Per-task limits are used by structured analysis and other bounded
+		// workflows. A model capability limit remains the hard upper bound.
+		if input.MaxOutputTokens <= 0 || input.TextOptions.MaxOutputTokens < input.MaxOutputTokens {
+			input.MaxOutputTokens = input.TextOptions.MaxOutputTokens
+		}
 	}
 	var textPublisher *taskTextStreamPublisher
 	if input.Mode == "text" && strings.HasPrefix(taskType, "canvas_text") {

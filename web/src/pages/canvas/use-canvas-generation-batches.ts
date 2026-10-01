@@ -73,7 +73,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                 mode,
                 status: "queued",
                 items: availableTargets.map((target) => ({ id: nanoid(), ...target, status: "waiting", retryCount: 0 })),
-                concurrency: options?.concurrency ? Math.max(1, Math.min(10, Math.floor(options.concurrency))) : undefined,
+                concurrency: options?.concurrency ? Math.max(1, Math.floor(options.concurrency)) : undefined,
                 createdAt: now,
                 updatedAt: now,
             };
@@ -175,16 +175,14 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                     .find((candidate) => candidate.id === itemId);
                 return item ? !nodeById.get(item.nodeId)?.metadata?.taskId : false;
             }).length;
-            let availableSlots = Math.max(0, activeTaskLimit - activeTaskCount - pendingReservations);
+            let availableSlots = activeTaskLimit <= 0 ? Number.POSITIVE_INFINITY : Math.max(0, activeTaskLimit - activeTaskCount - pendingReservations);
             if (!availableSlots) return;
 
             const candidates: Array<{ batch: CanvasGenerationBatch; item: CanvasGenerationBatchItem; node: CanvasNodeData }> = [];
             for (const sourceNode of currentNodes) {
                 for (const batch of sourceNode.metadata?.generationBatches || []) {
                     if (batch.projectId !== projectId || batch.status === "completed" || batch.status === "cancelled") continue;
-                    let batchAvailableSlots = batch.concurrency
-                        ? Math.max(0, batch.concurrency - batch.items.filter((item) => ["submitting", "queued", "running"].includes(item.status)).length)
-                        : Number.POSITIVE_INFINITY;
+                    let batchAvailableSlots = batch.concurrency ? Math.max(0, batch.concurrency - batch.items.filter((item) => ["submitting", "queued", "running"].includes(item.status)).length) : Number.POSITIVE_INFINITY;
                     for (const item of batch.items) {
                         if (item.status !== "waiting" || availableSlots <= 0 || batchAvailableSlots <= 0) continue;
                         const node = nodeById.get(item.nodeId);
@@ -223,6 +221,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                         node.metadata?.retryOf && node.metadata.attemptGroupId && node.metadata.taskClientOperationId
                             ? { retryOf: node.metadata.retryOf, attemptGroupId: node.metadata.attemptGroupId, clientOperationId: node.metadata.taskClientOperationId }
                             : undefined,
+                    selectedSkillIds: node.metadata?.skillIds,
                 }).finally(() => {
                     controllersRef.current.delete(key);
                     reconcileBatches();
@@ -323,9 +322,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                 onOk: () => {
                     const latestNodeById = new Map(nodesRef.current.map((node) => [node.id, node]));
                     const latestBatch = findBatch(nodesRef.current, sourceNodeId, batchId);
-                    const latestStoppableItems = latestBatch
-                        ? latestBatch.items.filter((item) => item.status === "waiting" && stoppableItems.some((candidate) => candidate.id === item.id) && !latestNodeById.get(item.nodeId)?.metadata?.taskId)
-                        : [];
+                    const latestStoppableItems = latestBatch ? latestBatch.items.filter((item) => item.status === "waiting" && stoppableItems.some((candidate) => candidate.id === item.id) && !latestNodeById.get(item.nodeId)?.metadata?.taskId) : [];
                     const stoppableIds = new Set(latestStoppableItems.map((item) => item.id));
                     updateBatch(sourceNodeId, batchId, (current) => {
                         const items = current.items.map((item) => (stoppableIds.has(item.id) ? { ...item, status: "cancelled" as const, errorDetails: undefined } : item));

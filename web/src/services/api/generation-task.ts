@@ -43,6 +43,12 @@ type BackendGenerationTaskOptions = {
     onTextDelta?: (text: string) => void;
     streamText?: boolean;
     enableThinking?: boolean;
+    maxOutputTokens?: number;
+    structuredOutput?: {
+        name: string;
+        schema: Record<string, unknown>;
+        strict?: boolean;
+    };
     clientOperationId?: string;
     retryOf?: string;
     retryContextsByBatchIndex?: Array<{ retryOf: string; attemptGroupId: string; clientOperationId: string }>;
@@ -86,6 +92,8 @@ export async function runBackendGenerationTask(
         onTextDelta,
         streamText,
         enableThinking,
+        maxOutputTokens,
+        structuredOutput,
         clientOperationId,
         retryOf,
         attemptGroupId,
@@ -97,7 +105,7 @@ export async function runBackendGenerationTask(
     assertBackendRuntimeConfigured(config, mode);
     const prepared = await prepareGenerationReferences({ config, mode, referenceImages, referenceVideos, referenceAudios, mask });
     throwIfAborted(signal);
-    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate, onTextDelta, streamText, enableThinking, clientOperationId, retryOf, attemptGroupId }, prepared, dependencies);
+    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate, onTextDelta, streamText, enableThinking, maxOutputTokens, structuredOutput, clientOperationId, retryOf, attemptGroupId }, prepared, dependencies);
 }
 
 // 分镜等后台生产流程只需要可靠提交任务；任务状态与产物由项目工作区轮询和
@@ -300,7 +308,16 @@ function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepa
             config: backendProviderConfig(config, mode),
             capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
             textHistory: options.textHistory,
-            ...(mode === "text" ? { textOptions: { stream: options.streamText !== false, thinking: options.enableThinking === true } } : {}),
+            ...(mode === "text"
+                ? {
+                      textOptions: {
+                          stream: options.streamText !== false,
+                          thinking: options.enableThinking === true,
+                          ...(options.maxOutputTokens && options.maxOutputTokens > 0 ? { maxOutputTokens: options.maxOutputTokens } : {}),
+                          ...(options.structuredOutput ? { structuredOutput: options.structuredOutput } : {}),
+                      },
+                  }
+                : {}),
             referenceImages: prepared.referenceImages,
             referenceVideos: prepared.referenceVideos,
             referenceAudios: prepared.referenceAudios,

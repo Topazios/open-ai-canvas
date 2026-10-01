@@ -119,7 +119,8 @@ export function WorkflowGraphEditor({ workflowJson, workflowGraph, fields, onCha
     }, [handleViewportWheel]);
 
     const startPan = (event: ReactPointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0 || (event.target as Element).closest("[data-workflow-node]")) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (event.button !== 0 || target?.closest("[data-workflow-node]")) return;
         const viewport = viewportRef.current;
         if (!viewport) return;
         panRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: viewport.scrollLeft, top: viewport.scrollTop };

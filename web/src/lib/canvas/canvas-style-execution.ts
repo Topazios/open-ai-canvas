@@ -13,8 +13,10 @@ export type CanvasStyleExecutionRuntime = {
 export function resolveCanvasStyleExecution(nodes: CanvasNodeData[], sourceNode: CanvasNodeData | undefined, prompt: string, config: AiConfig, mode: "image" | "video"): CanvasStyleExecutionRuntime | null {
     if (mode === "image" && parseToolMentionTokens(prompt).some((tool) => tool.type === "style")) return null;
     const styleNode = nodes.find((node) => node.metadata?.workflowKind === "styleboard");
-    if (!styleNode || sourceNode?.metadata?.workflowKind === "styleboard") return null;
-    const profile = parseStyleProfile(styleNode.metadata?.styleProfileJson) || legacyStyleNodeProfile(styleNode);
+    if (sourceNode?.metadata?.workflowKind === "styleboard") return null;
+    if (sourceNode?.metadata?.styleInheritance === "isolated" && !sourceNode.metadata.styleProfileJson) return null;
+    const profile = parseStyleProfile(sourceNode?.metadata?.styleProfileJson)
+        || (styleNode ? parseStyleProfile(styleNode.metadata?.styleProfileJson) || legacyStyleNodeProfile(styleNode) : null);
     if (!profile) return null;
     const requestConfig = resolveModelRequestConfig(config, config.model);
     const plan = resolveStyleExecutionPlan(profile, { mode, model: requestConfig.model, interfaceType: requestConfig.interfaceType || requestConfig.apiFormat });

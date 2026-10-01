@@ -2,10 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import { canvasConnectionError } from "../src/lib/canvas/canvas-connection-policy";
 import { assertCanvasImageReferenceLimit, buildGenerationConfig, canvasImageReferenceLimitError, resolveCanvasGenerationModel } from "../src/lib/canvas/canvas-project-generation";
-import { readNodeGenerationSpec, synchronizeGenerationSpec } from "../src/lib/canvas/generation-contract";
+import { generationSpecMetadata, readNodeGenerationSpec, specFromConfig, synchronizeGenerationSpec } from "../src/lib/canvas/generation-contract";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 import { groupModelsByDisplayName, inferVideoOperation, modelCompatibilityError, modelGroupReferenceLimits, modelPromptLengthError, resolveCompatibleModel, resolveModelGenerationDefaults, resolveModelVideoBooleanOptions } from "../src/lib/model-selection";
 import { defaultConfig, normalizeModelOptionValue, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
+import { backendProviderConfig } from "../src/services/api/generation-task";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
 
 function policyConfig(): AiConfig {
@@ -54,6 +55,40 @@ function node(id: string, type: CanvasNodeType, generationMode?: "image" | "vide
 }
 
 describe("逻辑模型选择", () => {
+    test("批量生图将显式 1:1 + 2K 保存并传入后端任务配置", () => {
+        const model = "relay::grok-image";
+        const capabilityConfig = defaultModelCapabilityConfig("grok-image", "grok-image");
+        const config: AiConfig = {
+            ...defaultConfig,
+            model,
+            imageModel: model,
+            channels: [{
+                id: "relay",
+                name: "图像渠道",
+                baseUrl: "https://api.example.com",
+                apiKey: "test-key",
+                apiFormat: "openai",
+                models: ["grok-image"],
+                modelCosts: [{ model: "grok-image", capability: "image", billingMode: "fixed_request", unitPriceMicrocredits: 1, capabilityConfig }],
+            }],
+            imageModels: [model],
+            models: [model],
+            size: "16:9",
+            quality: "1k",
+        };
+        const spec = specFromConfig("image", "角色设定参考图", { ...config, size: "1:1", quality: "2k", count: "1" });
+        const imageNode: CanvasNodeData = {
+            ...node("asset", CanvasNodeType.Image),
+            metadata: {
+                model, size: "16:9", quality: "1k",
+                ...generationSpecMetadata(spec),
+            },
+        };
+        const resolved = buildGenerationConfig(config, imageNode, "image");
+        expect(readNodeGenerationSpec(imageNode)?.options).toMatchObject({ size: "1:1", quality: "2k", count: 1 });
+        expect(resolved).toMatchObject({ model, size: "1:1", quality: "2k", count: "1" });
+        expect(backendProviderConfig(resolved, "image")).toMatchObject({ size: "1:1", quality: "2k", count: "1" });
+    });
 
     test("generationSpec 的显式 false 和 0 覆盖陈旧镜像及全局默认", () => {
         const config = policyConfig();

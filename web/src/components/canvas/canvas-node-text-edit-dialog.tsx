@@ -54,7 +54,7 @@ export function CanvasNodeTextEditDialog({
         <Modal open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} centered destroyOnHidden width={980} title="图片文字编辑">
             <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_390px]">
                 <div className="grid min-h-[360px] place-items-center overflow-hidden rounded-xl bg-black/5 p-3 dark:bg-white/[0.04]">
-                    <img src={dataUrl} alt="待编辑图片" className="max-h-[64vh] max-w-full object-contain" draggable={false} />
+                    <img src={dataUrl} alt="待编辑图片" className="max-h-[64dvh] max-w-full object-contain" draggable={false} />
                 </div>
                 <div className="flex min-h-[360px] flex-col gap-3">
                     <div className="flex items-start justify-between gap-3">

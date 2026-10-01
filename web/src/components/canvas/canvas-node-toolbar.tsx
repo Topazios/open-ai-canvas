@@ -7,7 +7,7 @@ import { canvasDockStyle } from "@/lib/canvas/canvas-aceternity-style";
 import { ASSET_CATEGORY_OPTIONS } from "@/lib/asset-category";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { resolveNodeToolbarPlacement, resolveToolbarTools, type NodeToolbarGroup, type ToolContext, type ToolbarHandlers } from "@/lib/canvas/tool-registry";
-import { subscribeCanvasGraphicsViewportPreview } from "@/lib/canvas/canvas-live-viewport";
+import { subscribeCanvasViewportVisibilityPreview } from "@/lib/canvas/canvas-live-viewport";
 import { canvasNodeAssetCategory } from "@/lib/canvas/canvas-node-asset";
 import type { ImageSplitParams } from "@/lib/canvas/canvas-image-data";
 import { formatBytes, getDataUrlByteSize } from "@/lib/image-utils";
@@ -19,6 +19,7 @@ import { useEffectiveConfig } from "@/stores/use-config-store";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode, type ViewportTransform } from "@/types/canvas";
 import { buildImageToolbarTools } from "./canvas-image-toolbar-tools";
 import { CanvasGridSplitPicker } from "./canvas-grid-split-picker";
+import { getCanvasNodeScreenRect, isCanvasRectVisible, resolveCanvasOverlayScale } from "./canvas-workspace-overlays";
 
 type CanvasNodeToolbarProps = {
     node: CanvasNodeData | null;
@@ -35,6 +36,7 @@ type CanvasNodeToolbarProps = {
     onAnnotationEdit: (node: CanvasNodeData) => void;
     onTextEdit: (node: CanvasNodeData) => void;
     onGenerateImage: (node: CanvasNodeData) => void;
+    onBatchGenerateImages: (node: CanvasNodeData) => void;
     onUpload: (node: CanvasNodeData) => void;
     onDownload: (node: CanvasNodeData) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
@@ -66,6 +68,8 @@ type CanvasNodeToolbarProps = {
     onDelete: (node: CanvasNodeData) => void;
     onNineGrid: (node: CanvasNodeData, toolId: number, label: string, icon: string) => void;
     workspaceMode?: CanvasWorkspaceMode;
+    scaleWithNode?: boolean;
+    panelOpen?: boolean;
 };
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
@@ -101,6 +105,7 @@ export function CanvasNodeToolbar({
     onAnnotationEdit,
     onTextEdit,
     onGenerateImage,
+    onBatchGenerateImages,
     onUpload,
     onDownload,
     onSaveAsset,
@@ -132,11 +137,17 @@ export function CanvasNodeToolbar({
     onDelete,
     onNineGrid,
     workspaceMode = "professional",
+    scaleWithNode = false,
+    panelOpen = false,
 }: CanvasNodeToolbarProps) {
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
     const [containerWidth, setContainerWidth] = useState(1000);
     const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
+    const [attachedToPanel, setAttachedToPanel] = useState(false);
+    const [nodeInViewport, setNodeInViewport] = useState(true);
     const toolbarRef = useRef<HTMLDivElement>(null);
+    const nodeRef = useRef<CanvasNodeData | null>(node);
+    nodeRef.current = node;
     const { message } = App.useApp();
     const copyText = useCopyText();
     const themeName = useActiveTheme();
@@ -149,12 +160,8 @@ export function CanvasNodeToolbar({
 
     useLayoutEffect(() => {
         const container = containerRef.current;
-        if (!node || !container) {
-            setAnchor(null);
-            return;
-        }
-        const element = container.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(node.id)}"]`);
-        if (!element) {
+        const nodeId = node?.id;
+        if (!nodeId || !container) {
             setAnchor(null);
             return;
         }
@@ -163,28 +170,90 @@ export function CanvasNodeToolbar({
         let containerRect = container.getBoundingClientRect();
         let toolbarWidth = toolbarRef.current?.offsetWidth || 0;
         let toolbarHeight = toolbarRef.current?.offsetHeight || 44;
+        let liveViewport = viewport;
+        let previousViewport = viewport;
+        let lastNodeVisibility: boolean | null = null;
+        let panel: HTMLElement | null = null;
+        let observedNode: HTMLElement | null = null;
+        let resizeObserver: ResizeObserver;
+        const overlayRoot = container.closest<HTMLElement>("[data-canvas-editor]")
+            || container.parentElement?.parentElement?.parentElement
+            || container.parentElement
+            || container.ownerDocument.body;
+        const findNodeElement = () => {
+            const currentNode = nodeRef.current;
+            if (!currentNode) return null;
+            const nextElement = container.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(currentNode.id)}"]`);
+            return nextElement?.isConnected ? nextElement : null;
+        };
+        const findPanel = () => {
+            const nextPanel = overlayRoot.querySelector<HTMLElement>(`[data-canvas-node-panel-id="${CSS.escape(nodeId)}"]`);
+            if (nextPanel === panel) return panel;
+            if (panel) resizeObserver.unobserve(panel);
+            panel = nextPanel;
+            if (panel) resizeObserver.observe(panel);
+            return panel;
+        };
+        const observeNodeElement = (nextElement: HTMLElement | null) => {
+            if (nextElement === observedNode) return;
+            if (observedNode) resizeObserver.unobserve(observedNode);
+            observedNode = nextElement;
+            if (observedNode) resizeObserver.observe(observedNode);
+        };
+        const updateNodeVisibility = (nextViewport = liveViewport, nextElement = observedNode?.isConnected ? observedNode : findNodeElement()) => {
+            const currentNode = nodeRef.current;
+            const nodeRect = currentNode ? getCanvasNodeScreenRect(currentNode, nextViewport) : null;
+            const visible = Boolean(nextElement?.isConnected && nodeRect && isCanvasRectVisible(nodeRect, {
+                left: 0,
+                top: 0,
+                right: containerRect.width,
+                bottom: containerRect.height,
+                width: containerRect.width,
+                height: containerRect.height,
+            }));
+            lastNodeVisibility = visible;
+            setNodeInViewport((current) => current === visible ? current : visible);
+            return visible;
+        };
         const update = () => {
-            const nodeRect = element.getBoundingClientRect();
-            const preferredLeft = nodeRect.left - containerRect.left + nodeRect.width / 2;
-            const halfToolbar = toolbarWidth / 2;
-            const canClamp = toolbarWidth > 0 && toolbarWidth <= containerRect.width - 20;
-            let left = canClamp ? Math.min(Math.max(preferredLeft, halfToolbar + 10), containerRect.width - halfToolbar - 10) : preferredLeft;
-            const above = nodeRect.top - containerRect.top - 30;
-            let top = Math.max(toolbarHeight + 8, Math.min(above, containerRect.height - 8));
-            for (const panel of container.querySelectorAll<HTMLElement>("[data-canvas-node-panel]")) {
-                const panelRect = panel.getBoundingClientRect();
-                const panelLeft = panelRect.left - containerRect.left;
-                const panelRight = panelRect.right - containerRect.left;
-                const panelTop = panelRect.top - containerRect.top;
-                const panelBottom = panelRect.bottom - containerRect.top;
-                if (left + halfToolbar <= panelLeft || left - halfToolbar >= panelRight || top <= panelTop || top - toolbarHeight >= panelBottom) continue;
-                if (panelLeft >= toolbarWidth + 18) left = panelLeft - halfToolbar - 8;
-                else if (containerRect.width - panelRight >= toolbarWidth + 18) left = panelRight + halfToolbar + 8;
-                else if (panelTop >= toolbarHeight + 16) top = panelTop - 8;
-                else if (containerRect.height - panelBottom >= toolbarHeight + 16) top = panelBottom + toolbarHeight + 8;
+            const currentNode = nodeRef.current;
+            const element = findNodeElement();
+            observeNodeElement(element);
+            if (!currentNode || !element) {
+                setNodeInViewport(false);
+                setAnchor(null);
+                setAttachedToPanel(false);
+                return;
             }
+            const scale = resolveCanvasOverlayScale(liveViewport.k, scaleWithNode);
+            const activePanel = findPanel();
+            const attached = Boolean(activePanel);
+            const nodeRect = element.getBoundingClientRect();
+            updateNodeVisibility(liveViewport, element);
+            const panelRect = activePanel?.getBoundingClientRect() || null;
+            const anchorRect = panelRect || nodeRect;
+            const renderedToolbarWidth = toolbarWidth * scale;
+            const renderedToolbarHeight = toolbarHeight * scale;
+            const halfToolbar = renderedToolbarWidth / 2;
+            const minLeft = containerRect.left + (renderedToolbarWidth > 0 ? halfToolbar + 10 : 10);
+            const maxLeft = containerRect.right - (renderedToolbarWidth > 0 ? halfToolbar + 10 : 10);
+            const preferredLeft = anchorRect.left + anchorRect.width / 2;
+            const left = Math.min(Math.max(preferredLeft, minLeft), Math.max(minLeft, maxLeft));
+            const preferredTop = attached
+                ? anchorRect.top - renderedToolbarHeight
+                : anchorRect.top - renderedToolbarHeight - 8;
+            const minTop = containerRect.top + 8;
+            const maxTop = containerRect.bottom - renderedToolbarHeight - 8;
+            const top = Math.min(Math.max(preferredTop, minTop), Math.max(minTop, maxTop));
             if (toolbarRef.current) {
-                toolbarRef.current.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+                toolbarRef.current.style.width = activePanel ? `${activePanel.offsetWidth}px` : "max-content";
+                toolbarRef.current.style.maxWidth = `${Math.max(0, containerRect.width - 20) / scale}px`;
+                toolbarRef.current.style.left = `${left}px`;
+                toolbarRef.current.style.top = `${top}px`;
+                toolbarRef.current.style.transform = `translateX(-50%) scale(${scale})`;
+                toolbarRef.current.style.transformOrigin = "center top";
+                toolbarRef.current.dataset.attachedPanel = attached ? "true" : "false";
+                setAttachedToPanel((current) => current === attached ? current : attached);
                 return;
             }
             setAnchor((current) => current?.left === left && current.top === top ? current : { left, top });
@@ -201,25 +270,42 @@ export function CanvasNodeToolbar({
             containerRect = container.getBoundingClientRect();
             toolbarWidth = toolbarRef.current?.offsetWidth || 0;
             toolbarHeight = toolbarRef.current?.offsetHeight || 44;
+            findPanel();
             setContainerWidth(containerRect.width);
             scheduleUpdate();
         };
+        resizeObserver = new ResizeObserver(measure);
         measure();
-        const resizeObserver = new ResizeObserver(measure);
-        resizeObserver.observe(element);
         resizeObserver.observe(container);
         if (toolbarRef.current) resizeObserver.observe(toolbarRef.current);
-        const unsubscribeViewport = subscribeCanvasGraphicsViewportPreview(container, scheduleUpdate);
+        findPanel();
+        const unsubscribeViewport = subscribeCanvasViewportVisibilityPreview(container, (nextViewport) => {
+            const verticalChanged = Math.abs(nextViewport.y - previousViewport.y) > 0.5;
+            const scaleChanged = Math.abs(nextViewport.k - previousViewport.k) > 0.001;
+            liveViewport = nextViewport;
+            previousViewport = nextViewport;
+            // 横向双指滑动主要用于查看相邻内容，不让固定工具栏随
+            // x 轴预览漂移；纵向移动和缩放仍然重新贴合节点/面板。
+            if (verticalChanged || scaleChanged) scheduleUpdate();
+            else {
+                const wasVisible = lastNodeVisibility;
+                const visible = updateNodeVisibility(nextViewport);
+                if (visible && wasVisible === false) scheduleUpdate();
+            }
+        });
+        const mutationObserver = new MutationObserver(scheduleUpdate);
+        mutationObserver.observe(overlayRoot, { childList: true, subtree: true });
         window.addEventListener("resize", measure);
         return () => {
             disposed = true;
             resizeObserver.disconnect();
+            mutationObserver.disconnect();
             unsubscribeViewport();
             window.removeEventListener("resize", measure);
         };
-    }, [anchor === null, containerRef, node, viewport.k, viewport.x, viewport.y]);
+    }, [containerRef, node?.height, node?.id, node?.position.x, node?.position.y, node?.width, panelOpen, scaleWithNode, viewport.k, viewport.y]);
 
-    if (!node || !anchor) return null;
+    if (!node || !anchor || !nodeInViewport) return null;
 
     const isImage = node.type === CanvasNodeType.Image;
     const isVideo = node.type === CanvasNodeType.Video;
@@ -238,7 +324,7 @@ export function CanvasNodeToolbar({
     // 构建 ToolContext——供注册表解析工具
     const nodeHoverHandlers = {
         onNodeInfo: onInfo, onNodeDelete: onDelete, onNodeRetry: onRetry, onNodeEditText: onEditText, onNodeDecreaseFont: onDecreaseFont, onNodeIncreaseFont: onIncreaseFont,
-        onNodeToggleDialog: onToggleDialog, onNodeAnnotate: onAnnotate, onNodeGenerateImage: onGenerateImage, onNodeUpload: onUpload, onNodeDownload: onDownload,
+        onNodeToggleDialog: onToggleDialog, onNodeAnnotate: onAnnotate, onNodeGenerateImage: onGenerateImage, onNodeBatchGenerateImages: onBatchGenerateImages, onNodeUpload: onUpload, onNodeDownload: onDownload,
         onNodeSaveAsset: onSaveAsset, onNodeMaskEdit: onMaskEdit, onNodeRemoveBackground: onRemoveBackground, onNodeEmotion: onEmotion, onNodePortraitTexture: onPortraitTexture, onNodeCrop: onCrop,
         onNodeSplit: (target) => onSplit(target, { rows: 2, columns: 2 }), onNodeUpscale: onUpscale, onNodeSuperResolve: onSuperResolve, onNodeAngle: onAngle, onNodeViewImage: onViewImage,
         onNodeExtractVideoFrames: onExtractVideoFrames, onNodeExtractAudioFromVideo: onExtractAudioFromVideo, onNodeTrimVideoSegments: onTrimVideoSegments, onNodeReversePrompt: onReversePrompt, onNodeToggleFreeResize: onToggleFreeResize,
@@ -307,12 +393,13 @@ export function CanvasNodeToolbar({
         else if (!toolbarRef.current?.contains(document.activeElement)) onLeave();
     };
     const dockStyle = canvasDockStyle(theme, theme.node.text);
+    const overlayScale = resolveCanvasOverlayScale(viewport.k, scaleWithNode);
 
     return (
         <div
             ref={toolbarRef}
-            className="canvas-node-toolbar absolute z-[var(--z-node-toolbar)] -translate-x-1/2 -translate-y-full"
-            style={{ left: 0, top: 0, transform: `translate3d(${anchor.left}px, ${anchor.top}px, 0)`, width: "max-content", maxWidth: "calc(100% - 20px)", color: theme.node.text }}
+            className={`canvas-node-toolbar fixed z-[var(--z-node-toolbar)] ${attachedToPanel ? "is-attached-to-panel" : ""}`}
+            style={{ left: anchor.left, top: anchor.top, width: "max-content", maxWidth: "calc(100% - 20px)", color: theme.node.text, transform: `translateX(-50%) scale(${resolveCanvasOverlayScale(viewport.k, scaleWithNode)})`, transformOrigin: "center top" }}
             onMouseEnter={() => onKeep(node.id)}
             onMouseLeave={() => { if (!openMenuId) onLeave(); }}
             onMouseDown={(event) => event.stopPropagation()}
@@ -329,17 +416,17 @@ export function CanvasNodeToolbar({
                 style={{ ...dockStyle, border: 0 }}
             >
                 {primaryTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} />)}
-                {nineGridTools.length ? <NodeDockMenuButton menuId="nine-grid" label="九宫格" icon={<Grid3x3 className="size-3.5" />} tools={nineGridTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} /> : null}
+                {nineGridTools.length ? <NodeDockMenuButton menuId="nine-grid" label="九宫格" icon={<Grid3x3 className="size-3.5" />} tools={nineGridTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} popupScale={overlayScale} /> : null}
                 {panoramaTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} />)}
-                {portraitTools.length ? <NodeDockMenuButton menuId="portrait" label="人像调整" icon={<UserRound className="size-3.5" />} tools={portraitTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} /> : null}
-                {viewpointLightingTools.length ? <NodeDockMenuButton menuId="viewpoint-lighting" label="视角" icon={<Camera className="size-3.5" />} tools={viewpointLightingTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} /> : null}
-                {processTools.length ? <NodeDockMenuButton menuId="process" label={processMenuLabel} icon={isVideo ? <Images className="size-3.5" /> : <SlidersHorizontal className="size-3.5" />} tools={processTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} split={hasImage && !simpleMode ? { node, onSplit } : undefined} /> : null}
+                {portraitTools.length ? <NodeDockMenuButton menuId="portrait" label="人像调整" icon={<UserRound className="size-3.5" />} tools={portraitTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} popupScale={overlayScale} /> : null}
+                {viewpointLightingTools.length ? <NodeDockMenuButton menuId="viewpoint-lighting" label="视角" icon={<Camera className="size-3.5" />} tools={viewpointLightingTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} popupScale={overlayScale} /> : null}
+                {processTools.length ? <NodeDockMenuButton menuId="process" label={processMenuLabel} icon={isVideo ? <Images className="size-3.5" /> : <SlidersHorizontal className="size-3.5" />} tools={processTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} popupScale={overlayScale} split={hasImage && !simpleMode ? { node, onSplit } : undefined} /> : null}
                 {workspaceTools.length ? <span aria-hidden className="aceternity-dock-separator mx-1 h-5 w-px shrink-0" /> : null}
                 {workspaceTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} />)}
                 {utilityTools.length || moreTools.length ? <span aria-hidden className="aceternity-dock-separator mx-1 h-5 w-px shrink-0" /> : null}
                 {utilityTools.map((tool) => <NodeDockToolButton key={tool.id} tool={tool} iconOnly />)}
                 {moreTools.length ? (
-                    <NodeDockMenuButton menuId="more" label="更多" icon={<Ellipsis className="size-3.5" />} tools={moreTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} placement="topRight" iconOnly />
+                    <NodeDockMenuButton menuId="more" label="更多" icon={<Ellipsis className="size-3.5" />} tools={moreTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} placement="topRight" iconOnly popupScale={overlayScale} />
                 ) : null}
             </div>
         </div>
@@ -369,7 +456,7 @@ function compareToolbarTools(left: ToolbarTool, right: ToolbarTool) {
     return left.order - right.order;
 }
 
-function NodeDockMenuButton({ menuId, label, icon, tools, openMenuId, onOpenChange, placement = "top", iconOnly = false, split }: { menuId: string; label: string; icon: ReactNode; tools: ToolbarTool[]; openMenuId: string | null; onOpenChange: (menuId: string, open: boolean) => void; placement?: "top" | "topRight"; iconOnly?: boolean; split?: { node: CanvasNodeData; onSplit: (node: CanvasNodeData, params: ImageSplitParams) => void } }) {
+function NodeDockMenuButton({ menuId, label, icon, tools, openMenuId, onOpenChange, placement = "top", iconOnly = false, popupScale = 1, split }: { menuId: string; label: string; icon: ReactNode; tools: ToolbarTool[]; openMenuId: string | null; onOpenChange: (menuId: string, open: boolean) => void; placement?: "top" | "topRight"; iconOnly?: boolean; popupScale?: number; split?: { node: CanvasNodeData; onSplit: (node: CanvasNodeData, params: ImageSplitParams) => void } }) {
     const open = openMenuId === menuId;
     const triggerRef = useRef<HTMLButtonElement>(null);
     const [splitPanelOpen, setSplitPanelOpen] = useState(false);
@@ -442,6 +529,10 @@ function NodeDockMenuButton({ menuId, label, icon, tools, openMenuId, onOpenChan
             popupRender={(menu) => (
                 <div
                     className={`canvas-node-toolbar-menu${splitEntry && split ? " canvas-node-toolbar-menu-split" : ""}`}
+                    style={{
+                        transform: `scale(${popupScale})`,
+                        transformOrigin: placement === "topRight" ? "bottom right" : "bottom center",
+                    }}
                     data-canvas-no-zoom
                     data-canvas-wheel-scroll
                     onPointerDown={(event) => event.stopPropagation()}

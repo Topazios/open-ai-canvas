@@ -141,7 +141,7 @@ export function ToolbarSettingsModal({ open, onClose, toolbar }: ToolbarSettings
             closable={false}
             width={720}
             centered
-            destroyOnClose
+            destroyOnHidden
             styles={{
                 container: { padding: 0, background: theme.spatial.elevated, border: 0, boxShadow: "none" },
                 body: { padding: 0, background: theme.spatial.elevated },

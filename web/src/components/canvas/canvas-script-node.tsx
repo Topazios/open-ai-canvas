@@ -748,7 +748,7 @@ export function CanvasScriptEditor({
                 bordered
                 sticky
                 pagination={false}
-                scroll={{ x: Math.max(900, columns.length * 180), y: "calc(78vh - 170px)" }}
+                            scroll={{ x: Math.max(900, columns.length * 180), y: "calc(78dvh - 170px)" }}
                 dataSource={filteredRows}
                 columns={columns}
                 rowSelection={{ selectedRowKeys: selectedIds, onChange: (keys) => setSelectedIds(keys.map(String)) }}

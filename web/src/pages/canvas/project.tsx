@@ -33,7 +33,7 @@ import { useUserStore } from "@/stores/use-user-store";
 import { App, Button } from "antd";
 import { ArrowLeftRight } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
-import { getNodeSpec } from "@/constant/canvas";
+import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
 import { CanvasCloudAgentPanel } from "@/components/canvas/canvas-cloud-agent-panel";
@@ -73,6 +73,7 @@ import { CanvasShareModal } from "@/components/canvas/canvas-share-modal";
 import { CanvasScriptEditor, CanvasScriptNodeContent } from "@/components/canvas/canvas-script-node";
 import { CanvasBatchTableNodeContent } from "@/components/canvas/canvas-batch-table-node";
 import { BatchGenerationSettingsDialog } from "@/components/canvas/batch-generation-settings-dialog";
+import { CanvasTextBatchGenerationModal, type TextAssetBatchGenerationSettings } from "@/components/canvas/canvas-text-batch-generation-modal";
 import { batchReferenceColumns, promoteLegacyBatchTableSize } from "@/lib/canvas/canvas-batch-table";
 import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardMinNodeHeight, storyboardTableHeight } from "@/lib/canvas/canvas-storyboard-layout";
 import { CanvasDirectorNodePanel } from "@/components/canvas/director/canvas-director-node-panel";
@@ -106,6 +107,8 @@ import { batchSourceRestriction } from "@/lib/canvas/canvas-batch-connection";
 import { deriveStoryboardPipelineProgress } from "@/lib/canvas/canvas-storyboard-progress";
 import { CanvasOperationChangeToast, CanvasMergeStatusToast, CanvasUploadStatusToast } from "./canvas-project-feedback";
 import { backendProviderConfig, getGenerationCount } from "@/lib/canvas/canvas-project-generation";
+import { generationSpecMetadata, specFromConfig } from "@/lib/canvas/generation-contract";
+import { applyToolMention } from "@/lib/canvas/canvas-resource-references";
 import { cancelGenerationTask } from "@/services/api/task-center";
 import { CanvasSyncStatus } from "./canvas-sync-status";
 import { CanvasVersionHistory, useCanvasVersionHistory } from "./canvas-version-history";
@@ -152,6 +155,9 @@ import { useCanvasStoryboard } from "./use-canvas-storyboard";
 import { useCanvasUpload } from "./use-canvas-upload";
 import { useCanvasTimelineAssetInsert } from "./use-canvas-timeline-asset-insert";
 import { useCanvasViewportController } from "./use-canvas-viewport-controller";
+import { findAvailableGenerationGroupPosition } from "@/lib/canvas/canvas-generation-layout";
+import { FRAME_HEADER_HEIGHT } from "@/lib/canvas/canvas-frame";
+import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import {
     CanvasNodeType,
     type CanvasAssistantSession,
@@ -172,10 +178,15 @@ import {
     type ViewportTransform,
 } from "@/types/canvas";
 import type { ReferenceImage } from "@/types/image";
+import type { TextAssetBatchItem } from "@/lib/canvas/text-asset-batch";
 import { ART_CRITIQUE_NODE_TYPE } from "@/lib/art-critique/contracts";
 
 const CanvasDirectorWorkbench = lazy(() => import("@/components/canvas/director/canvas-director-workbench").then((module) => ({ default: module.CanvasDirectorWorkbench })));
 const CanvasDrawingEditorModal = lazy(() => import("@/components/canvas/canvas-drawing-editor-modal").then((module) => ({ default: module.CanvasDrawingEditorModal })));
+
+const REFERENCE_ASSET_GRID_GAP = 72;
+const REFERENCE_ASSET_GRID_PADDING = 40;
+const REFERENCE_ASSET_GRID_COLUMNS = 3;
 
 const NODE_STATUS_SUCCESS = "success" as const;
 const EMPTY_RESOURCE_REFERENCES: CanvasResourceReference[] = [];
@@ -316,6 +327,7 @@ function InfiniteCanvasPage() {
     const [arkPrivateAssetUploadNodeId, setArkPrivateAssetUploadNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
+    const [textBatchSourceNodeId, setTextBatchSourceNodeId] = useState<string | null>(null);
     const [textEditorNodeId, setTextEditorNodeId] = useState<string | null>(null);
     const [characterReferenceNodeId, setCharacterReferenceNodeId] = useState<string | null>(null);
     const [drawingNodeId, setDrawingNodeId] = useState<string | null>(null);
@@ -528,6 +540,10 @@ function InfiniteCanvasPage() {
     const linkedProjectId = shortDramaEnabled ? currentProject?.projectId || "" : "";
     const linkedProjectQuery = useQuery({ queryKey: ["project", linkedProjectId], queryFn: () => getProject(linkedProjectId), enabled: Boolean(linkedProjectId) });
     const refetchLinkedProject = linkedProjectQuery.refetch;
+    const batchProjectStyle = useMemo(() => {
+        const project = linkedProjectQuery.data?.project;
+        return resolveProjectCanvasStyle(project?.stylePresetId, project?.styleProfileJson) || null;
+    }, [linkedProjectQuery.data?.project]);
     const archiveNodesToLinkedFolder = useCallback(
         (folder: CanvasNodeData, droppedNodes: CanvasNodeData[]) => {
             const folderId = folder.metadata?.folder?.assetFolderId;
@@ -1974,6 +1990,198 @@ function InfiniteCanvasPage() {
         enqueueGenerationBatch,
     });
 
+    const openTextAssetBatchGeneration = useCallback((node: CanvasNodeData) => {
+        const content = (node.metadata?.content || node.metadata?.prompt || "").trim();
+        if (!content) {
+            message.warning("文本节点为空，无法拆分资产");
+            return;
+        }
+        setTextBatchSourceNodeId(node.id);
+    }, [message]);
+
+    const confirmTextAssetBatchGeneration = useCallback((items: TextAssetBatchItem[], settings: TextAssetBatchGenerationSettings) => {
+        const sourceNode = nodesRef.current.find((node) => node.id === textBatchSourceNodeId);
+        if (!sourceNode || sourceNode.type !== CanvasNodeType.Text) {
+            message.error("原文本节点已不存在，请重新选择");
+            return;
+        }
+        const model = settings.imageModel || settings.model;
+        if (!isAiConfigReady({ ...effectiveConfig, ...settings, model, imageModel: model }, model)) {
+            message.error("所选图片模型尚未配置，未创建生成任务");
+            return;
+        }
+        const imageDefaults = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
+        // 先按所选比例预留真实卡片尺寸，避免生成后节点变成方图/竖图而侵入下一行。
+        const imageSize = nodeSizeFromRatio(settings.size || "auto", imageDefaults.width, imageDefaults.height) || imageDefaults;
+        const gap = REFERENCE_ASSET_GRID_GAP;
+        const padding = REFERENCE_ASSET_GRID_PADDING;
+        const columns = Math.min(REFERENCE_ASSET_GRID_COLUMNS, items.length);
+        const rows = Math.ceil(items.length / columns);
+        const frameWidth = padding * 2 + columns * imageSize.width + Math.max(0, columns - 1) * gap;
+        const frameHeight = FRAME_HEADER_HEIGHT + padding * 2 + rows * imageSize.height + Math.max(0, rows - 1) * gap;
+        const groupPosition = findAvailableGenerationGroupPosition(
+            nodesRef.current,
+            { x: sourceNode.position.x + sourceNode.width + 120, y: sourceNode.position.y },
+            { width: frameWidth, height: frameHeight },
+        );
+        const frame = createCanvasNode(
+            CanvasNodeType.Frame,
+            { x: groupPosition.x + frameWidth / 2, y: groupPosition.y + frameHeight / 2 },
+            {
+                workflowKind: "reference_set",
+                workflowTitle: "Note 资产组",
+                referenceAssetNodeIds: [],
+                frame: { collapsed: false, expandedWidth: frameWidth, expandedHeight: frameHeight },
+            },
+        );
+        frame.title = `设定板资产组 · 角色 ${items.filter((item) => item.category === "character").length} · 场景 ${items.filter((item) => item.category === "environment").length}`;
+        frame.position = groupPosition;
+        frame.width = frameWidth;
+        frame.height = frameHeight;
+        const targets = items.map((item, index) => {
+            const promptPrefix = item.sheetPrompt?.trim() || item.prompt.trim();
+            const skillPrompt = [promptPrefix, item.negativePrompt?.trim() ? `避免：${item.negativePrompt.trim()}` : ""].filter(Boolean).join("\n\n");
+            const prompt = settings.styleTool
+                ? applyToolMention(skillPrompt, { id: settings.styleTool.id, label: settings.styleTool.label, type: "style" }, "Palette")
+                : skillPrompt;
+            const generationSpec = specFromConfig(
+                "image",
+                prompt,
+                {
+                    ...effectiveConfig,
+                    ...settings,
+                    model,
+                    imageModel: model,
+                    count: "1",
+                },
+            );
+            const node = createCanvasNode(
+                CanvasNodeType.Image,
+                {
+                    x: groupPosition.x + padding + (index % columns) * (imageSize.width + gap) + imageSize.width / 2,
+                    y: groupPosition.y + FRAME_HEADER_HEIGHT + padding + Math.floor(index / columns) * (imageSize.height + gap) + imageSize.height / 2,
+                },
+                {
+                    prompt,
+                    composerContent: prompt,
+                    model,
+                    size: settings.size,
+                    quality: settings.quality,
+                    transparentBackground: settings.transparentBackground,
+                    count: 1,
+                    generationMode: "image",
+                    generationType: "generation",
+                    workflowKind: item.category === "character" ? "character" : "scene",
+                    workflowTitle: item.title.trim(),
+                    workflowDescription: item.prompt.trim(),
+                    assetCategory: item.category,
+                    batchSourceNodeId: sourceNode.id,
+                    batchRowId: item.id,
+                    batchOperation: "creative",
+                    status: "idle",
+                    cameraControl: settings.cameraControl,
+                    skillIds: settings.skillIds,
+                    stylePresetId: settings.stylePresetId,
+                    styleProfileJson: settings.styleProfileJson,
+                    styleInheritance: "isolated",
+                },
+            );
+            node.width = imageSize.width;
+            node.height = imageSize.height;
+            node.position = {
+                x: groupPosition.x + padding + (index % columns) * (imageSize.width + gap),
+                y: groupPosition.y + FRAME_HEADER_HEIGHT + padding + Math.floor(index / columns) * (imageSize.height + gap),
+            };
+            node.title = `${item.category === "character" ? "角色" : "场景"} · ${item.title.trim()}`;
+            node.parentId = frame.id;
+            node.metadata = {
+                ...node.metadata,
+                ...generationSpecMetadata(generationSpec),
+                characterAliases: item.aliases,
+                workflowDescription: item.summary ? `${item.summary}\n\n${item.sourceEvidence || ""}`.trim() : item.sourceEvidence,
+                referenceSetId: frame.id,
+                manualSize: true,
+            };
+            return { item, node };
+        });
+        frame.metadata = { ...frame.metadata, referenceAssetNodeIds: targets.map(({ node }) => node.id) };
+        const nextNodes = [...nodesRef.current, frame, ...targets.map(({ node }) => node)];
+        const nextConnections = [...connectionsRef.current];
+        nodesRef.current = nextNodes;
+        connectionsRef.current = nextConnections;
+        setNodes(nextNodes);
+        setConnections(nextConnections);
+        setSelectedNodeIds(new Set(targets.map(({ node }) => node.id)));
+        enqueueGenerationBatch(sourceNode.id, "batch_image", targets.map(({ item, node }) => ({ rowId: item.id, nodeId: node.id })), { concurrency: settings.concurrency });
+        setTextBatchSourceNodeId(null);
+        message.success(`已创建 ${targets.length} 个角色/场景图片任务`);
+    }, [effectiveConfig, enqueueGenerationBatch, isAiConfigReady, message, nodesRef, setConnections, setNodes, setSelectedNodeIds, textBatchSourceNodeId]);
+
+    // 资产组内的节点不可按各自原图比例变化，统一使用同一网格单元，避免组内卡片大小不一致。
+    useEffect(() => {
+        if (!projectLoaded) return;
+        setNodes((current) => {
+            const childUpdates = new Map<string, CanvasNodeData>();
+            const frameUpdates = new Map<string, CanvasNodeData>();
+            current.forEach((frame) => {
+                if (frame.type !== CanvasNodeType.Frame || frame.metadata?.workflowKind !== "reference_set" || frame.metadata?.frame?.collapsed) return;
+                const children = (frame.metadata.referenceAssetNodeIds || [])
+                    .map((id) => current.find((node) => node.id === id && node.parentId === frame.id))
+                    .filter((node): node is CanvasNodeData => Boolean(node));
+                const remainingChildren = current.filter((node) => node.parentId === frame.id && !children.some((child) => child.id === node.id));
+                children.push(...remainingChildren);
+                if (!children.length) return;
+
+                const columns = Math.min(REFERENCE_ASSET_GRID_COLUMNS, children.length);
+                const requestedCellSize = children
+                    .map((node) => node.metadata?.size ? nodeSizeFromRatio(node.metadata.size, NODE_DEFAULT_SIZE[CanvasNodeType.Image].width, NODE_DEFAULT_SIZE[CanvasNodeType.Image].height) : null)
+                    .find((size): size is { width: number; height: number } => Boolean(size));
+                const cellWidth = requestedCellSize?.width || Math.max(...children.map((node) => node.width));
+                const cellHeight = requestedCellSize?.height || Math.max(...children.map((node) => node.height));
+                const rows = Math.ceil(children.length / columns);
+                const width = REFERENCE_ASSET_GRID_PADDING * 2 + columns * cellWidth + Math.max(0, columns - 1) * REFERENCE_ASSET_GRID_GAP;
+                const height = FRAME_HEADER_HEIGHT + REFERENCE_ASSET_GRID_PADDING * 2 + rows * cellHeight + Math.max(0, rows - 1) * REFERENCE_ASSET_GRID_GAP;
+                children.forEach((node, index) => {
+                    const nextNode = {
+                        ...node,
+                        width: cellWidth,
+                        height: cellHeight,
+                        position: {
+                            x: frame.position.x + REFERENCE_ASSET_GRID_PADDING + (index % columns) * (cellWidth + REFERENCE_ASSET_GRID_GAP),
+                            y: frame.position.y + FRAME_HEADER_HEIGHT + REFERENCE_ASSET_GRID_PADDING + Math.floor(index / columns) * (cellHeight + REFERENCE_ASSET_GRID_GAP),
+                        },
+                        metadata: { ...node.metadata, manualSize: true },
+                    };
+                    if (
+                        node.width !== nextNode.width
+                        || node.height !== nextNode.height
+                        || node.position.x !== nextNode.position.x
+                        || node.position.y !== nextNode.position.y
+                        || node.metadata?.manualSize !== true
+                    ) {
+                        childUpdates.set(node.id, nextNode);
+                    }
+                });
+                if (frame.width === width && frame.height === height) return;
+                frameUpdates.set(frame.id, {
+                    ...frame,
+                    width,
+                    height,
+                    metadata: {
+                        ...frame.metadata,
+                        frame: { collapsed: false, expandedWidth: width, expandedHeight: height },
+                    },
+                });
+            });
+            if (!childUpdates.size && !frameUpdates.size) return current;
+            return current.map((node) => {
+                const frame = frameUpdates.get(node.id);
+                if (frame) return frame;
+                return childUpdates.get(node.id) || node;
+            });
+        });
+    }, [nodes, projectLoaded, setNodes]);
+
     useEffect(() => {
         if (!projectLoaded) return;
         setNodes((current) => {
@@ -2889,6 +3097,7 @@ function InfiniteCanvasPage() {
                                 node={dialogNode}
                                 viewport={viewport}
                                 containerRef={containerRef}
+                                scaleWithNode
                                 allowOverflow={dialogNode.type !== CanvasNodeType.Config}
                                 dragOffset={dragPreview?.nodeIds.has(dialogNode.id) ? { x: dragPreview.x, y: dragPreview.y } : null}
                                 isDragging={isNodeDragging && Boolean(dragPreview?.nodeIds.has(dialogNode.id))}
@@ -2957,7 +3166,9 @@ function InfiniteCanvasPage() {
                         ) : null}
 
                         <CanvasNodeToolbar
-                            node={isCanvasNodeMoving || nodeImageSettingsOpen || emotionNodeId || angleNodeId ? null : toolbarNode}
+                            node={isCanvasNodeMoving || nodeImageSettingsOpen || emotionNodeId || angleNodeId ? null : dialogNode || toolbarNode}
+                            scaleWithNode
+                            panelOpen={Boolean(dialogNode)}
                             workspaceMode={workspaceMode}
                             viewport={viewport}
                             containerRef={containerRef}
@@ -2969,6 +3180,7 @@ function InfiniteCanvasPage() {
                             onIncreaseFont={(node) => handleFontSizeChange(node.id, Math.min(32, (node.metadata?.fontSize || 14) + 2))}
                             onToggleDialog={(node) => setDialogNodeId((current) => (current === node.id ? null : node.id))}
                             onGenerateImage={generateImageFromTextNode}
+                            onBatchGenerateImages={openTextAssetBatchGeneration}
                             onUpload={(node) => handleUploadRequest(node.id)}
                             onDownload={downloadNodeImage}
                             onSaveAsset={(node) => void saveNodeAsset(node)}
@@ -3072,6 +3284,7 @@ function InfiniteCanvasPage() {
                             onEditText={openTextNodeEditor}
                             onOpenDrawing={openDrawingNode}
                             onGenerateImage={generateImageFromTextNode}
+                            onBatchGenerateImages={openTextAssetBatchGeneration}
                             onCopyContent={(node) => {
                                 void copyNodeContentToClipboard(node);
                             }}
@@ -3346,6 +3559,16 @@ function InfiniteCanvasPage() {
                             concurrency={batchGenDialogConcurrency}
                             onClose={closeBatchGenDialog}
                             onConfirm={confirmBatchGenDialog}
+                        />
+
+                        <CanvasTextBatchGenerationModal
+                            open={Boolean(textBatchSourceNodeId)}
+                            sourceNode={textBatchSourceNodeId ? nodeById.get(textBatchSourceNodeId) || null : null}
+                            projectId={projectId}
+                            config={effectiveConfig}
+                            projectStyle={batchProjectStyle}
+                            onClose={() => setTextBatchSourceNodeId(null)}
+                            onConfirm={confirmTextAssetBatchGeneration}
                         />
 
                         <AssetPickerModal open={assetPickerOpen} multiple={assetInsertScope === "canvas"} onInsert={handleLibraryAssetsInsert} onClose={closeAssetPicker} />

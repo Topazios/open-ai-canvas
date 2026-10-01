@@ -444,6 +444,28 @@ func TestResourceAccessChecksOwnershipAndSignsOSSResource(t *testing.T) {
 	}
 }
 
+func TestResourceAccessForLocalDisplayUsesAuthenticatedResourceURL(t *testing.T) {
+	svc := newResourceTestService(t)
+	resource := model.Resource{
+		ID: "resource-local-display", UserID: "user-1", Kind: "image", Status: model.ResourceStatusReady,
+		Provider: "local", ObjectKey: "users/user-1/image/display.png", MimeType: "image/png",
+	}
+	if err := svc.repo.CreateResource(&resource); err != nil {
+		t.Fatal(err)
+	}
+	results, err := svc.ResourceAccessBatch("user-1", []ResourceAccessRequest{{
+		ResourceID: resource.ID,
+		AccessOptions: ResourceAccessOptions{Purpose: assets.PurposeDisplay},
+	}})
+	if err != nil || len(results) != 1 || results[0].Access == nil {
+		t.Fatalf("ResourceAccessBatch() = %#v, %v", results, err)
+	}
+	access := results[0].Access
+	if access.Delivery != assets.DeliveryLocal || access.URL != "/api/resources/resource-local-display/file?variant=original" {
+		t.Fatalf("local display access = %#v, want authenticated resource URL", access)
+	}
+}
+
 func TestPrepareResourceDeliveryPrefersConfiguredCDN(t *testing.T) {
 	svc := newResourceTestService(t)
 	settingJSON, _ := json.Marshal(ossSettingValue{

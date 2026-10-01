@@ -38,10 +38,10 @@ export function useAgentPanelLayout() {
 
     const onPointerDown = (event: PointerEvent<HTMLElement>) => {
         if (compact || event.button !== 0 || !event.isPrimary) return;
-        const target = event.target as HTMLElement;
-        const resize = target.closest<HTMLElement>("[data-agent-resize]");
-        const header = target.closest("[data-agent-drag-handle]");
-        if (!resize && (!header || target.closest("button, input, textarea, a, [role=button]"))) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const resize = target?.closest<HTMLElement>("[data-agent-resize]");
+        const header = target?.closest("[data-agent-drag-handle]");
+        if (!resize && (!header || target?.closest("button, input, textarea, a, [role=button]"))) return;
         event.preventDefault();
         event.stopPropagation();
         event.currentTarget.setPointerCapture(event.pointerId);

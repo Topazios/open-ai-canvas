@@ -34,6 +34,7 @@ type CanvasProjectContextMenuProps = {
     onEditText: (node: CanvasNodeData) => void;
     onOpenDrawing: (node: CanvasNodeData) => void;
     onGenerateImage: (node: CanvasNodeData) => void;
+    onBatchGenerateImages: (node: CanvasNodeData) => void;
     onCopyContent: (node: CanvasNodeData | null) => void;
     onCopyMediaUrl: (node: CanvasNodeData | null) => void;
     onUploadToArkPrivateAsset: (node: CanvasNodeData) => void;
@@ -100,6 +101,9 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             }}
             onGenerateImage={() => {
                 if (node) props.onGenerateImage(node);
+            }}
+            onBatchGenerateImages={() => {
+                if (node) props.onBatchGenerateImages(node);
             }}
             onCopyContent={() => props.onCopyContent(node)}
             onCopyMediaUrl={() => props.onCopyMediaUrl(node)}

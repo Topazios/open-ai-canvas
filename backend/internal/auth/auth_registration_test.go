@@ -88,6 +88,42 @@ func TestRegisterAcceptedTermsCreatesEmailUser(t *testing.T) {
 	}
 }
 
+func TestLocalUnverifiedRegistration(t *testing.T) {
+	t.Setenv("CANVAS_LOCAL_UNVERIFIED_REGISTRATION", "true")
+	svc, db := newRegistrationTestService(t)
+	if err := db.Create(&model.User{ID: "admin", Username: "admin", Role: model.UserRoleAdmin, Status: model.UserStatusActive}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.SystemSetting{Key: registrationSettingKey, ValueJSON: `{"enabled":true}`}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.SystemSetting{
+		Key:       authPolicyKey,
+		ValueJSON: `{"smsLogin":false,"emailLogin":false,"smsRegistration":false,"emailRegistration":false,"smsAndEmailRegistration":false}`,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	settings, err := svc.PublicAuthSettings()
+	if err != nil || !settings.UnverifiedRegistration {
+		t.Fatalf("unverified registration settings = %#v, %v", settings, err)
+	}
+	if _, err := svc.Register(RegisterRequest{
+		Username: "bad-email", Email: "other@example.com", Password: "password", AcceptedTerms: true,
+	}); err == nil {
+		t.Fatal("unverified registration accepted an email")
+	}
+	result, err := svc.Register(RegisterRequest{Username: "local-user", Password: "password", AcceptedTerms: true})
+	if err != nil || result.User.Role != model.UserRoleUser || result.User.Email != "" {
+		t.Fatalf("local registration result = %#v, %v", result, err)
+	}
+	if _, err := svc.UpdateRegistrationSetting(&model.User{ID: "admin", Role: model.UserRoleAdmin}, RegistrationSettingRequest{Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Register(RegisterRequest{Username: "another-user", Password: "password", AcceptedTerms: true}); err == nil {
+		t.Fatal("closed registration accepted a user")
+	}
+}
+
 func TestLinuxDORegistrationAgreement(t *testing.T) {
 	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

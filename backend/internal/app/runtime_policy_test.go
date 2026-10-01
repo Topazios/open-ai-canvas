@@ -138,6 +138,18 @@ func TestRuntimePolicyDefaultsAndSelfUseModeValidate(t *testing.T) {
 	}
 }
 
+func TestRuntimePolicyAllowsUnlimitedActiveTasks(t *testing.T) {
+	policy := defaultRuntimePolicy()
+	policy.Task.ActiveTaskLimit = 0
+	if err := validateRuntimePolicy(policy); err != nil {
+		t.Fatalf("unlimited active task policy error = %v", err)
+	}
+	policy.Task.ActiveTaskLimit = -1
+	if err := validateRuntimePolicy(policy); err == nil {
+		t.Fatal("negative active task limit should be rejected")
+	}
+}
+
 func TestRuntimePolicyRejectsSingleFileAboveAccountCapacity(t *testing.T) {
 	policy := defaultRuntimePolicy()
 	policy.Resource.StoredFileGB = 1

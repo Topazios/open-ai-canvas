@@ -110,12 +110,14 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if err != nil {
 		return nil, err
 	}
-	activeTasks, err := s.repo.ActiveTaskCountForUser(userID)
-	if err != nil {
-		return nil, err
-	}
-	if activeTasks >= int64(policy.Task.ActiveTaskLimit) {
-		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
+	if policy.Task.ActiveTaskLimit > 0 {
+		activeTasks, err := s.repo.ActiveTaskCountForUser(userID)
+		if err != nil {
+			return nil, err
+		}
+		if activeTasks >= int64(policy.Task.ActiveTaskLimit) {
+			return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
+		}
 	}
 	task := model.Task{ID: newID(), UserID: userID, TraceID: req.TraceID, RequestID: req.RequestID, ProjectID: req.ProjectID, Type: taskType, Status: model.TaskStatusQueued, Stage: "等待队列调度", Progress: 5, Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: req.Model}
 	if req.admission != nil {
@@ -174,7 +176,7 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		task.BillingOrderID = billingOrder.ID
 	}
 	err = s.createTaskWithinStorageQuota(&task, billingOrder, policy)
-	if errors.Is(err, repository.ErrActiveTaskLimit) {
+	if errors.Is(err, repository.ErrActiveTaskLimit) && policy.Task.ActiveTaskLimit > 0 {
 		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 	}
 	if errors.Is(err, repository.ErrInsufficientCredits) {

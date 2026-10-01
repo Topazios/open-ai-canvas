@@ -44,3 +44,29 @@ func TestFinanceRoutesExposeChannelModelBatchReprice(t *testing.T) {
 		t.Fatalf("unauthenticated status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
+
+func TestFinanceRoutesExposeChannelModelBatchStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	RegisterFinanceRoutes(router.Group("/api"), &service.Service{})
+	const wanted = "POST /api/admin/channels/:id/models/batch-status"
+	for _, route := range router.Routes() {
+		if route.Method+" "+route.Path == wanted {
+			return
+		}
+	}
+	t.Fatalf("route %s is not registered", wanted)
+}
+
+func TestFinanceRoutesExposeChannelModelBatchSettings(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	RegisterFinanceRoutes(router.Group("/api"), &service.Service{})
+	const wanted = "POST /api/admin/channels/:id/models/batch-settings"
+	for _, route := range router.Routes() {
+		if route.Method+" "+route.Path == wanted {
+			return
+		}
+	}
+	t.Fatalf("route %s is not registered", wanted)
+}

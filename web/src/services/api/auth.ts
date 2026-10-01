@@ -378,7 +378,7 @@ export type RuntimePolicySetting = {
 };
 
 export function getAuthSettings() {
-    return http.get<VerificationPolicy & { firstUser: boolean; registrationEnabled: boolean; linuxdoEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean; smsBindingAvailable: boolean; emailBindingAvailable: boolean; agreementTitle?: string; agreementContent?: string }>("/auth/settings");
+    return http.get<VerificationPolicy & { firstUser: boolean; registrationEnabled: boolean; unverifiedRegistration: boolean; linuxdoEnabled: boolean; emailEnabled: boolean; emailCodeRequired: boolean; smsBindingAvailable: boolean; emailBindingAvailable: boolean; agreementTitle?: string; agreementContent?: string }>("/auth/settings");
 }
 
 export function linuxDOLoginURL(next: string, acceptedTerms?: boolean) {
@@ -583,7 +583,11 @@ export function updateAdminDrawingEngineSetting(input: Pick<CanvasDrawingEngineS
     return http.patch<{ setting: CanvasDrawingEngineSetting }>("/admin/settings/drawing-engine", input);
 }
 
-export type AdminApiLogParams = AdminListParams & { recordType?: "request" | "download" | "all" };
+export type AdminApiLogParams = AdminListParams & {
+    recordType?: "request" | "download" | "all";
+    from?: string;
+    to?: string;
+};
 
 export function listAdminApiLogs(params: AdminApiLogParams = {}) {
     return http.get<{ logs: ApiCallLog[]; total: number; page: number; pageSize: number }>("/admin/api-logs", { params });

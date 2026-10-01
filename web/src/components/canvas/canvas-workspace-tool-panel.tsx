@@ -303,7 +303,7 @@ export function CanvasWorkspaceToolPanel({ onInsert }: CanvasWorkspaceToolPanelP
             {previewTool && preview ? (
                 preview.kind === "video" ? (
                     <AppModal flush open title={previewTool.label} onCancel={() => setPreviewTool(null)} footer={null} width="min(1200px, calc(100vw - 32px))">
-                        <VideoPlayer src={preview.src} title={previewTool.label || "视频预览"} className="max-h-[84vh] max-w-full bg-black" />
+                        <VideoPlayer src={preview.src} title={previewTool.label || "视频预览"} className="max-h-[84dvh] max-w-full bg-black" />
                     </AppModal>
                 ) : (
                     <CanvasImagePreview src={preview.src} alt={previewTool.label} onClose={() => setPreviewTool(null)} />
@@ -320,7 +320,7 @@ export function CanvasWorkspaceToolPanel({ onInsert }: CanvasWorkspaceToolPanelP
                 onOk={() => createForm.submit()}
                 afterClose={() => createForm.resetFields()}
             >
-                <Form<CreateToolFormValues> form={createForm} layout="vertical" requiredMark={false} initialValues={{ visibility: "private" }} onFinish={(values) => createMutation.mutate(values)} className="max-h-[72vh] overflow-y-auto p-6 px-8">
+                <Form<CreateToolFormValues> form={createForm} layout="vertical" requiredMark={false} initialValues={{ visibility: "private" }} onFinish={(values) => createMutation.mutate(values)} className="max-h-[72dvh] overflow-y-auto p-6 px-8">
                     <Form.Item name="label" label="名称" rules={[{ required: true, whitespace: true, message: "请输入工具名称" }, { max: 120 }]}>
                         <Input maxLength={120} showCount placeholder="例如：电影感胶片" />
                     </Form.Item>

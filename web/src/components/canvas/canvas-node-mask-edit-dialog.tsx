@@ -115,7 +115,7 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, config, onClose, onCon
             <div className="grid gap-5 lg:grid-cols-[minmax(360px,1fr)_340px]">
                 <div className="flex min-h-[360px] items-center justify-center rounded-lg bg-surface-active p-0">
                     <div className="relative inline-block max-w-full overflow-hidden rounded-lg bg-transparent select-none">
-                        <img src={dataUrl} alt="" className="relative z-0 block max-h-[68vh] max-w-full bg-transparent" draggable={false} />
+                        <img src={dataUrl} alt="" className="relative z-0 block max-h-[68dvh] max-w-full bg-transparent" draggable={false} />
                         {image ? (
                             <>
                                 <canvas ref={maskCanvasRef} width={image.width} height={image.height} className="hidden" />
@@ -134,7 +134,7 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, config, onClose, onCon
                     </div>
                 </div>
 
-                <div className="flex max-h-[68vh] min-h-[360px] flex-col overflow-hidden">
+                <div className="flex max-h-[68dvh] min-h-[min(360px,calc(100dvh-96px))] flex-col overflow-hidden">
                     <div className="thin-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
                         <div>
                             <h2 className="text-xl font-semibold">局部重绘</h2>

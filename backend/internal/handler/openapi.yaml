@@ -958,6 +958,122 @@ paths:
           $ref: "#/components/responses/Error"
         "403":
           $ref: "#/components/responses/Error"
+  /admin/channels/{id}/models/batch-status:
+    post:
+      tags: [admin]
+      summary: 批量启用或停用系统渠道模型
+      description: |
+        仅管理员可用。模型 ID 必须属于当前系统渠道，单批 1–100 个模型；
+        空 ID、重复 ID、已删除或不属于当前渠道的记录整批拒绝，不会部分更新。
+        只修改模型启用状态，并失效模型路由目录缓存。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [modelIds, enabled]
+              properties:
+                modelIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { type: string, minLength: 1 }
+                enabled: { type: boolean }
+            example: { modelIds: [MODEL001, MODEL002], enabled: false }
+      responses:
+        "200":
+          description: 更新成功，data.updated 为更新的模型数量
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: integer, enum: [0] }
+                  msg: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      updated: { type: integer }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+  /admin/channels/{id}/models/batch-settings:
+    post:
+      tags: [admin]
+      summary: 批量设置系统渠道模型参数
+      description: |
+        仅管理员可用。批量修改模型启停状态、能力、调用协议、展示名、渠道展示名、描述、Logo 和标签；
+        未提交的字段保持原值。模型产品标识、上游模型 ID 和价格不会被修改；能力和调用协议必须同时提交。
+        设置能力与协议时，各模型的能力参数将按上游模型 ID 分别重置为协议默认值；价格档不会自动转换，应单独核对。
+        模型 ID 必须属于当前系统渠道，单批 1–100 个模型，校验失败时整批拒绝。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [modelIds]
+              properties:
+                modelIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { type: string, minLength: 1 }
+                enabled: { type: boolean }
+                displayName: { type: string, maxLength: 160 }
+                channelLabel: { type: string, maxLength: 80 }
+                description: { type: string, maxLength: 500 }
+                icon: { type: string, maxLength: 80 }
+                tags:
+                  type: array
+                  maxItems: 5
+                  items:
+                    type: object
+                    required: [text, color]
+                    properties:
+                      text: { type: string }
+                      color: { type: string }
+                capability:
+                  type: string
+                  enum: [text, image, video, audio]
+                protocol:
+                  type: string
+                  minLength: 1
+            example: { modelIds: [MODEL001, MODEL002], enabled: true, capability: image, protocol: openai-image }
+      responses:
+        "200":
+          description: 更新成功，data.updated 为更新的模型数量
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: integer, enum: [0] }
+                  msg: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      updated: { type: integer }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
   /admin/agent-lessons:
     get:
       tags: [admin]

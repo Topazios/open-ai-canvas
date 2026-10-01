@@ -73,8 +73,8 @@ export default function RegisterPage() {
         registering.current = true;
         setSubmitting(true);
         try {
-            if (!settings?.firstUser && !verification.ticket) throw new Error("请先获取本次注册验证码");
-            await register({ username, ...(settings?.firstUser ? { email } : verification), displayName, password, acceptedTerms: agreementAccepted });
+            if (!settings?.firstUser && !settings?.unverifiedRegistration && !verification.ticket) throw new Error("请先获取本次注册验证码");
+            await register({ username, ...(settings?.firstUser ? { email } : settings?.unverifiedRegistration ? {} : verification), displayName, password, acceptedTerms: agreementAccepted });
             const { applyUserSession } = await import("@/lib/user-session");
             await applyUserSession(await getAuthSession());
             if (!settings?.firstUser) window.sessionStorage.setItem("infinite-canvas:model-setup-guide", "1");
@@ -97,7 +97,7 @@ export default function RegisterPage() {
 
     const registrationClosed = settings?.registrationEnabled === false;
     const methods = settings ? verificationMethods(settings, "register") : [];
-    const verificationUnavailable = Boolean(settings && !settings.firstUser && methods.length === 0);
+    const verificationUnavailable = Boolean(settings && !settings.firstUser && !settings.unverifiedRegistration && methods.length === 0);
     const disabled = !settings || registrationClosed || verificationUnavailable;
 
     return (

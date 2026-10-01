@@ -9,6 +9,7 @@ import (
 	"infinite-canvas/backend/internal/repository"
 	"log"
 	"net/mail"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -47,15 +48,16 @@ type LoginRequest struct {
 
 type PublicAuthSettings struct {
 	VerificationPolicy
-	SMSBindingAvailable   bool   `json:"smsBindingAvailable"`
-	EmailBindingAvailable bool   `json:"emailBindingAvailable"`
-	FirstUser             bool   `json:"firstUser"`
-	RegistrationEnabled   bool   `json:"registrationEnabled"`
-	LinuxDOEnabled        bool   `json:"linuxdoEnabled"`
-	EmailEnabled          bool   `json:"emailEnabled"`
-	EmailCodeRequired     bool   `json:"emailCodeRequired"`
-	AgreementTitle        string `json:"agreementTitle,omitempty"`
-	AgreementContent      string `json:"agreementContent,omitempty"`
+	SMSBindingAvailable    bool   `json:"smsBindingAvailable"`
+	EmailBindingAvailable  bool   `json:"emailBindingAvailable"`
+	FirstUser              bool   `json:"firstUser"`
+	RegistrationEnabled    bool   `json:"registrationEnabled"`
+	UnverifiedRegistration bool   `json:"unverifiedRegistration"`
+	LinuxDOEnabled         bool   `json:"linuxdoEnabled"`
+	EmailEnabled           bool   `json:"emailEnabled"`
+	EmailCodeRequired      bool   `json:"emailCodeRequired"`
+	AgreementTitle         string `json:"agreementTitle,omitempty"`
+	AgreementContent       string `json:"agreementContent,omitempty"`
 }
 
 type AuthSessionResult struct {
@@ -111,18 +113,21 @@ func (s *Service) PublicAuthSettings() (*PublicAuthSettings, error) {
 	p.SMSRegistration = p.SMSRegistration && smsRegister
 	p.EmailRegistration = p.EmailRegistration && emailEnabled
 	p.SMSAndEmailRegistration = p.SMSAndEmailRegistration && smsRegister && emailEnabled
+	unverifiedRegistration := os.Getenv("CANVAS_LOCAL_UNVERIFIED_REGISTRATION") == "true" &&
+		!p.SMSRegistration && !p.EmailRegistration && !p.SMSAndEmailRegistration
 	agreementTitle, agreementContent := s.RegistrationAgreement()
 	return &PublicAuthSettings{
-		VerificationPolicy:    p,
-		SMSBindingAvailable:   smsBind,
-		EmailBindingAvailable: emailEnabled,
-		FirstUser:             false,
-		RegistrationEnabled:   registrationEnabled,
-		LinuxDOEnabled:        s.LinuxDOEnabled(),
-		EmailEnabled:          emailEnabled,
-		EmailCodeRequired:     p.EmailRegistration || p.SMSAndEmailRegistration,
-		AgreementTitle:        agreementTitle,
-		AgreementContent:      agreementContent,
+		VerificationPolicy:     p,
+		SMSBindingAvailable:    smsBind,
+		EmailBindingAvailable:  emailEnabled,
+		FirstUser:              false,
+		RegistrationEnabled:    registrationEnabled,
+		UnverifiedRegistration: unverifiedRegistration,
+		LinuxDOEnabled:         s.LinuxDOEnabled(),
+		EmailEnabled:           emailEnabled,
+		EmailCodeRequired:      p.EmailRegistration || p.SMSAndEmailRegistration,
+		AgreementTitle:         agreementTitle,
+		AgreementContent:       agreementContent,
 	}, nil
 }
 
@@ -174,22 +179,32 @@ func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
 				return nil, err
 			}
 		} else {
-			p, err := s.verificationPolicy()
+			settings, err := s.PublicAuthSettings()
 			if err != nil {
 				return nil, err
 			}
-			if !p.allows("register", "email") || req.Phone != "" {
-				return nil, kernel.BadAuthRequest("请先获取本次注册验证码")
-			}
-			if email == "" {
-				return nil, kernel.BadAuthRequest("请输入邮箱")
-			}
-			if err := s.validateRegistrationEmailDomain(email); err != nil {
-				return nil, err
-			}
-			verifiedCode, err = s.VerifyRegistrationEmailCode(email, req.EmailCode)
-			if err != nil {
-				return nil, err
+			if settings.UnverifiedRegistration {
+				if email != "" || req.Phone != "" || req.EmailCode != "" || req.SMSCode != "" {
+					return nil, kernel.BadAuthRequest("本地免验证注册只支持用户名和密码")
+				}
+			} else {
+				p, err := s.verificationPolicy()
+				if err != nil {
+					return nil, err
+				}
+				if !p.allows("register", "email") || req.Phone != "" {
+					return nil, kernel.BadAuthRequest("请先获取本次注册验证码")
+				}
+				if email == "" {
+					return nil, kernel.BadAuthRequest("请输入邮箱")
+				}
+				if err := s.validateRegistrationEmailDomain(email); err != nil {
+					return nil, err
+				}
+				verifiedCode, err = s.VerifyRegistrationEmailCode(email, req.EmailCode)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

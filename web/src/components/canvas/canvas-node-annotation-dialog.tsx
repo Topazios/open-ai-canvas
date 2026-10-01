@@ -126,8 +126,8 @@ export function CanvasNodeAnnotationDialog({ image, open, onClose, onConfirm, ed
                 </div>
                 <div className="flex min-h-[360px] items-center justify-center overflow-hidden rounded-lg bg-black/5 dark:bg-white/[0.03]">
                     {source && size.width ? (
-                        <div className="relative inline-block max-h-[72vh] max-w-full overflow-hidden">
-                            <img src={source} alt="待标注图片" className="block max-h-[72vh] max-w-full select-none object-contain" draggable={false} />
+                        <div className="relative inline-block max-h-[72dvh] max-w-full overflow-hidden">
+                            <img src={source} alt="待标注图片" className="block max-h-[72dvh] max-w-full select-none object-contain" draggable={false} />
                             <canvas ref={canvasRef} width={size.width} height={size.height} className="absolute inset-0 h-full w-full cursor-crosshair touch-none" onPointerDown={startDraw} onPointerMove={moveDraw} onPointerUp={stopDraw} onPointerCancel={stopDraw} />
                         </div>
                     ) : <span className="text-sm opacity-50">正在读取图片...</span>}

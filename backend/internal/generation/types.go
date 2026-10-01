@@ -29,8 +29,15 @@ type Input struct {
 }
 
 type TextOptions struct {
-	Stream   *bool `json:"stream"`
-	Thinking bool  `json:"thinking"`
+	Stream           *bool                 `json:"stream"`
+	Thinking         bool                  `json:"thinking"`
+	StructuredOutput *StructuredTextOutput `json:"structuredOutput,omitempty"`
+}
+
+type StructuredTextOutput struct {
+	Name   string                 `json:"name"`
+	Schema map[string]interface{} `json:"schema"`
+	Strict *bool                  `json:"strict,omitempty"`
 }
 
 type AgentToolRequests struct {

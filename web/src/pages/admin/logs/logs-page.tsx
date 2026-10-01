@@ -1,7 +1,7 @@
 import { Alert, App, Button, Input, Modal, Segmented } from "antd";
 import { IconButton } from "@/pages/admin/ui/controls";
 import type { ColumnsType } from "antd/es/table";
-import { Download, Eye, Play, Search } from "lucide-react";
+import { Download, Eye, Play, RefreshCw, Search } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
@@ -26,6 +26,7 @@ export default function LogsPage() {
     const view = normalizeLogView(searchParams.get("view"));
     const status = normalizeStatus(searchParams.get("status"));
     const recordType = searchParams.get("recordType") === "download" ? "download" : searchParams.get("recordType") === "all" ? "all" : "request";
+    const rangePreset = normalizeRangePreset(searchParams.get("range"));
     const page = positiveInt(searchParams.get("page"), 1);
     const pageSize = normalizePageSize(searchParams.get("pageSize"));
     const debouncedKeyword = useDebouncedValue(keyword);
@@ -38,12 +39,13 @@ export default function LogsPage() {
     const [detailLogId, setDetailLogId] = useState<string | null>(null);
     const [mediaPreview, setMediaPreview] = useState<{ url: string; kind: "image" | "video"; title: string } | null>(null);
     const requestSequence = useRef(0);
-    const hasFilters = Boolean(keyword || status !== "all" || recordType !== "request");
+    const hasFilters = Boolean(keyword || status !== "all" || recordType !== "request" || rangePreset !== "all");
+    const range = recentRange(rangePreset);
 
     const updateUrl = (patch: Record<string, string | number>, replace = false) => {
         const next = new URLSearchParams(searchParams);
         Object.entries(patch).forEach(([key, value]) => {
-            const isDefault = (key === "filter" && value === "") || (key === "status" && value === "all") || (key === "page" && value === 1) || (key === "pageSize" && value === 20);
+            const isDefault = (key === "filter" && value === "") || (key === "status" && value === "all") || (key === "range" && value === "all") || (key === "page" && value === 1) || (key === "pageSize" && value === 20);
             if (isDefault) next.delete(key);
             else next.set(key, String(value));
         });
@@ -57,7 +59,7 @@ export default function LogsPage() {
         setLogs([]);
         setTotal(0);
         setSelectedIds([]);
-        void listAdminApiLogs({ recordType, keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status, page, pageSize })
+        void listAdminApiLogs({ recordType, keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status, from: range?.from, to: range?.to, page, pageSize })
             .then((result) => {
                 if (sequence !== requestSequence.current) return;
                 setLogs(result.logs);
@@ -73,7 +75,7 @@ export default function LogsPage() {
             })
             .finally(() => sequence === requestSequence.current && setLoading(false));
         return () => { requestSequence.current += 1; };
-    }, [debouncedKeyword, status, recordType, page, pageSize, retry]);
+    }, [debouncedKeyword, status, recordType, rangePreset, page, pageSize, retry]);
 
     const fullColumns: ColumnsType<ApiCallLog> = [
         { title: "时间", width: 168, render: (_, log) => <button type="button" className="admin-log-detail-link" aria-label={`查看请求 ${log.id} 详情`} onClick={() => setDetailLogId(log.id)}>{formatTime(log.startedAt || log.createdAt)}</button> },
@@ -167,13 +169,16 @@ export default function LogsPage() {
             title="请求明细"
             description="模型生成与结果下载记录；仅计费调用扣除积分"
             actions={
-                <AdminExportButton
-                    exportFile={() => exportAdminApiLogs({ recordType, keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status })}
-                    fileName={() => `请求明细-${new Date().toISOString().slice(0, 10)}.csv`}
-                    label="导出当前筛选"
-                    successMessage="已按当前筛选导出请求明细"
-                    errorMessage="导出请求明细失败"
-                />
+                <>
+                    <IconButton icon={RefreshCw} size="md" loading={loading} title="刷新请求明细" aria-label="刷新请求明细" onClick={() => setRetry((value) => value + 1)} />
+                    <AdminExportButton
+                        exportFile={() => exportAdminApiLogs({ recordType, keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status, from: range?.from, to: range?.to })}
+                        fileName={() => `请求明细-${new Date().toISOString().slice(0, 10)}.csv`}
+                        label="导出当前筛选"
+                        successMessage="已按当前筛选导出请求明细"
+                        errorMessage="导出请求明细失败"
+                    />
+                </>
             }
         >
             {loadError ? <Alert type="error" showIcon title="请求明细读取失败" description={loadError} action={<Button size="small" onClick={() => setRetry((value) => value + 1)}>重试</Button>} /> : null}
@@ -181,19 +186,35 @@ export default function LogsPage() {
                 className={view === "all" ? "admin-logs-full" : "admin-logs-compact"}
                 trailing={<Segmented aria-label="请求明细视图" value={view} onChange={(value) => updateUrl({ view: value })} options={[{ label: "排障", value: "troubleshoot" }, { label: "计费", value: "billing" }, { label: "全部字段", value: "all" }]} />}
                 toolbar={
-                    <Input
-                        allowClear
-                        className="app-list-search"
-                        prefix={<Search className="size-4 text-foreground/40" />}
-                        value={keyword}
-                        placeholder="搜索用户、渠道、模型、路径或请求号"
-                        onChange={(event) => updateUrl({ filter: event.target.value, page: 1 }, true)}
-                    />
+                    <>
+                        <Input
+                            allowClear
+                            className="app-list-search"
+                            prefix={<Search className="size-4 text-foreground/40" />}
+                            value={keyword}
+                            placeholder="搜索用户、渠道、模型、路径或请求号"
+                            onChange={(event) => updateUrl({ filter: event.target.value, page: 1 }, true)}
+                        />
+                        <div className="admin-log-quick-filters" role="group" aria-label="请求明细快捷搜索">
+                            {QUICK_FILTERS.map(([value, label]) => (
+                                <button
+                                    key={value}
+                                    type="button"
+                                    className={quickFilterActive(value, { keyword, status, rangePreset }) ? "is-active" : undefined}
+                                    aria-pressed={quickFilterActive(value, { keyword, status, rangePreset })}
+                                    onClick={() => applyQuickFilter(value, updateUrl)}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    </>
                 }
                 toolbarActiveFilters={
                     <>
                         {keyword ? <AdminFilterChip label={`搜索：${keyword}`} onRemove={() => updateUrl({ filter: "", page: 1 })} /> : null}
                         {status !== "all" ? <AdminFilterChip label={`结果：${status === "succeeded" ? "成功" : "失败"}`} onRemove={() => updateUrl({ status: "all", page: 1 })} /> : null}
+                        {rangePreset !== "all" ? <AdminFilterChip label={`时间：${rangeLabel(rangePreset)}`} onRemove={() => updateUrl({ range: "all", page: 1 })} /> : null}
                     </>
                 }
                 toolbarFilters={
@@ -213,7 +234,7 @@ export default function LogsPage() {
                     </>
                 }
                 toolbarActive={hasFilters}
-                onReset={() => updateUrl({ filter: "", status: "all", recordType: "request", page: 1 })}
+                onReset={() => updateUrl({ filter: "", status: "all", range: "all", recordType: "request", page: 1 })}
                 batchActions={
                     <AdminBatchBar count={selectedIds.length} onClear={() => setSelectedIds([])}>
                         <AdminExportButton
@@ -283,6 +304,44 @@ export default function LogsPage() {
 function positiveInt(value: string | null, fallback: number) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+type QuickFilter = "all" | "failed" | "succeeded" | "24h" | "7d" | "timeout" | "tls";
+type RangePreset = "all" | "24h" | "7d";
+const QUICK_FILTERS: Array<[QuickFilter, string]> = [
+    ["all", "全部"],
+    ["failed", "失败"],
+    ["succeeded", "成功"],
+    ["24h", "近 24 小时"],
+    ["7d", "近 7 天"],
+    ["timeout", "超时"],
+    ["tls", "TLS 错误"],
+];
+
+function normalizeRangePreset(value: string | null): RangePreset {
+    return value === "24h" || value === "7d" ? value : "all";
+}
+function recentRange(value: RangePreset) {
+    if (value === "all") return undefined;
+    const duration = value === "24h" ? 24 * 60 * 60 * 1_000 : 7 * 24 * 60 * 60 * 1_000;
+    const to = new Date();
+    return { from: new Date(to.getTime() - duration).toISOString(), to: to.toISOString() };
+}
+function rangeLabel(value: RangePreset) {
+    return value === "24h" ? "近 24 小时" : value === "7d" ? "近 7 天" : "全部时间";
+}
+function quickFilterActive(value: QuickFilter, current: { keyword: string; status: "all" | "succeeded" | "failed"; rangePreset: RangePreset }) {
+    if (value === "all") return !current.keyword && current.status === "all" && current.rangePreset === "all";
+    if (value === "failed" || value === "succeeded") return !current.keyword && current.rangePreset === "all" && current.status === value;
+    if (value === "24h" || value === "7d") return !current.keyword && current.status === "all" && current.rangePreset === value;
+    if (value === "timeout") return current.keyword === "超时" && current.status === "failed" && current.rangePreset === "all";
+    return current.keyword === "tls" && current.status === "failed" && current.rangePreset === "all";
+}
+function applyQuickFilter(value: QuickFilter, updateUrl: (patch: Record<string, string | number>, replace?: boolean) => void) {
+    if (value === "all") return updateUrl({ filter: "", status: "all", range: "all", page: 1 });
+    if (value === "failed" || value === "succeeded") return updateUrl({ filter: "", status: value, range: "all", page: 1 });
+    if (value === "24h" || value === "7d") return updateUrl({ filter: "", status: "all", range: value, page: 1 });
+    if (value === "timeout") return updateUrl({ filter: "超时", status: "failed", range: "all", page: 1 });
+    return updateUrl({ filter: "tls", status: "failed", range: "all", page: 1 });
 }
 function normalizePageSize(value: string | null) {
     const parsed = positiveInt(value, 20);

@@ -80,6 +80,7 @@ export type ToolbarHandlers = {
     onNodeToggleDialog: (node: CanvasNodeData) => void;
     onNodeAnnotate: (node: CanvasNodeData) => void;
     onNodeGenerateImage: (node: CanvasNodeData) => void;
+    onNodeBatchGenerateImages: (node: CanvasNodeData) => void;
     onNodeUpload: (node: CanvasNodeData) => void;
     onNodeDownload: (node: CanvasNodeData) => void;
     onNodeSaveAsset: (node: CanvasNodeData) => void;

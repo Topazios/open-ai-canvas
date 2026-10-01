@@ -11,6 +11,7 @@ import { VideoPlayer } from "@/components/video-player";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { modelDisplayName, useEffectiveConfig } from "@/stores/use-config-store";
 import { resolveMediaUrl } from "@/services/file-storage";
+import { resourceStorageKeyFromURL } from "@/services/api/resources";
 
 type CanvasProjectStatusDialogsProps = {
     theme: { node: { stroke: string; panel: string; muted: string; fill: string } };
@@ -85,7 +86,7 @@ export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading,
                 footer={null}
                 width="min(1200px, calc(100vw - 32px))"
                 flush
-                styles={{ body: { display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "84vh", overflow: "hidden", background: "var(--workspace-canvas-deep)" } }}
+                styles={{ body: { display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "84dvh", overflow: "hidden", background: "var(--workspace-canvas-deep)" } }}
             >
                 {previewNode?.type === CanvasNodeType.Video && (previewNode.metadata?.content || previewNode.metadata?.storageKey) ? (
                     <ResolvedCanvasVideoPreview node={previewNode} />
@@ -122,14 +123,16 @@ export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading,
 }
 
 function ResolvedCanvasVideoPreview({ node }: { node: CanvasNodeData }) {
-    const [src, setSrc] = useState(node.metadata?.storageKey ? "" : node.metadata?.content || "");
+    const initialStorageKey = node.metadata?.storageKey || resourceStorageKeyFromURL(node.metadata?.content);
+    const [src, setSrc] = useState(initialStorageKey ? "" : node.metadata?.content || "");
     const [failed, setFailed] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
-        setSrc(node.metadata?.storageKey ? "" : node.metadata?.content || "");
+        const storageKey = node.metadata?.storageKey || resourceStorageKeyFromURL(node.metadata?.content);
+        setSrc(storageKey ? "" : node.metadata?.content || "");
         setFailed(false);
-        void resolveMediaUrl(node.metadata?.storageKey, node.metadata?.content || "")
+        void resolveMediaUrl(storageKey, node.metadata?.content || "")
             .then((url) => {
                 if (!cancelled) {
                     setSrc(url);
@@ -146,7 +149,7 @@ function ResolvedCanvasVideoPreview({ node }: { node: CanvasNodeData }) {
 
     if (failed) return <div className="grid min-h-72 w-full place-items-center text-sm text-white/55">视频地址获取失败，请关闭后重试</div>;
     if (!src) return <div className="grid min-h-72 w-full place-items-center text-sm text-white/55">正在加载视频…</div>;
-    return <VideoPlayer src={src} mimeType={node.metadata?.mimeType} title={node.title || "视频预览"} hasAudio={typeof node.metadata?.hasAudio === "boolean" ? node.metadata.hasAudio : undefined} className="max-h-[84vh] max-w-full bg-black" />;
+    return <VideoPlayer src={src} mimeType={node.metadata?.mimeType} title={node.title || "视频预览"} hasAudio={typeof node.metadata?.hasAudio === "boolean" ? node.metadata.hasAudio : undefined} className="max-h-[84dvh] max-w-full bg-black" />;
 }
 
 function TaskGenerationParameters({ inputJson, theme }: { inputJson?: string; theme: CanvasProjectStatusDialogsProps["theme"] }) {

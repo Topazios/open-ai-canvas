@@ -81,3 +81,18 @@ test("node style overrides project style and removing it restores inheritance", 
     expect(resolveCanvasStyleExecution([styleNode], undefined, prompt, defaultConfig, "image")).toBeNull();
     expect(resolveCanvasStyleExecution([styleNode], undefined, removeToolMentions(prompt, "style"), defaultConfig, "image")).not.toBeNull();
 });
+
+test("batch assets use the selected image style tool instead of inheriting the project style", async () => {
+    const { resolveCanvasStyleExecution } = await import("../src/lib/canvas/canvas-style-execution");
+    const { defaultConfig } = await import("../src/stores/use-config-store");
+    const { createStyleProfileSnapshot, serializeStyleProfile } = await import("../src/lib/canvas/style-profile");
+    const style = createStyleProfileSnapshot({ presetId: "batch-style", title: "批量画风", description: "", tags: [], prompt: "batch style", assets: [] });
+    const project = createStyleProfileSnapshot({ presetId: "project-style", title: "项目画风", description: "", tags: [], prompt: "project style", assets: [] });
+    const styleNode: CanvasNodeData = { id: "style", type: CanvasNodeType.Text, title: "项目画风", position: { x: 0, y: 0 }, width: 300, height: 200, metadata: { workflowKind: "styleboard", styleProfileJson: serializeStyleProfile(project) } };
+    const asset: CanvasNodeData = { id: "asset", type: CanvasNodeType.Image, title: "林晚", position: { x: 0, y: 0 }, width: 300, height: 200, metadata: { batchOperation: "creative", styleProfileJson: serializeStyleProfile(style), styleInheritance: "isolated" } };
+    const prompt = applyToolMention("角色设定参考图", { id: 23, type: "style", label: "宫廷权谋" }, "Palette");
+    expect(parseToolMentionTokens(prompt)).toMatchObject([{ type: "style", toolId: 23, label: "宫廷权谋" }]);
+    expect(resolveCanvasStyleExecution([styleNode, asset], asset, prompt, defaultConfig, "image")).toBeNull();
+    expect(resolveCanvasStyleExecution([styleNode, asset], asset, "角色设定参考图", defaultConfig, "image")?.prompt).toContain("batch style");
+    expect(resolveCanvasStyleExecution([styleNode, asset], { ...asset, metadata: { batchOperation: "creative", styleInheritance: "isolated" } }, "角色设定参考图", defaultConfig, "image")).toBeNull();
+});

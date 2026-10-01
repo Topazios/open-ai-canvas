@@ -1,7 +1,6 @@
 import { http } from "@/services/api/request";
 import type { ModelTag } from "@/lib/model-tags";
 
-
 export type CreditAccount = {
     userId: string;
     availableMicrocredits: number;
@@ -324,6 +323,26 @@ export function deleteAdminChannelModel(channelId: string, id: string) {
 
 export function deleteAdminChannelModels(channelId: string, modelIds: string[]) {
     return http.post<{ deleted: number }>(`/admin/channels/${encodeURIComponent(channelId)}/models/batch-delete`, { modelIds });
+}
+
+export function updateAdminChannelModelsEnabled(channelId: string, modelIds: string[], enabled: boolean) {
+    return http.post<{ updated: number }>(`/admin/channels/${encodeURIComponent(channelId)}/models/batch-status`, { modelIds, enabled });
+}
+
+export type ChannelModelBatchSettings = {
+    modelIds: string[];
+    enabled?: boolean;
+    displayName?: string;
+    channelLabel?: string;
+    description?: string;
+    icon?: string;
+    tags?: ModelTag[];
+    capability?: ChannelModel["capability"];
+    protocol?: ChannelModel["protocol"];
+};
+
+export function updateAdminChannelModelsSettings(channelId: string, input: ChannelModelBatchSettings) {
+    return http.post<{ updated: number }>(`/admin/channels/${encodeURIComponent(channelId)}/models/batch-settings`, input);
 }
 
 export type ChannelModelRepriceInput = {

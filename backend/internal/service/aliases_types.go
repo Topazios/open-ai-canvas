@@ -30,6 +30,7 @@ type (
 	AdminCacheClearResult                  = app.AdminCacheClearResult
 	AdminChannelModelFetchResult           = app.AdminChannelModelFetchResult
 	AdminChannelModelImportRequest         = app.AdminChannelModelImportRequest
+	AdminChannelModelBatchSettingsRequest  = app.AdminChannelModelBatchSettingsRequest
 	AdminChannelModelTestResult            = app.AdminChannelModelTestResult
 	AdminChannelPage                       = app.AdminChannelPage
 	AdminChannelReference                  = app.AdminChannelReference

@@ -321,6 +321,8 @@ export type CanvasNodeMetadata = {
     workflowDescription?: string;
     stylePresetId?: string;
     styleProfileJson?: string;
+    /** Controls whether image/video generation inherits the project style when no node style is set. */
+    styleInheritance?: "project" | "isolated";
     styleExecutionPlan?: StyleExecutionPlan;
     skillIds?: string[];
     skillVersions?: Array<{ skillId: string; versionId: string; version: string }>;

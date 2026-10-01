@@ -137,7 +137,8 @@ export function CanvasAngleScene({
     }, [dragging]);
 
     const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-        if ((event.target as HTMLElement).closest(".canvas-angle-dir")) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest(".canvas-angle-dir")) return;
         event.preventDefault();
         event.stopPropagation();
         dragPointer.current = event.pointerId;

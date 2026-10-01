@@ -112,4 +112,39 @@ describe("skill runtime", () => {
         expect(result.prompt).toContain('<skill-context skill-id="director"');
         expect(result.metadata.skillIds).toEqual(["director"]);
     });
+
+    test("system skills run without user installation and remain unique when selected", () => {
+        const system = skill({ skillId: "system-assets", skillName: "系统资产", isAdded: false, isPrivate: false, ownerUid: "system" });
+        const user = skill({ skillId: "user-style", skillName: "用户画风" });
+        const selected = resolveSkillMentions("生成资产", [system, user], ["system-assets", "user-style"], ["system-assets"]);
+        expect(selected.map((item) => item.skillId)).toEqual(["system-assets", "user-style"]);
+    });
+
+    test("system skills run when no user skill is selected, without activating unrelated installed skills", () => {
+        const system = skill({ skillId: "system-assets", skillName: "系统资产", isAdded: false, isPrivate: false, ownerUid: "system" });
+        const installed = skill({ skillId: "unrelated-style", skillName: "无关画风" });
+        expect(resolveSkillMentions("", [system, installed], undefined, ["system-assets"]).map((item) => item.skillId)).toEqual(["system-assets"]);
+        expect(resolveSkillMentions("生成资产", [system, installed], [], ["system-assets"]).map((item) => item.skillId)).toEqual(["system-assets"]);
+    });
+
+    test("skill runtime loads only the resolved system and user skills", async () => {
+        const system = skill({ skillId: "system-assets", skillName: "系统资产", isAdded: false, isPrivate: false, ownerUid: "system" });
+        const user = skill({ skillId: "user-style", skillName: "用户画风" });
+        const unrelated = skill({ skillId: "unrelated", skillName: "无关技能" });
+        const runtime = createSkillRuntime({
+            getFile: async (id, path) => ({ file: file(path, `${id} instructions`) }),
+            listFiles: async () => ({ files: [] }),
+        });
+        const prepared = await runtime.prepare({
+            profile: "canvas",
+            prompt: "生成资产",
+            skills: [system, user, unrelated],
+            selectedSkillIds: ["user-style"],
+            systemSkillIds: ["system-assets"],
+        });
+        expect(prepared.selectedSkills.map((item) => item.skillId)).toEqual(["system-assets", "user-style"]);
+        expect(prepared.prompt).toContain("system-assets instructions");
+        expect(prepared.prompt).toContain("user-style instructions");
+        expect(prepared.prompt).not.toContain("unrelated instructions");
+    });
 });

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Image as ImageIcon, LoaderCircle } from "lucide-react";
 
 import { AppModal } from "@/components/ui/product/app-modal";
+import { resourceStorageKeyFromURL } from "@/services/api/resources";
 import { resolveImageUrl } from "@/services/image-storage";
 
 type CanvasImagePreviewProps = {
@@ -12,19 +13,21 @@ type CanvasImagePreviewProps = {
 };
 
 export function CanvasImagePreview({ src = "", storageKey, alt = "图片", onClose }: CanvasImagePreviewProps) {
-    const [resolvedSrc, setResolvedSrc] = useState(storageKey ? "" : src);
+    const effectiveStorageKey = storageKey || resourceStorageKeyFromURL(src);
+    const [resolvedSrc, setResolvedSrc] = useState(effectiveStorageKey ? "" : src);
     const [loading, setLoading] = useState(Boolean(src || storageKey));
     const [error, setError] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
-        setResolvedSrc(storageKey ? "" : src);
+        const nextStorageKey = storageKey || resourceStorageKeyFromURL(src);
+        setResolvedSrc(nextStorageKey ? "" : src);
         setLoading(Boolean(src || storageKey));
         setError(false);
         if (!src && !storageKey) return () => {
             cancelled = true;
         };
-        void resolveImageUrl(storageKey, src)
+        void resolveImageUrl(nextStorageKey, src)
             .then((url) => {
                 if (cancelled) return;
                 if (!url) {
@@ -73,14 +76,14 @@ export function CanvasImagePreview({ src = "", storageKey, alt = "图片", onClo
             className="canvas-image-preview-modal"
         >
             <div
-                className="flex min-h-[min(72vh,680px)] items-center justify-center border-t p-4 sm:p-6"
+                className="flex min-h-[min(72dvh,680px)] items-center justify-center border-t p-4 sm:p-6"
                 style={{
                     borderColor: "var(--workspace-border)",
                     background: "color-mix(in srgb, var(--workspace-surface) 86%, var(--background))",
                 }}
             >
                 <div
-                    className="relative flex min-h-[min(62vh,560px)] w-full items-center justify-center overflow-hidden rounded-[var(--r-lg)] border p-3 sm:p-5"
+                    className="relative flex min-h-[min(62dvh,560px)] w-full items-center justify-center overflow-hidden rounded-[var(--r-lg)] border p-3 sm:p-5"
                     style={{
                         borderColor: "var(--workspace-border-strong)",
                         background: "var(--workspace-surface-strong)",
@@ -129,7 +132,7 @@ export function CanvasImagePreview({ src = "", storageKey, alt = "图片", onClo
                             src={resolvedSrc}
                             alt={alt}
                             draggable={false}
-                            className={`max-h-[min(66vh,620px)] max-w-full rounded-[var(--r-sm)] border object-contain shadow-xl transition-opacity duration-200 motion-reduce:transition-none ${loading || error ? "opacity-0" : "opacity-100"}`}
+                            className={`max-h-[min(66dvh,620px)] max-w-full rounded-[var(--r-sm)] border object-contain shadow-xl transition-opacity duration-200 motion-reduce:transition-none ${loading || error ? "opacity-0" : "opacity-100"}`}
                             style={{ borderColor: "var(--workspace-border-strong)" }}
                             onLoad={() => {
                                 setLoading(false);

@@ -418,7 +418,13 @@ function useScreenAnchor(
         const observer = new ResizeObserver(() => update(viewport));
         observer.observe(container);
         observer.observe(element);
-        const unsubscribe = subscribeCanvasViewportPreview(container, update);
+        let previousViewport = viewport;
+        const unsubscribe = subscribeCanvasViewportPreview(container, (nextViewport) => {
+            const verticalChanged = Math.abs(nextViewport.y - previousViewport.y) > 0.5;
+            const scaleChanged = Math.abs(nextViewport.k - previousViewport.k) > 0.001;
+            previousViewport = nextViewport;
+            if (verticalChanged || scaleChanged) update(nextViewport);
+        });
         return () => {
             observer.disconnect();
             unsubscribe();

@@ -766,11 +766,8 @@ func runTextTask(ctx context.Context, input canvasGenerationInput) (map[string]i
 // Known text protocols keep the plugin's request mapping and host transport,
 // while sharing the SSE parser used by text generation and Agent requests.
 func executeProtocolCreateRequest(ctx context.Context, input canvasGenerationInput, spec protocol.RequestSpec) ([]byte, *protocol.Result, error) {
-	wire := input.Config.InterfaceType
-	if wire == string(model.ChannelInterfaceOpenAIResponse) {
-		wire = "responses"
-	}
-	if input.Mode != "text" || !input.StreamText || (wire != "chat-completion" && wire != "responses" && wire != "claude-api") {
+	wire, streamable := streamingProtocolForRequest(input, spec)
+	if input.Mode != "text" || !input.StreamText || !streamable {
 		data, err := executeProtocolRequest(ctx, input.Config, spec)
 		return data, nil, err
 	}
@@ -803,6 +800,38 @@ func executeProtocolCreateRequest(ctx context.Context, input canvasGenerationInp
 	return data, &protocol.Result{Text: text, Reasoning: stringField(parsed, "reasoning")}, nil
 }
 
+func streamingProtocolForRequest(input canvasGenerationInput, spec protocol.RequestSpec) (string, bool) {
+	wire := strings.TrimSpace(input.Config.InterfaceType)
+	switch wire {
+	case "chat-completion":
+		return "chat-completion", true
+	case string(model.ChannelInterfaceOpenAIResponse), "responses":
+		return "responses", true
+	case "claude-api":
+		return "claude-api", true
+	}
+
+	// Declarative plugins use their provider ID as InterfaceType, so they
+	// cannot be identified by the built-in protocol names above. Recognize
+	// only the well-known request shapes to avoid applying an SSE parser to
+	// unrelated custom protocols that happen to support text.
+	body := protocolBodyObject(spec.Body)
+	if body == nil {
+		return "", false
+	}
+	path := strings.ToLower(strings.TrimSpace(strings.SplitN(spec.Path, "?", 2)[0]))
+	switch {
+	case strings.Contains(path, "/chat/completions") && body["messages"] != nil:
+		return "chat-completion", true
+	case strings.HasSuffix(path, "/responses") && body["input"] != nil:
+		return "responses", true
+	case strings.HasSuffix(path, "/messages") && body["messages"] != nil:
+		return "claude-api", true
+	default:
+		return "", false
+	}
+}
+
 func runLegacyTextTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	responseInput, err := textResponseInput(input)
 	if err != nil {
@@ -811,6 +840,7 @@ func runLegacyTextTask(ctx context.Context, input canvasGenerationInput) (map[st
 	body := map[string]interface{}{"model": input.Config.Model, "input": responseInput}
 	applyTextThinking(body, input, "responses")
 	applyTextOutputLimit(body, input.MaxOutputTokens, "max_output_tokens")
+	applyStructuredTextOutput(body, input, "responses")
 	result, err := requestTextProvider(ctx, input.Config, "/responses", body, "responses", input.StreamText, input.OnTextDelta)
 	if err != nil {
 		if !shouldFallbackTextToChat(err) {
@@ -833,6 +863,7 @@ func runResponsesTextTask(ctx context.Context, input canvasGenerationInput) (map
 	body := map[string]interface{}{"model": input.Config.Model, "input": responseInput}
 	applyTextThinking(body, input, "responses")
 	applyTextOutputLimit(body, input.MaxOutputTokens, "max_output_tokens")
+	applyStructuredTextOutput(body, input, "responses")
 	result, err := requestTextProvider(ctx, input.Config, "/responses", body, "responses", input.StreamText, input.OnTextDelta)
 	if err != nil {
 		return nil, err
@@ -854,6 +885,7 @@ func runChatCompletionsTextTask(ctx context.Context, input canvasGenerationInput
 	body := map[string]interface{}{"model": input.Config.Model, "messages": messages}
 	applyTextThinking(body, input, "chat-completion")
 	applyTextOutputLimit(body, input.MaxOutputTokens, "max_tokens")
+	applyStructuredTextOutput(body, input, "chat-completion")
 	result, err := requestTextProvider(ctx, input.Config, "/chat/completions", body, "chat-completion", input.StreamText, input.OnTextDelta)
 	if err != nil {
 		return nil, err
@@ -930,6 +962,35 @@ func providerTextTaskResult(result providerTextResult) map[string]interface{} {
 func applyTextOutputLimit(body map[string]interface{}, limit int, field string) {
 	if limit > 0 {
 		body[field] = limit
+	}
+}
+
+func applyStructuredTextOutput(body map[string]interface{}, input canvasGenerationInput, protocol string) {
+	output := input.TextOptions.StructuredOutput
+	if output == nil || strings.TrimSpace(output.Name) == "" || len(output.Schema) == 0 {
+		return
+	}
+	strict := true
+	if output.Strict != nil {
+		strict = *output.Strict
+	}
+	switch protocol {
+	case "chat-completion":
+		body["response_format"] = map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name": output.Name, "strict": strict, "schema": output.Schema,
+			},
+		}
+	case "responses":
+		body["text"] = map[string]interface{}{
+			"format": map[string]interface{}{
+				"type":   "json_schema",
+				"name":   output.Name,
+				"strict": strict,
+				"schema": output.Schema,
+			},
+		}
 	}
 }
 

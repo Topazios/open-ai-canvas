@@ -649,7 +649,7 @@ export function CanvasTimelineDialog({
             }}
             flush
         >
-            <div className="flex h-[min(76vh,760px)] min-h-[420px] flex-col text-sm" style={{ color: theme.node.text }}>
+            <div className="flex h-[min(76dvh,760px)] min-h-[min(420px,calc(100dvh-96px))] flex-col text-sm" style={{ color: theme.node.text }}>
                 <div ref={toolbarRef} className="flex flex-nowrap items-center gap-2 overflow-hidden border-b px-4 py-3" style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}>
                     <span className="min-w-24 rounded-md border px-2 py-1 text-xs font-semibold tabular-nums" style={{ borderColor: theme.toolbar.border, background: theme.node.fill, color: theme.accent.primary }}>
                         {formatTimelineTime(playheadMs)}

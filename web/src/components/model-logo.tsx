@@ -116,7 +116,7 @@ export function ModelIconPicker({ value, onChange }: { value?: string; onChange?
                 onCancel={() => setOpen(false)}
                 width={540}
                 centered
-                destroyOnClose
+                destroyOnHidden
                 footer={
                     <div className="flex items-center justify-between py-1 text-xs text-foreground/45">
                         <span>共 {filteredIcons.length} 个可用 Logo</span>

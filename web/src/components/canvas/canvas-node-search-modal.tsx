@@ -3,6 +3,7 @@ import { Input, Modal } from "antd";
 import { AudioLines, BookOpenText, Clock3, FileText, Image, Pencil, Search, Video } from "lucide-react";
 
 import { CanvasVideoPreviewImage } from "@/components/canvas/canvas-video-preview-image";
+import { CachedResourceImage } from "@/components/cached-resource-image";
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { canvasNodeMaterialSummary, canvasNodeSearchContext, canvasNodeSearchTimes, searchCanvasNodes } from "@/lib/canvas/canvas-node-search";
 import { useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -66,7 +67,7 @@ export function CanvasNodeSearchModal({ open, nodes, onClose, onFocus }: { open:
                 <span className="tabular-nums">{query.trim() ? `找到 ${results.length} 个节点` : `最近编辑 · ${results.length} 个节点`}</span>
                 <span className="hidden sm:inline">↑↓ 选择 · Enter 定位 · Esc 关闭</span>
             </div>
-            <div id={RESULT_LIST_ID} role="listbox" aria-label="画布节点搜索结果" className="thin-scrollbar max-h-[54vh] overflow-y-auto overscroll-contain py-1.5">
+            <div id={RESULT_LIST_ID} role="listbox" aria-label="画布节点搜索结果" className="thin-scrollbar max-h-[54dvh] overflow-y-auto overscroll-contain py-1.5">
                 {results.length ? results.map((node, index) => (
                     <CanvasNodeSearchResult
                         key={node.id}
@@ -141,7 +142,7 @@ function CanvasNodeSearchThumbnail({ node }: { node: CanvasNodeData }) {
     }
 
     if (mediaSource && !failed) {
-        return <img src={mediaSource} alt="" width={64} height={44} loading="lazy" decoding="async" className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
+        return <CachedResourceImage storageKey={node.metadata?.storageKey} src={mediaSource} alt="" width={64} height={44} loading="lazy" decoding="async" className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
     }
 
     const textPreview = node.metadata?.previewContent || node.metadata?.composerContent || node.metadata?.prompt || node.metadata?.content;

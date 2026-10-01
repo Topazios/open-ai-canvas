@@ -67,6 +67,8 @@ export type PrepareSkillRuntimeInput<P extends keyof SkillRuntimeResultByProfile
     prompt: string;
     skills: Skill[];
     selectedSkillIds?: string[];
+    /** System-owned skills are executable for the current workflow without being user-added. */
+    systemSkillIds?: string[];
 };
 
 export type SkillRuntimeToolResult = { ok: true; message: string; data?: unknown } | { ok: false; message: string };
@@ -90,23 +92,25 @@ const SKILL_REF_PATTERN = /@\[skill:([^\]]+)\]/g;
 const TEXT_FILE_EXTENSIONS = new Set([".md", ".mdx", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv"]);
 const EMPTY_PROVENANCE: SkillRuntimeProvenance = { skillIds: [], skillVersions: [], skillFiles: [] };
 
-export function resolveSkillMentions(prompt: string, skills: Skill[], selectedSkillIds?: string[]) {
-    const activeSkills = skills.filter((skill) => skill.isAdded);
+export function resolveSkillMentions(prompt: string, skills: Skill[], selectedSkillIds?: string[], systemSkillIds: string[] = []) {
+    const systemIds = new Set(systemSkillIds);
+    const activeSkills = skills.filter((skill) => skill.isAdded || systemIds.has(skill.skillId));
     if (!activeSkills.length) return [];
+    const systemSkills = activeSkills.filter((skill) => systemIds.has(skill.skillId));
     if (selectedSkillIds) {
         const byId = new Map(activeSkills.map((skill) => [skill.skillId, skill]));
-        return Array.from(new Set(selectedSkillIds)).flatMap((id) => {
+        return Array.from(new Set([...systemSkillIds, ...selectedSkillIds])).flatMap((id) => {
             const skill = byId.get(id);
             return skill ? [skill] : [];
         });
     }
-    if (!prompt.trim()) return [];
+    if (!prompt.trim()) return systemSkills;
 
     const mentionedIds = new Set<string>();
     let match: RegExpExecArray | null;
     SKILL_REF_PATTERN.lastIndex = 0;
     while ((match = SKILL_REF_PATTERN.exec(prompt))) mentionedIds.add(match[1]);
-    return activeSkills.filter((skill) => mentionedIds.has(skill.skillId) || containsNaturalSkillMention(prompt, skill.skillName));
+    return activeSkills.filter((skill) => systemIds.has(skill.skillId) || mentionedIds.has(skill.skillId) || containsNaturalSkillMention(prompt, skill.skillName));
 }
 
 export function buildSkillMentionReferences(skills: Skill[]): CanvasResourceReference[] {
@@ -147,7 +151,7 @@ export function createSkillRuntime(dependencies: SkillRuntimeDependencies = {
     return {
         async prepare<P extends keyof SkillRuntimeResultByProfile>(input: PrepareSkillRuntimeInput<P>): Promise<SkillRuntimeResultByProfile[P]> {
             const config = SKILL_RUNTIME_PROFILES[input.profile];
-            const selectedSkills = resolveSkillMentions(input.prompt, input.skills, input.selectedSkillIds).slice(0, config.maxSkills);
+            const selectedSkills = resolveSkillMentions(input.prompt, input.skills, input.selectedSkillIds, input.systemSkillIds).slice(0, config.maxSkills);
             const adapter = deliveryAdapters[config.delivery as keyof typeof deliveryAdapters];
             if (!adapter) throw new Error(`技能运行模式 ${config.delivery} 不支持直接准备上下文`);
             return adapter.prepare({ prompt: normalizeSkillTokens(input.prompt, input.skills), selectedSkills, config }) as Promise<SkillRuntimeResultByProfile[P]>;

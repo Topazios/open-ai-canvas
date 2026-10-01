@@ -2006,6 +2006,10 @@
     box-shadow: var(--admin-card-shadow);
 }
 
+.admin-shell .admin-batch-bar > div:last-child {
+    flex-wrap: nowrap;
+}
+
 .admin-table-frame {
     display: flex;
     min-height: 0;
@@ -6320,12 +6324,16 @@
     background: color-mix(in srgb, var(--foreground) 3%, var(--admin-layer-1));
 }
 
-:is(.admin-storage-mode-section, .admin-email-delivery-section, .admin-access-registration-section, .admin-access-linuxdo-section, .admin-access-agreement-section, .admin-intercept-policy-section, .admin-third-party-credential-section) > .admin-settings-section-summary h2 {
+:is(.admin-storage-mode-section, .admin-email-delivery-section, .admin-access-registration-section, .admin-access-linuxdo-section, .admin-access-agreement-section, .admin-intercept-policy-section, .admin-third-party-credential-section)
+    > .admin-settings-section-summary
+    h2 {
     font-size: 16px;
     letter-spacing: -0.01em;
 }
 
-:is(.admin-storage-mode-section, .admin-email-delivery-section, .admin-access-registration-section, .admin-access-linuxdo-section, .admin-access-agreement-section, .admin-intercept-policy-section, .admin-third-party-credential-section) > .admin-settings-section-summary p {
+:is(.admin-storage-mode-section, .admin-email-delivery-section, .admin-access-registration-section, .admin-access-linuxdo-section, .admin-access-agreement-section, .admin-intercept-policy-section, .admin-third-party-credential-section)
+    > .admin-settings-section-summary
+    p {
     max-width: 760px;
     margin-top: 5px;
     font-size: 12px;
@@ -9057,6 +9065,7 @@
 
 .admin-model-editor-form > .ant-tabs > .ant-tabs-body-holder {
     min-height: 0;
+    flex: 1 1 auto;
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
@@ -9068,8 +9077,25 @@
     padding: 16px 24px 20px;
 }
 
+.admin-model-editor-form > .ant-tabs > .ant-tabs-body-holder > .ant-tabs-content,
+.admin-model-editor-form > .ant-tabs > .ant-tabs-body-holder > .ant-tabs-content > .ant-tabs-tabpane {
+    min-height: 100%;
+}
+
 .admin-model-protocol-field {
-    grid-column: 1 / -1;
+    min-width: 0;
+}
+
+.admin-model-batch-settings-modal .ant-modal-container {
+    display: flex;
+    max-height: calc(100dvh - 32px);
+    flex-direction: column;
+}
+
+.admin-model-batch-settings-modal .ant-modal-body {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .admin-model-editor-form {
@@ -9751,9 +9777,9 @@
 }
 
 :root:not(.dark) .admin-model-editor-section {
-    border: 1px solid rgba(17, 17, 17, 0.15);
-    background: #ffffff;
-    box-shadow: 0 1px 3px rgb(17 17 17 / 0.055);
+    border: 0;
+    background: transparent;
+    box-shadow: none;
 }
 
 :root:not(.dark) .admin-model-editor-drawer :is(.admin-capability-group, .admin-capability-boolean-field, .admin-capability-parameter-field),

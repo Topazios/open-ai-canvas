@@ -416,6 +416,89 @@ func TestDeleteAdminChannelModelsDeletesSelectionAtomically(t *testing.T) {
 	}
 }
 
+func TestUpdateAdminChannelModelsEnabled(t *testing.T) {
+	svc, db := newChannelModelTestService(t)
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-status", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: "https://example.com/v1", APIKey: "key", APIFormat: "openai"}
+	items := []model.ChannelModel{
+		{ID: "status-a", ChannelID: channel.ID, ModelKey: "status-a", DisplayName: "Status A", Enabled: true, PriceVersion: 1},
+		{ID: "status-b", ChannelID: channel.ID, ModelKey: "status-b", DisplayName: "Status B", Enabled: false, PriceVersion: 1},
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&items).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := svc.UpdateAdminChannelModelsEnabled(admin, channel.ID, []string{"status-a", "status-b"}, false)
+	if err != nil || updated != 2 {
+		t.Fatalf("disable updated=%d err=%v", updated, err)
+	}
+	var disabled []model.ChannelModel
+	if err := db.Where("channel_id = ?", channel.ID).Order("id").Find(&disabled).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(disabled) != 2 || disabled[0].Enabled || disabled[1].Enabled {
+		t.Fatalf("disabled models = %#v", disabled)
+	}
+
+	if _, err := svc.UpdateAdminChannelModelsEnabled(admin, channel.ID, []string{"status-a", "missing"}, true); err == nil {
+		t.Fatal("batch status update accepted a missing model")
+	}
+	var unchanged []model.ChannelModel
+	if err := db.Where("channel_id = ?", channel.ID).Order("id").Find(&unchanged).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(unchanged) != 2 || unchanged[0].Enabled || unchanged[1].Enabled {
+		t.Fatalf("rejected batch partially changed models = %#v", unchanged)
+	}
+}
+
+func TestUpdateAdminChannelModelsSettingsKeepsPerModelDefaults(t *testing.T) {
+	svc, db := newChannelModelTestService(t)
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-batch-settings", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: "https://example.com/v1", APIKey: "key", APIFormat: "openai"}
+	items := []model.ChannelModel{
+		{ID: "batch-a", ChannelID: channel.ID, ModelKey: "batch-a", ProviderModelKey: "gpt-image-2", Capability: "text", Protocol: model.ChannelInterfaceChatCompletion, CapabilityVersion: 2, Enabled: true},
+		{ID: "batch-b", ChannelID: channel.ID, ModelKey: "batch-b", ProviderModelKey: "gpt-image-2-high", Capability: "text", Protocol: model.ChannelInterfaceChatCompletion, CapabilityVersion: 4, Enabled: true},
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&items).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	capability, protocol := "image", string(model.ChannelInterfaceOpenAIImage)
+	updated, err := svc.UpdateAdminChannelModelsSettings(admin, channel.ID, AdminChannelModelBatchSettingsRequest{
+		ModelIDs: []string{"batch-a", "batch-b"}, Capability: &capability, Protocol: &protocol,
+	})
+	if err != nil || updated != 2 {
+		t.Fatalf("batch settings updated=%d err=%v", updated, err)
+	}
+	for _, original := range items {
+		var stored model.ChannelModel
+		if err := db.First(&stored, "id = ?", original.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.Capability != capability || string(stored.Protocol) != protocol || stored.CapabilityVersion != original.CapabilityVersion+1 {
+			t.Fatalf("updated model contract = %#v", stored)
+		}
+		expected, err := NormalizeModelCapabilityConfigForModel(capability, protocol, original.ProviderModelKey, DefaultModelCapabilityConfigForModel(protocol, original.ProviderModelKey))
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedJSON, err := json.Marshal(expected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.CapabilityConfigJSON != string(expectedJSON) {
+			t.Fatalf("%s capability config does not match its upstream model defaults", original.ID)
+		}
+	}
+}
+
 func TestDeleteAdminChannelModelsRejectsWholeSelectionWhenOneModelIsInUse(t *testing.T) {
 	svc, db := newChannelModelTestService(t)
 	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}

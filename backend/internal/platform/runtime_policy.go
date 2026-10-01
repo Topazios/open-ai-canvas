@@ -382,11 +382,14 @@ func validateRuntimePolicy(value RuntimePolicySetting) error {
 	}
 	task := value.Task
 	for label, item := range map[string]int{
-		"Worker 并发数": task.WorkerConcurrency, "全局渠道并发数": task.ChannelConcurrency, "活动任务上限": task.ActiveTaskLimit,
+		"Worker 并发数": task.WorkerConcurrency, "全局渠道并发数": task.ChannelConcurrency,
 	} {
 		if item < 1 || item > maxRuntimeConcurrency {
 			return kernel.BadAuthRequest(fmt.Sprintf("%s必须是 1-%d 的整数", label, maxRuntimeConcurrency))
 		}
+	}
+	if task.ActiveTaskLimit < 0 || task.ActiveTaskLimit > maxRuntimeConcurrency {
+		return kernel.BadAuthRequest(fmt.Sprintf("活动任务上限必须是 0-%d 的整数 (0 表示不限制)", maxRuntimeConcurrency))
 	}
 	for label, item := range map[string]int{
 		"图片任务超时": task.ImageTimeoutMinutes, "文本任务超时": task.TextTimeoutMinutes,

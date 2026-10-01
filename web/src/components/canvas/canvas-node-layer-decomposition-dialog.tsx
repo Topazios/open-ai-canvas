@@ -84,8 +84,8 @@ export function CanvasNodeLayerDecompositionDialog({
         <Modal open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} centered destroyOnHidden width={900} title="AI 图层拆分">
             <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_320px]">
                 <div className="grid min-h-[340px] place-items-center overflow-hidden rounded-xl bg-black/5 p-3 dark:bg-white/[0.04]">
-                    <div ref={imageFrameRef} className="relative inline-block max-h-[60vh] max-w-full select-none" onPointerDown={startBox} onPointerMove={moveBox} onPointerUp={finishBox} onPointerCancel={finishBox}>
-                        <img src={dataUrl} alt="待拆分图片" className="block max-h-[60vh] max-w-full object-contain" draggable={false} />
+                    <div ref={imageFrameRef} className="relative inline-block max-h-[60dvh] max-w-full select-none" onPointerDown={startBox} onPointerMove={moveBox} onPointerUp={finishBox} onPointerCancel={finishBox}>
+                        <img src={dataUrl} alt="待拆分图片" className="block max-h-[60dvh] max-w-full object-contain" draggable={false} />
                         <div className="pointer-events-none absolute inset-0">
                             {regions.map((region, index) => <RegionBox key={`${region.join("-")}-${index}`} region={region} label={index + 1} />)}
                             {draft ? <RegionBox region={draft} label={regions.length + 1} draft /> : null}

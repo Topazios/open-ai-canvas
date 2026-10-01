@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { InfiniteCanvas } from "../src/components/canvas/infinite-canvas";
 import { canvasAppearanceForTheme } from "../src/lib/canvas/canvas-appearance";
-import { applyCanvasLiveViewport, CANVAS_GRAPHICS_VIEWPORT_PREVIEW_EVENT, CANVAS_VIEWPORT_PREVIEW_EVENT } from "../src/lib/canvas/canvas-live-viewport";
+import { applyCanvasLiveViewport, CANVAS_GRAPHICS_VIEWPORT_PREVIEW_EVENT, CANVAS_VIEWPORT_PREVIEW_EVENT, CANVAS_VIEWPORT_VISIBILITY_PREVIEW_EVENT } from "../src/lib/canvas/canvas-live-viewport";
 import type { CanvasBackgroundMode } from "../src/lib/canvas-theme";
 import type { ViewportTransform } from "../src/types/canvas";
 
@@ -62,9 +62,11 @@ describe("canvas screen-space background", () => {
         });
         const graphics: ViewportTransform[] = [];
         const previews: ViewportTransform[] = [];
+        const visibilityPreviews: ViewportTransform[] = [];
         let scrolls = 0;
         container.addEventListener(CANVAS_GRAPHICS_VIEWPORT_PREVIEW_EVENT, (event) => graphics.push((event as CustomEvent<ViewportTransform>).detail));
         container.addEventListener(CANVAS_VIEWPORT_PREVIEW_EVENT, (event) => previews.push((event as CustomEvent<ViewportTransform>).detail));
+        container.addEventListener(CANVAS_VIEWPORT_VISIBILITY_PREVIEW_EVENT, (event) => visibilityPreviews.push((event as CustomEvent<ViewportTransform>).detail));
         container.addEventListener("scroll", () => scrolls++);
 
         for (const viewport of viewports) {
@@ -75,6 +77,7 @@ describe("canvas screen-space background", () => {
             expect(gridWrites).toEqual([]);
         }
         expect(graphics).toEqual(viewports);
+        expect(visibilityPreviews).toEqual(viewports);
         expect(previews).toEqual([]);
         expect(scrolls).toBe(0);
         expect(world.style.willChange).toBe("transform");
@@ -85,5 +88,29 @@ describe("canvas screen-space background", () => {
         expect(previews).toEqual([viewports[0]]);
         expect(scrolls).toBe(1);
         expect(gridWrites).toEqual([]);
+    });
+
+    test("does not broadcast horizontal-only placement previews", () => {
+        const properties = new Map<string, string>([["--canvas-committed-scale", "1"]]);
+        const world = { style: { transform: "", transformOrigin: "", willChange: "" } };
+        const container = Object.assign(new EventTarget(), {
+            style: {
+                getPropertyValue: (name: string) => properties.get(name) ?? "",
+                setProperty: (name: string, value: string) => properties.set(name, value),
+            },
+            dataset: { canvasViewportInteracting: "true" },
+            querySelector: () => world,
+        });
+        const previews: ViewportTransform[] = [];
+        const visibilityPreviews: ViewportTransform[] = [];
+        container.addEventListener(CANVAS_VIEWPORT_PREVIEW_EVENT, (event) => previews.push((event as CustomEvent<ViewportTransform>).detail));
+        container.addEventListener(CANVAS_VIEWPORT_VISIBILITY_PREVIEW_EVENT, (event) => visibilityPreviews.push((event as CustomEvent<ViewportTransform>).detail));
+
+        applyCanvasLiveViewport(container as unknown as HTMLDivElement, { x: 10, y: 0, k: 1 });
+        applyCanvasLiveViewport(container as unknown as HTMLDivElement, { x: 30, y: 0, k: 1 });
+        applyCanvasLiveViewport(container as unknown as HTMLDivElement, { x: 30, y: 8, k: 1 });
+
+        expect(previews).toEqual([{ x: 10, y: 0, k: 1 }, { x: 30, y: 8, k: 1 }]);
+        expect(visibilityPreviews).toHaveLength(3);
     });
 });

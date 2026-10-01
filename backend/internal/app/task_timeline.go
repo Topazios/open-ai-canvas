@@ -229,7 +229,7 @@ func (s *Service) CreateTimelineTranscriptionTask(userID string, req TimelineTra
 		Provider: "local", Model: "whisper.cpp", InputJSON: string(inputJSON),
 	}
 	if err := s.createTaskWithinStorageQuota(&task, nil, policy); err != nil {
-		if errors.Is(err, repository.ErrActiveTaskLimit) {
+		if errors.Is(err, repository.ErrActiveTaskLimit) && policy.Task.ActiveTaskLimit > 0 {
 			return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 		}
 		return nil, err
@@ -283,7 +283,7 @@ func (s *Service) CreateTimelineRenderTask(userID string, req TimelineRenderCrea
 		Provider: "local", Model: "ffmpeg", InputJSON: string(inputJSON),
 	}
 	if err := s.createTaskWithinStorageQuota(&task, nil, policy); err != nil {
-		if errors.Is(err, repository.ErrActiveTaskLimit) {
+		if errors.Is(err, repository.ErrActiveTaskLimit) && policy.Task.ActiveTaskLimit > 0 {
 			return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 		}
 		return nil, err

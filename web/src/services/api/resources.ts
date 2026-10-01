@@ -165,6 +165,23 @@ export function resourceIdFromStorageKey(storageKey?: string) {
     return storageKey?.startsWith("resource:") ? storageKey.slice("resource:".length) : "";
 }
 
+/**
+ * Older canvas snapshots may only contain a signed public file URL and no
+ * resource storage key. Recover the stable resource identity so display
+ * components can request a fresh authenticated access URL instead of
+ * repeatedly loading an expired signature.
+ */
+export function resourceStorageKeyFromURL(url?: string) {
+    if (!url) return "";
+    const match = String(url).match(/(?:^|\/)api\/(?:public\/)?resources\/([^/]+)\/file(?:[/?#]|$)/i);
+    if (!match?.[1]) return "";
+    try {
+        return resourceStorageKey(decodeURIComponent(match[1]));
+    } catch {
+        return resourceStorageKey(match[1]);
+    }
+}
+
 export function isResourceUrl(url?: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
     const path = url?.split(/[?#]/, 1)[0] || "";
@@ -354,6 +371,24 @@ export async function getResourceAccess(storageKey: string | undefined, purpose:
     })();
     accessRequests.set(key, request);
     return request;
+}
+
+/**
+ * Drop one access descriptor and request it again.
+ *
+ * Display URLs may be signed by an object store or by the platform's public
+ * resource endpoint. A tab can remain open longer than that short-lived
+ * credential, so media elements need an explicit recovery path after a load
+ * failure instead of reusing the stale cached URL.
+ */
+export async function refreshResourceAccess(storageKey: string | undefined, purpose: ResourceAccessPurpose = "display", variant: ResourceAccessVariant = "original", downloadName = "") {
+    const id = resourceIdFromStorageKey(storageKey);
+    if (!id) throw new Error("当前媒体尚未上传到后端资源存储");
+    const scope = getActiveUserScope();
+    const key = `${scope}:${id}:${purpose}:${variant}:${downloadName}`;
+    accessCache.delete(key);
+    accessRequests.delete(key);
+    return getResourceAccess(storageKey, purpose, variant, downloadName);
 }
 
 /** 模型上游读取资源使用更长 TTL，但仍走统一资源访问合同。 */

@@ -51,6 +51,7 @@ const NODE_STATUS_ERROR = "error" as const;
 export type CanvasNodeGenerationOptions = {
     controller?: AbortController;
     waitForTaskCapacity?: boolean;
+    selectedSkillIds?: string[];
     context?: { conversationId?: string; messageId?: string };
     retryContext?: { retryOf: string; attemptGroupId: string; clientOperationId: string };
     onTaskUpdate?: (task: GenerationTask) => void;
@@ -177,7 +178,7 @@ export function useCanvasGenerationExecutor({
 
                     let skillExecution: Awaited<ReturnType<typeof skillRuntime.prepare<"canvas">>>;
                     try {
-                        skillExecution = await skillRuntime.prepare({ profile: "canvas", prompt: rawGenerationContext.prompt, skills: addedSkills });
+                        skillExecution = await skillRuntime.prepare({ profile: "canvas", prompt: rawGenerationContext.prompt, skills: addedSkills, selectedSkillIds: options?.selectedSkillIds });
                     } catch (error) {
                         message.error(error instanceof Error ? error.message : "技能上下文加载失败");
                         return;
@@ -275,8 +276,9 @@ export function useCanvasGenerationExecutor({
                         );
                     }
 
-                    // 已有内容节点只是本次生成的来源；任务状态归新目标所有，不能覆盖已成功结果。
-                    const markSourceStatus = !sourceNode?.metadata?.content && !editingTextNode;
+                    // 媒体节点有内容时只是本次生成的来源；已有文本节点编辑后则需要
+                    // 把当前节点切回 loading，等待结果原地覆盖正文。
+                    const markSourceStatus = Boolean(editingTextNode) || !sourceNode?.metadata?.content;
                     const statusPrompt = sourceNode?.type === CanvasNodeType.Config ? effectivePrompt : prompt;
                     if (markSourceStatus)
                         setNodes((current) =>

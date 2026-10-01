@@ -3,6 +3,7 @@ import { getImageBlob } from "@/services/image-storage";
 import { deleteRemoteAssets, deleteRemoteCanvasProject, getRemoteAsset, getRemoteAssetsByIds, getRemoteCanvasProject, getRemoteUserDataSnapshot, listRemoteAssetsPage, restoreRemoteCanvasHistory, upsertRemoteAsset, upsertRemoteCanvasProject } from "@/services/api/user-data";
 import { ApiError } from "@/services/api/request";
 import { canvasContentHash, sameCanvasContent } from "@/lib/canvas/canvas-content";
+import { restoreCanvasTextResources } from "@/lib/canvas/canvas-text-resource";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { preserveCanvasSyncDraft, readCanvasSyncDrafts } from "@/services/canvas-sync-drafts";
 import { appQueryClient } from "@/lib/query-client";
@@ -87,7 +88,7 @@ export async function loadCanvasProjectForEditing(id: string, options: { latest?
         }
         let remote: CanvasProject;
         try {
-            remote = (await getRemoteCanvasProject(id)).project;
+            remote = await restoreCanvasTextResources((await getRemoteCanvasProject(id)).project);
         } catch (error) {
             if (epoch !== sessionEpoch) throw new Error("账号已切换，请重新打开画布");
             const local = useCanvasStore.getState().openProject(id);
@@ -156,7 +157,8 @@ export async function refreshCanvasAfterAgent(id: string) {
     const epoch = sessionEpoch;
     return withRemoteUserDataSyncExclusive(async () => {
         if (!activeRemoteUserId) throw new Error("请先登录再刷新 Agent 画布结果");
-        const { project } = await getRemoteCanvasProject(id);
+        const { project: remoteProject } = await getRemoteCanvasProject(id);
+        const project = await restoreCanvasTextResources(remoteProject);
         if (epoch !== sessionEpoch) throw new Error("账号已切换");
         const current = useCanvasStore.getState().projects.find((candidate) => candidate.id === id);
         const baseline = acknowledgedProjects.get(id);
@@ -317,7 +319,8 @@ export async function syncRemoteUserData(userId?: string | null) {
                 const clean = local.remoteContentHash && local.remoteContentHash === await canvasContentHash(local);
                 if (!clean && !sameCanvasContent(local, remoteById.get(local.id))) await preserveCanvasSyncDraft(local);
             }
-            const projects = await Promise.all(snapshot.projects.map(async (project) => {
+            const projects = await Promise.all(snapshot.projects.map(async (rawProject) => {
+                const project = await restoreCanvasTextResources(rawProject);
                 const local = localProjects.find((item) => item.id === project.id);
                 const draftCount = (await readCanvasSyncDrafts(project.id)).length;
                 useSyncProgressStore.getState().setProjectProgress(project.id, { phase: "done", draftCount, message: "已保存到云端" });
@@ -835,6 +838,7 @@ function applyResourceReference(payload: Record<string, unknown>, storageKey: st
     }
     const url = resourceFileUrl(resourceId);
     payload.storageKey = storageKey;
+    if (typeof payload.mimeType === "string" && /^text\//i.test(payload.mimeType)) return payload;
     for (const key of ["content", "dataUrl", "url", "coverUrl"]) {
         if (typeof payload[key] === "string") payload[key] = url;
     }

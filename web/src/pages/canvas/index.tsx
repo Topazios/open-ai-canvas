@@ -19,6 +19,7 @@ import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
+import { remapImportedNodeResource } from "@/lib/canvas/canvas-text-resource";
 import { saveCanvasDrawing, type CanvasDrawingRenderDraft } from "@/lib/canvas/canvas-drawing-storage";
 import { createCanvasProjectWithRemoteSync, hasRemoteUserDataSyncSession, loadCanvasProjectForEditing, saveRemoteUserDataNow, scheduleRemoteUserDataSync } from "@/services/user-data-sync";
 import { listRemoteCanvasProjectsPage, type CanvasLibrarySummary } from "@/services/api/user-data";
@@ -199,7 +200,8 @@ export default function CanvasPage() {
                 }
 
                 try {
-                    const storageKeyMap = new Map<string, { storageKey: string; url: string }>();
+                    const storageKeyMap = new Map<string, { storageKey: string; url: string; textContent?: string }>();
+                    const textStorageKeys = new Set((item.project.nodes || []).filter((node) => node.type === CanvasNodeType.Text).map((node) => node.metadata?.storageKey).filter((key): key is string => Boolean(key)));
                     const concurrency = 4;
                     let fileIndex = 0;
                     const workers = new Array(Math.min(item.files.length, concurrency)).fill(null).map(async () => {
@@ -210,18 +212,19 @@ export default function CanvasPage() {
                             const mime = fileItem.mimeType || blob.type || "image/png";
                             const typedBlob = blob.type ? blob : blob.slice(0, blob.size, mime);
                             const kind: "image" | "video" | "audio" | "file" = mime.startsWith("image/") ? "image" : mime.startsWith("video/") ? "video" : mime.startsWith("audio/") ? "audio" : "file";
+                            const textContent = textStorageKeys.has(fileItem.storageKey) ? await typedBlob.text() : undefined;
 
                             try {
                                 const resource = await uploadResourceFile(typedBlob, kind, { fileName: fileItem.path.split("/").pop() });
                                 const newStorageKey = resourceStorageKey(resource.id);
                                 const newUrl = resourceFileUrl(resource.id);
                                 await primeResourceBlobCache(newStorageKey, typedBlob).catch(() => "");
-                                storageKeyMap.set(fileItem.storageKey, { storageKey: newStorageKey, url: newUrl });
+                                storageKeyMap.set(fileItem.storageKey, { storageKey: newStorageKey, url: newUrl, textContent });
                             } catch (uploadErr) {
                                 console.warn("上传资源到后端失败，降级保存本地", uploadErr);
                                 const localUrl = await (fileItem.storageKey.startsWith("image:") ? setImageBlob(fileItem.storageKey, typedBlob) : setMediaBlob(fileItem.storageKey, typedBlob));
                                 if (localUrl) {
-                                    storageKeyMap.set(fileItem.storageKey, { storageKey: fileItem.storageKey, url: localUrl });
+                                    storageKeyMap.set(fileItem.storageKey, { storageKey: fileItem.storageKey, url: localUrl, textContent });
                                 }
                             } finally {
                                 useSyncProgressStore.getState().incrementProjectCompleted(importedProjectId);
@@ -234,17 +237,11 @@ export default function CanvasPage() {
                     const remapNodeMedia = (node: CanvasNodeData): CanvasNodeData => {
                         const oldKey = node.metadata?.storageKey;
                         const mapped = oldKey ? storageKeyMap.get(oldKey) : undefined;
-                        const isDeadBlob = (val?: string) => typeof val === "string" && val.startsWith("blob:");
-                        const nextStorageKey = mapped ? mapped.storageKey : oldKey && !isDeadBlob(oldKey) ? oldKey : undefined;
-                        const content = mapped ? mapped.url : isDeadBlob(node.metadata?.content) ? "" : node.metadata?.content;
-                        const previewContent = mapped ? mapped.url : isDeadBlob(node.metadata?.previewContent) ? "" : node.metadata?.previewContent;
+                        const remapped = remapImportedNodeResource(node, mapped);
                         return {
-                            ...node,
+                            ...remapped,
                             metadata: {
-                                ...node.metadata,
-                                ...(nextStorageKey !== undefined ? { storageKey: nextStorageKey } : {}),
-                                ...(content !== undefined ? { content } : {}),
-                                ...(previewContent !== undefined ? { previewContent } : {}),
+                                ...remapped.metadata,
                                 drawingEngine: node.type === "drawing" && node.metadata?.drawingId ? drawingEngineById.get(node.metadata.drawingId) || node.metadata.drawingEngine || "tldraw" : node.metadata?.drawingEngine,
                             },
                         };

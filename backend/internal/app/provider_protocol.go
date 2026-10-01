@@ -232,6 +232,27 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 		request.Extra["max_output_tokens"] = input.MaxOutputTokens
 		request.Extra["max_tokens"] = input.MaxOutputTokens
 	}
+	if output := input.TextOptions.StructuredOutput; output != nil && strings.TrimSpace(output.Name) != "" && len(output.Schema) > 0 {
+		strict := true
+		if output.Strict != nil {
+			strict = *output.Strict
+		}
+		switch input.Config.InterfaceType {
+		case "chat-completion":
+			request.Extra["response_format"] = map[string]interface{}{
+				"type": "json_schema",
+				"json_schema": map[string]interface{}{
+					"name": output.Name, "strict": strict, "schema": output.Schema,
+				},
+			}
+		case "openai-response":
+			request.Extra["text"] = map[string]interface{}{
+				"format": map[string]interface{}{
+					"type": "json_schema", "name": output.Name, "strict": strict, "schema": output.Schema,
+				},
+			}
+		}
+	}
 	if duration, err := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds)); err == nil && duration > 0 {
 		request.Duration = duration
 	}

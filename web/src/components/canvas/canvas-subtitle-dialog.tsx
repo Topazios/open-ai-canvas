@@ -484,7 +484,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
 
     return (
         <AppModal className="canvas-subtitle-dialog" title={title} open={open} centered footer={null} width={1120} destroyOnHidden onCancel={onClose} flush>
-            <div className="flex h-[min(72vh,680px)] min-h-[420px] flex-col text-sm" style={{ color: theme.node.text }}>
+            <div className="flex h-[min(72dvh,680px)] min-h-[min(420px,calc(100dvh-96px))] flex-col text-sm" style={{ color: theme.node.text }}>
                 <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3" style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}>
                     <input
                         ref={fileInputRef}

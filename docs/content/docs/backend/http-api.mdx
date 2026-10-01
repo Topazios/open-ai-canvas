@@ -96,6 +96,19 @@ CANVAS_BACKEND_DATA_DIR=/明确的数据目录 ./migrate-schema repair-canvas-re
 
 ## 模型规格报价
 
+### 管理员批量启停渠道模型
+
+`POST /admin/channels/:id/models/batch-status` 接收当前系统渠道内的 1–100 个模型 ID 和目标状态，返回 `{ code: 0, data: { updated: number }, msg }`。仅管理员可调用；模型 ID 为空、重复、已删除或不属于当前渠道时整批拒绝，不会部分更新。
+
+```json
+{
+  "modelIds": ["MODEL001", "MODEL002"],
+  "enabled": false
+}
+```
+
+批量启用、停用都会失效模型路由目录缓存；不会修改模型价格、规格、协议或排序。
+
 ### 管理员批量调价
 
 `POST /admin/channels/:id/models/batch-reprice` 接收最终售价及原始价格版本，返回 `{ code: 0, data: { updated: number }, msg }`。仅管理员可调用；单批 1–100 个模型，空 ID、重复 ID 或不属于当前系统渠道的记录整批拒绝。请求结构如下（价格为整数微积分）：

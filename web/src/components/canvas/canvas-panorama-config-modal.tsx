@@ -504,7 +504,7 @@ PanoramaSetupForm.displayName = "PanoramaSetupForm";
 export function CanvasPanoramaConfigModal({ open, onCancel, onConfirm, onCopyPrompt, previewImageUrl, initialProjection, initialSourceMode, initialSmartBase, nodes }: CanvasPanoramaConfigModalProps) {
     return (
         <AppModal open={open} centered footer={null} width={680} flush onCancel={onCancel}>
-            <div className="flex min-h-0 flex-col overflow-hidden" style={{ maxHeight: "min(640px, calc(100vh - 100px))" }}>
+            <div className="flex min-h-0 flex-col overflow-hidden" style={{ maxHeight: "min(640px, calc(100dvh - 100px))" }}>
                 <div className="relative flex min-h-0 flex-1">
                     <PanoramaSetupForm
                         onSubmit={onConfirm}

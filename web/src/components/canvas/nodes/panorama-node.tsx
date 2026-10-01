@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Camera, Globe, Grid3x3, Loader2, Maximize2, RotateCcw, X } from "lucide-react";
 
 import { useCanvasNodeActions } from "@/components/canvas/canvas-node-action-context";
+import { CachedResourceImage } from "@/components/cached-resource-image";
 import { useUpstreamNodes } from "@/components/canvas/canvas-node-graph-context";
 import { getNodeResourceKind } from "@/lib/canvas/node-registry";
 import type { CanvasTheme } from "@/lib/canvas-theme";
@@ -57,6 +58,7 @@ export function PanoramaNodeContent({ node, theme, reduceMediaEffects }: Panoram
     const actions = useCanvasNodeActions();
     const inherited = upstream.find((item) => getNodeResourceKind(item) === "image");
     const url = node.metadata?.content || inherited?.metadata?.content || node.metadata?.panoramaConfig?.directImageUrl || "";
+    const storageKey = node.metadata?.storageKey || inherited?.metadata?.storageKey;
     const projection = node.metadata?.panoramaConfig?.projection || "spherical";
     const projectionLabel = projection === "spherical" ? "720° 球体" : "360° 环绕";
     const [active, setActive] = useState(false);
@@ -139,7 +141,7 @@ export function PanoramaNodeContent({ node, theme, reduceMediaEffects }: Panoram
 
     const previewContent = (
         <div className="relative h-full w-full overflow-hidden" style={{ background: theme.node.fill }}>
-            <img src={url} alt={node.title || "全景"} className="h-full w-full object-cover opacity-80" draggable={false} />
+            <CachedResourceImage storageKey={storageKey} src={url} alt={node.title || "全景"} className="h-full w-full object-cover opacity-80" draggable={false} eager />
             <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 px-3 py-2" style={{ background: "linear-gradient(to top, rgba(0,0,0,.85), rgba(0,0,0,.35))", boxShadow: "0 -1px 0 rgba(0,0,0,.25)" }}>
                 <span className="min-w-0 truncate text-white" style={{ fontSize: "var(--fs-label)", textShadow: "0 1px 3px rgba(0,0,0,.85)" }}>
                     {failed ? "全景加载失败（图片可能不允许跨域读取）" : expanded ? "已展开全屏环视" : reduceMediaEffects ? "性能模式下仅显示预览" : `${projectionLabel} · 360° 全景`}

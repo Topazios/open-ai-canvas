@@ -3,7 +3,7 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 import { readImageMeta } from "@/lib/image-utils";
 import { getActiveUserScope } from "@/lib/user-scope";
-import { getResourceAccess, importResourceFromUrl, isResourceUrl, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, ResourceUploadError, uploadResourceFile } from "@/services/api/resources";
+import { getResourceAccess, importResourceFromUrl, isResourceUrl, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, resourceStorageKeyFromURL, ResourceUploadError, uploadResourceFile } from "@/services/api/resources";
 import { getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
 
 export type UploadedImage = {
@@ -78,18 +78,22 @@ function shouldImportRemoteImage(input: string) {
 }
 
 export async function resolveImageUrl(storageKey?: string, fallback = "", options?: { cacheMiss?: boolean }) {
-    if (!storageKey) return fallback;
-    const resourceId = resourceIdFromStorageKey(storageKey);
+    // Older canvas snapshots may only keep a signed `/api/public/resources/...`
+    // URL. Recover its stable resource key before mounting it so an expired
+    // signature is never used as the first browser request.
+    const resolvedStorageKey = storageKey || resourceStorageKeyFromURL(fallback);
+    if (!resolvedStorageKey) return fallback;
+    const resourceId = resourceIdFromStorageKey(resolvedStorageKey);
     if (resourceId) {
         // 远程资源展示直接使用 OSS/CDN 授权地址，不把媒体内容读进浏览器 Blob。
-        return resolveResourceAccessURL((await getResourceAccess(storageKey, "display")).url);
+        return resolveResourceAccessURL((await getResourceAccess(resolvedStorageKey, "display")).url);
     }
-    const cached = objectUrls.get(storageKey);
+    const cached = objectUrls.get(resolvedStorageKey);
     if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
+    const blob = await store.getItem<Blob>(resolvedStorageKey);
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
+    objectUrls.set(resolvedStorageKey, url);
     return url;
 }
 

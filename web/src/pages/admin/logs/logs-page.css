@@ -7,6 +7,41 @@
     white-space: nowrap;
 }
 
+[data-admin-root] .admin-log-quick-filters {
+    display: flex;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    padding-top: 2px;
+}
+
+[data-admin-root] .admin-log-quick-filters::before {
+    content: "快捷搜索";
+    margin-right: 4px;
+    color: var(--admin-text-muted);
+    font-size: 12px;
+}
+
+[data-admin-root] .admin-log-quick-filters button {
+    min-height: 26px;
+    padding: 2px 9px;
+    border: 1px solid var(--admin-border);
+    border-radius: var(--admin-radius-sm);
+    background: var(--admin-surface);
+    color: var(--admin-text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+[data-admin-root] .admin-log-quick-filters button:hover,
+[data-admin-root] .admin-log-quick-filters button.is-active {
+    border-color: var(--admin-focus);
+    background: var(--admin-nav-active);
+    color: var(--admin-text);
+}
+
 [data-admin-root] .admin-log-detail-link {
     display: block;
     max-width: 100%;

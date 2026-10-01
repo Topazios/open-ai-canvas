@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { resolveCanvasAppearance, resolveCanvasGridColor, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
 import { resolveCanvasPointerIntent } from "@/lib/canvas/canvas-selection";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
-import { applyCanvasLiveViewport, subscribeCanvasViewportPreview } from "@/lib/canvas/canvas-live-viewport";
+import { applyCanvasLiveViewport, setCanvasViewportInteracting, subscribeCanvasViewportPreview } from "@/lib/canvas/canvas-live-viewport";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import type { ViewportTransform } from "@/types/canvas";
 
@@ -32,7 +32,8 @@ const CANVAS_WHEEL_IGNORE_SELECTOR = "[data-canvas-no-zoom],[data-canvas-wheel-s
 const CANVAS_POINTER_IGNORE_SELECTOR = "[data-canvas-no-zoom],[data-connection-create-menu],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown";
 const CANVAS_INTERNAL_DRAG_SELECTOR = "[data-canvas-batch-table]";
 const WHEEL_ZOOM_DELTA = 72;
-const TRACKPAD_PINCH_ZOOM_DELTA = 24;
+const TRACKPAD_PINCH_ZOOM_DELTA = 16;
+const TRACKPAD_PAN_MULTIPLIER = 1.2;
 
 type TouchPoint = { x: number; y: number };
 
@@ -86,7 +87,7 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
         frameRef.current = null;
         syncTimerRef.current = null;
         nextViewportRef.current = null;
-        delete container?.dataset.canvasViewportInteracting;
+        setCanvasViewportInteracting(container, false);
         setIsPanning(false);
         setIsSpacePressed(false);
         document.body.style.cursor = "default";
@@ -112,7 +113,7 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
         () => () => {
             if (frameRef.current) cancelAnimationFrame(frameRef.current);
             if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-            delete containerRef.current?.dataset.canvasViewportInteracting;
+            setCanvasViewportInteracting(containerRef.current, false);
             document.body.style.cursor = "";
         },
         [containerRef],
@@ -124,14 +125,14 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
         (next: ViewportTransform, commitAfterIdle = false) => {
             viewportRef.current = next;
             scaleRef.current = next.k;
-            onViewportPreviewChange?.(next);
             const container = containerRef.current;
-            if (container) container.dataset.canvasViewportInteracting = "true";
+            setCanvasViewportInteracting(container, true);
             nextViewportRef.current = next;
             if (!frameRef.current) frameRef.current = requestAnimationFrame((now) => {
                 frameRef.current = null;
                 const pending = nextViewportRef.current;
                 if (!pending) return;
+                onViewportPreviewChange?.(pending);
                 const notify = now - lastPreviewNotifyRef.current >= 32;
                 applyCanvasLiveViewport(containerRef.current, pending, notify);
                 if (notify) lastPreviewNotifyRef.current = now;
@@ -140,7 +141,7 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
             if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
             syncTimerRef.current = setTimeout(() => {
                 interactingRef.current = false;
-                delete containerRef.current?.dataset.canvasViewportInteracting;
+                setCanvasViewportInteracting(containerRef.current, false);
                 syncViewport();
                 syncTimerRef.current = null;
             }, 120);
@@ -198,14 +199,19 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
             interactingRef.current = true;
             const current = viewportRef.current;
             const rawAbsY = Math.abs(event.deltaY);
-            const looksLikeMouseWheel = event.deltaMode !== 0 || (rawAbsY >= 80 && Math.abs(rawAbsY - Math.round(rawAbsY / 100) * 100) < 1);
-            const looksLikeTrackpadPan = !isPinchZoom && (event.shiftKey || absX > 0 || (!looksLikeMouseWheel && absY > 0));
+            // Mac trackpad scroll is a pixel-mode, high-frequency stream. Keep
+            // it on the pan path; only discrete 100px-style wheel ticks use
+            // the unmodified mouse-wheel zoom path.
+            const looksLikeDiscreteWheel = event.deltaMode !== 0
+                || (absX === 0 && Number.isInteger(event.deltaY) && rawAbsY >= 80 && rawAbsY % 100 === 0);
+            const looksLikeTrackpadPan = !isPinchZoom && (event.shiftKey || absX > 0 || (!looksLikeDiscreteWheel && absY > 0));
 
             if (looksLikeTrackpadPan) {
-                const panX = event.shiftKey && absX < 1 ? deltaY : deltaX;
+                const panX = (event.shiftKey && absX < 1 ? deltaY : deltaX) * TRACKPAD_PAN_MULTIPLIER;
+                const panY = (event.shiftKey && absX < 1 ? 0 : deltaY) * TRACKPAD_PAN_MULTIPLIER;
                 scheduleViewportChange({
                     x: current.x - panX,
-                    y: current.y - (event.shiftKey && absX < 1 ? 0 : deltaY),
+                    y: current.y - panY,
                     k: current.k,
                 }, true);
                 return;
@@ -215,7 +221,7 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
             if (!rect) return;
             const mouseX = event.clientX - rect.left;
             const mouseY = event.clientY - rect.top;
-            const zoomDelta = isPinchZoom && !looksLikeMouseWheel ? TRACKPAD_PINCH_ZOOM_DELTA : WHEEL_ZOOM_DELTA;
+            const zoomDelta = isPinchZoom && !looksLikeDiscreteWheel ? TRACKPAD_PINCH_ZOOM_DELTA : WHEEL_ZOOM_DELTA;
             const factor = Math.pow(1.1, -deltaY / zoomDelta);
             const newScale = clampScale(current.k * factor);
             const worldX = (mouseX - current.x) / current.k;
@@ -368,7 +374,7 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
                 panState.current.pointerId = -1;
                 interactingRef.current = false;
                 if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-                delete containerRef.current?.dataset.canvasViewportInteracting;
+                setCanvasViewportInteracting(containerRef.current, false);
                 syncViewport();
                 setIsPanning(false);
                 document.body.style.cursor = "";
@@ -385,7 +391,7 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
             panState.current.pointerId = -1;
             interactingRef.current = false;
             if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-            delete containerRef.current?.dataset.canvasViewportInteracting;
+            setCanvasViewportInteracting(containerRef.current, false);
             syncViewport();
             setIsPanning(false);
             document.body.style.cursor = "";
