@@ -297,16 +297,17 @@ func (r *Repository) ResourceReferenceSnapshotExcludingAssets(userID string, exc
 	}
 
 	type joinedRepresentation struct {
-		ID         string
-		Title      string
-		ResourceID string
+		ID           string
+		Title        string
+		ResourceID   string
+		MetadataJSON string
 	}
 	var representations []joinedRepresentation
 	representationQuery := r.db.Table("asset_representations").
-		Select("asset_representations.id, assets.title, asset_representations.resource_id").
+		Select("asset_representations.id, assets.title, asset_representations.resource_id, asset_representations.metadata_json").
 		Joins("JOIN asset_versions ON asset_versions.id = asset_representations.asset_version_id").
 		Joins("JOIN assets ON assets.id = asset_versions.asset_id").
-		Where("assets.user_id = ? AND asset_representations.resource_id IN ?", userID, resourceIDs)
+		Where("assets.user_id = ?", userID)
 	if len(excludingAssetIDs) > 0 {
 		representationQuery = representationQuery.Where("assets.id NOT IN ?", excludingAssetIDs)
 	}
@@ -315,6 +316,7 @@ func (r *Repository) ResourceReferenceSnapshotExcludingAssets(userID string, exc
 	}
 	for _, representation := range representations {
 		snapshot.Direct = append(snapshot.Direct, ResourceDirectReference{Kind: "素材", ID: representation.ID, Title: representation.Title, ResourceID: representation.ResourceID})
+		snapshot.Documents = append(snapshot.Documents, ResourceReferenceDocument{Kind: "素材", ID: representation.ID, Title: representation.Title, PrimaryJSON: representation.MetadataJSON})
 	}
 
 	var voices []model.VoiceProfile
@@ -416,8 +418,23 @@ func (r *Repository) DeleteAssetsAndResources(userID string, assetIDs []string, 
 		if len(assetIDs) == 0 || len(ownedAssets) != len(assetIDs) {
 			return gorm.ErrRecordNotFound
 		}
-		// Explicit deletion and archive expiry must never invalidate a snapshot.
-		if err := New(tx).RequireNoCanvasHistoryReferences(resourceIDs); err != nil {
+		if deleteReferencedResources {
+			// 彻底删除：移除被删资源的画布历史索引，让删除 worker 可以释放物理对象；
+			// 历史快照正文保留，恢复该版本时由画布断链修复处理失效媒体。
+			if len(resourceIDs) > 0 {
+				// 与历史快照写入串行化，避免清除索引后又插入外键引用。
+				if r.Dialect() == "postgres" {
+					var resources []model.Resource
+					if err := tx.Select("id").Where("id IN ?", resourceIDs).Order("id").Clauses(clause.Locking{Strength: "UPDATE"}).Find(&resources).Error; err != nil {
+						return err
+					}
+				}
+				if err := tx.Where("resource_id IN ?", resourceIDs).Delete(&model.CanvasSnapshotResource{}).Error; err != nil {
+					return err
+				}
+			}
+		} else if err := New(tx).RequireNoCanvasHistoryReferences(resourceIDs); err != nil {
+			// 受保护删除不得让任何画布历史快照失效。
 			return err
 		}
 		versionIDs := tx.Model(&model.AssetVersion{}).Select("id").Where("asset_id IN ?", assetIDs)

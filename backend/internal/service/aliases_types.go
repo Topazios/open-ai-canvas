@@ -27,6 +27,7 @@ type (
 	AdminAuditPage                         = app.AdminAuditPage
 	AdminCacheClearGroupResult             = app.AdminCacheClearGroupResult
 	AdminCacheClearRequest                 = app.AdminCacheClearRequest
+	AgentSessionLimitRequest               = app.AgentSessionLimitRequest
 	AdminCacheClearResult                  = app.AdminCacheClearResult
 	AdminChannelModelFetchResult           = app.AdminChannelModelFetchResult
 	AdminChannelModelImportRequest         = app.AdminChannelModelImportRequest
@@ -273,6 +274,10 @@ type (
 	Service                                = app.Service
 	ShotRevisionInput                      = app.ShotRevisionInput
 	SkillCategory                          = app.SkillCategory
+	SkillLibraryCategory                   = app.SkillLibraryCategory
+	SkillLibraryCategoryList               = app.SkillLibraryCategoryList
+	SkillLibraryCategoryMutationRequest    = app.SkillLibraryCategoryMutationRequest
+	SkillLibraryCategoryAssignmentRequest  = app.SkillLibraryCategoryAssignmentRequest
 	SkillEffectiveUser                     = app.SkillEffectiveUser
 	SkillFileSearchResult                  = app.SkillFileSearchResult
 	SkillGitHubInstallRequest              = app.SkillGitHubInstallRequest

@@ -1,5 +1,3 @@
-import { getMediaBlob } from "@/services/file-storage";
-import { getImageBlob } from "@/services/image-storage";
 import { deleteRemoteAssets, deleteRemoteCanvasProject, getRemoteAsset, getRemoteAssetsByIds, getRemoteCanvasProject, getRemoteUserDataSnapshot, listRemoteAssetsPage, restoreRemoteCanvasHistory, upsertRemoteAsset, upsertRemoteCanvasProject } from "@/services/api/user-data";
 import { ApiError } from "@/services/api/request";
 import { canvasContentHash, sameCanvasContent } from "@/lib/canvas/canvas-content";
@@ -7,7 +5,6 @@ import { restoreCanvasTextResources } from "@/lib/canvas/canvas-text-resource";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { preserveCanvasSyncDraft, readCanvasSyncDrafts } from "@/services/canvas-sync-drafts";
 import { appQueryClient } from "@/lib/query-client";
-import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { parseAssetRecordList } from "@/lib/asset-record";
 import { assetForRemoteSync } from "@/lib/asset-remote-sync";
 import type { Asset } from "@/stores/use-asset-store";
@@ -19,6 +16,9 @@ import { useCanvasHistoryStore } from "@/stores/canvas/use-canvas-history-store"
 import { repairMissingCanvasAssets, repairMissingCanvasVideoPreviews, collectCanvasMediaAssetIds, rebindInconsistentCanvasAssets, type CanvasAssetRebindResult } from "@/services/canvas-asset-repair";
 import { canvasNodeToAsset } from "@/lib/canvas/canvas-node-asset";
 import { applyAgentCanvasPatch, type AgentCanvasPatch } from "@/lib/canvas/agent-canvas-patch";
+import { collectLocalMediaKeys, ensureRemoteResourceReferences } from "./user-data-sync-media";
+
+export { numberValue } from "./user-data-sync-media";
 
 let activeRemoteUserId = "";
 type RemoteUserDataPhase = "inactive" | "hydrating" | "ready" | "failed";
@@ -27,6 +27,7 @@ let remoteUserDataPhase: RemoteUserDataPhase = "inactive";
 let syncTimer: number | null = null;
 let syncPromise: Promise<void> | null = null;
 let syncQueued = false;
+let syncRetryAttempt = 0;
 let remoteOperationTail: Promise<void> = Promise.resolve();
 let subscriptionsInstalled = false;
 let acknowledgedAssets = new Map<string, Asset>();
@@ -36,6 +37,7 @@ let sessionEpoch = 0;
 const verifiedProjects = new Set<string>();
 const verifiedAssets = new Set<string>();
 const remoteProjectLoadPromises = new Map<string, Promise<CanvasProject | undefined>>();
+const REMOTE_SYNC_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 16_000, 30_000] as const;
 
 export async function initializeRemoteUserDataSession(userId: string) {
     await withRemoteUserDataSyncExclusive(async () => {
@@ -88,7 +90,8 @@ export async function loadCanvasProjectForEditing(id: string, options: { latest?
         }
         let remote: CanvasProject;
         try {
-            remote = await restoreCanvasTextResources((await getRemoteCanvasProject(id)).project);
+            const knownRemote = verifiedProjects.has(id) ? acknowledgedProjects.get(id) : undefined;
+            remote = await restoreCanvasTextResources((await getRemoteCanvasProject(id, knownRemote)).project);
         } catch (error) {
             if (epoch !== sessionEpoch) throw new Error("账号已切换，请重新打开画布");
             const local = useCanvasStore.getState().openProject(id);
@@ -157,7 +160,8 @@ export async function refreshCanvasAfterAgent(id: string) {
     const epoch = sessionEpoch;
     return withRemoteUserDataSyncExclusive(async () => {
         if (!activeRemoteUserId) throw new Error("请先登录再刷新 Agent 画布结果");
-        const { project: remoteProject } = await getRemoteCanvasProject(id);
+        const knownRemote = verifiedProjects.has(id) ? acknowledgedProjects.get(id) : undefined;
+        const { project: remoteProject } = await getRemoteCanvasProject(id, knownRemote);
         const project = await restoreCanvasTextResources(remoteProject);
         if (epoch !== sessionEpoch) throw new Error("账号已切换");
         const current = useCanvasStore.getState().projects.find((candidate) => candidate.id === id);
@@ -293,8 +297,6 @@ export async function loadAssetsForUse(ids: Iterable<string>) {
     });
 }
 
-const LOCAL_STORAGE_KEY_PATTERN = /^(image|video|audio|file|video-reference|audio-reference):/;
-
 export async function syncRemoteUserData(userId?: string | null) {
 	// 登录/切换账号时，服务端快照建立新的远端基线；本地 IndexedDB 只负责首屏缓存，
 	// 不能把服务端已经删除或当前用户无权访问的实体重新补回去。后续增量保存必须基于这份基线做冲突校验。
@@ -376,6 +378,7 @@ export function resetRemoteUserDataSync() {
         window.clearTimeout(syncTimer);
         syncTimer = null;
     }
+    syncRetryAttempt = 0;
     syncQueued = false;
     useSyncProgressStore.getState().clearAll();
 }
@@ -410,6 +413,66 @@ export function scheduleRemoteUserDataSync() {
         syncTimer = null;
         void saveRemoteUserDataNow().catch((error) => console.warn("云端自动同步失败", error));
     }, 1200);
+}
+
+function isRetryableRemoteSyncError(error: unknown) {
+    if (error instanceof ApiError) return error.retryable;
+    if (error instanceof DOMException && error.name === "AbortError") return false;
+    if (typeof error === "object" && error !== null && "permanent" in error) {
+        return (error as { permanent?: unknown }).permanent !== true;
+    }
+    // Plain errors from validation/local storage should remain visible instead of
+    // being retried indefinitely. Transport failures are normalized as ApiError.
+    return false;
+}
+
+function updateRetryProgress(delayMs: number) {
+    const seconds = Math.max(1, Math.ceil(delayMs / 1_000));
+    const progress = useSyncProgressStore.getState();
+    for (const item of Object.values(progress.syncingProjects)) {
+        if (item.phase !== "error") continue;
+        progress.setProjectProgress(item.projectId, {
+            message: `${item.message || "云端同步失败"}；${seconds} 秒后自动重试`,
+        });
+    }
+}
+
+function stopRetryProgress() {
+    const progress = useSyncProgressStore.getState();
+    for (const item of Object.values(progress.syncingProjects)) {
+        if (item.phase !== "error" || !item.message?.includes("自动重试")) continue;
+        progress.setProjectProgress(item.projectId, { message: "云端同步失败，请点击立即重试" });
+    }
+}
+
+function scheduleRemoteUserDataRetry(error: unknown) {
+    if (!isRetryableRemoteSyncError(error) || !activeRemoteUserId || remoteUserDataPhase !== "ready") return false;
+    if (syncRetryAttempt >= REMOTE_SYNC_RETRY_DELAYS_MS.length) {
+        stopRetryProgress();
+        return false;
+    }
+    const delayMs = Math.max(
+        REMOTE_SYNC_RETRY_DELAYS_MS[syncRetryAttempt],
+        error instanceof ApiError ? error.retryAfterMs || 0 : 0,
+    );
+    syncRetryAttempt += 1;
+    if (syncTimer) window.clearTimeout(syncTimer);
+    updateRetryProgress(delayMs);
+    syncTimer = window.setTimeout(() => {
+        syncTimer = null;
+        void saveRemoteUserDataNow().catch((retryError) => console.warn("云端自动重试失败", retryError));
+    }, delayMs);
+    return true;
+}
+
+/** 用户主动点击重试时重新开始退避窗口，不影响本地已保存的内容。 */
+export function retryRemoteUserDataSync(projectId?: string) {
+    syncRetryAttempt = 0;
+    if (syncTimer) {
+        window.clearTimeout(syncTimer);
+        syncTimer = null;
+    }
+    return saveRemoteUserDataNow(projectId);
 }
 
 export function formatLocalSavedRemotePending(localAction: string, error: unknown): string {
@@ -619,12 +682,22 @@ export async function saveRemoteUserDataNow(input?: string | readonly string[] |
         if (epoch !== sessionEpoch) throw new Error("账号已切换，已停止旧会话保存");
         await drainRemoteUserDataChanges(options);
     });
+    let syncFailed = false;
+    let syncError: unknown;
     try {
         await syncPromise;
         assertNoConflict();
+        syncRetryAttempt = 0;
+    } catch (error) {
+        syncFailed = true;
+        syncError = error;
     } finally {
         syncPromise = null;
         if (syncQueued) scheduleRemoteUserDataSync();
+    }
+    if (syncFailed) {
+        scheduleRemoteUserDataRetry(syncError);
+        throw syncError;
     }
 }
 
@@ -753,6 +826,26 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
             if (pending) syncQueued = true;
         } catch (error) {
             const conflict = error instanceof ApiError && error.reason !== "canvas_history_resources_missing" && (error.status === 409 || error.status === 428);
+            if (conflict) {
+                try {
+                    const { project: remote } = await getRemoteCanvasProject(source.id);
+                    const current = useCanvasStore.getState().openProject(source.id);
+                    if (current && current === useCanvasStore.getState().openProject(source.id) && sameCanvasContent(current, remote)) {
+                        const hash = await canvasContentHash(remote);
+                        if (current === useCanvasStore.getState().openProject(source.id)) {
+                            const reconciled = { ...remote, viewport: current.viewport, remoteContentHash: hash };
+                            acknowledgedProjects.set(source.id, reconciled);
+                            verifiedProjects.add(source.id);
+                            useCanvasStore.setState((state) => ({ projects: state.projects.map((project) => project.id === source.id ? reconciled : project) }));
+                            await flushCanvasStorePersistence();
+                            useSyncProgressStore.getState().setProjectProgress(source.id, { phase: "done", message: "云端内容一致，已自动校准版本" });
+                            continue;
+                        }
+                    }
+                } catch {
+                    // Keep the original conflict and preserve the local draft below.
+                }
+            }
             useSyncProgressStore.getState().setProjectProgress(source.id, {
                 phase: conflict ? "conflict" : "error",
                 message: error instanceof Error ? error.message : "云端同步失败，等待重试",
@@ -774,127 +867,12 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
     if (dirtyProjects.length) void appQueryClient.invalidateQueries({ queryKey: ["canvas-library"] });
 }
 
-function collectLocalMediaKeys(value: unknown, set = new Set<string>()): string[] {
-    if (!value || typeof value !== "object") return [...set];
-    if (Array.isArray(value)) {
-        for (const item of value) collectLocalMediaKeys(item, set);
-        return [...set];
-    }
-    const record = value as Record<string, unknown>;
-    const storageKey = typeof record.storageKey === "string" ? record.storageKey : "";
-    if (isLocalStorageKey(storageKey) && !resourceIdFromStorageKey(storageKey)) {
-        set.add(storageKey);
-    } else {
-        const inline = inlineMediaDataUrl(record);
-        if (inline) set.add(`${inline.length}:${inline.slice(0, 64)}:${inline.slice(-64)}`);
-    }
-    for (const child of Object.values(record)) {
-        collectLocalMediaKeys(child, set);
-    }
-    return [...set];
-}
-
-async function ensureRemoteResourceReferences<T>(value: T, uploaded = new Map<string, string>(), onUploaded?: () => void): Promise<T> {
-    if (!value || typeof value !== "object") return value;
-    if (Array.isArray(value)) {
-        const result: unknown[] = [];
-        for (const item of value) result.push(await ensureRemoteResourceReferences(item, uploaded, onUploaded));
-        return result as T;
-    }
-
-    const next: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value)) {
-        next[key] = await ensureRemoteResourceReferences(child, uploaded, onUploaded);
-    }
-
-    const storageKey = typeof next.storageKey === "string" ? next.storageKey : "";
-    const remoteResourceId = resourceIdFromStorageKey(storageKey);
-    if (remoteResourceId) return applyResourceReference(next, storageKey) as T;
-
-    if (!isLocalStorageKey(storageKey)) {
-        const inline = inlineMediaDataUrl(next);
-        if (!inline) return next as T;
-        const identity = await inlineMediaUploadIdentity(inline);
-        const cached = uploaded.get(identity);
-        if (cached) return applyResourceReference(next, cached) as T;
-        const resourceStorage = await uploadInlineDataUrl(inline, identity);
-        uploaded.set(identity, resourceStorage);
-        onUploaded?.();
-        return applyResourceReference(next, resourceStorage) as T;
-    }
-
-    const cached = uploaded.get(storageKey);
-    if (cached) return applyResourceReference(next, cached) as T;
-    const resourceStorage = await uploadLocalStorageKey(storageKey, next);
-    uploaded.set(storageKey, resourceStorage);
-    onUploaded?.();
-    return applyResourceReference(next, resourceStorage) as T;
-}
-
-function applyResourceReference(payload: Record<string, unknown>, storageKey: string) {
-    const resourceId = resourceIdFromStorageKey(storageKey);
-    if (!resourceId) {
-        throw new Error(`远端资源引用无效：${storageKey}`);
-    }
-    const url = resourceFileUrl(resourceId);
-    payload.storageKey = storageKey;
-    if (typeof payload.mimeType === "string" && /^text\//i.test(payload.mimeType)) return payload;
-    for (const key of ["content", "dataUrl", "url", "coverUrl"]) {
-        if (typeof payload[key] === "string") payload[key] = url;
-    }
-    return payload;
-}
-
-function inlineMediaDataUrl(payload: Record<string, unknown>) {
-    for (const key of ["dataUrl", "content", "url", "coverUrl"]) {
-        const value = payload[key];
-        if (typeof value === "string" && /^data:(image|video|audio)\//i.test(value)) return value;
-    }
-    return "";
-}
-
-async function uploadInlineDataUrl(dataUrl: string, identity: string) {
-    const response = await fetch(dataUrl);
-    if (!response.ok) throw new Error("内嵌媒体读取失败");
-    const blob = await response.blob();
-    const kind: "image" | "video" | "audio" | "file" = blob.type.startsWith("image/") ? "image" : blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
-    const resource = await uploadResourceFile(blob, kind, { idempotencyKey: identity });
-    return resourceStorageKey(resource.id);
-}
-
-async function inlineMediaUploadIdentity(dataUrl: string) {
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(dataUrl));
-    return `inline:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
-
-async function uploadLocalStorageKey(storageKey: string, payload: Record<string, unknown>) {
-    const blob = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-    if (!blob) throw new Error(`本地媒体不存在，无法同步：${storageKey}`);
-    const kind = blob.type.startsWith("image/") ? "image" : blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
-    const resource = await uploadResourceFile(blob, kind, {
-        width: numberValue(payload.naturalWidth) || numberValue(payload.width),
-        height: numberValue(payload.naturalHeight) || numberValue(payload.height),
-        durationMs: numberValue(payload.durationMs),
-        idempotencyKey: storageKey,
-    });
-    return resourceStorageKey(resource.id);
-}
-
 function requireRemoteUserDataBaseline() {
     if (remoteUserDataPhase !== "ready") throw new Error("云端数据基线尚未建立，已停止写入");
 }
 
 function sameEntitySnapshot<T>(acknowledged: T | undefined, current: T) {
     return acknowledged !== undefined && (acknowledged === current || JSON.stringify(acknowledged) === JSON.stringify(current));
-}
-
-function isLocalStorageKey(value: string) {
-    return LOCAL_STORAGE_KEY_PATTERN.test(value) && !resourceIdFromStorageKey(value);
-}
-
-function numberValue(value: unknown) {
-    const number = Number(value);
-    return Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
 function sanitizeCanvasProjectForRemoteSync<T>(project: T): T {

@@ -11,6 +11,35 @@ import (
 	"infinite-canvas/backend/internal/model"
 )
 
+func (r *Repository) CloudAgentPiSession(userID, runID string) (*model.CloudAgentPiSession, error) {
+	var session model.CloudAgentPiSession
+	err := r.db.First(&session, "run_id = ? AND user_id = ?", runID, userID).Error
+	return &session, err
+}
+
+// SaveCloudAgentPiSession uses a revision predicate so a stale/recovered Pi
+// process cannot overwrite a newer native session snapshot.
+func (r *Repository) SaveCloudAgentPiSession(session *model.CloudAgentPiSession, expectedRevision int64) error {
+	if session == nil || session.RunID == "" || session.UserID == "" {
+		return fmt.Errorf("invalid Agent session identity")
+	}
+	if expectedRevision == 0 {
+		session.Revision = 1
+		return r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(session).Error
+	}
+	result := r.db.Model(&model.CloudAgentPiSession{}).
+		Where("run_id = ? AND user_id = ? AND revision = ?", session.RunID, session.UserID, expectedRevision).
+		Updates(map[string]any{"session_jsonl": session.SessionJSONL, "revision": expectedRevision + 1, "updated_at": time.Now()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	session.Revision = expectedRevision + 1
+	return nil
+}
+
 func (r *Repository) EnsureCloudAgent(run *model.CloudAgentExecution) error {
 	if run.ConversationID == "" {
 		run.ConversationID = run.ID
@@ -29,12 +58,18 @@ func (r *Repository) EnsureCloudAgent(run *model.CloudAgentExecution) error {
 	}
 	return r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(run).Error
 }
+
+// CloudAgent 在同一个只读事务里读取执行行和它的事件/消息行。分开读的话，并发写入
+// （运行时事件、工具结果）可能落在两次查询之间：读到旧的计数配新的行，解码时会被
+// 当成"记录不完整"而把一次正常运行判死。
 func (r *Repository) CloudAgent(userID, id string) (*model.CloudAgentExecution, error) {
 	var run model.CloudAgentExecution
-	err := r.db.First(&run, "id = ? AND user_id = ?", id, userID).Error
-	if err == nil {
-		err = r.hydrateCloudAgent(&run)
-	}
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&run, "id = ? AND user_id = ?", id, userID).Error; err != nil {
+			return err
+		}
+		return New(tx).hydrateCloudAgent(&run)
+	})
 	return &run, err
 }
 
@@ -106,12 +141,25 @@ func (r *Repository) CloudAgentEventRecordCount(userID, runID string) (int64, er
 
 func (r *Repository) CloudAgentForActiveTask(userID, taskID string) (*model.CloudAgentExecution, error) {
 	var run model.CloudAgentExecution
-	err := r.db.Where("user_id = ? AND active_task_id = ? AND status IN ?", userID, taskID, []string{"running", "queued"}).First(&run).Error
-	if err == nil {
-		err = r.hydrateCloudAgent(&run)
-	}
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND active_task_id = ? AND status IN ?", userID, taskID, []string{"running", "queued"}).First(&run).Error; err != nil {
+			return err
+		}
+		return New(tx).hydrateCloudAgent(&run)
+	})
 	return &run, err
 }
+
+// CloudAgentIDsWaitingApprovalForCanvas lists the caller's runs paused on an
+// approval for one canvas. Callers reload each run before mutating it.
+func (r *Repository) CloudAgentIDsWaitingApprovalForCanvas(userID, canvasID string) ([]string, error) {
+	var ids []string
+	err := r.db.Model(&model.CloudAgentExecution{}).
+		Where("user_id = ? AND canvas_id = ? AND status = ?", userID, canvasID, "waiting_approval").
+		Order("id").Limit(20).Pluck("id", &ids).Error
+	return ids, err
+}
+
 func (r *Repository) CloudAgentRoots() ([]model.Task, error) {
 	var tasks []model.Task
 	err := r.db.Where("operation = ? AND id NOT IN (SELECT id FROM cloud_agent_executions)", "cloud_agent").Order("created_at").Limit(50).Find(&tasks).Error
@@ -124,14 +172,18 @@ func (r *Repository) ActiveCloudAgentsAfter(after string, limit int) ([]model.Cl
 	if limit < 1 || limit > 50 {
 		limit = 50
 	}
-	err := r.db.Where("(status IN ? OR cleanup_pending = ?) AND id > ?", []string{"running", "queued"}, true, after).Order("id").Limit(limit).Find(&runs).Error
-	if err == nil {
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("(status IN ? OR cleanup_pending = ?) AND id > ?", []string{"running", "queued"}, true, after).Order("id").Limit(limit).Find(&runs).Error; err != nil {
+			return err
+		}
+		scoped := New(tx)
 		for i := range runs {
-			if err = r.hydrateCloudAgent(&runs[i]); err != nil {
-				break
+			if err := scoped.hydrateCloudAgent(&runs[i]); err != nil {
+				return err
 			}
 		}
-	}
+		return nil
+	})
 	return runs, err
 }
 
@@ -347,4 +399,34 @@ func (r *Repository) MarkCloudAgentCancelled(userID, id string, revision int64) 
 		return ErrCreationConflict
 	}
 	return nil
+}
+
+// GeminiCacheByKey returns an official Gemini CachedContent owned by the user.
+func (r *Repository) GeminiCacheByKey(userID, cacheKey string) (*model.CloudAgentGeminiCache, error) {
+	var cache model.CloudAgentGeminiCache
+	if err := r.db.Where("user_id = ? AND cache_key = ?", userID, cacheKey).First(&cache).Error; err != nil {
+		return nil, err
+	}
+	return &cache, nil
+}
+
+// UpsertGeminiCache persists the resource name and expiry returned by Gemini.
+func (r *Repository) UpsertGeminiCache(cache *model.CloudAgentGeminiCache) error {
+	return r.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "user_id"}, {Name: "cache_key"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"user_id", "base_url", "model", "credential_hash", "resource_name", "expire_time", "updated_at",
+		}),
+	}).Create(cache).Error
+}
+
+func (r *Repository) DeleteGeminiCache(userID, cacheKey string) error {
+	return r.db.Where("user_id = ? AND cache_key = ?", userID, cacheKey).Delete(&model.CloudAgentGeminiCache{}).Error
+}
+
+// DeleteGeminiCacheIfResourceMatches prevents a late request using an old
+// CachedContent resource from deleting a newer cache for the same identity.
+func (r *Repository) DeleteGeminiCacheIfResourceMatches(userID, cacheKey, resourceName string) (bool, error) {
+	result := r.db.Where("user_id = ? AND cache_key = ? AND resource_name = ?", userID, cacheKey, resourceName).Delete(&model.CloudAgentGeminiCache{})
+	return result.RowsAffected == 1, result.Error
 }

@@ -18,9 +18,8 @@ import (
 const cloudAgentContextCompactionOperation = "cloud_agent_context_compaction"
 
 const (
-	// cloudAgentMaxCompactionsPerRun 限制同一轮最多压几次：压完仍然超阈值时不能无限暂停
-	// （检查点已经只剩少量历史，再压也不会更小），用完次数就回到上游的原有判死路径。
-	cloudAgentMaxCompactionsPerRun = 4
+	// 压缩次数是异常循环护栏，不应成为正常长会话的闸门。
+	cloudAgentMaxCompactionsPerRun = 64
 	// cloudAgentContextKeepPairs 是压缩后原样保留的最近对话对数：检查点负责事实，最近两对
 	// 负责"用户最后说了什么、模型最后答了什么"的语感与指代。
 	cloudAgentContextKeepPairs = 2
@@ -48,7 +47,7 @@ type cloudAgentCompactionReading struct {
 
 // cloudAgentCompactionReadingFor 把"下一步预计输入 token"接到上游已有的预算算式上。
 //
-// 阈值不在这里另定：上游 cloudAgentContextBudgetFor 已经把压缩线算成输入预算的 85%
+// 阈值不在这里另定：上游 cloudAgentContextBudgetFor 已经把压缩线算成模型窗口的 80%
 // （CompactAtTokens），就地正文卸载用的就是它；语义压缩必须共用同一条线，否则会出现
 // "显示还没到线、后台已经开始压"。
 //
@@ -66,9 +65,9 @@ func cloudAgentCompactionReadingFor(budget cloudAgentContextBudget, projectedTok
 		BudgetSource:      budget.Source,
 	}
 	if budget.InputBudgetTokens > 0 {
-		reading.PressureRatio = math.Round(float64(projectedTokens)/float64(budget.InputBudgetTokens)*10000) / 10000
+		reading.PressureRatio = math.Round(float64(projectedTokens)/float64(budget.ContextWindowTokens)*10000) / 10000
 	}
-	if budget.Source == "" || budget.Source == "default" {
+	if !budget.Configured || budget.Source == "" || budget.Source == "default" {
 		return reading, false
 	}
 	return reading, true
@@ -470,7 +469,7 @@ func (s *Service) writeCloudAgentContextCheckpoint(run *model.CloudAgentExecutio
 	recent := cloudAgentCompleteTurnTail(state.Canonical.Messages, cloudAgentContextKeepPairs)
 	history, err := cloudAgentCheckpointHistory(checkpoint, recent)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errCloudAgentCheckpoint, err)
+		return cloudAgentCheckpointFailure("compaction checkpoint history", err)
 	}
 	return s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
 		state.ContextCheckpoint = &checkpoint
@@ -487,9 +486,9 @@ func (s *Service) writeCloudAgentContextCheckpoint(run *model.CloudAgentExecutio
 		}
 		// 消息整体被替换：写路径按 kind 逐条 upsert 并删除 sequence 超出新条数的尾部行，
 		// 因此"条数变少/全变"都能正确落库。
-		// 历史被换成检查点，早期读取回执也一起没了：不清"已读过去重"标记，模型再要技能正文
-		// 会被回一句"本轮已请求过该技能路径，请使用历史工具结果"，而那份历史已经不存在。
-		state.SkillReads, state.ProfileReads = nil, nil
+		// 只读结果由 ToolReadResults 统一缓存；压缩后模型再次请求时，缓存层会恢复完整正文。
+		// 只有 profile 的旧版读取标记需要清掉，因为它不属于统一结果缓存。
+		state.ProfileReads = nil
 		state.ActiveTaskID, state.ActiveTextDraft = "", ""
 		// 中途暂停压缩（Resume）：压完继续本轮的步进，并记一次次数上限。
 		// 收尾压缩（resume=false）本来就要结束本轮；keepTerminal=true 表示本轮已是终态
