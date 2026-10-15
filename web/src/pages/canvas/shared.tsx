@@ -16,7 +16,8 @@ import { WorkspaceState } from "@/components/layout/workspace-state";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanvasAppearance, resolveCanvasAppearance, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, isCanvasFolderNode, isFrameNode, isNodeHiddenByCollapsedFrame, resolveFrameConnection } from "@/lib/canvas/canvas-frame";
+import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, isCanvasFolderNode, isFrameNode, isNodeHiddenByCollapsedFrame } from "@/lib/canvas/canvas-frame";
+import { resolveCanvasDisplayConnections } from "@/lib/canvas/canvas-connection-spatial-index";
 import { ensureMediaNodeMinimumSize } from "@/lib/canvas/canvas-node-size";
 import { getContextResourceNodes } from "@/lib/canvas/canvas-resource-references";
 import { getPublicCanvasShare } from "@/services/api/canvas-share";
@@ -64,10 +65,7 @@ export default function SharedCanvasPage() {
         return result;
     }, [nodes]);
     const visibleNodes = useMemo(() => nodes.filter((node) => !isNodeHiddenByCollapsedFrame(node, nodes)), [nodes]);
-    const visibleConnections = useMemo(() => connections.flatMap((connection) => {
-        const resolved = resolveFrameConnection(connection, nodes);
-        return resolved ? [{ connection, ...resolved }] : [];
-    }), [connections, nodes]);
+    const visibleConnections = useMemo(() => resolveCanvasDisplayConnections(nodes, connections), [connections, nodes]);
     const connectionBounds = useMemo(() => {
         if (!nodes.length) return { left: -1, top: -1, width: 2, height: 2 };
         const padding = 320;

@@ -44,17 +44,19 @@ type TaskSummary struct {
 }
 
 type TaskClientContext struct {
-	NodeID           string `json:"nodeId,omitempty"`
-	ConversationID   string `json:"conversationId,omitempty"`
-	MessageID        string `json:"messageId,omitempty"`
-	BatchIndex       int    `json:"batchIndex,omitempty"`
-	BatchCount       int    `json:"batchCount,omitempty"`
-	DomainProjectID  string `json:"domainProjectId,omitempty"`
-	ChapterID        string `json:"chapterId,omitempty"`
-	ChapterOperation string `json:"chapterOperation,omitempty"`
-	ShotID           string `json:"shotId,omitempty"`
-	WorkflowStepID   string `json:"workflowStepId,omitempty"`
-	ArtifactType     string `json:"artifactType,omitempty"`
+	StoryNodeID       string `json:"storyNodeId,omitempty"`
+	ClientOperationID string `json:"clientOperationId,omitempty"`
+	NodeID            string `json:"nodeId,omitempty"`
+	ConversationID    string `json:"conversationId,omitempty"`
+	MessageID         string `json:"messageId,omitempty"`
+	BatchIndex        int    `json:"batchIndex,omitempty"`
+	BatchCount        int    `json:"batchCount,omitempty"`
+	DomainProjectID   string `json:"domainProjectId,omitempty"`
+	ChapterID         string `json:"chapterId,omitempty"`
+	ChapterOperation  string `json:"chapterOperation,omitempty"`
+	ShotID            string `json:"shotId,omitempty"`
+	WorkflowStepID    string `json:"workflowStepId,omitempty"`
+	ArtifactType      string `json:"artifactType,omitempty"`
 }
 
 type TaskBillingSummary struct {
@@ -139,24 +141,29 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 func taskClientContext(raw string) *TaskClientContext {
 	var input struct {
 		Metadata struct {
-			Source          string `json:"source"`
-			NodeID          string `json:"nodeId"`
-			ConversationID  string `json:"conversationId"`
-			MessageID       string `json:"messageId"`
-			BatchIndex      int    `json:"batchIndex"`
-			BatchCount      int    `json:"batchCount"`
-			DomainProjectID string `json:"domainProjectId"`
-			ChapterID       string `json:"chapterId"`
-			Operation       string `json:"operation"`
-			ShotID          string `json:"shotId"`
-			WorkflowStepID  string `json:"workflowStepId"`
-			ArtifactType    string `json:"artifactType"`
+			StoryNodeID       string `json:"storyNodeId"`
+			ClientOperationID string `json:"clientOperationId"`
+			Source            string `json:"source"`
+			NodeID            string `json:"nodeId"`
+			ConversationID    string `json:"conversationId"`
+			MessageID         string `json:"messageId"`
+			BatchIndex        int    `json:"batchIndex"`
+			BatchCount        int    `json:"batchCount"`
+			DomainProjectID   string `json:"domainProjectId"`
+			ChapterID         string `json:"chapterId"`
+			Operation         string `json:"operation"`
+			ShotID            string `json:"shotId"`
+			WorkflowStepID    string `json:"workflowStepId"`
+			ArtifactType      string `json:"artifactType"`
 		} `json:"metadata"`
 	}
 	if json.Unmarshal([]byte(raw), &input) != nil {
 		return nil
 	}
 	metadata := input.Metadata
+	if metadata.Source == "canvas-story-development" && metadata.StoryNodeID != "" && metadata.ClientOperationID != "" {
+		return &TaskClientContext{StoryNodeID: metadata.StoryNodeID, ClientOperationID: metadata.ClientOperationID}
+	}
 	context := &TaskClientContext{NodeID: metadata.NodeID}
 	if metadata.Source == "create-page" && metadata.ConversationID != "" && metadata.MessageID != "" {
 		context.ConversationID = metadata.ConversationID

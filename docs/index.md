@@ -4,6 +4,10 @@
 
 ## 设计沉淀
 
+- [制作流程长任务 Agent 改造方案](plans/workflow-production-agent.md)：复用现有后台 Agent，将资产提取与跨节点汇总接入规划、分页读取、共享事实、逐项产出、检查修复和断点恢复；待实施方案。
+
+- [短剧完整制作流程实施方案](plans/short-drama-full-production-plan.md)：现有功能复用矩阵、八阶段导航整合、画布/工作台/剪辑器衔接、保存与确认缺口、I0–I5 整合批次及人工验收（实施中，已完成项与待验收边界持续更新）。
+
 - [资源访问与 OSS/CDN 分发架构重构](design/resource-delivery-architecture.md)：资源身份、场景授权与分发策略分离，统一访问合同、全入口迁移、旧实现退场及流量/安全验收门槛（核心代码已实施，待真实 OSS/CDN 链路验收）。
 
 - [短信渠道插件与登录注册策略](design/sms-channels-and-auth-policy.md)：阿里云/腾讯云官方 SDK 候选基线、多渠道与模板路由、发送记录、验证码安全、短信和邮箱登录注册组合及分阶段验收（核心代码已实施，待真实 OSS/CDN 链路验收）。
@@ -59,6 +63,7 @@
 - [功能](content/docs/overview/features.mdx)
 - [本地开发](content/docs/backend/local-development.mdx)
 - [HTTP API 合同](content/docs/backend/http-api.mdx)
+- [短剧制作执行规范](content/docs/backend/production-rules.mdx)
 - [后端数据库](content/docs/backend/backend-database.mdx)
 - [代码地图](content/docs/backend/code-map.mdx)
 - [待办](content/docs/progress/todo.mdx)

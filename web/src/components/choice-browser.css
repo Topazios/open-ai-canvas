@@ -32,6 +32,9 @@
 .choice-browser-option:hover {
     background: var(--surface-hover);
 }
+.choice-browser-option[data-vendor="false"] {
+    grid-template-columns: minmax(0, 1fr) 16px;
+}
 .choice-browser-option[data-selected="true"] {
     background: var(--workspace-accent-soft);
     box-shadow: inset 0 0 0 1px var(--workspace-border-strong);

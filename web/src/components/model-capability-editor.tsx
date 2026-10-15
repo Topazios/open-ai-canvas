@@ -45,7 +45,7 @@ export function ModelCapabilityEditor({ value, onChange, protocol, capability = 
         return <ImageCapabilityEditor value={value} onChange={onChange} protocol={protocol} model={model} disabled={disabled} section={section} />;
     }
     const profile = normalizeModelCapabilityConfig(value || defaultModelCapabilityConfig(protocol)).video!;
-    const update = (patch: Partial<VideoCapabilityConfig>) => onChange?.({ version: 1, video: { ...profile, ...patch } });
+    const update = (patch: Partial<VideoCapabilityConfig>) => onChange?.({ version: 1, protocols: value?.protocols, video: { ...profile, ...patch } });
     const updateReferences = (patch: Partial<VideoCapabilityConfig["references"]>) => update({ references: { ...profile.references, ...patch } });
     const updateDuration = (patch: Partial<VideoCapabilityConfig["duration"]>) => update({ duration: { ...profile.duration, ...patch } });
     const durationValues = (profile.duration.values || []).join(",");
@@ -353,7 +353,7 @@ export function ModelCapabilityEditor({ value, onChange, protocol, capability = 
 function TextCapabilityEditor({ value, onChange, protocol, disabled, section }: Pick<Props, "value" | "onChange" | "protocol" | "disabled" | "section">) {
     const profile = normalizeModelCapabilityConfig(value || defaultModelCapabilityConfig(protocol)).text!;
     const update = (patch: Partial<TextCapabilityConfig>) => {
-        onChange?.({ version: 1, text: { ...profile, ...patch } });
+        onChange?.({ version: 1, protocols: value?.protocols, text: { ...profile, ...patch } });
     };
     const updateReferences = (patch: Partial<TextCapabilityConfig["references"]>) => {
         update({ references: { ...profile.references, ...patch } });
@@ -431,7 +431,7 @@ function TextCapabilityEditor({ value, onChange, protocol, disabled, section }: 
 
 function ImageCapabilityEditor({ value, onChange, protocol, model, disabled, section }: Required<Pick<Props, "model" | "disabled">> & Pick<Props, "value" | "onChange" | "protocol" | "section">) {
     const profile = normalizeModelCapabilityConfig(value || { version: 1, image: defaultImageCapabilityConfig(protocol, model) }).image!;
-    const update = (patch: Partial<ImageCapabilityConfig>) => onChange?.({ version: 1, image: { ...profile, ...patch } });
+    const update = (patch: Partial<ImageCapabilityConfig>) => onChange?.({ version: 1, protocols: value?.protocols, image: { ...profile, ...patch } });
     const updateReferences = (patch: Partial<ImageCapabilityConfig["references"]>) => update({ references: { ...profile.references, ...patch } });
     const updateSize = (patch: Partial<ImageCapabilityConfig["size"]>) => update({ size: { ...profile.size, ...patch } });
     const updateQuality = (patch: Partial<ImageCapabilityConfig["quality"]>) => update({ quality: { ...profile.quality, ...patch } });

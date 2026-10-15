@@ -5,6 +5,59 @@ description: 从产品功能快速定位主要代码入口
 
 # 代码功能地图
 
+## 制作 Agent
+
+- `backend/internal/app/production_agent*.go`：来源分页、事实证据、共享缓存、资产写入回执、覆盖、暂停与恢复；复用 `cloud_agent_pi_*` 的服务端执行与任务账务。
+- `backend/internal/model/production_agent.go`、`repository/production_agent.go`：schema 45 作业/事实页/产物回执及用户隔离。
+- `web/src/services/production-agent.ts`、`pages/canvas/use-production-agent-runs.ts`：任务提交及重开恢复；`canvas-production-agent-status.tsx` 展示进度和运行控制。
+- `web/scripts/canvas-production-agent-page-tests.ts`：真实生产页面的隔离 API 验收，无计费模型调用。
+
+## 短剧制作与审片
+
+- 共享解析：`workflow-text-batch.ts` 的 `sharedWorkflowTextBatch` 为五类资产创建 version 2 计划，把正文与辅助约束分开；`workflow_text_facts.go` 定义类别无关的事实提示词、原文证据校验、类别筛选和解析缓存范围。`workflow_text_batch.go` 复用现有持久任务，`LatestWorkflowSharedTask` 查找相同解析的最近尝试，稳定主键及原计费事务防止重复提交。实际模型子调用仍走准入与计费，临时名额不足时协调任务等待。无数据库迁移。
+- 边框路由：`canvas-connection-routing.ts` 求矩形边框间最近点与鼠标最近边界点；`canvas-connections.tsx` 统一已提交路径和拖动预览，保留显式行端口；`use-canvas-connection-controller.ts` 将普通节点的吸附检测扩展至四边。`canvas-leafer-graphics-layer.tsx` 用同一路径绘制流动短线，30fps 上限，不触发 React 状态更新，生命周期结束时释放动画和监听器。
+
+- 容器连线：`canvas-connection-spatial-index.ts` 将阶段容器展开态也作为端点，以容器对归并显示，`memberIdsByConnectionId` 保留可见边到实际边的映射；`removeCanvasDisplayConnection` 原子解除该组，节点操作复用原历史和保存链。分享与版本预览使用 `resolveCanvasDisplayConnections`。`workflowAncestors` 接受原逐集来源边或对应显式容器边，仍校验原文稿来源和指纹。
+- 容器子节点的 `connectionsAtContainer` 经世界层传入 `CanvasNode` 并纳入 memo 比较，关闭会伸出容器的独立连接热区，保持文稿编辑与拖动；避免子节点端口遮挡容器关联线。
+- 固定资产五个常驻入口：`short-drama-steps.ts` 定义 Bible/Characters/Environments/Props/Special；`canvas-short-drama-entry.tsx` 的当前阶段和总览都直接展示全部任务，无特殊资产开关。`activeShortDramaSteps` 隐藏旧 Extract/Catalog/Approval/Style/Settings/Voices，完整枚举仍保留旧合同。八阶段共 33 个活动步骤、39 个注册定义。`sourceSteps` 保存创建时合同，旧任务不改写。分镜、声线试听和音效制作引用人物声线、场景环境声、道具标志音及所选 Bible；`optionalRequires` 保留特殊资产可省略的依赖语义。
+- 规范确认：`canvas-workflow-assets.ts` 严格解析 Bible 的两个部分，沿原任务消费链路拆成普通 Text。`productionBibleConfirmed` / `confirmProductionBible` 仅用于可选审核，不再作为 `workflowSources` 的生成门槛。`workflowAncestors` 继续校验提取记录/设定/风格完整性、内容状态、来源连线及祖先指纹；编辑规范后可以生成新资产，既有下游仍检查原版本。`canvas-workflow-asset-review.tsx` 是页面私有规范审核及资产资料窗口。
+- 资产资料：`canvas-workflow-asset-profile.ts` 校验结构化出场、变体、声音、冲突；模型不能写入参考关联或审批。`assetSchemaVersion: 2` 只约束新任务，旧 JSON 继续可恢复。`assetProfile` 关联真实画布媒体及指纹；`assetContextProfile` 优先选定版本并按集缩减出场，`assetAppliesToEpisode` 在索引过期/未知时保守包含。正文、确认、资料以及实际参考变化进入来源检查，待提交任务也校验参考快照。
+- 分组结果：`canvas-workflow-assets.ts` 校验 JSON 总结和条目，拒绝不完整和重名条目；`commitCanvasGenerationResult` 在原持久化消费链路中原子拆成确定 ID 的普通文本节点，保留提取记录、来源指纹和阶段步骤。`assetGroup`、`assetKey` 区分资产集合与分集集合；`materializedTaskId` 防止重放覆盖编辑或复活删除项。不依赖临时弹窗或额外业务状态仓库，无数据库迁移。
+- 分组依赖：集合成员保留正文及制作规范来源，整体关联线即可满足校验；下游选择完整分组，输入按集筛选当前成员文稿及制作方案，不重复注入历史全文。长上下文改走后台分批任务。格式错误或模型引用未提供的集数时保留原始文本、标记失败，不自动付费重试。
+- 紧凑导引：`canvas-short-drama-entry.tsx/.css` 使用阶段选择器及内部滚动；`use-drama-guide-position.ts` 负责 pointer capture、取消、键盘移动、账号隔离位置持久化和 ResizeObserver 边界约束，浮窗范围避开现有左导航。
+
+- 旧结果多选归组：`workflowGroupingProblem` / `groupSelectedWorkflowDocuments` 校验准确选区、目标背板及来源分支；支持追加已有兼容容器、普通背板识别，保持原节点正文、ID、任务和依赖。`project.tsx` 从实际选区构造动作，`CanvasNodeContextMenu` 在空白画布、多选节点和单节点三个菜单分支复用流程入口；`use-short-drama-workflow-generation.ts` 只保存归组，不创建生成任务。
+
+- 分集容器与参数传递：`canvas-short-drama-workflow.ts` 的 `workflowParameters`、`workflowEpisodeProgress` 解析选定分支制作参数和唯一集数进度；`groupWorkflowDocuments` / `groupExistingWorkflowEpisodes` 使用原 `Frame` 与 `parentId` 布局，不建立第二套业务存储。容器 `shortDrama.role: collection` 保存成员节点 ID、来源集合、版本和制作参数，集合成员关系不用可见因果线冒充；成员移出或删除后不静默跳过。
+- 按集提取及跨集汇总：`createWorkflowDocuments` 展开集合并按集匹配依赖，结果仍使用现有文本任务；`aggregate: true` 文稿记录对应提取容器来源。`workflowGenerationSources`、`workflowAncestors` 校验完整来源指纹；提示词只发送直接文稿及方案。`workflow-text-batch.ts` 将超过 48000 UTF-16 字符预算的上下文按来源与段落分成不超过 20000 字符的单元，计划随 `shortDrama.textBatch` 保存。`CanvasFrameNode` 展示后端批次 stage，最终产物仍由原消费链路拆成普通文本。
+- 后端 `app/workflow_text_batch.go` 处理 `short_drama_batch` 协调任务，复用任务表输入和子任务结果重建执行状态，无新表。父任务不计费，逐个子调用经 `CreateTask` 完成模型、能力、存储和计费校验；`repository/workflow_text_batch.go` 将父租约检查、子任务唯一键与积分预留合并为事务，子任务借用父任务活动配额，父任务释放 Worker 后等待回查。显式重试通过 `RouteRun` 区分失败尝试，复用已成功调用；跨集归并按有界输入最多进行八层，无法收敛保留结果并真实报错。
+
+- 阶段文稿生成：`web/src/lib/short-drama-stages.ts`、`short-drama-steps.ts` 维护阶段步骤枚举与有向依赖；`canvas-short-drama-workflow.ts` 负责来源版本、跨集/跨流程/循环/断线检查、提示词上下文及独立文本节点创建。`canvas-workflow-generator.tsx` 是选题以外的统一参数面板；正文按起始集数和数量创建独立新版本。
+- 节点合同：`CanvasNodeMetadata.shortDrama` 包含 `stage`、`step`、`pipelineId`、`sourceNodeIds`、`sourceSignatures`、`episodeNumber`、`version`、制作参数、操作 ID 与提交状态；`role: document` 标明文稿不能替代真实媒体或审核。沿用画布 metadata 序列化，无数据库迁移。`canvas-context-menu.tsx` / `canvas-project-context-menu.tsx` 根据定义提供下一步，`project.tsx` 连接生成面板与普通文本编辑器。
+- 文稿后台提交：`use-short-drama-workflow-generation.ts` 先持久化结果节点和提交标记，再提交现有任务 API；结果使用原 `use-canvas-generation.ts` 消费和刷新恢复。未提交节点显式继续，回执不明的提交不得重发。`use-legacy-story-recovery.ts` 恢复旧编辑器本机草稿与旧任务，校验原稿指纹和存储 revision。行为测试为 `web/test/short-drama-workflow.test.ts`，生产页面回归为 `web/scripts/canvas-workflow-generator-page-tests.ts`。
+
+- 选题与旧会话：`web/src/services/story-development-session.ts` 保留本机草稿、任务、最近一次撤销版本和历史批次合同；`use-story-development-session.ts` 负责选题会话恢复，`canvas-story-development-editor.tsx` 现在仅由选题入口挂载。旧分集批次 helper/hook 及测试保留，原先的正文编辑器交互不再作为当前入口；新版使用上述独立文本节点链路。
+
+- 自由画布关联：`web/src/pages/canvas/canvas-project-association.tsx` 复用项目/章节 API 并展示保存后预览；`canvas-project-top-bar.tsx` 与 `canvas-focus-mode-bar.tsx` 提供入口。`backend/internal/app/project.go` 复核用户、项目和预期画布 revision；`repository/canvas_unit_link.go` 将画布归属、快照、章节关系和项目版本纳入事务，并调用现有 `canvas.SaveDocumentWithHistory`；`project_canvas_association_test.go` 覆盖回滚与幂等。
+- 节点镜头映射：`web/src/pages/canvas/canvas-node-shot-mapping.tsx` 在原关联弹窗内提供节点搜索、镜头/采用产物选择、预览、确认和解除；`backend/internal/handler/project_unit_routes.go` → `app/project_canvas_node_mapping.go` → `repository/canvas_node_shot_link.go` 实现归属/版本校验和原子写入。`model.CanvasNodeShotLink` 使用 schema 44 新表；行为测试在 app/handler 同名 `_test.go`，实际生产页面验证为 `web/scripts/canvas-node-mapping-page-tests.ts`。当前仅身份/版本关联，不自动同步业务正文或审核。
+
+- 剪辑冲突草稿：`web/src/services/project-editor-timeline.ts` 在原存储锁内保存会话草稿、校验恢复版本并保留恢复前备份；`editor-timeline-draft-preview.tsx` 负责对照、选择和恢复入口，`editor.tsx` 仍复用原时间线 store/队列。草稿键为 `editor-timeline:<projectId>[:unit:<unitId>]:drafts`，沿用用户 scope，记录版本 1；不新增数据库迁移。行为测试为 `project-timeline-drafts.test.ts`，真实生产路由脚本为 `web/scripts/project-timeline-drafts-page-tests.ts`。
+
+- 旧项目剪辑归属：`web/src/pages/projects/detail/editor-legacy-timeline-preview.tsx` 提供片段预览和选集，`editor.tsx` 负责加载及期望版本保存；`project-editor-timeline.ts` 的 `assignLegacyProjectTimeline` 使用原项目锁与目标集锁一次提交版本 1 归属快照，保留原项目键。存储键为 `editor-timeline:<projectId>:assignment`，沿用用户作用域。按集 editor 路由由 `detail.tsx` 的 `useMatch` 明确识别。行为测试见 `project-timeline-assignment.test.ts`，真实页面测试见 `web/scripts/project-timeline-assignment-page-tests.ts`。
+
+- 八阶段共享定义：`web/src/lib/short-drama-stages.ts`；画布子任务：`web/src/lib/canvas/canvas-short-drama.ts`、`web/src/components/canvas/canvas-short-drama-entry.tsx`。
+- 剧情与章节创作链：`web/src/lib/canvas/canvas-story-development.ts` 定义选题、制作方案（含故事总纲）、集纲和分集正文四步节点合同、上游指纹、提示词及并发保存校验；`nextStoryDevelopmentStage` 统一编辑器和下一步导航。`outline` 仅保留历史编辑能力，`storySourceState` 排除其强制依赖和过期阻断，将原文作为单独参考返回。`web/src/components/canvas/canvas-story-development-editor.tsx` 提供候选选题、完善方案、历史粗纲显式补入草稿、AI 正文直接写入与撤销、导入、逐集正文和窄屏编辑；`web/src/pages/canvas/use-canvas-short-drama.ts` 负责补建缺失节点和创建下一集正文。结果沿用现有画布节点 metadata 和文本任务通道，不新增数据库迁移。
+- 项目阶段与审片/交付页面：`web/src/pages/projects/detail/workflow.tsx`、`workflow-stage-views.tsx`。
+- 本地时间线存储键与串行/浏览器锁：`web/src/services/project-editor-timeline.ts`；本地审片记录、时间线指纹校验和期望版本检查：`web/src/services/short-drama-delivery-store.ts`。
+- 审片时间点及片段映射：`web/src/lib/timeline/review-position.ts` 读取既有渲染快照并按源素材偏移定位；`DeliveryIssue.position` 是可选本地记录字段，写入沿用版本锁并校验原审片资源。UI 在 `workflow-stage-views.tsx`；行为/恢复测试见 `review-position.test.ts`、`short-drama-delivery-persistence.test.ts`；真实路由浏览器验证见 `web/scripts/short-drama-review-page-tests.ts`。没有数据库迁移或服务端审核归档变更。
+- 剪辑宿主保存与作用域：`web/src/pages/projects/detail/editor.tsx`；提交快照与保存队列：`web/src/stores/editor/editor-store.ts`；固定导出快照与仅重试记录保存：`web/src/lib/plugins/builtin/editor/editor-export.tsx`。
+- 当前集镜头列表、资源复核与入轨入口：`web/src/pages/projects/detail/editor-shot-assembly.tsx`；来源过滤、去重与追加计划：`web/src/lib/timeline/shot-assembly.ts`；原子批量命令入口为既有 `editor-store.ts` 的 `dispatchBatch`。片段可选 `shotSource` 沿用时间线版本 2，无数据库迁移。
+- 入轨行为与资源释放测试：`web/test/shot-assembly.test.ts`、`media-metadata.test.ts`；远端媒体时长读取与取消：`web/src/lib/media-metadata.ts`。不把预计镜头时长视为已知媒体时长。
+- 镜头换版计划及缺失来源定位：`web/src/lib/timeline/shot-replacement.ts`；真实对照组件：`web/src/pages/projects/detail/editor-shot-replacement-preview.tsx`。`editor-commands.ts` 的 `replaceShotMedia` 校验整组期望片段、归属、轨道锁与源区间并保持剪辑属性；`ai-command-schema.ts` 同步 13 个操作及命令 schema 2，快照仍是时间线版本 2。
+- 换版行为/恢复测试：`web/test/shot-replacement.test.ts`；对照组件渲染测试：`editor-shot-replacement-preview.test.tsx`。默认轨道的已保存设置由 `timeline-tracks.ts` 保留，避免刷新后锁定、静音和可见性重置。
+- 上游来源依赖与审片门禁：`web/src/lib/timeline/shot-dependencies.ts` 生成当前集来源指纹并核对时间线 `shotSource`；`short-drama-delivery-store.ts` 保存/比较 `shotDependencyFingerprint`；`workflow-stage-views.tsx` 在质检和交付页面显示阻断，并在确认前重读工作区和时间线。测试见 `web/test/shot-dependencies.test.ts` 与 `short-drama-delivery-store.test.ts`。
+- 定向行为测试：`web/test/short-drama-delivery-persistence.test.ts`、`short-drama-delivery-store.test.ts`、`editor-store.test.ts`。本地记录不代表服务端审核归档，实际业务验收见待测试文档。
+
 ## 画布 Agent 配置与 Live2D
 
 - 后台入口：`web/src/pages/admin/settings/appearance-settings-page.tsx` 与 `components/canvas-appearance-editor.tsx`。

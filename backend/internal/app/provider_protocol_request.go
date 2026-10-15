@@ -176,7 +176,7 @@ func executeProtocolBinaryRequestWithConsumer(ctx context.Context, config provid
 	if err != nil {
 		return nil, "", err
 	}
-	requestURL, err := protocolRequestURL(config.BaseURL, spec)
+	requestURL, err := protocolRequestURLForAdapter(config, spec)
 	if err != nil {
 		return nil, "", err
 	}

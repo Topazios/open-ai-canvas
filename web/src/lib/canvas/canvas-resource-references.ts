@@ -491,10 +491,20 @@ export function collectUpstreamVideoNodes(nodeId: string, nodes: CanvasNodeData[
  * 扩展节点经 CanvasNodeGraphContext 复用它，不要另写一份取上游的逻辑。
  */
 export function getContextResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    return connections
-        .filter((connection) => connection.toNodeId === nodeId)
-        .map((connection) => nodes.find((node) => node.id === connection.fromNodeId))
-        .filter((node): node is CanvasNodeData => Boolean(node && isResourceNode(node)));
+    return buildContextResourceNodeMap(nodes, connections).get(nodeId) || [];
+}
+
+export function buildContextResourceNodeMap(nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const result = new Map<string, CanvasNodeData[]>();
+    for (const connection of connections) {
+        const node = nodeById.get(connection.fromNodeId);
+        if (!node || !isResourceNode(node)) continue;
+        const upstream = result.get(connection.toNodeId);
+        if (upstream) upstream.push(node);
+        else result.set(connection.toNodeId, [node]);
+    }
+    return result;
 }
 
 /**

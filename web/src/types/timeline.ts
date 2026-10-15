@@ -108,6 +108,28 @@ export type TimelineClip = {
     text?: string;
     /** 仅时间线作用域的直连媒体；存在时预览/导出优先从该字段解析，不再回画布查节点 */
     directMedia?: TimelineDirectMedia;
+    /** 从当前集采用的视频入轨时固定来源；拆分/裁剪保留该引用，不自动跟随新版本。 */
+    shotSource?: {
+        projectId: string;
+        unitId: string;
+        shotId: string;
+        revisionId: string;
+        artifactId: string;
+        resourceId: string;
+    };
+    /** 从当前集已采用配音/声音产物入轨时固定来源与对白区间。 */
+    voiceSource?: {
+        projectId: string;
+        unitId: string;
+        shotId: string;
+        revisionId: string;
+        artifactId: string;
+        resourceId: string;
+        dialogueId?: string;
+        shotOffsetMs: number;
+        durationMs: number;
+        sourceStartMs?: number;
+    };
 };
 
 export type TimelineProject = {

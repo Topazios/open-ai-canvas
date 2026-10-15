@@ -170,6 +170,7 @@ type (
 	LibTVImportWarning                     = app.LibTVImportWarning
 	LibTVSettingRequest                    = app.LibTVSettingRequest
 	LinkCanvasUnitRequest                  = app.LinkCanvasUnitRequest
+	LinkCanvasNodeShotRequest              = app.LinkCanvasNodeShotRequest
 	LinkProjectAssetRequest                = app.LinkProjectAssetRequest
 	LinkShotAssetRequest                   = app.LinkShotAssetRequest
 	LinuxDOCallbackResult                  = app.LinuxDOCallbackResult
@@ -333,6 +334,7 @@ type (
 	UpdateProjectCharacterRequest          = app.UpdateProjectCharacterRequest
 	UpdateProjectRequest                   = app.UpdateProjectRequest
 	UpdateProjectUnitRequest               = app.UpdateProjectUnitRequest
+	UnlinkCanvasNodeShotRequest            = app.UnlinkCanvasNodeShotRequest
 	UpdateUserRequest                      = app.UpdateUserRequest
 	UpdateWorkflowStepRequest              = app.UpdateWorkflowStepRequest
 	UserAnnouncementFeed                   = app.UserAnnouncementFeed

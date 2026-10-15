@@ -23,11 +23,13 @@ describe("canvas node drag overlays", () => {
         expect(projectSource).not.toContain("angleNode?.metadata?.content && !isCanvasNodeMoving");
         expect(projectSource).toContain("emotionNode?.metadata?.content && !isCanvasNodeMoving");
         expect(projectSource).toContain("selectedNodeBounds && !selectionBox && !isCanvasNodeMoving");
-        expect(projectSource).toContain("node={isCanvasNodeMoving || nodeImageSettingsOpen || emotionNodeId || angleNodeId ? null : dialogNode || toolbarNode}");
+        const toolbarCondition = projectSource.match(/node=\{(isCanvasNodeMoving[^\n]+?)\? null : dialogNode \|\| toolbarNode\}/)?.[1];
+        expect(toolbarCondition).toBeDefined();
+        expect(toolbarCondition).toContain("isCanvasNodeMoving || nodeImageSettingsOpen || emotionNodeId || angleNodeId");
         expect(projectSource).toContain("scaleWithNode");
         expect(projectSource).toContain("onNodeDragEnd: handleNodeDragEnd");
         expect(projectSource).toContain("setDialogNodeId(node.id);");
-        expect(selectionControllerSource).toContain("if (clickedNodeId) onNodeDragEnd?.(clickedNodeId);");
+        expect(selectionControllerSource).toContain("if (clickedNodeId && liveIds.has(clickedNodeId)) onNodeDragEnd?.(clickedNodeId);");
     });
 
     test("keeps node toolbar fixed during horizontal viewport previews and clears it offscreen", () => {

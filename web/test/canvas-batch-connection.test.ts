@@ -130,7 +130,7 @@ describe("planBatchConnections", () => {
 });
 
 describe("canvas connection anchors", () => {
-    it("keeps ordinary node edges centered even when legacy ratios exist", () => {
+    it("uses the shortest top/bottom border connection regardless of legacy side ratios", () => {
         const connection: CanvasConnection = {
             id: "ratio-test",
             fromNodeId: "text-a",
@@ -140,8 +140,9 @@ describe("canvas connection anchors", () => {
         };
         const result = canvasConnectionPath(connection, nodes[0], nodes[1]);
 
-        expect(result.startY).toBe(90);
-        expect(result.endY).toBe(310);
+        expect(result.startY).toBe(180);
+        expect(result.endY).toBe(220);
+        expect(result.startX).toBe(result.endX);
     });
 
     it("keeps storyboard row handles positioned independently from the node center", () => {
@@ -153,8 +154,8 @@ describe("canvas connection anchors", () => {
         };
         const result = canvasConnectionPath(connection, nodes[0], nodes[4]);
 
-        expect(result.startY).toBe(90);
-        expect(result.endY).toBeGreaterThan(90);
+        expect(result.startY).toBe(nodes[0].position.y + nodes[0].height / 2);
+        expect(result.endY).toBe(148);
     });
 });
 

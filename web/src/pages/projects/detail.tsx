@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, App } from "antd";
 import { ArrowLeft, Plus } from "lucide-react";
-import { Link, Navigate, useNavigate, useParams } from "react-router";
+import { Link, Navigate, useMatch, useNavigate, useParams } from "react-router";
 
 import { getProjectCore, getProjectOverview, getProjectUnitWorkspace, linkCanvasUnit, listProjectUnits } from "@/services/api/projects";
 import { WorkspacePage } from "@/components/layout/workspace-page";
@@ -33,10 +33,11 @@ const views: Array<{ key: DetailView; label: string }> = [
 
 export default function ProjectDetailPage() {
     const { projectId = "", view, chapterId, unitId, stage } = useParams();
+    const unitEditorRoute = useMatch("/projects/:projectId/editor/:unitId");
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const { message } = App.useApp();
-    const activeView: DetailView = unitId || view === "workflow" ? "workflow" : chapterId ? "chapters" : views.some((item) => item.key === view) ? view as DetailView : "overview";
+    const activeView: DetailView = unitEditorRoute || view === "editor" ? "editor" : unitId || view === "workflow" ? "workflow" : chapterId ? "chapters" : views.some((item) => item.key === view) ? view as DetailView : "overview";
     const coreQuery = useQuery({
         queryKey: ["project", projectId, "core"],
         queryFn: () => getProjectCore(projectId),
@@ -52,7 +53,7 @@ export default function ProjectDetailPage() {
     const workspaceQuery = useQuery({
         queryKey: ["project", projectId, "unit-workspace", activeUnitId],
         queryFn: () => getProjectUnitWorkspace(projectId, activeUnitId),
-        enabled: Boolean(projectId && activeUnitId) && (activeView === "chapters" || activeView === "workflow"),
+        enabled: Boolean(projectId && activeUnitId) && (activeView === "chapters" || activeView === "workflow" || activeView === "editor"),
         refetchInterval: (query) => (query.state.data?.tasks || []).some((task) => task.clientContext?.shotId && (task.status === "queued" || task.status === "running")) ? 2_000 : false,
     });
     const project = coreQuery.data?.project;
@@ -62,6 +63,7 @@ export default function ProjectDetailPage() {
         units: workspace?.unit ? units.map((unit) => unit.id === workspace.unit.id ? workspace.unit : unit) : units,
         canvases: [],
         canvasUnitLinks: [],
+        canvasNodeShotLinks: [],
         unitCanvasCounts: unitsQuery.data?.canvasCounts || {},
         assets: workspace?.assets || [],
         assetFolders: [],
@@ -143,7 +145,7 @@ export default function ProjectDetailPage() {
                                 {activeView === "canvases" ? <ProjectCanvasesView detail={detail} refreshProject={refreshProject} onCreateCanvas={createCanvas} /> : null}
                                 {activeView === "assets" ? <ProjectAssetsView detail={detail} refreshProject={refreshProject} onCreateCanvas={createCanvas} /> : null}
                                 {activeView === "settings" ? <ProjectSettingsView detail={detail} refreshProject={refreshProject} onCreateCanvas={createCanvas} /> : null}
-                                {activeView === "editor" ? <ProjectEditorView detail={detail} /> : null}
+                                {activeView === "editor" ? workspaceQuery.isLoading ? <WorkspaceLoadingState label="正在打开当前集剪辑器" detail="读取本集镜头、产物和项目素材" /> : workspaceQuery.isError ? <WorkspaceErrorState title="剪辑素材读取失败" description="当前集的镜头和产物暂时不可用。" onRetry={() => void workspaceQuery.refetch()} /> : <ProjectEditorView detail={detail} unitId={activeUnitId} /> : null}
                             </div>
                         </Suspense>
                     </div>

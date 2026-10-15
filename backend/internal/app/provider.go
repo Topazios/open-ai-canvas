@@ -39,9 +39,11 @@ type canvasGenerationInput struct {
 }
 
 type canvasTextOptions struct {
-	Stream           *bool                 `json:"stream"`
-	Thinking         bool                  `json:"thinking"`
-	StructuredOutput *StructuredTextOutput `json:"structuredOutput,omitempty"`
+	ReasoningEffort   ReasoningEffort       `json:"reasoningEffort,omitempty"`
+	ReasoningDisabled bool                  `json:"reasoningDisabled,omitempty"`
+	Stream            *bool                 `json:"stream"`
+	Thinking          bool                  `json:"thinking"`
+	StructuredOutput  *StructuredTextOutput `json:"structuredOutput,omitempty"`
 	// MaxOutputTokens 是本次调用的输出上限（思考 + 正文 + 工具参数）。
 	// 画布 Agent 的每一步都带上限：不设时上游按"剩余上下文"放行，思考模型可以把单步
 	// 拖到几分钟（实测 output_tokens 正好吃满可用预算、正文与工具调用皆空）；0 表示不限制。
@@ -75,6 +77,7 @@ type providerConfig struct {
 	ProviderModelKey      string                 `json:"providerModelKey,omitempty"`
 	APIFormat             string                 `json:"apiFormat"`
 	InterfaceType         string                 `json:"interfaceType"`
+	SelectedProtocol      string                 `json:"selectedProtocol,omitempty"`
 	BaseURL               string                 `json:"baseUrl"`
 	APIKey                string                 `json:"apiKey"`
 	SecretKey             string                 `json:"secretKey"`
@@ -405,7 +408,13 @@ func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, 
 		return providerConfig{}, errors.New("系统渠道模型标识不一致")
 	}
 	config.InterfaceType = string(channelModel.Protocol)
-	config.APIFormat = channelAPIFormatForProtocol(channel.APIFormat, channelModel.Protocol)
+	if config.SelectedProtocol != "" {
+		if err := validatePinnedProtocol(s.protocolRegistry(), config.SelectedProtocol, channelModel.Capability); err != nil {
+			return providerConfig{}, err
+		}
+		config.InterfaceType = config.SelectedProtocol
+	}
+	config.APIFormat = channelAPIFormatForProtocol(channel.APIFormat, model.ChannelInterfaceType(config.InterfaceType))
 	config.BaseURL = channel.BaseURL
 	config.APIKey = channel.APIKey
 	config.SecretKey = channel.SecretKey

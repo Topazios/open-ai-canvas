@@ -50,6 +50,7 @@ func (w *taskWorkerCoordinator) start(ctx context.Context) {
 	s := w.service
 	s.startTextReplayCleanup(ctx)
 	s.startProviderCancellationReconciliation(ctx)
+	s.startCanvasNodeTaskCleanup(ctx)
 	s.startBillingReviewAudit(ctx)
 	s.startAgentMemoryCompactScheduler()
 	s.runWorkerLoop(func(ctx context.Context) {
@@ -185,6 +186,9 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task, globalSlot 
 	}
 	if task.Type == model.TaskTypeTimelineRender {
 		return w.processTimelineRender(task, ctx)
+	}
+	if task.Operation == workflowBatchOperation {
+		return s.processWorkflowTextBatch(task)
 	}
 	if task.MediaRecoveryJSON != "" {
 		result, recoveryErr := s.resumeTaskMedia(ctx, task)

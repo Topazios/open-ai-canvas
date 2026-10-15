@@ -37,6 +37,24 @@ func TestValidateImageTaskDoesNotApplyQualityPromptLimitToGrokLite(t *testing.T)
 	}
 }
 
+func TestValidateImagePromptUsesConfiguredUnicodeLimitAndSystemPrompt(t *testing.T) {
+	profile := DefaultImageCapabilityConfig("openai-image", "fixture")
+	profile.References.PromptMaxChars = 5
+	input := canvasGenerationInput{Mode: "image", Prompt: "画", Config: providerConfig{SystemPrompt: " \U0001f3ac中 "}}
+	if err := validateImageTask(profile, input); err != nil {
+		t.Fatalf("five Unicode characters should pass: %v", err)
+	}
+	input.Prompt += "面"
+	if err := validateImageTask(profile, input); err == nil || !strings.Contains(err.Error(), "6 个字符") {
+		t.Fatalf("full prompt above declared limit admitted: %v", err)
+	}
+	input.Config.CapabilityConfig = &ModelCapabilityConfig{Image: profile}
+	input.Prompt = "一二三四五六"
+	if err := validateWorkflowProviderPromptLength(input); err == nil {
+		t.Fatal("workflow image prompt bypassed declared limit")
+	}
+}
+
 func TestValidateVideoTaskRejectsPromptAboveCapabilityLimit(t *testing.T) {
 	profile := DefaultModelCapabilityConfigForModel("autodl-comfyui", "MiniMax H3").Video
 	profile.References.PromptMaxChars = 10_000

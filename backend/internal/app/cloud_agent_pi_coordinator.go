@@ -182,12 +182,13 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 	if s == nil || s.repo == nil {
 		return
 	}
+	defer s.projectProductionAgentStatus(userID, runID)
 	for attempt := 0; attempt < 4; attempt++ {
 		run, err := s.repo.CloudAgent(userID, runID)
 		if err != nil {
 			return
 		}
-		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 			if cloudAgentRunTerminal(current.Status) {
 				return nil
 			}
@@ -195,6 +196,11 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 			current.FailureMessage = cause.Error()
 			state, decodeErr := cloudAgentDecode(current)
 			if decodeErr == nil {
+				if state.Request.Production != nil && state.ActiveTaskID != "" {
+					if task, err := repo.TaskForUser(userID, state.ActiveTaskID); err == nil && task.Status == model.TaskStatusFailed {
+						state.event(runID, "production_model_completed", map[string]any{"taskId": task.ID, "step": state.Step, "status": task.Status, "text": cloudAgentSafeMediaTaskError(task)})
+					}
+				}
 				state.LastError = cause.Error()
 				state.event(runID, "run_failed", map[string]any{"error": cause.Error()})
 				return cloudAgentSave(current, &state)
@@ -253,6 +259,9 @@ func (s *Service) recoverCloudAgentPiRunners() {
 
 // runCloudAgentPiSession 核心会话管理
 func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID string) error {
+	if err := s.initializeProductionAgent(userID, runID); err != nil {
+		return fmt.Errorf("initialize production: %w", err)
+	}
 	// 1. 加载运行状态
 	task, state, err := s.cloudAgentTask(userID, runID)
 	if err != nil {
@@ -395,11 +404,20 @@ func (s *Service) completeCloudAgentPiRun(userID, runID string) error {
 		}
 
 		// 原子更新状态
-		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+		policy, policyErr := s.RuntimePolicy()
+		if policyErr != nil {
+			return policyErr
+		}
+		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 			if cloudAgentRunTerminal(current.Status) || current.Status == "waiting_approval" || current.Status == "waiting_user" {
 				return nil
 			}
 
+			if state.Request.Production != nil {
+				if err := productionComplete(repo, current, &state, policy); err != nil {
+					return err
+				}
+			}
 			current.Status = "completed"
 			state.event(runID, "run_completed", map[string]any{
 				"text":      "Agent 已完成",

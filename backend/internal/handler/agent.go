@@ -18,6 +18,32 @@ import (
 
 // Agent orchestration is durable; the browser stream never drives execution.
 func RegisterAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
+	r.POST("/canvas-projects/:id/tasks/reconcile", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req struct {
+			DeletedNodeIDs []string `json:"deletedNodeIds"`
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 256<<10)
+		if c.Request.ContentLength != 0 {
+			if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+				fail(c, http.StatusBadRequest, err)
+				return
+			}
+		}
+		if len(req.DeletedNodeIDs) > 5000 {
+			fail(c, http.StatusBadRequest, errors.New("删除节点数量超过限制"))
+			return
+		}
+		if err := svc.ReconcileCanvasNodeTasks(c.Request.Context(), user.ID, c.Param("id"), req.DeletedNodeIDs...); err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"accepted": true})
+	})
 	r.GET("/agent/capabilities", func(c *gin.Context) {
 		if _, err := currentUser(c, svc); err != nil {
 			failService(c, err)
@@ -223,6 +249,27 @@ func RegisterAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"accepted": true})
 	})
+	r.POST("/agent/runs/:id/production-control", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+		var req struct {
+			Action   string `json:"action"`
+			MaxSteps int    `json:"maxSteps"`
+		}
+		if err = c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		if err = svc.ControlProductionAgent(user.ID, c.Param("id"), req.Action, req.MaxSteps); err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"accepted": true})
+	})
 	r.POST("/agent/runs/:id/undo", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -388,6 +435,7 @@ func agentRunViewOptions(c *gin.Context) (service.CloudAgentRunViewOptions, erro
 		max   int
 	}{
 		{name: "sinceSeq", value: &options.SinceSeq, min: 0, max: math.MaxInt32},
+		{name: "beforeSeq", value: &options.BeforeSeq, min: 0, max: math.MaxInt32},
 		{name: "eventLimit", value: &options.EventLimit, min: 1, max: agentRunEventQueryLimit},
 	} {
 		raw := strings.TrimSpace(c.Query(item.name))
@@ -399,6 +447,9 @@ func agentRunViewOptions(c *gin.Context) (service.CloudAgentRunViewOptions, erro
 			return options, fmt.Errorf("%s 必须是 %d–%d 之间的整数", item.name, item.min, item.max)
 		}
 		*item.value = parsed
+	}
+	if options.BeforeSeq > 0 && options.SinceSeq > 0 {
+		return options, fmt.Errorf("beforeSeq 与 sinceSeq 不可同时使用")
 	}
 	return options, nil
 }

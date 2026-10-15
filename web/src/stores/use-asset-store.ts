@@ -421,27 +421,27 @@ export const useAssetStore = create<AssetStore>()(
                 await new Promise<void>((resolve, reject) => {
                     window.setTimeout(() =>
                         withGenerationArtifactCommitLock(scope, async () => {
-                            const syncDrafts = await readAllCanvasSyncDrafts(scope);
-                            // 固定锁序：artifact -> Canvas（释放）-> Asset，避免跨 store 锁重入。
-                            const canvasProjects = await withCanvasStorePersistenceLock(scope, async () => {
+                            // Lock order: artifact -> canvas -> asset. Draft references stay locked through deletion.
+                            await withCanvasStorePersistenceLock(scope, async () => {
                                 await commitPendingCanvasStorePersistenceLocked(scope);
                                 const durableCanvas = parseCanvasStorageDocument(await localForageStorageForScope(scope).getItem(CANVAS_STORE_KEY));
-                                return pendingCanvasStorePersistence(scope)?.projects ?? durableCanvas.state.projects;
-                            });
-                            await withGenerationAssetStorageLock(scope, async () => {
-                                await commitPendingAssetStorePersistenceLocked(scope);
-                                const durableAssets = (await readPersistedAssetDocumentForScope(scope)).state.assets;
-                                const references = { projects: canvasProjects, assets: durableAssets, syncDrafts };
-                                const imageKeys = new Set([...frozenExtraImageKeys, ...collectImageStorageKeys(references)]);
-                                const mediaKeys = new Set([...frozenExtraMediaKeys, ...collectMediaStorageKeys(references)]);
-                                await cleanupUnusedImages(
-                                    [...imageKeys].map((storageKey) => ({ storageKey })),
-                                    scope,
-                                );
-                                await cleanupUnusedMedia(
-                                    [...mediaKeys].map((storageKey) => ({ storageKey })),
-                                    scope,
-                                );
+                                const canvasProjects = pendingCanvasStorePersistence(scope)?.projects ?? durableCanvas.state.projects;
+                                const syncDrafts = await readAllCanvasSyncDrafts(scope);
+                                await withGenerationAssetStorageLock(scope, async () => {
+                                    await commitPendingAssetStorePersistenceLocked(scope);
+                                    const durableAssets = (await readPersistedAssetDocumentForScope(scope)).state.assets;
+                                    const references = { projects: canvasProjects, assets: durableAssets, syncDrafts };
+                                    const imageKeys = new Set([...frozenExtraImageKeys, ...collectImageStorageKeys(references)]);
+                                    const mediaKeys = new Set([...frozenExtraMediaKeys, ...collectMediaStorageKeys(references)]);
+                                    await cleanupUnusedImages(
+                                        [...imageKeys].map((storageKey) => ({ storageKey })),
+                                        scope,
+                                    );
+                                    await cleanupUnusedMedia(
+                                        [...mediaKeys].map((storageKey) => ({ storageKey })),
+                                        scope,
+                                    );
+                                });
                             });
                         }).then(resolve, reject),
                     );

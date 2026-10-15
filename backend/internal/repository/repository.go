@@ -32,6 +32,7 @@ var ErrProjectHasActiveTasks = errors.New("项目中还有进行中的任务，�
 var ErrProjectUnitShotsChanged = errors.New("镜头已被修改，请刷新后重试")
 
 var ErrCanvasRevisionConflict = errors.New("画布已被更新，请刷新后重试")
+var ErrProjectArchived = errors.New("项目已归档，不能修改短剧生产数据")
 
 type Repository struct {
 	db *gorm.DB
@@ -92,6 +93,11 @@ func (r *Repository) UserStorageUsage(userID string) (UserStorageUsage, error) {
 		query = strings.ReplaceAll(query, ", '') AS BLOB))", ", ''))")
 	}
 	err := r.db.Raw(query, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID).Scan(&usage).Error
+	if err == nil && r.db.Migrator().HasTable(&model.ProductionAgentJob{}) {
+		var bytes int64
+		bytes,err=r.ProductionAgentStorageBytes(userID)
+		usage.TaskBytes+=bytes
+	}
 	return usage, err
 }
 

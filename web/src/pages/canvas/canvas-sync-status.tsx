@@ -22,7 +22,7 @@ export function CanvasSyncStatus({ projectId, onLoadLatest, onOpenVersions }: { 
     const tone = conflict ? "conflict" : error ? "error" : saving ? "pending" : phase === "done" ? "done" : "idle";
     const label = conflict ? "需要处理冲突" : error ? "云端保存失败" : saving ? "正在同步" : phase === "done" ? "已保存到云端" : "尚未同步";
     const description = conflict
-        ? "本地修改没有被覆盖，已保存为本地草稿。"
+        ? progress?.message || (progress?.draftCount ? "本地修改已保存为本地草稿。" : "存在版本冲突，请先下载本地副本；草稿保存尚未确认。")
         : error
           ? progress?.message || "本地内容仍然保留，云端暂未确认。"
           : saving

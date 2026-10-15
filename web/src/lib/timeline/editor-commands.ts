@@ -21,6 +21,13 @@ export type EditorCommandRegistry = {
 // ---------------------------------------------------------------------------
 
 export type AddClipPayload = { clip: TimelineClip };
+export type ReplaceShotMediaPayload = {
+    /** 对照界面展示过的整组片段快照；发生编辑或增删时拒绝旧方案。 */
+    expectedClips: TimelineClip[];
+    source: NonNullable<TimelineClip["shotSource"]>;
+    durationMs: number;
+    title: string;
+};
 export type MoveClipPayload = { id: string; startMs: number; trackId?: string };
 export type TrimClipPayload = { id: string; startMs?: number; durationMs?: number; sourceStartMs?: number };
 export type SplitClipPayload = { id: string; splitAtMs: number };
@@ -62,6 +69,7 @@ export const EDITOR_COMMAND_OPS = [
     "addTrack",
     "removeTrack",
     "setTrackFlag",
+    "replaceShotMedia",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -114,6 +122,36 @@ function handleAddClip(state: TimelineProject, payload: unknown): TimelineProjec
     if (clip.kind === "subtitle") fail("addClip", 'subtitle clips must use op "addSubtitle"');
     findTrackOrThrow("addClip", state, clip.trackId);
     return withClips(state, [...state.clips, clip]);
+}
+
+function handleReplaceShotMedia(state: TimelineProject, payload: unknown): TimelineProject {
+    const op = "replaceShotMedia";
+    if (!payload || typeof payload !== "object") fail(op, "payload must be an object");
+    const { expectedClips, source, durationMs, title } = payload as ReplaceShotMediaPayload;
+    if (!source || [source.projectId, source.unitId, source.shotId, source.revisionId, source.artifactId, source.resourceId].some((id) => typeof id !== "string" || !id.trim())) fail(op, "完整镜头来源不能为空");
+    if (!Number.isSafeInteger(durationMs) || durationMs <= 0) fail(op, "新素材时长必须为已确认的正整数毫秒");
+    if (typeof title !== "string") fail(op, "素材标题必须为字符串");
+    if (!Array.isArray(expectedClips) || !expectedClips.length) fail(op, "替换范围不能为空");
+    const clips = state.clips.filter((clip) => clip.shotSource?.projectId === source.projectId && clip.shotSource.unitId === source.unitId && clip.shotSource.shotId === source.shotId);
+    const expectedById = new Map(expectedClips.map((clip) => [clip?.id, clip]));
+    if (expectedById.size !== expectedClips.length || clips.length !== expectedClips.length || !clips.length) fail(op, "镜头片段范围已变化，请重新预览替换");
+    if (new Set(clips.map((clip) => clip.id)).size !== clips.length || state.clips.filter((clip) => expectedById.has(clip.id)).length !== clips.length) fail(op, "时间线片段标识重复，请先修复来源");
+    for (const clip of clips) {
+        assertClipShape(op, clip);
+        if (JSON.stringify(clip) !== JSON.stringify(expectedById.get(clip.id))) fail(op, "镜头片段已编辑，请重新预览替换");
+        if (clip.kind !== "video" || clip.directMedia?.kind !== "video" || clip.directMedia.storageKey !== `resource:${clip.shotSource!.resourceId}`) fail(op, "已有片段媒体与镜头来源不一致");
+        if (findTrackOrThrow(op, state, clip.trackId).locked) fail(op, "片段所在轨道已锁定");
+        const sourceStartMs = clip.sourceStartMs ?? 0;
+        if (!Number.isFinite(sourceStartMs) || sourceStartMs < 0 || !Number.isFinite(clip.durationMs) || clip.durationMs <= 0) fail(op, "已有剪辑区间无效");
+        if (sourceStartMs + clip.durationMs > durationMs) fail(op, "新素材过短，不能保留现有剪辑区间");
+    }
+    const nextSource = { projectId: source.projectId, unitId: source.unitId, shotId: source.shotId, revisionId: source.revisionId, artifactId: source.artifactId, resourceId: source.resourceId };
+    const nodeId = `shot-source:${[source.projectId, source.unitId, source.shotId, source.revisionId, source.artifactId, source.resourceId].map(encodeURIComponent).join(":")}`;
+    const directMedia = { id: source.artifactId, kind: "video" as const, title, storageKey: `resource:${source.resourceId}`, durationMs };
+    // map 保留片段顺序、稳定 ID 和未受影响对象引用；整组拆分片段共享同一新媒体身份。
+    return withClips(state, state.clips.map((clip) => expectedById.has(clip.id)
+        ? { ...clip, nodeId, directMedia, shotSource: nextSource, sourceDurationMs: durationMs }
+        : clip));
 }
 
 function handleMoveClip(state: TimelineProject, payload: unknown): TimelineProject {
@@ -333,6 +371,7 @@ const BUILTIN_HANDLERS: ReadonlyArray<readonly [string, CommandHandler]> = [
     ["addTrack", handleAddTrack],
     ["removeTrack", handleRemoveTrack],
     ["setTrackFlag", handleSetTrackFlag],
+    ["replaceShotMedia", handleReplaceShotMedia],
     ["rebuildSubtitleClips", handleRebuildSubtitleClips],
 ];
 

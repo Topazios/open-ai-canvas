@@ -9083,6 +9083,12 @@
 }
 
 .admin-model-protocol-field {
+    grid-column: 1 / -1;
+    min-width: 0;
+}
+
+.admin-model-editor-form .model-protocol-routing {
+    grid-column: 1 / -1;
     min-width: 0;
 }
 

@@ -77,6 +77,9 @@ func (r *Repository) DeleteProject(userID string, id string, canvasUpdates []mod
 		if err := tx.Where("project_id = ?", id).Delete(&model.CanvasUnitLink{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("project_id = ?", id).Delete(&model.CanvasNodeShotLink{}).Error; err != nil {
+			return err
+		}
 		for _, canvas := range canvasUpdates {
 			result := tx.Model(&model.CanvasProject{}).
 				Where("id = ? AND user_id = ? AND project_id = ? AND revision = ?", canvas.ID, userID, id, canvas.Revision).
@@ -229,6 +232,9 @@ func (r *Repository) DeleteProjectUnit(projectID string, id string) error {
 		if err := tx.Where("project_id = ? AND unit_id = ?", projectID, id).Delete(&model.CanvasUnitLink{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("project_id = ? AND unit_id = ?", projectID, id).Delete(&model.CanvasNodeShotLink{}).Error; err != nil {
+			return err
+		}
 		shotIDs := tx.Model(&model.Shot{}).Select("id").Where("project_id = ? AND unit_id = ?", projectID, id)
 		if err := tx.Where("project_id = ? AND unit_id = ?", projectID, id).Delete(&model.ProductionTaskLink{}).Error; err != nil {
 			return err
@@ -304,6 +310,12 @@ func (r *Repository) ProjectCanvasUnitLinks(projectID string) ([]model.CanvasUni
 	return links, err
 }
 
+func (r *Repository) ProjectCanvasNodeShotLinks(projectID string) ([]model.CanvasNodeShotLink, error) {
+	var links []model.CanvasNodeShotLink
+	err := r.db.Where("project_id = ?", projectID).Order("created_at asc, id asc").Find(&links).Error
+	return links, err
+}
+
 func (r *Repository) DeleteCanvasUnitLink(projectID string, canvasID string, unitID string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		result := tx.Delete(&model.CanvasUnitLink{}, "project_id = ? AND canvas_id = ? AND unit_id = ?", projectID, canvasID, unitID)
@@ -312,6 +324,9 @@ func (r *Repository) DeleteCanvasUnitLink(projectID string, canvasID string, uni
 		}
 		if result.RowsAffected != 1 {
 			return gorm.ErrRecordNotFound
+		}
+		if err := tx.Where("project_id = ? AND canvas_id = ? AND unit_id = ?", projectID, canvasID, unitID).Delete(&model.CanvasNodeShotLink{}).Error; err != nil {
+			return err
 		}
 		return tx.Model(&model.Project{}).Where("id = ?", projectID).Updates(map[string]any{"revision": gorm.Expr("revision + 1"), "updated_at": time.Now()}).Error
 	})
@@ -324,6 +339,9 @@ func (r *Repository) AssignCanvasToProject(userID string, canvasID string, proje
 func (r *Repository) UnassignCanvasFromProject(userID string, projectID string, canvasID string, payloadJSON string, updatedAt time.Time, revision int64) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("project_id = ? AND canvas_id = ?", projectID, canvasID).Delete(&model.CanvasUnitLink{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("project_id = ? AND canvas_id = ?", projectID, canvasID).Delete(&model.CanvasNodeShotLink{}).Error; err != nil {
 			return err
 		}
 		result := tx.Model(&model.CanvasProject{}).Where("id = ? AND user_id = ? AND project_id = ? AND revision = ?", canvasID, userID, projectID, revision).Updates(map[string]any{

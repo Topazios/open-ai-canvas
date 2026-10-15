@@ -25,7 +25,6 @@ import {
     type AgentPermissionMode,
     type AgentProfileScope,
     type AgentProfileView,
-    type AgentReasoningMode,
     type AgentRun,
 } from "@/services/api/agent";
 import { agentApprovalMatchesSettings, agentApprovalTargetGenerating } from "@/lib/canvas/agent-media-approval";
@@ -88,7 +87,6 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
     const [messages, setMessages] = useState<CloudAgentChatMessage[]>([]);
     const [prompt, setPrompt] = useState("");
     const lastPrefillPromptRef = useRef("");
-    const [reasoningMode, setReasoningMode] = useState<AgentReasoningMode>("off");
     const [profileView, setProfileView] = useState<AgentProfileView | null>(null);
     const [profileLoading, setProfileLoading] = useState(false);
     const [profileSaving, setProfileSaving] = useState(false);
@@ -612,7 +610,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                 const input = {
                     canvasId,
                     prompt: value,
-                    reasoningMode,
+                    reasoningEffort: config.textReasoningEffort || "medium",
                     profileRevision: profileView.revision,
                     model: modelOptionName(selectedModel) || undefined,
                     ...(logicalModelId ? { logicalModelId } : requestConfig.channelId ? { channelId: requestConfig.channelId, channelModelKey: modelOptionName(selectedModel) || undefined } : {}),
@@ -911,8 +909,6 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                                         onBack={() => setView("chat")}
                                         onModelChange={setModel}
                                         onPermissionChange={setPermissionMode}
-                                        reasoningMode={reasoningMode}
-                                        onReasoningModeChange={setReasoningMode}
                                         profileView={profileView}
                                         profileLoading={profileLoading}
                                         profileSaving={profileSaving}
@@ -936,7 +932,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                                     <AgentHistory conversations={conversations} activeConversationId={activeConversationId} theme={theme} onBack={() => setView("chat")} onNew={newConversation} onOpen={openConversation} onDelete={deleteConversation} />
                                 </motion.div>
                             ) : (
-                                <motion.div key="chat" className="flex min-h-0 flex-1 flex-col" initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} transition={{ duration: reducedMotion ? 0 : 0.18 }}>
+                                <motion.div key="chat" className="agent-panel-chat thin-scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto" initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} transition={{ duration: reducedMotion ? 0 : 0.18 }}>
                                     <AgentHeader
                                         theme={theme}
                                         hasMessages={messages.length > 0}
@@ -1031,7 +1027,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, se
                                         references={[...references, ...buildSkillMentionReferences(installedSkills)]}
                                         slashSkills={installedSkills}
                                         includeAssetLibrary={false}
-                                        submitAccessory={<AgentContextRing view={presentAgentContextUsage(contextUsage)} />}
+                                        submitAccessory={<AgentContextRing view={presentAgentContextUsage(contextUsage)} theme={theme} />}
                                         left={
                                             <ComposerControls
                                                 config={config}

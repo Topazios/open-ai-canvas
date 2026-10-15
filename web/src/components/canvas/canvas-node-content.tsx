@@ -5,6 +5,8 @@ import type { CanvasNodeRenderLOD } from "@/lib/canvas/canvas-node-lod";
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import { canvasRichTextHTML } from "@/lib/canvas/canvas-rich-text";
 import { canvasTextFontSize } from "@/lib/canvas/canvas-text-scale";
+import { recordCanvasRender } from "@/lib/canvas/canvas-performance-diagnostics";
+import { hasCanvasCustomNodeContent } from "@/lib/canvas/canvas-custom-node-content";
 import { loadCanvasDrawingPreview } from "@/lib/canvas/canvas-drawing-storage";
 import { producedModelLabel } from "@/lib/canvas/produced-model";
 import { useConfigStore } from "@/stores/use-config-store";
@@ -12,7 +14,7 @@ import { useUserStore } from "@/stores/use-user-store";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
-import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeRetryOptions } from "@/types/canvas";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { ART_CRITIQUE_NODE_TYPE } from "@/lib/art-critique/contracts";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
@@ -48,7 +50,7 @@ export type CanvasNodeContentProps = {
     onContentChange: (nodeId: string, content: string) => void;
     onStopEditing: () => void;
     mentionReferences: CanvasResourceReference[];
-    onRetry?: (node: CanvasNodeData) => void;
+    onRetry?: (node: CanvasNodeData, options?: CanvasNodeRetryOptions) => void;
     onReloadResource?: (node: CanvasNodeData) => void;
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
     onToggleBatch?: () => void;
@@ -58,6 +60,7 @@ export type CanvasNodeContentProps = {
 };
 
 export function CanvasNodeContent(props: CanvasNodeContentProps) {
+    recordCanvasRender("content", props.node.id);
     if (props.node.metadata?.fileUpload) return <CanvasFileUploadContent node={props.node} theme={props.theme} reduceMotion={props.reduceMediaEffects} />;
     // Keep the image renderer mounted while node LOD changes. Visibility still gates first load.
     if (props.node.type === CanvasNodeType.Image && props.renderLOD !== "full" && (props.node.metadata?.content || props.node.metadata?.storageKey)) {
@@ -65,14 +68,7 @@ export function CanvasNodeContent(props: CanvasNodeContentProps) {
     }
     if (props.renderLOD === "shell") return <CanvasNodeShellContent node={props.node} theme={props.theme} />;
     if (props.renderLOD === "preview") return <CanvasNodePreviewContent node={props.node} theme={props.theme} />;
-    const hasCustomContent =
-        props.node.type === CanvasNodeType.Config ||
-        props.node.type === CanvasNodeType.Script ||
-        props.node.type === CanvasNodeType.BatchTable ||
-        Boolean(props.node.metadata?.directorSceneId) ||
-        (props.node.metadata?.workflowKind === "character" && Boolean(props.node.metadata.characterAssetId)) ||
-        (props.node.metadata?.workflowKind === "story_input" && !props.isEditingContent) ||
-        (props.node.metadata?.workflowKind === "styleboard" && !props.node.metadata.content);
+    const hasCustomContent = hasCanvasCustomNodeContent(props.node, props.isEditingContent);
     if (hasCustomContent && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.node.type === ART_CRITIQUE_NODE_TYPE) return <ArtCritiqueNodeContent node={props.node} />;
     if (props.node.type === MEDIA_CONVERSION_NODE_TYPE) return <MediaConversionNodeContent node={props.node} theme={props.theme} />;
@@ -232,6 +228,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                     onChange={(value) => onContentChange(node.id, value)}
                     onBlur={onStopEditing}
                     onKeyDown={(event) => {
+                        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                         if (event.key === "Escape") onStopEditing();
                     }}
                     onMouseDown={(event) => event.stopPropagation()}

@@ -1,6 +1,6 @@
 import type { ModelCapabilityChoice } from "@/components/model-protocol-picker";
 import { defaultModelCapabilityConfig, normalizeModelCapabilityConfig, type ModelCapabilityConfig } from "@/lib/model-capabilities";
-import { modelProtocolSupportsTokenBilling, type ModelProtocolDefinition } from "@/lib/model-protocols";
+import { groupedModelProtocols, modelProtocolSupportsTokenBilling, type ModelProtocolDefinition } from "@/lib/model-protocols";
 import type { ChannelModel } from "@/services/api/wallet";
 import type { ModelTag } from "@/lib/model-tags";
 import { defaultPriceTier, legacyPriceTierToForm, priceTierToForm, type PriceTierFormValues } from "./channel-model-price-tier-form";
@@ -28,7 +28,7 @@ export function editorSectionForField(name: (string | number)[]): EditorSection 
 
 export function initialChannelModelValues(item: ChannelModel | null, protocols: ModelProtocolDefinition[]): ChannelModelFormValues {
     const capability = item?.capability || "text";
-    const protocol = item ? item.protocol : protocols.find((p) => p.capability === capability && p.enabled !== false)?.value;
+    const protocol = item ? item.protocol : groupedModelProtocols(protocols.filter((p) => p.capability === capability))[0]?.value;
     const upstreamModel = item?.providerModelKey || item?.modelKey || "";
     return {
         modelKey: item?.modelKey || "",
@@ -49,7 +49,7 @@ export function initialChannelModelValues(item: ChannelModel | null, protocols: 
 // Clear incompatible selectors, but never silently convert prices or billing units.
 export function changeChannelModelCapability(values: ChannelModelFormValues, protocols: ModelProtocolDefinition[]): ChannelModelFormValues {
     const capability = values.capability;
-    const protocol = protocols.find((p) => p.value === values.protocol && p.capability === capability && p.enabled !== false)?.value || protocols.find((p) => p.capability === capability && p.enabled !== false)?.value;
+    const protocol = protocols.find((p) => p.value === values.protocol && p.capability === capability && p.enabled !== false)?.value || groupedModelProtocols(protocols.filter((p) => p.capability === capability))[0]?.value;
     return {
         ...values,
         protocol,

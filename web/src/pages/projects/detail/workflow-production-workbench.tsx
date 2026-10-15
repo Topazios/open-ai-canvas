@@ -29,6 +29,7 @@ import {
     linkShotAsset,
     listProjectAssetsPage,
     saveProjectShot,
+    selectProjectShotArtifact,
     unlinkShotAsset,
     type ProjectAsset,
     type ProjectDetail,
@@ -94,6 +95,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
     const [previewTab, setPreviewTab] = useState<"latest" | "history">("latest");
     const [previewArtifactId, setPreviewArtifactId] = useState("");
     const [imagePreviewArtifact, setImagePreviewArtifact] = useState<ShotArtifact | null>(null);
+    const [selectingArtifactId, setSelectingArtifactId] = useState("");
     const [editorDirty, setEditorDirty] = useState(false);
     const [submittingShotIds, setSubmittingShotIds] = useState<Set<string>>(() => new Set());
     const [taskClock, setTaskClock] = useState(() => Date.now());
@@ -394,6 +396,21 @@ export default function WorkflowProductionWorkbench(props: Props) {
     const stageCopy = productionStageCopy[activeStage as "storyboard" | "previz" | "video"];
     const selectedShotSubmitting = submittingShotIds.has(selectedShot?.id || "");
 
+    const selectArtifact = async (artifact: ShotArtifact) => {
+        if (!selectedShot || artifact.selected || artifact.status !== "ready") return;
+        setSelectingArtifactId(artifact.id);
+        try {
+            await selectProjectShotArtifact(projectId, selectedShot.id, artifact.id);
+            setPreviewArtifactId(artifact.id);
+            await onRefresh();
+            message.success("已采用该版本产物");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "采用产物失败");
+        } finally {
+            setSelectingArtifactId("");
+        }
+    };
+
     if (!selectedShot) {
         return <div className="workflow-empty-shot"><EmptyState size="compact" title="当前章节还没有分镜" action={<Button type="primary" icon={<Plus className="size-4" />} loading={addingShot} onClick={onAddShot}>新增第一个分镜</Button>} /></div>;
     }
@@ -474,6 +491,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
                         </div>
                         <div className="flex items-center gap-1"><span className="mr-1 text-[var(--fs-micro)] text-foreground/45">{shotIndex + 1} / {shots.length}</span><Button type="text" size="small" icon={<ChevronLeft className="size-4" />} disabled={shotIndex <= 0} onClick={() => selectRelativeShot(-1)} aria-label="上一个镜头" /><Button type="text" size="small" icon={<ChevronRight className="size-4" />} disabled={shotIndex >= shots.length - 1} onClick={() => selectRelativeShot(1)} aria-label="下一个镜头" /></div>
                     </header>
+                    <ShotRevisionImpact detail={detail} shot={selectedShot} dirty={editorDirty} />
                     <Form form={form} layout="vertical" className="workflow-shot-form" onValuesChange={() => setEditorDirty(true)} onFinish={(values) => saveShot.mutate(values)}>
                         <div className="workflow-shot-form-scroll thin-scrollbar">
                             <div className="workflow-form-section-heading"><span>镜头脚本</span><small>先写清镜头里发生什么，再调整生成参数</small></div>
@@ -570,10 +588,10 @@ export default function WorkflowProductionWorkbench(props: Props) {
                         />
                     </header>
                     <div className="workflow-preview-scroll thin-scrollbar">
-                        {previewTab === "latest" ? <LatestPreview artifact={previewArtifact} emptyText={stageCopy.empty} onPreviewImage={setImagePreviewArtifact} /> : <ArtifactHistory artifacts={artifacts} activeId={previewArtifact?.id} onSelect={(artifact) => { setPreviewArtifactId(artifact.id); setPreviewTab("latest"); }} />}
+                        {previewTab === "latest" ? <LatestPreview artifact={previewArtifact} emptyText={stageCopy.empty} onPreviewImage={setImagePreviewArtifact} /> : <ArtifactHistory artifacts={artifacts} activeId={previewArtifact?.id} onSelect={(artifact) => { setPreviewArtifactId(artifact.id); setPreviewTab("latest"); }} onAdopt={selectArtifact} selectingArtifactId={selectingArtifactId} />}
                         <div className="workflow-preview-summary"><div className="flex items-center justify-between gap-2"><span className="text-xs font-medium">当前产物</span><ArtifactStatus artifact={newestArtifact} compact /></div><div className="mt-1 text-[var(--fs-micro)] text-foreground/45">{newestArtifact ? `${formatDuration(selectedShot.durationMs)} · ${resolution}p · v${newestArtifact.version}` : "当前镜头还没有生成产物"}</div></div>
                         <div className="workflow-preview-actions"><Button icon={<RefreshCcw className="size-3.5" />} loading={selectedShotSubmitting || shotTask?.status === "queued" || shotTask?.status === "running"} onClick={() => void generateArtifact()}>重新生成</Button><Button icon={<Download className="size-3.5" />} disabled={!previewArtifact?.resourceId} onClick={() => previewArtifact?.resourceId && void downloadArtifact(previewArtifact, selectedShot.title, message.error)}>下载{activeStage === "video" ? "视频" : "图片"}</Button></div>
-                        <ArtifactHistory artifacts={artifacts.slice(0, 4)} activeId={previewArtifact?.id} onSelect={(artifact) => setPreviewArtifactId(artifact.id)} compact />
+                        <ArtifactHistory artifacts={artifacts.slice(0, 4)} activeId={previewArtifact?.id} onSelect={(artifact) => setPreviewArtifactId(artifact.id)} onAdopt={selectArtifact} selectingArtifactId={selectingArtifactId} compact />
                     </div>
                 </aside>
             </div>
@@ -708,9 +726,23 @@ function VideoArtifactPreview({ src, title }: { src: string; title: string }) {
     </button>;
 }
 
-function ArtifactHistory({ artifacts, activeId, onSelect, compact = false }: { artifacts: ShotArtifact[]; activeId?: string; onSelect: (artifact: ShotArtifact) => void; compact?: boolean }) {
+function ArtifactHistory({ artifacts, activeId, onSelect, onAdopt, selectingArtifactId, compact = false }: { artifacts: ShotArtifact[]; activeId?: string; onSelect: (artifact: ShotArtifact) => void; onAdopt: (artifact: ShotArtifact) => void; selectingArtifactId: string; compact?: boolean }) {
     if (!artifacts.length) return compact ? null : <EmptyState size="compact" title="暂无历史版本" />;
-    return <section className={`workflow-history ${compact ? "is-compact" : ""}`}><div className="workflow-history-title">历史版本</div>{artifacts.map((artifact) => <button key={artifact.id} type="button" className={artifact.id === activeId ? "is-active" : ""} onClick={() => onSelect(artifact)}>{artifact.resourceId ? artifact.type === "video" ? <video src={resourceFileUrl(artifact.resourceId)} muted preload="metadata" /> : <img src={resourceFileUrl(artifact.resourceId)} alt="" loading="lazy" /> : <span className="workflow-history-placeholder"><Layers3 /></span>}<span className="min-w-0 flex-1"><strong>v{artifact.version}{artifact.selected ? " · 当前" : ""}</strong><small>{new Date(artifact.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small></span><ArtifactStatus artifact={artifact} compact /></button>)}</section>;
+    return <section className={`workflow-history ${compact ? "is-compact" : ""}`}><div className="workflow-history-title">历史版本</div>{artifacts.map((artifact) => <div key={artifact.id} className={`workflow-history-item ${artifact.id === activeId ? "is-active" : ""}`}><button type="button" className="workflow-history-preview" onClick={() => onSelect(artifact)}>{artifact.resourceId ? artifact.type === "video" ? <video src={resourceFileUrl(artifact.resourceId)} muted preload="metadata" /> : <img src={resourceFileUrl(artifact.resourceId)} alt="" loading="lazy" /> : <span className="workflow-history-placeholder"><Layers3 /></span>}<span className="min-w-0 flex-1"><strong>v{artifact.version}{artifact.selected ? " · 当前" : ""}</strong><small>{new Date(artifact.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small></span><ArtifactStatus artifact={artifact} compact /></button>{artifact.selected ? <span className="workflow-history-current">当前采用</span> : artifact.status === "ready" ? <button type="button" className="workflow-history-adopt" disabled={selectingArtifactId === artifact.id} onClick={() => void onAdopt(artifact)}>{selectingArtifactId === artifact.id ? "采用中…" : "采用此版本"}</button> : null}</div>)}</section>;
+}
+
+function ShotRevisionImpact({ detail, shot, dirty }: { detail: ProjectDetail; shot: ProjectShot; dirty: boolean }) {
+    const revision = currentRevision(detail, shot);
+    const selectedArtifacts = (detail.shotArtifacts || []).filter((artifact) => artifact.shotId === shot.id && artifact.selected);
+    const staleArtifacts = (detail.shotArtifacts || []).filter((artifact) => artifact.shotId === shot.id && artifact.status === "stale");
+    const copy = dirty
+        ? "保存脚本后将生成新版本；当前已采用产物会进入待复核，避免旧结果覆盖新脚本。"
+        : staleArtifacts.length
+            ? `脚本 v${revision?.version ?? "—"} 已更新，${staleArtifacts.length} 个历史产物待重新生成或重新采用。`
+            : selectedArtifacts.length
+                ? `脚本 v${revision?.version ?? "—"} · 已确认 ${selectedArtifacts.length} 个当前产物。`
+                : `脚本 v${revision?.version ?? "—"} · 当前还没有确认产物。`;
+    return <div className={`workflow-shot-impact ${dirty || staleArtifacts.length ? "is-warning" : ""}`} role="status"><span>{copy}</span>{selectedArtifacts.length ? <small>{selectedArtifacts.map((artifact) => `${artifact.type} v${artifact.version}`).join(" · ")}</small> : null}</div>;
 }
 
 function ShotTimeline({ activeStage, detail, shots, selectedShotId, submittingShotIds, onSelectShot, onAddShot, addingShot }: { activeStage: ShortDramaWorkflowStage; detail: ProjectDetail; shots: ProjectShot[]; selectedShotId: string; submittingShotIds: Set<string>; onSelectShot: (id: string) => void; onAddShot: () => void; addingShot: boolean }) {

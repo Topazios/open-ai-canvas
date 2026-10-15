@@ -1,9 +1,9 @@
-import { AudioLines, Check, Film, Flame, Image, MessageSquareText, Network, Settings2, Sparkles } from "lucide-react";
+import { AudioLines, Check, Film, Image, MessageSquareText, Network, Settings2 } from "lucide-react";
 import { Button, Modal } from "antd";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { ModelIcon } from "@/components/model-picker";
-import { modelProtocolLabel, type ModelProtocol, type ModelProtocolDefinition, type ProtocolCapability } from "@/lib/model-protocols";
+import { groupedModelProtocols, modelProtocolLabel, type ModelProtocol, type ModelProtocolDefinition, type ProtocolCapability } from "@/lib/model-protocols";
 import { cn } from "@/lib/utils";
 
 export type ModelCapabilityChoice = ProtocolCapability;
@@ -70,7 +70,7 @@ export function ProtocolCardPicker({
     density?: PickerDensity;
     protocols?: ModelProtocolDefinition[];
 }) {
-    const availableProtocols = protocols.filter((item) => item.capability === capability && item.enabled !== false);
+    const availableProtocols = groupedModelProtocols(protocols.filter((item) => item.capability === capability), value);
     return (
         <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2", density === "compact" && "gap-1.5 xl:grid-cols-3")} role="radiogroup" aria-label="模型请求协议">
             {availableProtocols.map((protocol) => {
@@ -89,7 +89,7 @@ export function ProtocolCardPicker({
                         onClick={() => onChange?.(protocol.value)}
                     >
                         <div className={cn("flex min-w-0 items-start", density === "compact" ? "gap-1.5 pr-4" : "gap-2.5 pr-6")}>
-                            <ProtocolBrandMark protocol={protocol} compact={density === "compact"} />
+                            <Network aria-hidden="true" className="size-4 shrink-0 text-foreground/60" />
                             <div className="min-w-0 flex-1">
                                 <div className={cn("model-protocol-card-title truncate font-semibold", density === "compact" ? "text-xs" : "text-sm")}>{protocol.label}</div>
                                 <div className={cn("model-protocol-card-endpoint mt-0.5 truncate font-mono text-foreground/48", density === "compact" ? "text-[var(--fs-micro)]" : "text-[var(--fs-tiny)]")}>{protocol.create}</div>
@@ -179,31 +179,6 @@ export function ModelCapabilityProtocolModal({
             </Modal>
         </>
     );
-}
-
-function ProtocolBrandMark({ protocol, compact = false }: { protocol: ModelProtocolDefinition; compact?: boolean }) {
-    const iconSize = compact ? "size-6" : "size-8";
-    const vendor = `${protocol.vendor || ""} ${protocol.label}`.toLowerCase();
-    if (vendor.includes("jimeng") || vendor.includes("即梦"))
-        return (
-            <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}>
-                <Sparkles className={compact ? "size-3" : "size-4"} />
-            </span>
-        );
-    if (vendor.includes("volcengine") || vendor.includes("火山方舟"))
-        return (
-            <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}>
-                <Flame className={compact ? "size-3" : "size-4"} />
-            </span>
-        );
-    if (vendor.includes("newapi") || vendor.includes("novita"))
-        return (
-            <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}>
-                <Network className={compact ? "size-3" : "size-4"} />
-            </span>
-        );
-    const brand = vendor.includes("gemini") || vendor.includes("google") ? "gemini" : vendor.includes("grok") || vendor.includes("xai") ? "grok" : vendor.includes("openai") ? "openai" : "openai";
-    return <BrandIconRow models={[brand]} compact={compact} />;
 }
 
 function BrandIconRow({ models, compact = false, className }: { models: string[]; compact?: boolean; className?: string }) {

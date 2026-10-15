@@ -28,6 +28,14 @@ function renderGrid(mode: CanvasBackgroundMode, viewport: ViewportTransform, the
 }
 
 describe("canvas screen-space background", () => {
+    test("committed translation stays on the world transform, not inherited node variables", () => {
+        for (const viewport of viewports) {
+            const markup = renderToStaticMarkup(<InfiniteCanvas containerRef={createRef<HTMLDivElement>()} viewport={viewport} onViewportChange={() => {}}><div data-test-node /></InfiniteCanvas>);
+            expect(markup).not.toContain("--canvas-live-x");
+            expect(markup).not.toContain("--canvas-live-y");
+            expect(markup).toContain(`transform:translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(1)`);
+        }
+    });
     for (const mode of ["lines", "dots"] as const) {
         test(`${mode} keeps fixed geometry across zoom, pan and committed renders`, () => {
             for (const theme of ["light", "dark"] as const) {

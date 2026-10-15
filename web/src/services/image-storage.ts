@@ -5,6 +5,7 @@ import { readImageMeta } from "@/lib/image-utils";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { getResourceAccess, importResourceFromUrl, isResourceUrl, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, resourceStorageKeyFromURL, ResourceUploadError, uploadResourceFile } from "@/services/api/resources";
 import { getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
+import { LocalMediaUrlCache } from "@/services/local-media-url-cache";
 
 export type UploadedImage = {
     url: string;
@@ -24,15 +25,19 @@ export type UploadedImage = {
 };
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
-const objectUrls = new Map<string, string>();
+const objectUrls = new LocalMediaUrlCache();
+
+export function clearImageObjectUrls() { objectUrls.clear(); }
 
 export async function uploadImage(input: string | Blob, onProgress?: (uploadedBytes: number, totalBytes: number) => void): Promise<UploadedImage> {
     // 同一个逻辑上传在直传失败后会退回 IndexedDB，并由云端数据同步再次提交。
     // 提前生成本地 key，确保两条路径向后端发送相同的幂等标识。
     const storageKey = `image:${getActiveUserScope()}:${nanoid()}`;
+    const generation = objectUrls.generation;
     if (typeof input === "string" && shouldImportRemoteImage(input)) {
         try {
             const resource = await importResourceFromUrl(input, "image", { idempotencyKey: storageKey });
+            objectUrls.assertCurrent(generation);
             return {
                 url: resource.publicUrl || resourceFileUrl(resource.id),
                 storageKey: resourceStorageKey(resource.id),
@@ -41,36 +46,54 @@ export async function uploadImage(input: string | Blob, onProgress?: (uploadedBy
                 bytes: resource.size || 0,
                 mimeType: resource.mimeType || "image/png",
             };
-        } catch {
+        } catch (error) {
+            objectUrls.assertCurrent(generation);
+            if (error instanceof DOMException && error.name === "AbortError") throw error;
             // Keep the browser-side path as a fallback for CORS-enabled HTTPS images.
         }
     }
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    let blob: Blob;
+    if (typeof input === "string") {
+        const response = await fetch(input, { credentials: isResourceUrl(input) ? "include" : "same-origin" });
+        if (!response.ok) throw new Error(`读取图片失败（HTTP ${response.status}）`);
+        blob = await response.blob();
+    } else blob = input;
+    objectUrls.assertCurrent(generation);
     const previewUrl = URL.createObjectURL(blob);
-    const meta = await readImageMeta(previewUrl);
-    let remoteUploadError = "";
+    let retainPreviewUrl = false;
     try {
-        const resource = await uploadResourceFile(blob, "image", { width: meta.width, height: meta.height, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey }, onProgress);
-        await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
-        URL.revokeObjectURL(previewUrl);
-        return {
-            url: resource.publicUrl || resourceFileUrl(resource.id),
-            storageKey: resourceStorageKey(resource.id),
-            width: resource.width || meta.width,
-            height: resource.height || meta.height,
-            bytes: resource.size || blob.size,
-            mimeType: resource.mimeType || blob.type || meta.mimeType,
-        };
-    } catch (error) {
-        // 鉴权失效、越权、体积超限这类失败重传也是同样结果，不能退化成"稍后自动同步"。
-        if (error instanceof ResourceUploadError && error.permanent) throw error;
-        remoteUploadError = error instanceof Error ? error.message : "图片直传失败";
+        const meta = await readImageMeta(previewUrl);
+        objectUrls.assertCurrent(generation);
+        let remoteUploadError = "";
+        try {
+            const resource = await uploadResourceFile(blob, "image", { width: meta.width, height: meta.height, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey }, onProgress);
+            objectUrls.assertCurrent(generation);
+            await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
+            objectUrls.assertCurrent(generation);
+            return {
+                url: resource.publicUrl || resourceFileUrl(resource.id),
+                storageKey: resourceStorageKey(resource.id),
+                width: resource.width || meta.width,
+                height: resource.height || meta.height,
+                bytes: resource.size || blob.size,
+                mimeType: resource.mimeType || blob.type || meta.mimeType,
+            };
+        } catch (error) {
+            objectUrls.assertCurrent(generation);
+            if (error instanceof DOMException && error.name === "AbortError") throw error;
+            // 鉴权失效、越权、体积超限这类失败重传也是同样结果，不能退化成"稍后自动同步"。
+            if (error instanceof ResourceUploadError && error.permanent) throw error;
+            remoteUploadError = error instanceof Error ? error.message : "图片直传失败";
+        }
+        // 瞬时失败退回本机：文件仍可用，且云端数据同步会用同一幂等键重传。
+        await store.setItem(storageKey, blob);
+        objectUrls.assertCurrent(generation);
+        const url = objectUrls.adopt(storageKey, previewUrl);
+        retainPreviewUrl = true;
+        return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType, pendingRemoteUpload: true, remoteUploadError };
+    } finally {
+        if (!retainPreviewUrl) URL.revokeObjectURL(previewUrl);
     }
-    // 瞬时失败退回本机：文件仍可用，且云端数据同步会用同一幂等键重传。
-    await store.setItem(storageKey, blob);
-    const url = previewUrl;
-    objectUrls.set(storageKey, url);
-    return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType, pendingRemoteUpload: true, remoteUploadError };
 }
 
 function shouldImportRemoteImage(input: string) {
@@ -88,13 +111,7 @@ export async function resolveImageUrl(storageKey?: string, fallback = "", option
         // 远程资源展示直接使用 OSS/CDN 授权地址，不把媒体内容读进浏览器 Blob。
         return resolveResourceAccessURL((await getResourceAccess(resolvedStorageKey, "display")).url);
     }
-    const cached = objectUrls.get(resolvedStorageKey);
-    if (cached) return cached;
-    const blob = await store.getItem<Blob>(resolvedStorageKey);
-    if (!blob) return fallback;
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(resolvedStorageKey, url);
-    return url;
+    return (await objectUrls.resolve(resolvedStorageKey, () => store.getItem<Blob>(resolvedStorageKey))) || fallback;
 }
 
 export async function getImageBlob(storageKey: string) {
@@ -104,10 +121,7 @@ export async function getImageBlob(storageKey: string) {
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
     if (resourceIdFromStorageKey(storageKey)) return primeResourceBlobCache(storageKey, blob);
-    await store.setItem(storageKey, blob);
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
-    return url;
+    return objectUrls.write(storageKey, blob, () => store.setItem(storageKey, blob));
 }
 
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string; name?: string; type?: string; mimeType?: string }) {
@@ -127,10 +141,7 @@ export async function deleteStoredImages(keys: Iterable<string>) {
     await Promise.all(
         Array.from(new Set(keys)).map(async (key) => {
             if (resourceIdFromStorageKey(key)) return;
-            const url = objectUrls.get(key);
-            if (url) URL.revokeObjectURL(url);
-            objectUrls.delete(key);
-            await store.removeItem(key);
+            await objectUrls.remove(key, () => store.removeItem(key));
         }),
     );
 }

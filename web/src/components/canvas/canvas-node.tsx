@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, Lock, Maximize2, Music2, Pencil, RefreshCw, ScanSearch, Settings2, Star, Trash2, Type, Video, WandSparkles } from "lucide-react";
 
 import { useCanvasNodeActions } from "./canvas-node-action-context";
+import { recordCanvasRender } from "@/lib/canvas/canvas-performance-diagnostics";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { CanvasNodeRenderLOD } from "@/lib/canvas/canvas-node-lod";
@@ -15,12 +16,20 @@ import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-refer
 import { ART_CRITIQUE_NODE_TYPE } from "@/lib/art-critique/contracts";
 import { getNodeDefinition, getNodeMinSize, shouldKeepAspectRatio } from "@/lib/canvas/node-registry";
 import { CanvasNodeContent, CanvasNodeImageInfo, CanvasNodeProducedModel } from "./canvas-node-content";
+import { CanvasShotProjection } from "./canvas-shot-projection";
+import type { CanvasShotBinding } from "@/lib/canvas/canvas-shot-projection";
+import { GripVertical, ZoomIn } from "lucide-react";
+import "./canvas-image-preview.css";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
 
 type CanvasNodeProps = {
     data: CanvasNodeData;
+    shotBinding?: CanvasShotBinding;
+    showOriginalNode?: boolean;
+    onOriginalNodeView?: (nodeId: string, original: boolean) => void;
+    onRefreshShot?: () => void;
     renderLOD?: CanvasNodeRenderLOD;
     dragOffset?: Position;
     scale: number;
@@ -31,6 +40,7 @@ type CanvasNodeProps = {
     isConnectionTarget: boolean;
     connectionApproach?: Position;
     forceInputVisible?: boolean;
+    connectionsAtContainer?: boolean;
     showImageInfo: boolean;
     reduceMediaEffects?: boolean;
     readOnly?: boolean;
@@ -55,7 +65,7 @@ type CanvasNodeProps = {
     onContentChange: (nodeId: string, content: string) => void;
     onToggleBatch?: (nodeId: string) => void;
     onSetBatchPrimary?: (node: CanvasNodeData) => void;
-    onRetry?: (node: CanvasNodeData) => void;
+    onRetry?: (node: CanvasNodeData, options?: import("@/types/canvas").CanvasNodeRetryOptions) => void;
     onReloadResource?: (node: CanvasNodeData) => void;
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
     onOpenVersions?: (node: CanvasNodeData) => void;
@@ -70,6 +80,10 @@ type CanvasNodeProps = {
 
 export const CanvasNode = React.memo(function CanvasNode({
     data,
+    shotBinding,
+    showOriginalNode = false,
+    onOriginalNodeView,
+    onRefreshShot,
     renderLOD = "full",
     dragOffset,
     scale,
@@ -80,6 +94,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     isConnectionTarget,
     connectionApproach,
     forceInputVisible = false,
+    connectionsAtContainer = false,
     showImageInfo,
     reduceMediaEffects = false,
     readOnly = false,
@@ -115,7 +130,9 @@ export const CanvasNode = React.memo(function CanvasNode({
     onMediaPlayRequest,
     onContextMenu,
 }: CanvasNodeProps) {
+    recordCanvasRender("node", data.id);
     const theme = canvasThemes[useActiveTheme()];
+    const projectView = Boolean(shotBinding && !showOriginalNode);
     const [hovered, setHovered] = useState(false);
     const [isEditingContent, setIsEditingContent] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -295,14 +312,14 @@ export const CanvasNode = React.memo(function CanvasNode({
                 setHovered(false);
                 onHoverEnd(data.id);
             }}
-            onContextMenu={(event) => onContextMenu(event, data.id)}
+            onContextMenu={(event) => { if (projectView) { event.preventDefault(); return; } onContextMenu(event, data.id); }}
         >
             {showChrome ? <NodeExternalHeader
                 node={data}
                 scale={scale}
-                dimensionLabel={mediaDimensionLabel}
+                dimensionLabel={projectView ? null : mediaDimensionLabel}
                 active={isSelected || isFocusRelated}
-                editable={!readOnly && !data.metadata?.locked && Boolean(onTitleChange)}
+                editable={!projectView && !readOnly && !data.metadata?.locked && Boolean(onTitleChange)}
                 editing={isEditingTitle}
                 draft={titleDraft}
                 theme={theme}
@@ -317,7 +334,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 data-connection-tilt={connectionTilt ? "true" : undefined}
                 data-state={data.metadata?.status || (isActive ? "active" : isRelated ? "related" : "idle")}
                 style={{
-                    background: hasImageContent || hasVideoContent ? "transparent" : theme.node.fill,
+                    background: hasImageContent && data.parentId && data.metadata?.shortDrama?.mediaKind === "image" ? theme.node.fill : hasImageContent || hasVideoContent ? "transparent" : theme.node.fill,
                     // 固定占位但不绘制描边，避免聚焦切换时边框宽度变化造成白边跳动。
                     border: isComposerNode ? "0" : "1px solid transparent",
                     boxShadow: isComposerNode || !showChrome ? "none" : isSelected || isFocusRelated ? theme.node.hoverShadow : theme.node.shadow,
@@ -328,6 +345,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 } as React.CSSProperties}
                 onMouseDown={(event) => onMouseDown(event, data.id)}
                 onDoubleClick={(event) => {
+                    if (projectView) return;
                     if (isBatchRoot) {
                         event.stopPropagation();
                         onToggleBatch?.(data.id);
@@ -358,13 +376,18 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onOpenTextEditor?.(data);
                         return;
                     }
+                    if (!readOnly && data.metadata?.storyDevelopment) {
+                        event.stopPropagation();
+                        onOpenTextEditor?.(data);
+                        return;
+                    }
                     if (readOnly || data.type !== CanvasNodeType.Text) return;
                     event.stopPropagation();
                     setIsEditingContent(true);
                 }}
             >
                 <div
-                    className={`relative flex h-full w-full items-center justify-center rounded-[inherit] ${isBatchRoot || data.type === CanvasNodeType.Script || data.type === CanvasNodeType.BatchTable || isComposerNode ? "overflow-visible" : "overflow-hidden"}`}
+                    className={`relative flex h-full w-full ${shotBinding ? "flex-col" : ""} items-center justify-center rounded-[inherit] ${isBatchRoot || data.type === CanvasNodeType.Script || data.type === CanvasNodeType.BatchTable || isComposerNode ? "overflow-visible" : "overflow-hidden"}`}
                     style={
                         {
                             background: hasImageContent || hasVideoContent || hasAudioContent ? "transparent" : theme.node.fill,
@@ -377,10 +400,22 @@ export const CanvasNode = React.memo(function CanvasNode({
                     }
                 >
                     {/* 节点状态徽章（对应 #97 决策2：左上角 loading/success/error，近距离确认信号）*/}
-                    {showChrome && data.metadata?.status && data.metadata.status !== "idle" && data.type !== CanvasNodeType.Frame ? (
+                    {shotBinding && showChrome ? <div data-canvas-no-zoom className="flex w-full shrink-0 gap-1 border-b px-2 py-1 text-xs" style={{ background: theme.node.fill, borderColor: theme.toolbar.border, color: theme.node.text }} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}>
+                        <button type="button" aria-label="移动画布节点" title="移动画布节点" className="grid w-5 shrink-0 cursor-grab place-items-center" onMouseDown={(event) => onMouseDown(event, data.id)}><GripVertical className="size-3.5" /></button>
+                        <div role="group" aria-label="节点内容来源" className="flex gap-1">
+                            {[false, true].map((original) => <button key={String(original)} type="button" aria-pressed={original === showOriginalNode} onClick={() => onOriginalNodeView?.(data.id, original)} className="rounded px-2 py-1" style={{ background: original === showOriginalNode ? theme.toolbar.itemHover : undefined }}>{original ? "原节点" : "项目镜头"}</button>)}
+                        </div>
+                    </div> : null}
+                    {showChrome && !projectView && data.metadata?.status && data.metadata.status !== "idle" && data.type !== CanvasNodeType.Frame ? (
                         <NodeStatusBadge status={data.metadata.status} />
                     ) : null}
-                    <CanvasNodeContent
+                    {projectView && shotBinding ? <CanvasShotProjection
+                        binding={shotBinding} refresh={onRefreshShot!} node={data} theme={theme} renderLOD={effectiveRenderLOD}
+                        isEditingContent={false} textareaRef={textareaRef} isBatchRoot={false} batchCount={0}
+                        batchExpanded={false} batchOpening={false} batchRecovering={false}
+                        onContentChange={onContentChange} onStopEditing={() => undefined} mentionReferences={[]}
+                        mediaActive={mediaActive} onMediaPlayRequest={onMediaPlayRequest}
+                    /> : <CanvasNodeContent
                         node={data}
                         theme={theme}
                         renderLOD={effectiveRenderLOD}
@@ -404,10 +439,10 @@ export const CanvasNode = React.memo(function CanvasNode({
                         reduceMediaEffects={reduceMediaEffects}
                         mediaActive={mediaActive}
                         onMediaPlayRequest={onMediaPlayRequest}
-                    />
+                    />}
                 </div>
 
-                {showChrome && data.type === CanvasNodeType.Text && data.metadata?.workflowKind !== "character" && data.metadata?.status !== "loading" && data.metadata?.status !== "error" && !readOnly ? (
+                {showChrome && !projectView && data.type === CanvasNodeType.Text && data.metadata?.workflowKind !== "character" && data.metadata?.status !== "loading" && data.metadata?.status !== "error" && !readOnly ? (
                     <div
                         className={`absolute bottom-[10%] left-1/2 z-[var(--node-z-overlay)] -translate-x-1/2 motion-safe:transition motion-safe:duration-200 ${isSelected ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-3 opacity-0"}`}
                         onMouseDown={(event) => event.stopPropagation()}
@@ -426,7 +461,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                     </div>
                 ) : null}
 
-                {showChrome && data.metadata?.versionLabel ? (
+                {showChrome && !projectView && data.metadata?.versionLabel ? (
                     <button
                         type="button"
                         className="absolute left-3 top-3 z-[var(--node-z-overlay)] grid size-7 place-items-center rounded-[var(--r-full)] border p-0.5 text-[var(--node-badge-fs)] font-semibold leading-none backdrop-blur-md transition-[transform,background,border-color,box-shadow] hover:-translate-y-px focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 motion-reduce:hover:translate-y-0"
@@ -444,7 +479,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         {data.metadata.versionLabel}
                     </button>
                 ) : null}
-                {showChrome && showStatusTrack ? (
+                {showChrome && !projectView && showStatusTrack ? (
                     <div className={`absolute right-3 top-3 z-[var(--node-z-overlay)] flex min-w-0 items-center justify-end gap-1 ${data.metadata?.versionLabel ? "max-w-[calc(100%-104px)]" : "max-w-[calc(100%-24px)]"}`}>
                         {resourceLabel && data.type !== CanvasNodeType.Image ? <ResourceLabelBadge reference={resourceLabel} theme={theme} /> : null}
                         {hasMediaContent && !readOnly ? <ResourceStorageBadge storageKey={data.metadata?.storageKey} active={isActive} theme={theme} /> : null}
@@ -454,7 +489,15 @@ export const CanvasNode = React.memo(function CanvasNode({
                     </div>
                 ) : null}
                 {/* 批次子图操作条：成功子项提供下载/副本/设为主图，失败子项提供重试/删除 */}
-                {showChrome && isBatchChild && !readOnly && (hasImageContent || data.metadata?.status === "error") && (hovered || isSelected) ? (
+                {!projectView && hasImageContent && onViewImage && effectiveRenderLOD !== "shell" ? <button
+                    type="button" className="canvas-image-preview-trigger" data-canvas-no-zoom
+                    aria-label={`预览图片：${data.title}`} title="预览图片"
+                    style={{ background: theme.toolbar.panel, color: theme.node.text, borderColor: theme.toolbar.border, width: Math.min(80, 36 / scale), height: Math.min(80, 36 / scale) }}
+                    onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                    onClick={(event) => { event.stopPropagation(); onViewImage(data); }}
+                ><ZoomIn style={{ width: "55%", height: "55%" }} /></button> : null}
+                {showChrome && !projectView && isBatchChild && !readOnly && (hasImageContent || data.metadata?.status === "error") && (hovered || isSelected) ? (
                     <div
                         className="absolute inset-x-0 bottom-2 z-[var(--node-z-overlay)] flex justify-center"
                         onMouseDown={(event) => event.stopPropagation()}
@@ -473,12 +516,12 @@ export const CanvasNode = React.memo(function CanvasNode({
                     </div>
                 ) : null}
                 {/* 批次主图位（折叠根节点封面）常驻下载按钮 */}
-                {showChrome && isBatchRoot && hasImageContent && !readOnly ? (
+                {showChrome && !projectView && isBatchRoot && hasImageContent && !readOnly ? (
                     <div className="absolute bottom-2 right-2 z-[var(--node-z-overlay)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                         <BatchChildActionButton theme={theme} label="下载主图" icon={<Download className="size-3.5" />} onClick={() => downloadNode?.(data)} />
                     </div>
                 ) : null}
-                {showChrome && (assetTags.length || showProducedModel || (showImageInfo && hasImageContent)) ? (
+                {showChrome && !projectView && (assetTags.length || showProducedModel || (showImageInfo && hasImageContent)) ? (
                     <div className={`pointer-events-none absolute inset-x-3 z-[var(--node-z-overlay)] flex items-end justify-between gap-2 ${mediaActive && hasVideoContent ? "bottom-16" : "bottom-3"}`}>
                         <div className="flex min-w-0 items-end gap-1">
                             {assetTags.length ? <AssetTagBadges tags={assetTags} theme={theme} /> : null}
@@ -496,8 +539,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 </> : null}
             </div>
 
-            {(showChrome || forceInputVisible) && !readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.BatchTable ? <ConnectionSideRail side="left" scale={scale} theme={theme} visible={hovered || forceInputVisible} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
-            {showChrome && !readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config && showOutputConnection ? <ConnectionSideRail side="right" scale={scale} theme={theme} visible={hovered} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
+            {(showChrome || forceInputVisible) && !readOnly && !connectionsAtContainer && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.BatchTable ? <ConnectionSideRail side="left" scale={scale} theme={theme} visible={hovered || forceInputVisible} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
+            {showChrome && !readOnly && !connectionsAtContainer && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config && showOutputConnection ? <ConnectionSideRail side="right" scale={scale} theme={theme} visible={hovered} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
 
         </div>
     );
@@ -506,18 +549,24 @@ export const CanvasNode = React.memo(function CanvasNode({
 function areCanvasNodePropsEqual(previous: CanvasNodeProps, next: CanvasNodeProps) {
     return (
         previous.data === next.data &&
+        previous.shotBinding === next.shotBinding &&
+        previous.showOriginalNode === next.showOriginalNode &&
+        previous.onOriginalNodeView === next.onOriginalNodeView &&
+        previous.onRefreshShot === next.onRefreshShot &&
         previous.renderLOD === next.renderLOD &&
         previous.dragOffset?.x === next.dragOffset?.x &&
         previous.dragOffset?.y === next.dragOffset?.y &&
         previous.scale === next.scale &&
         previous.isSelected === next.isSelected &&
         previous.mediaActive === next.mediaActive &&
+        previous.onMediaPlayRequest === next.onMediaPlayRequest &&
         previous.isRelated === next.isRelated &&
         previous.isFocusRelated === next.isFocusRelated &&
         previous.isConnectionTarget === next.isConnectionTarget &&
         previous.connectionApproach?.x === next.connectionApproach?.x &&
         previous.connectionApproach?.y === next.connectionApproach?.y &&
         previous.forceInputVisible === next.forceInputVisible &&
+        previous.connectionsAtContainer === next.connectionsAtContainer &&
         previous.showImageInfo === next.showImageInfo &&
         previous.reduceMediaEffects === next.reduceMediaEffects &&
         previous.readOnly === next.readOnly &&
@@ -700,6 +749,7 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
                         onFocus={(event) => event.currentTarget.select()}
                         onBlur={onCommit}
                         onKeyDown={(event) => {
+                            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                             if (event.key === "Enter") event.currentTarget.blur();
                             if (event.key === "Escape") onCancel();
                         }}

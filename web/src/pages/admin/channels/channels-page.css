@@ -432,7 +432,7 @@
 @media (max-width: 900px) {
     .admin-channel-workspace {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: auto minmax(480px, 1fr);
+        grid-template-rows: auto minmax(640px, 1fr);
         overflow-y: auto;
     }
 
@@ -442,6 +442,11 @@
 
     .admin-channel-list {
         min-height: 96px;
+    }
+
+    .admin-channel-detail-header {
+        flex-direction: column;
+        align-items: stretch;
     }
 
     .admin-channel-sidebar-header,

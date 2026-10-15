@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/repository"
 )
@@ -30,14 +32,20 @@ func (s *Service) taskLifecycle() *taskLifecycleCoordinator {
 	return newTaskLifecycleCoordinator(s)
 }
 
-func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.Task, error) {
+func (w *taskLifecycleCoordinator) retryTask(userID string, id string, acknowledgedBillingOrderID ...string) (*model.Task, error) {
 	s := w.service
 	if s.IsDraining() {
 		return nil, &AppError{Status: 503, Code: 503, Message: "服务正在维护，暂不接受任务重试", Retryable: true}
 	}
 	task, err := s.repo.TaskForUser(userID, id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, NotFound("任务不存在")
+	}
 	if err != nil {
 		return nil, err
+	}
+	if task.RemovedAt != nil {
+		return nil, BadAuthRequest("对应节点已删除，不能重试原任务")
 	}
 	if task.MediaRecoveryJSON != "" {
 		return nil, BadAuthRequest("作品已生成，请使用重试保存，不要重复生成")
@@ -49,16 +57,50 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 		return nil, BadAuthRequest("Agent 重试需要新的幂等键和预算校验，请回到 Agent 对话重新发送")
 	}
 	if task.Status != model.TaskStatusFailed && task.Status != model.TaskStatusCancelled {
-		return nil, errors.New("only failed or cancelled tasks can be retried")
+		return nil, BadAuthRequest("只有失败或已取消的任务可以重试")
+	}
+	if task.Operation == workflowBatchOperation {
+		if err := s.ensureTaskProjectActive(userID, task.ProjectID); err != nil {
+			return nil, err
+		}
+		policy, err := s.RuntimePolicy()
+		if err != nil {
+			return nil, err
+		}
+		resumed, err := s.repo.RetryTaskWithBilling(userID, task, nil, policy.Task.ActiveTaskLimit)
+		if err != nil {
+			return nil, err
+		}
+		s.wakeTaskDispatcher()
+		return taskForOutput(*resumed), nil
 	}
 	if task.ProviderCancelStatus == model.ProviderCancelStatusRequested {
 		return nil, BadAuthRequest("上游取消状态仍在确认中，请确认费用结果后再重试")
 	}
-	if err := s.taskBilling().CheckRetryEligibility(task.BillingOrderID); err != nil {
-		if errors.Is(err, errTaskBillingReview) {
-			return nil, BadAuthRequest("上一次调用费用仍在核对中，处理完成前不能重复提交")
+	previousOrderID := task.BillingOrderID
+	resumeUnsubmitted := unsubmittedDirectRetry(task)
+	acknowledged := len(acknowledgedBillingOrderID) == 1 && acknowledgedBillingOrderID[0] != ""
+	if acknowledged && acknowledgedBillingOrderID[0] != previousOrderID {
+		return nil, BadAuthRequest("任务的调用记录已变化，请重新点击重试并确认")
+	}
+	retryWithPendingBilling := false
+	if err := s.taskBilling().CheckRetryEligibility(previousOrderID); err != nil && !resumeUnsubmitted {
+		if !errors.Is(err, errTaskBillingReview) {
+			return nil, err
 		}
-		return nil, err
+		diagnostic := taskExecutionDiagnostic(task)
+		canRegenerate := task.Type == "canvas_image" && task.Status == model.TaskStatusFailed &&
+			task.ProviderRequestID == "" && (task.ResultJSON == "" || task.ResultJSON == "{}") &&
+			diagnostic != nil && diagnostic.Phase == "execution" && diagnostic.SubmissionOutcome == "unknown"
+		if !canRegenerate {
+			return nil, BadAuthRequest("上一次调用费用仍待核对，请先核对上游结果或恢复已有作品")
+		}
+		if !acknowledged {
+			return nil, &AppError{Status: 409, Code: 409, Reason: "task_billing_review_required",
+				Message: "上次图片请求未返回结果，费用仍待核对。重新生成会发起新的调用，原调用仍可能产生费用。",
+				Details: map[string]any{"billingOrderId": previousOrderID}}
+		}
+		retryWithPendingBilling = true
 	}
 	if isContentModerationFailure(task.Error) {
 		return nil, BadAuthRequest(contentModerationRetryMessage)
@@ -77,6 +119,29 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 	if err := s.requireCustomChannelsForTaskInput(billingInput); err != nil {
 		return nil, err
 	}
+	if resumeUnsubmitted {
+		if err := s.ensureTaskProjectActive(userID, task.ProjectID); err != nil {
+			return nil, err
+		}
+		policy, err := s.RuntimePolicy()
+		if err != nil {
+			return nil, err
+		}
+		attempt, err := s.newDirectTaskAttempt(task, task.RouteRun)
+		if err != nil {
+			return nil, err
+		}
+		resumed, err := s.repo.ResumeUnsubmittedTaskRetry(userID, task, attempt, policy.Task.ActiveTaskLimit)
+		if errors.Is(err, repository.ErrTaskNotRetryable) || errors.Is(err, repository.ErrBillingStateConflict) {
+			return nil, BadAuthRequest("本次调用的提交或计费记录已变化，请刷新任务后核对")
+		}
+		if err != nil {
+			return nil, err
+		}
+		_ = s.log(userID, task.ID, "info", "已核实本轮未提交上游，补齐提交记录并继续原任务，未新增预扣", "")
+		s.wakeTaskDispatcher()
+		return taskForOutput(*resumed), nil
+	}
 	billingOrder, err := s.taskBillingOrder(userID, task, billingInput)
 	if err != nil {
 		return nil, err
@@ -88,7 +153,14 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 	if err := s.ensureTaskProjectActive(userID, task.ProjectID); err != nil {
 		return nil, err
 	}
-	task, err = s.repo.RetryTaskWithBilling(userID, task, billingOrder, policy.Task.ActiveTaskLimit)
+	var retryAttempt *model.RouteAttempt
+	if task.LogicalModelID == "" {
+		retryAttempt, err = s.newDirectTaskAttempt(task, task.RouteRun+1)
+		if err != nil {
+			return nil, err
+		}
+	}
+	task, err = s.repo.RetryTaskWithBilling(userID, task, billingOrder, policy.Task.ActiveTaskLimit, retryAttempt)
 	if errors.Is(err, repository.ErrInsufficientCredits) {
 		return nil, BadAuthRequest("积分不足，请先使用兑换码充值")
 	}
@@ -101,7 +173,12 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 	if err != nil {
 		return nil, err
 	}
+	if retryWithPendingBilling {
+		payload, _ := json.Marshal(map[string]string{"previousBillingOrderId": previousOrderID, "billingOrderId": task.BillingOrderID})
+		_ = s.log(userID, task.ID, "warn", "用户确认重新生成，原调用费用保留待核对，新调用独立记账", string(payload))
+	}
 	_ = s.log(userID, task.ID, "info", "任务已重新入队", "")
+	s.wakeTaskDispatcher()
 	return taskForOutput(*task), nil
 }
 
@@ -112,7 +189,7 @@ func (w *taskLifecycleCoordinator) cancelTask(ctx context.Context, userID string
 func (w *taskLifecycleCoordinator) cancelTaskWithIntent(_ context.Context, userID string, id string, intent model.TaskCancellationIntent) (*model.Task, error) {
 	s := w.service
 	switch intent.Source {
-	case model.TaskCancellationUserRequest, model.TaskCancellationParentCancelled, model.TaskCancellationParentFailed, model.TaskCancellationWorkerContext:
+	case model.TaskCancellationUserRequest, model.TaskCancellationParentCancelled, model.TaskCancellationParentFailed, model.TaskCancellationWorkerContext, model.TaskCancellationNodeDeleted:
 	default:
 		return nil, BadAuthRequest("取消请求缺少有效来源")
 	}
@@ -133,7 +210,7 @@ func (w *taskLifecycleCoordinator) cancelTaskWithIntent(_ context.Context, userI
 	// 用户一旦看到任务进入上游提交/生成阶段，即使 request ID 尚未来得及写回，
 	// 也必须按“可能已经产生上游费用”处理。父任务失败和 worker context 属于
 	// 内部协调，仍需继续走下面的上游取消/对账流程，不能被这条 UI 规则截断。
-	if intent.Source == model.TaskCancellationUserRequest && (strings.TrimSpace(task.ProviderRequestID) != "" || task.MediaStage != "" || !taskStageAllowsUserCancellation(task.Status, task.Stage)) {
+	if intent.Source == model.TaskCancellationUserRequest && (strings.TrimSpace(task.ProviderRequestID) != "" || task.MediaStage != "" || (task.Operation != workflowBatchOperation && !taskStageAllowsUserCancellation(task.Status, task.Stage))) {
 		return nil, BadAuthRequest("第三方请求已提交，任务不可取消")
 	}
 	originalStatus := task.Status

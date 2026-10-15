@@ -13,12 +13,14 @@ import (
 // Internal admission constraints are not JSON fields. Callers cannot select a
 // task ID or bypass the quoted-charge ceiling through the public tasks API.
 type taskAdmission struct {
-	ID           string
-	MaxCharge    int64
-	AgentRunID   string
-	GenerationID string
-	ApprovalID   string
-	NonBillable  bool
+	ID                   string
+	MaxCharge            int64
+	AgentRunID           string
+	GenerationID         string
+	ApprovalID           string
+	NonBillable          bool
+	UnboundedAgentBudget bool
+	BatchParent          *model.Task
 }
 
 // CreateTask 收敛任务进入系统前的 admission 流程：输入标准化、逻辑模型路由、
@@ -44,6 +46,24 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	normalizedInput, err := normalizeTaskInput(req.Input)
 	if err != nil {
 		return nil, err
+	}
+	productionMetadata, _ := normalizedInput["metadata"].(map[string]any)
+	_, hasProductionStage := productionMetadata["workflowStage"]
+	// Only trusted children of older, unscoped batch coordinators retain their
+	// original input/identity. Public batch-child requests still require a stage.
+	legacyBatchChild := req.admission != nil && req.admission.BatchParent != nil && !hasProductionStage
+	if !legacyBatchChild {
+		prompt, err = applyProductionTaskRules(taskType, req.Prompt, normalizedInput)
+		if err != nil {
+			return nil, err
+		}
+	}
+	batch, err := validateWorkflowTextBatch(taskType, prompt, normalizedInput)
+	if err != nil {
+		return nil, err
+	}
+	if req.Operation == workflowBatchOperation && batch == nil {
+		return nil, BadAuthRequest("分批任务缺少执行计划")
 	}
 	// Fail admission before queueing or charging; the worker validates again in
 	// case a tool is deleted or its visibility changes while queued.
@@ -101,6 +121,9 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if err := s.requireCustomChannelsForTaskInput(normalizedInput); err != nil {
 		return nil, err
 	}
+	if err := s.pinTaskModelProtocol(normalizedInput); err != nil {
+		return nil, err
+	}
 	if err := s.ValidateTaskCapability(normalizedInput); err != nil {
 		return nil, err
 	}
@@ -116,7 +139,13 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		if err != nil {
 			return nil, err
 		}
+		if req.admission != nil && req.admission.BatchParent != nil {
+			activeTasks-- // The child borrows its coordinator's admission slot.
+		}
 		if activeTasks >= int64(policy.Task.ActiveTaskLimit) {
+			if req.admission != nil && req.admission.BatchParent != nil {
+				return nil, repository.ErrActiveTaskLimit
+			}
 			return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 		}
 	}
@@ -143,6 +172,21 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if err := s.ensureTaskProjectActive(userID, req.ProjectID); err != nil {
 		return nil, err
 	}
+	if batch != nil {
+		task.Operation, task.RouteRun, task.Stage = workflowBatchOperation, 1, "等待分批处理"
+		if err := s.protectTaskSecrets(normalizedInput); err != nil {
+			return nil, err
+		}
+		encoded, err := json.Marshal(normalizedInput)
+		if err != nil {
+			return nil, err
+		}
+		task.InputJSON = string(encoded)
+		if err := s.createTaskWithinStorageQuota(&task, nil, policy); err != nil {
+			return nil, err
+		}
+		return taskForOutput(task), nil
+	}
 	// Agent roots are durable control-plane carriers, not model calls. They
 	// must not reserve credits or enter the worker queue; Pi creates the
 	// billable cloud_agent_step task for each actual model request instead.
@@ -167,8 +211,8 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if err != nil {
 		return nil, err
 	}
-	if req.admission != nil && billingOrder != nil {
-		if billingOrder.AmountMicrocredits > req.admission.MaxCharge {
+	if req.admission != nil && req.admission.BatchParent == nil && billingOrder != nil {
+		if !req.admission.UnboundedAgentBudget && billingOrder.AmountMicrocredits > req.admission.MaxCharge {
 			return nil, BadAuthRequest("模型调用报价超过本轮 Agent 积分上限，尚未创建任务或扣费")
 		}
 		switch billingOrder.BillingMode {
@@ -200,8 +244,15 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if billingOrder != nil {
 		task.BillingOrderID = billingOrder.ID
 	}
-	err = s.createTaskWithinStorageQuota(&task, billingOrder, policy)
+	if req.admission != nil && req.admission.BatchParent != nil {
+		err = s.createWorkflowBatchChildWithinStorageQuota(req.admission.BatchParent, &task, billingOrder, policy)
+	} else {
+		err = s.createTaskWithinStorageQuota(&task, billingOrder, policy)
+	}
 	if errors.Is(err, repository.ErrActiveTaskLimit) && policy.Task.ActiveTaskLimit > 0 {
+		if req.admission != nil && req.admission.BatchParent != nil {
+			return nil, err
+		}
 		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 	}
 	if errors.Is(err, repository.ErrInsufficientCredits) {
@@ -259,7 +310,7 @@ func applyRoutedProviderSelection(input map[string]any, routed *RoutedModel) map
 	nextConfig := make(map[string]any, len(config)+2)
 	for key, value := range config {
 		switch key {
-		case "channelId", "channelModelKey", "priceTierId", "providerModelKey", "apiFormat", "interfaceType", "baseUrl", "apiKey", "secretKey", "headers", "model", "capabilityConfig":
+		case "channelId", "channelModelKey", "priceTierId", "providerModelKey", "apiFormat", "interfaceType", "selectedProtocol", "baseUrl", "apiKey", "secretKey", "headers", "model", "capabilityConfig":
 			continue
 		default:
 			nextConfig[key] = value
@@ -316,6 +367,20 @@ func normalizeTaskInput(input map[string]any) (map[string]any, error) {
 	var normalized map[string]any
 	if err := json.Unmarshal(encoded, &normalized); err != nil {
 		return nil, BadAuthRequest("任务输入格式无效")
+	}
+	if mode, _ := normalized["mode"].(string); mode == "text" || normalized["textOptions"] != nil {
+		var parsed struct {
+			TextOptions canvasTextOptions `json:"textOptions"`
+		}
+		if err := json.Unmarshal(encoded, &parsed); err != nil {
+			return nil, BadAuthRequest("文本参数无效：" + err.Error())
+		}
+		options, _ := normalized["textOptions"].(map[string]any)
+		if options == nil {
+			options = map[string]any{}
+			normalized["textOptions"] = options
+		}
+		options["reasoningEffort"] = string(parsed.TextOptions.ReasoningEffort.effective())
 	}
 	if snapshot, ok := normalized["canvasSnapshot"]; ok {
 		normalized["canvasSnapshot"] = compactPersistedValue(snapshot)

@@ -177,6 +177,14 @@ export const router = createBrowserRouter([
                     </RequireAuth>
                 ),
             },
+            {
+                path: "/projects/:projectId/editor/:unitId",
+                element: (
+                    <RequireAuth>
+                        <RequireFeature feature="shortDramaEnabled">{deferred(<ProjectDetailPage />)}</RequireFeature>
+                    </RequireAuth>
+                ),
+            },
             { path: "/canvas", element: <RequireAuth>{deferred(<CanvasPage />)}</RequireAuth> },
             { path: "/canvas/:id", element: <RequireAuth><CanvasProjectPage /></RequireAuth> },
             {

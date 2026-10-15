@@ -6,6 +6,7 @@ import { FlaskConical, Plus } from "lucide-react";
 import { ModelIconPicker } from "@/components/model-logo";
 import { ModelIcon } from "@/components/model-picker";
 import { ModelProtocolBrowser } from "@/components/model-protocol-browser";
+import { ModelProtocolRouting } from "@/components/model-protocol-routing";
 import { ModelCapabilityEditor } from "@/components/model-capability-editor";
 import { defaultModelCapabilityConfig, normalizeModelCapabilityConfig, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import type { ModelProtocolDefinition } from "@/lib/model-protocols";
@@ -299,6 +300,10 @@ export function ChannelModelEditor({
                                             <Form.Item className="admin-model-protocol-field" name="protocol" label="调用协议" rules={[{ validator: async (_, value) => validateChannelModelProtocol(form.getFieldValue("capability"), value, protocols) }]}>
                                                 <ModelProtocolBrowser disabled={busy} capability={modelCapability} protocols={protocols} loading={protocolLoading} error={protocolError} />
                                             </Form.Item>
+                                            {modelCapability === "text" ? <ModelProtocolRouting primary={modelProtocol} value={capabilityConfig?.protocols} protocols={protocols} disabled={busy || protocolLoading || Boolean(protocolError)} onChange={(protocols) => {
+                                                form.setFieldValue("capabilityConfig", { ...form.getFieldValue("capabilityConfig"), protocols });
+                                                dirtyRef.current = true;
+                                            }} /> : null}
                                             {protocolError && (
                                                 <Alert
                                                     type="error"

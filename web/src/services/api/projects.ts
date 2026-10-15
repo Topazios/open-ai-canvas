@@ -39,6 +39,30 @@ export type CanvasUnitLink = {
     createdAt: string;
 };
 
+export type CanvasNodeShotLink = {
+    id: string;
+    projectId: string;
+    canvasId: string;
+    unitId: string;
+    nodeId: string;
+    shotId: string;
+    shotRevisionId: string;
+    artifactId?: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type CanvasNodeShotView = {
+    linkId: string;
+    nodeId: string;
+    state: "current" | "node_missing" | "unit_missing" | "shot_missing" | "revision_missing" | "shot_revised" | "artifact_changed" | "node_type_changed" | "resource_unavailable";
+    shotTitle?: string;
+    currentRevisionId?: string;
+    revision?: ShotRevision;
+    artifact?: ShotArtifact;
+    resourceAvailable: boolean;
+};
+
 export type ProjectUnit = {
     id: string;
     projectId: string;
@@ -250,6 +274,7 @@ export type ProjectDetail = {
     units: ProjectUnit[];
     canvases: ProjectCanvas[];
     canvasUnitLinks: CanvasUnitLink[];
+    canvasNodeShotLinks: CanvasNodeShotLink[];
     unitCanvasCounts?: Record<string, number>;
     assets: ProjectAsset[];
     assetFolders: ProjectAssetFolder[];
@@ -418,6 +443,7 @@ function normalizeProjectDetail(detail: ProjectDetail): ProjectDetail {
         units: Array.isArray(detail.units) ? detail.units : [],
         canvases: Array.isArray(detail.canvases) ? detail.canvases : [],
         canvasUnitLinks: Array.isArray(detail.canvasUnitLinks) ? detail.canvasUnitLinks : [],
+        canvasNodeShotLinks: Array.isArray(detail.canvasNodeShotLinks) ? detail.canvasNodeShotLinks : [],
         unitCanvasCounts: detail.unitCanvasCounts || {},
         assets,
         assetFolders: Array.isArray(detail.assetFolders) ? detail.assetFolders : [],
@@ -467,8 +493,20 @@ export function deleteProjectUnit(projectId: string, unitId: string) {
     return http.delete<{ id: string }>(`/projects/${encodeURIComponent(projectId)}/units/${encodeURIComponent(unitId)}`);
 }
 
-export function linkCanvasUnit(projectId: string, input: { canvasId: string; unitId: string; role?: string }) {
+export function linkCanvasUnit(projectId: string, input: { canvasId: string; unitId: string; role?: string; expectedCanvasRevision?: number }) {
     return http.post<{ link: { id: string; projectId: string; canvasId: string; unitId: string; role: string } }>(`/projects/${encodeURIComponent(projectId)}/canvas-links`, input);
+}
+
+export function listCanvasNodeShotLinks(projectId: string, canvasId: string) {
+    return http.get<{ links: CanvasNodeShotLink[]; views?: CanvasNodeShotView[] }>(`/projects/${encodeURIComponent(projectId)}/canvases/${encodeURIComponent(canvasId)}/node-shot-links`);
+}
+
+export function linkCanvasNodeShot(projectId: string, canvasId: string, input: { unitId: string; nodeId: string; shotId: string; artifactId?: string; expectedCanvasRevision: number; expectedProjectRevision: number }) {
+    return http.post<{ link: CanvasNodeShotLink }>(`/projects/${encodeURIComponent(projectId)}/canvases/${encodeURIComponent(canvasId)}/node-shot-links`, input);
+}
+
+export function unlinkCanvasNodeShot(projectId: string, canvasId: string, nodeId: string, input: { expectedLinkId: string; expectedProjectRevision: number }) {
+    return http.post<{ nodeId: string }>(`/projects/${encodeURIComponent(projectId)}/canvases/${encodeURIComponent(canvasId)}/node-shot-links/${encodeURIComponent(nodeId)}/unlink`, input);
 }
 
 export function unlinkCanvasUnit(projectId: string, canvasId: string, unitId: string) {
@@ -553,6 +591,10 @@ export function saveProjectShot(projectId: string, input: { id?: string; unitId?
 
 export function deleteProjectShot(projectId: string, shotId: string) {
     return http.delete<{ deleted: boolean }>(`/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}`);
+}
+
+export function selectProjectShotArtifact(projectId: string, shotId: string, artifactId: string) {
+    return http.post<{ artifact: ShotArtifact }>(`/projects/${encodeURIComponent(projectId)}/shots/${encodeURIComponent(shotId)}/artifacts/${encodeURIComponent(artifactId)}/select`, {});
 }
 
 export function replaceProjectUnitShots(projectId: string, unitId: string, shots: Array<{ title: string; description: string; durationMs: number; revision?: Partial<ShotRevisionInput>; assetVersionIds?: string[] }>, expectedShotIds?: string[]) {

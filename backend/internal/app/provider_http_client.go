@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -533,30 +534,55 @@ func ChannelAPIURLForProtocol(baseURL string, path string, interfaceType model.C
 }
 
 var channelAPIPrefixes = []string{"/api/plan/v3", "/api/v3", "/api/v1", "/v1beta", "/v1", "/v2", "/v3"}
+var requestAPIVersionPattern = regexp.MustCompile(`(?i)^/(?:api/)?v[0-9]+(?:alpha[0-9]*|beta[0-9]*)?(?:/|$)`)
+var baseAPIVersionPattern = regexp.MustCompile(`(?i)/(?:api/)?v[0-9]+(?:alpha[0-9]*|beta[0-9]*)?$`)
 
 func apiURLWithDefaultPrefix(baseURL string, path string, defaultPrefix string) string {
-	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	parsedBase, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return ""
+	}
+	base := strings.TrimRight(parsedBase.EscapedPath(), "/")
 	requestPath := strings.TrimSpace(path)
 	if requestPath == "" {
-		return base
+		return strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	}
 	if !strings.HasPrefix(requestPath, "/") {
 		requestPath = "/" + requestPath
 	}
 
+	parsedRequest, err := url.Parse(requestPath)
+	if err != nil || parsedRequest.Host != "" {
+		return ""
+	}
+	requestPath = parsedRequest.EscapedPath()
 	requestPrefix := requestAPIPathPrefix(requestPath)
 	basePrefix := baseAPIPathPrefix(base)
+	var joined string
 	if requestPrefix != "" {
 		if basePrefix == requestPrefix {
-			return base + strings.TrimPrefix(requestPath, requestPrefix)
+			joined = base + requestPath[len(requestPrefix):]
+		} else {
+			joined = base[:len(base)-len(basePrefix)] + requestPath
 		}
 		// 请求路径显式版本优先于 baseURL 残留版本，例如 base=/v1、path=/v2/... 时必须切到 /v2。
-		return strings.TrimSuffix(base, basePrefix) + requestPath
+	} else if basePrefix != "" {
+		joined = base + requestPath
+	} else {
+		joined = base + defaultPrefix + requestPath
 	}
-	if basePrefix != "" {
-		return base + requestPath
+	parsedBase.Path, err = url.PathUnescape(joined)
+	if err != nil {
+		return ""
 	}
-	return base + defaultPrefix + requestPath
+	parsedBase.RawPath = joined
+	query := parsedBase.Query()
+	for key, values := range parsedRequest.Query() {
+		query[key] = values
+	}
+	parsedBase.RawQuery = query.Encode()
+	parsedBase.Fragment = ""
+	return parsedBase.String()
 }
 
 func requestAPIPathPrefix(value string) string {
@@ -566,7 +592,7 @@ func requestAPIPathPrefix(value string) string {
 			return prefix
 		}
 	}
-	return ""
+	return strings.TrimRight(requestAPIVersionPattern.FindString(value), "/")
 }
 
 func baseAPIPathPrefix(value string) string {
@@ -576,7 +602,7 @@ func baseAPIPathPrefix(value string) string {
 			return prefix
 		}
 	}
-	return ""
+	return baseAPIVersionPattern.FindString(value)
 }
 
 func writeField(writer *multipart.Writer, key string, value string) {

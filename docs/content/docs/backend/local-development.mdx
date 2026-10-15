@@ -22,14 +22,34 @@ description: 在宿主机启动影策前后端开发服务
 脚本会：
 
 - 使用 `.local/project-workbench-debug` 作为后端 SQLite 开发数据目录；
-- 创建 `.local/cache/go-build` 和 `.local/cache/go-mod` 缓存目录；
+- 调用统一后端管理入口，首次没有程序时构建 `.local/bin/canvas-backend.exe`；
 - 首次启动时，如果 `web/node_modules` 不存在，执行 `bun install --frozen-lockfile`；
-- 打开两个 PowerShell 窗口，分别运行后端和前端；
+- 在后台启动服务，重复执行复用当前项目已启动的后端和 Vite；
+- 将后端进程身份记录在 `.local/run/backend.json`，前后端日志写入 `.local/logs`；
 - 将前端 `/api` 请求代理到 `http://127.0.0.1:8080`。
 
 启动后访问 [http://localhost:3000](http://localhost:3000)。后端健康检查地址是 [http://127.0.0.1:8080/api/health](http://127.0.0.1:8080/api/health)。
 
-脚本使用固定的本地开发端口：前端 `3000`，后端 `8080`。如果端口被占用，脚本会先退出，不会关闭已有进程。请分别在两个开发窗口中按 `Ctrl+C` 停止服务。
+脚本默认使用本地开发端口：前端 `3000`，后端 `8080`。不属于当前项目管理记录的进程占用端口时，脚本报错并保留对方进程；不会按端口或名称批量结束程序。`start-canvas.ps1` 继续复用该入口并打开画布。
+
+### 后端启停与更新
+
+```powershell
+.\scripts\backend-local.ps1 status
+.\scripts\backend-local.ps1 start
+.\scripts\backend-local.ps1 stop
+.\scripts\backend-local.ps1 restart
+# 更新源码后构建并切换；构建失败时当前服务保持运行
+.\scripts\backend-local.ps1 restart -Build
+```
+
+常规启停由同一个脚本完成，不需要到任务管理器找进程。进程固定叫 `canvas-backend.exe`；旧的按功能命名程序不是应继续使用的入口。单独的 `.local/start-backend.ps1`（若存在）也应转发到该管理脚本。
+
+脚本使用 PID、启动时间和完整程序路径核对进程，序列化同时到达的管理操作；启动完成须通过就绪检查。更新时保留 `canvas-backend.previous.exe`，失败构建不会停止运行中的服务，程序更新不恢复或覆盖数据库。
+
+正常退出通过本次启动专属的本地文件请求触发现有 HTTP 排空、Worker 关闭和数据库关闭流程。`CANVAS_LOCAL_STOP_FILE` 由管理脚本自动设置，默认没有此变量时仍使用原来的系统信号退出；不增加网络关闭接口。日志会记录 `backend stopped gracefully`。退出等待超时会保留进程记录并报告仍在排空，可再次查看状态或重试，默认不强杀。运行中的模型调用是否恢复仍由原有任务恢复与计费规则决定，不保证重启对模型响应无影响。
+
+数据目录仍为 `.local/project-workbench-debug`。`-Port` 可用于独立检验目录中的测试实例；同一仓库只维护一份后端管理记录，不应启动多份进程操作同一开发数据库。
 
 如果 PowerShell 的执行策略阻止脚本运行，可以只对当前进程临时放行：
 

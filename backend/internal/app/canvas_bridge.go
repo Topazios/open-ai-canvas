@@ -1,9 +1,11 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"time"
 
 	"infinite-canvas/backend/internal/assets"
@@ -219,7 +221,26 @@ func (s *Service) UserCanvasProject(userID string, id string) (json.RawMessage, 
 }
 
 func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (UserDataSummary, error) {
-	return s.canvasDomain().UpsertUserCanvasProject(userID, raw)
+	var input struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(raw, &input)
+	previous, _ := s.repo.CanvasProjectForUser(userID, input.ID)
+	result, err := s.canvasDomain().UpsertUserCanvasProject(userID, raw)
+	if err == nil {
+		var knownIDs []string
+		if previous != nil {
+			if doc, decodeErr := creationDocument(previous.PayloadJSON); decodeErr == nil {
+				for _, node := range creationMaps(doc["nodes"]) {
+					knownIDs = append(knownIDs, stringValue(node["id"]))
+				}
+			}
+		}
+		if cleanupErr := s.ReconcileCanvasNodeTasks(context.Background(), userID, result.ID, knownIDs...); cleanupErr != nil {
+			log.Printf("[canvas] node task cleanup pending: %v", cleanupErr)
+		}
+	}
+	return result, err
 }
 
 func (s *Service) RepairUserCanvasProject(userID string, raw json.RawMessage) (UserDataSummary, error) {

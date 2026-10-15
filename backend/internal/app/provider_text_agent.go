@@ -56,6 +56,7 @@ func runAgentToolTask(ctx context.Context, input canvasGenerationInput) (map[str
 		body = claudeAgentBody(body)
 	}
 	body["model"] = input.Config.Model
+	applyResponsesRequestDefaults(body, protocol)
 	applyTextThinking(body, input, protocol)
 	applyAgentOutputLimit(body, agentStepOutputLimit(input), protocol)
 	normalizeAgentToolChoice(body, input, protocol)
@@ -125,11 +126,18 @@ func applyAgentOutputLimit(body map[string]interface{}, limit int, protocol stri
 
 func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, adapter protocol.AgentAdapter) (map[string]interface{}, error) {
 	wire := input.Config.InterfaceType
-	if wire == string(model.ChannelInterfaceOpenAIResponse) {
+	switch protocol.ContractForAdapter(wire) {
+	case protocol.ContractChatCompletions:
+		wire = "chat-completion"
+	case protocol.ContractResponses:
 		wire = "responses"
+	case protocol.ContractMessages:
+		wire = "claude-api"
+	case protocol.ContractGenerateContent:
+		wire = "gemini"
 	}
 	knownWire := wire == "chat-completion" || wire == "responses" || wire == "claude-api"
-	if input.TextOptions.Thinking && !knownWire {
+	if input.TextOptions.Thinking && !knownWire && wire != "gemini" {
 		return nil, errors.New("当前声明式 Agent 渠道尚不支持思考模式，请关闭思考模式或切换内置协议渠道")
 	}
 	if input.AgentRequests == nil {
@@ -145,12 +153,21 @@ func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, a
 	if err != nil {
 		return nil, err
 	}
+	if wire == "gemini" {
+		body := protocolBodyObject(spec.Body)
+		if body == nil {
+			return nil, errors.New("声明式 Agent 请求体必须是 JSON 对象")
+		}
+		applyTextThinking(body, input, wire)
+		spec.Body = body
+	}
 	if knownWire {
 		body := protocolBodyObject(spec.Body)
 		if body == nil {
 			return nil, errors.New("声明式 Agent 请求体必须是 JSON 对象")
 		}
 		applyTextThinking(body, input, wire)
+		applyResponsesRequestDefaults(body, wire)
 		applyAgentOutputLimit(body, agentStepOutputLimit(input), wire)
 		normalizeAgentToolChoice(body, input, wire)
 		spec.Body = body
@@ -181,6 +198,19 @@ func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, a
 	body, err := executeDeclarativeAgentWithGeminiCache(ctx, input, spec)
 	if err != nil {
 		return nil, err
+	}
+	if knownWire {
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, fmt.Errorf("Agent 接口返回格式无效：%w", err)
+		}
+		// Raw Responses HTTP output nests text in output[].content[];
+		// output_text is only a convenience field on some SDKs/gateways.
+		result, err := parseAgentToolPayload(payload, wire)
+		if err == nil && payload["usage"] != nil {
+			result["usage"] = payload["usage"]
+		}
+		return result, err
 	}
 	parsed, err := adapter.ParseAgent(ctx, body)
 	if err != nil {
@@ -391,7 +421,13 @@ func parseAgentToolPayload(payload map[string]interface{}, protocol string) (map
 		return nil, err
 	}
 	result := map[string]interface{}{"mode": "text", "text": "", "toolCalls": []interface{}{}}
+	if usage, ok := payload["usage"].(map[string]interface{}); ok {
+		result["usage"] = usage
+	}
 	if protocol == "responses" {
+		if err := validateResponsesCompletion(payload); err != nil {
+			return nil, err
+		}
 		result["text"] = firstNonEmptyString(stringField(payload, "output_text"), extractResponseText(payload))
 		if reasoning := extractResponseReasoning(payload); reasoning != "" {
 			result["reasoning"] = reasoning
@@ -405,6 +441,9 @@ func parseAgentToolPayload(payload map[string]interface{}, protocol string) (map
 			calls = append(calls, map[string]interface{}{"id": firstNonEmptyString(stringField(item, "call_id"), stringField(item, "id")), "type": "function", "function": map[string]interface{}{"name": stringField(item, "name"), "arguments": stringField(item, "arguments")}})
 		}
 		result["toolCalls"] = calls
+		if result["text"] == "" && len(calls) == 0 {
+			return nil, errors.New("Responses 接口没有返回文本或工具调用")
+		}
 		return result, nil
 	}
 	if protocol == "claude-api" {

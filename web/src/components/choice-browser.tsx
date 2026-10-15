@@ -56,14 +56,14 @@ export function ChoiceBrowser({
                 <div className="choice-browser-panels">
                     <div className="choice-browser-list" role="radiogroup" aria-label={label}>
                         {visible.map((option) => (
-                            <label key={option.value} className="choice-browser-option" data-selected={option.value === value}>
+                            <label key={option.value} className="choice-browser-option" data-selected={option.value === value} data-vendor={Boolean(option.vendor)}>
                                 <span className="choice-browser-main">
                                     <strong>{option.label}</strong>
                                     <span title={option.subtitle}>{option.subtitle}</span>
                                 </span>
-                                <span className="choice-browser-vendor" title={option.vendor}>
+                                {option.vendor ? <span className="choice-browser-vendor" title={option.vendor}>
                                     {option.vendor}
-                                </span>
+                                </span> : null}
                                 <input type="radio" name={name} value={option.value} checked={option.value === value} disabled={unavailable || option.disabled} onChange={() => onChange?.(option.value)} />
                             </label>
                         ))}

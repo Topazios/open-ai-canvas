@@ -427,6 +427,22 @@ func TestCloudAgentReadToolCacheStopsCrossArgumentReadLoops(t *testing.T) {
 	}
 }
 
+func TestProductionAgentReadToolDoesNotUseOrdinaryReadBudget(t *testing.T) {
+	s, _, _, canvasID := cloudAgentProfileFixtureDB(t)
+	state := &cloudAgentRuntime{Request: CloudAgentRequest{CanvasID: canvasID, Production: &ProductionAgentRequest{TargetNodeID: "production-node"}}}
+	for index := 0; index < cloudAgentMaxReadToolCallsPerRun+5; index++ {
+		call := cloudAgentCall{ID: fmt.Sprintf("production-read-%d", index)}
+		call.Function.Name = "canvas_get_state"
+		call.Function.Arguments = fmt.Sprintf(`{"offset":%d}`, index)
+		if _, err := cloudAgentReadToolCached(s.repo, "user", state, call); err != nil {
+			t.Fatalf("production read %d unexpectedly hit ordinary read budget: %v", index+1, err)
+		}
+	}
+	if state.ReadToolCalls != 0 {
+		t.Fatalf("production reads must not consume ordinary read budget: %d", state.ReadToolCalls)
+	}
+}
+
 func TestCloudAgentReadCacheNormalizesObjectKeyOrder(t *testing.T) {
 	state := &cloudAgentRuntime{Profile: cloudAgentProfileSnapshot{Layers: []AgentProfileLayer{{Scope: model.AgentProfileScopeUser, Content: "固定偏好"}}}}
 	first := cloudAgentCall{ID: "profile-read-1"}

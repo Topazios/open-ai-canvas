@@ -277,7 +277,11 @@ func cloudAgentFallbackCheckpoint(state *cloudAgentRuntime) agentcontext.Checkpo
 		}
 		checkpoint.Decisions = append(checkpoint.Decisions, fmt.Sprintf("已查看过画面 %s（%s），无需重复看图", asset.NodeID, asset.Type))
 	}
-	checkpoint.Constraints = append(checkpoint.Constraints, fmt.Sprintf("权限模式：%s；本轮预算上限：%.4f credits", state.Request.PermissionMode, state.Request.Budget.MaxCredits))
+	if state.Request.Production != nil {
+		checkpoint.Constraints = append(checkpoint.Constraints, "制作任务按持久产物和覆盖检查判断完成，不设累计调用次数或任务积分上限；正常计费、来源校验和取消约束继续生效。")
+	} else {
+		checkpoint.Constraints = append(checkpoint.Constraints, fmt.Sprintf("权限模式：%s；本轮预算上限：%.4f credits", state.Request.PermissionMode, state.Request.Budget.MaxCredits))
+	}
 	for _, layer := range state.Profile.Layers {
 		if content := strings.TrimSpace(layer.Content); content != "" {
 			checkpoint.UserPreferences = append(checkpoint.UserPreferences, layer.Scope+": "+truncateRunes(content, 2400))
@@ -402,7 +406,7 @@ func (s *Service) enqueueCloudAgentContextCompaction(run *model.CloudAgentExecut
 	input := map[string]any{
 		"mode": "text", "prompt": prompt,
 		"config":      map[string]any{"channelId": state.Request.ChannelID, "channelModelKey": state.Request.ChannelModelKey, "model": firstNonEmpty(state.Request.ChannelModelKey, state.Request.Model), "systemPrompt": "只执行服务端上下文压缩合同。不要调用工具，不要生成面向用户的回复。"},
-		"textOptions": map[string]any{"stream": false, "thinking": false},
+		"textOptions": map[string]any{"stream": false, "thinking": false, "reasoningDisabled": true},
 	}
 	req := CreateTaskRequest{ProjectID: state.Request.CanvasID, Type: "canvas_text", Operation: cloudAgentContextCompactionOperation, Prompt: prompt, Model: state.Request.Model, LogicalModelID: state.Request.LogicalModelID, Input: input}
 	return s.enqueueCloudAgentTask(run, state, req, nil)

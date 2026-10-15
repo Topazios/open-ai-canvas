@@ -22,6 +22,8 @@ docs/content/docs/backend/*
 !docs/content/docs/backend/agent-prompt-policy.mdx
 !docs/content/docs/backend/canvas-agent-appearance.mdx
 !docs/content/docs/backend/http-api.mdx
+!docs/content/docs/backend/text-protocol-impact.mdx
+!docs/content/docs/backend/production-rules.mdx
 !docs/content/docs/backend/code-map.mdx
 !docs/content/docs/backend/newapi-channel-2.mdx
 !docs/content/docs/backend/video-token-billing.mdx
@@ -30,6 +32,10 @@ docs/content/docs/backend/*
 !docs/content/docs/overview/
 docs/content/docs/overview/*
 !docs/content/docs/overview/creative-agent-design.mdx
+# Keep canvas refactor evidence versioned without adding other generated documentation.
+!docs/content/docs/progress/
+docs/content/docs/progress/*
+!docs/content/docs/progress/canvas-refactor.mdx
 .env*
 !.env.example
 data/

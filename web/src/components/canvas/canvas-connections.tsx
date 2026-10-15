@@ -5,6 +5,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@/lib/canvas/canvas-storyboard-layout";
 import { batchReferenceHandleY } from "@/lib/canvas/canvas-batch-table";
+import { borderConnectionPath, closestBorderPoint, shortestBorderPair } from "@/lib/canvas/canvas-connection-routing";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@/types/canvas";
 
 export const ConnectionPath = React.memo(function ConnectionPath({
@@ -34,7 +35,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
     const [hovered, setHovered] = useState(false);
     const { pathD, startX, startY, endX, endY } = canvasConnectionPath(connection, from, to, fromScrollTop, toScrollTop);
     const emphasized = active || hovered;
-    const showVisual = !hideVisual && (visualMode === "full" || hovered);
+    const showVisual = !hideVisual && visualMode === "full";
     const showEmphasis = !hideVisual && emphasized;
     const gradientId = `canvas-flow-${connection.id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
@@ -100,7 +101,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
             {showVisual ? <path
                 d={pathD}
                 stroke={emphasized ? theme.accent.primary : theme.node.muted}
-                strokeWidth={emphasized ? 2.8 : 2}
+                strokeWidth={emphasized ? 3.4 : 2.6}
                 vectorEffect="non-scaling-stroke"
                 strokeOpacity={emphasized ? 0.95 : 0.8}
                 fill="none"
@@ -127,7 +128,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
             /> : null}
             {/* 流光：一小段高亮沿路径跑。周期与虚线流动刻意不同（2.1s vs 1.25s），
                 两者错拍才像有光在走；同频会锁成一条整体平移的虚线。 */}
-            {showEmphasis ? <path
+            {showEmphasis && visualMode === "full" ? <path
                 className="canvas-connection-comet"
                 d={pathD}
                 stroke={`url(#${gradientId}-comet)`}
@@ -143,36 +144,28 @@ export const ConnectionPath = React.memo(function ConnectionPath({
 }, (previous, next) => previous.connection === next.connection && previous.from === next.from && previous.to === next.to && previous.active === next.active && previous.visualMode === next.visualMode && previous.hideVisual === next.hideVisual && previous.fromScrollTop === next.fromScrollTop && previous.toScrollTop === next.toScrollTop);
 
 export function canvasConnectionPath(connection: CanvasConnection, from: CanvasNodeData, to: CanvasNodeData, fromScrollTop = 0, toScrollTop = 0) {
-    const startX = from.position.x + from.width;
-    const startY = connectionHandleY(from, connection.fromHandleId, fromScrollTop);
-    const endX = to.position.x;
-    const endY = connectionHandleY(to, connection.toHandleId, toScrollTop);
-    const dx = Math.abs(endX - startX);
-    const curvature = Math.max(dx * 0.5, 50);
-    return { pathD: `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`, startX, startY, endX, endY };
+    const fixedStart = connection.fromHandleId && from.id === connection.fromNodeId ? { x: from.position.x + from.width, y: connectionHandleY(from, connection.fromHandleId, fromScrollTop) } : undefined;
+    const fixedEnd = connection.toHandleId && to.id === connection.toNodeId ? { x: to.position.x, y: connectionHandleY(to, connection.toHandleId, toScrollTop) } : undefined;
+    const { start, end } = shortestBorderPair(from, to, fixedStart, fixedEnd);
+    return borderConnectionPath(start, end, from, to);
 }
 
 export function activeConnectionPath(node: CanvasNodeData | undefined, handle: ConnectionHandle, mouseWorld: Position, target?: CanvasNodeData, nodeScrollTop = 0) {
     if (!node) return "";
-    const startX = handle.handleType === "source" ? node.position.x + node.width : mouseWorld.x;
-    const startY = handle.handleType === "source" ? connectionHandleY(node, handle.handleId, nodeScrollTop) : mouseWorld.y;
-    const endX = handle.handleType === "source" ? mouseWorld.x : node.position.x;
-    const endY = handle.handleType === "source" ? mouseWorld.y : connectionHandleY(node, handle.handleId, nodeScrollTop);
-    const snappedStartX = handle.handleType === "target" && target ? target.position.x + target.width : startX;
-    const snappedStartY = handle.handleType === "target" && target ? connectionHandleY(target) : startY;
-    const snappedEndX = handle.handleType === "source" && target ? target.position.x : endX;
-    const snappedEndY = handle.handleType === "source" && target ? connectionHandleY(target) : endY;
-    const distance = Math.abs(snappedEndX - snappedStartX);
-    return `M ${snappedStartX} ${snappedStartY} C ${snappedStartX + distance * 0.5} ${snappedStartY}, ${snappedEndX - distance * 0.5} ${snappedEndY}, ${snappedEndX} ${snappedEndY}`;
+    const source = handle.handleType === "source";
+    const fixed = handle.handleId ? { x: node.position.x + (source ? node.width : 0), y: connectionHandleY(node, handle.handleId, nodeScrollTop) } : undefined;
+    if (target) {
+        const pair = source ? shortestBorderPair(node, target, fixed) : shortestBorderPair(target, node, undefined, fixed);
+        return borderConnectionPath(pair.start, pair.end, source ? node : target, source ? target : node).pathD;
+    }
+    const anchor = fixed || closestBorderPoint(node, mouseWorld);
+    return borderConnectionPath(source ? anchor : mouseWorld, source ? mouseWorld : anchor, source ? node : undefined, source ? undefined : node).pathD;
 }
 
 /**
  * 连线在节点上的接入 Y。
  *
- * 单端口的一侧（左右各一个出入口，除分镜脚本外都是）**永远取边的正中**：
- * 之前按鼠标落点比例取 Y，多条线接同一个端口就会沿着边散开，视觉上像节点有很多端口。
- * 真正的多端口只存在于分镜脚本的 `row:` 句柄；普通节点始终连接到边缘
- * 垂直中心，避免同一个节点因鼠标落点产生漂移的“伪端口”。
+ * 显式分镜行、上下文和批量引用端口使用固定 Y；普通节点使用四边中点。
  */
 export function connectionHandleY(node: CanvasNodeData, handleId?: string, scrollTop = 0) {
     const batchY = batchReferenceHandleY(node, handleId);

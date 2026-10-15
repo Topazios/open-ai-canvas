@@ -41,6 +41,7 @@ func cloudAgentPromptCacheIdentity(req CloudAgentRequest, policy cloudAgentPolic
 		policy.MediaPolicyID, fmt.Sprint(policy.MediaPolicyVersion), policy.MediaPolicyHash,
 		policy.CapabilitySetHash, policy.ProfileRevision, policy.ProfileHash,
 		req.PermissionMode, cloudAgentReasoningMode(req),
+		string(req.ReasoningEffort.effective()),
 		req.ChannelID, req.ChannelModelKey, req.Model, req.LogicalModelID,
 	}
 	return strings.Join(parts, "\x00")
@@ -76,6 +77,9 @@ func cloudAgentTools(req CloudAgentRequest) []map[string]any {
 }
 
 func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []map[string]any {
+	if req.Production != nil {
+		return productionAgentTools()
+	}
 	tools := []map[string]any{}
 	add := func(name, description string, properties map[string]any, required ...string) {
 		if required == nil {

@@ -137,7 +137,7 @@ func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit
 	})
 }
 
-func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, order *model.BillingOrder, activeTaskLimit int) (*model.Task, error) {
+func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, order *model.BillingOrder, activeTaskLimit int, attempts ...*model.RouteAttempt) (*model.Task, error) {
 	var task model.Task
 	taskID := prepared.ID
 	err := r.db.Transaction(func(tx *gorm.DB) error {
@@ -170,12 +170,24 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 		}
 		updated := tx.Model(&model.Task{}).
 			Where("id = ? AND user_id = ? AND status IN ?", taskID, userID, []model.TaskStatus{model.TaskStatusFailed, model.TaskStatusCancelled}).
+			Where("removed_at IS NULL AND route_run = ? AND billing_order_id = ?", prepared.RouteRun, prepared.BillingOrderID).
 			Updates(updates)
 		if updated.Error != nil {
 			return updated.Error
 		}
 		if updated.RowsAffected != 1 {
 			return ErrTaskNotRetryable
+		}
+		for _, attempt := range attempts {
+			if attempt == nil {
+				continue
+			}
+			if attempt.TaskID != taskID || attempt.RouteRun != prepared.RouteRun+1 || attempt.DispatchState != "not_sent" {
+				return ErrTaskNotRetryable
+			}
+			if err := tx.Create(attempt).Error; err != nil {
+				return err
+			}
 		}
 		if err := tx.Delete(&model.TaskTextDelta{}, "user_id = ? AND task_id = ?", userID, taskID).Error; err != nil {
 			return err
@@ -186,6 +198,9 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 }
 
 func enforceActiveTaskLimit(tx *gorm.DB, userID string, activeTaskLimit int) error {
+	if activeTaskLimit <= 0 {
+		return nil
+	}
 	var count int64
 	if err := tx.Model(&model.Task{}).Where("user_id = ? AND status IN ?", userID, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Count(&count).Error; err != nil {
 		return err

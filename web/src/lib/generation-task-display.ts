@@ -8,7 +8,7 @@ export const statusLabel: Record<TaskStatus, string> = {
     cancelled: "已取消",
 };
 
-type GenerationTaskDisplayTarget = Pick<GenerationTask, "status" | "stage" | "mediaStage" | "progress" | "providerRequestId" | "providerCancelStatus">;
+type GenerationTaskDisplayTarget = Pick<GenerationTask, "status" | "stage" | "mediaStage" | "progress" | "providerRequestId" | "providerCancelStatus"> & Partial<Pick<GenerationTask, "operation">>;
 
 const cancellablePreSubmissionStages = new Set(["queued", "等待队列调度", "后端接管任务", "正在准备创作"]);
 
@@ -22,6 +22,8 @@ const cancellablePreSubmissionStages = new Set(["queued", "等待队列调度", 
 export function canCancelGenerationTask(task: GenerationTaskDisplayTarget) {
     if (task.status !== "queued" && task.status !== "running") return false;
     if (task.providerRequestId || task.providerCancelStatus || task.mediaStage) return false;
+    // Cancelling a coordinator detaches this output; shared model calls keep running.
+    if (task.operation === "short_drama_batch") return true;
     const stage = (task.stage || "").trim().toLowerCase();
     // Unknown running stages are treated as already submitted. A provider may
     // return a custom stage name, and showing a cancel button in that state is

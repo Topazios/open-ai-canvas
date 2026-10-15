@@ -29,11 +29,12 @@ function equal(a: unknown, b: unknown): boolean {
 function mergeValue(current: unknown, before: unknown, after: unknown): unknown {
     if (equal(before, after) || equal(current, after)) return current;
     if (equal(current, before)) return after;
-    if (record(current) && record(before) && record(after)) {
+    if (record(current) && (record(before) || before === undefined) && record(after)) {
+        const base = before || {};
         const next = { ...current };
-        for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        for (const key of new Set([...Object.keys(base), ...Object.keys(after)])) {
             if (["__proto__", "constructor", "prototype"].includes(key)) throw new Error("无效的画布增量字段");
-            const value = mergeValue(current[key], before[key], after[key]);
+            const value = mergeValue(current[key], base[key], after[key]);
             if (value === undefined) delete next[key];
             else next[key] = value;
         }
@@ -83,30 +84,57 @@ export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvas
     return { ...project, nodes, connections, updatedAt: patch.updatedAt || project.updatedAt };
 }
 
-export function mergeAgentCanvasEditor(previous: CanvasProject, incoming: CanvasProject, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+export function mergeCanvasSnapshot(previous: CanvasProject, current: CanvasProject, incoming: CanvasProject): CanvasProject {
+    if (previous.id !== current.id || incoming.id !== current.id) throw new Error("画布同步基线不属于当前画布");
     const changes = <T extends { id: string }>(before: T[], after: T[]): Change<T>[] => {
         const byId = new Map(before.map((item) => [item.id, item]));
         const afterIds = new Set(after.map((item) => item.id));
         return [...after.filter((item) => !equal(item, byId.get(item.id))).map((item) => ({ before: byId.get(item.id) ?? null, after: item })), ...before.filter((item) => !afterIds.has(item.id)).map((item) => ({ before: item, after: null }))];
     };
+    // Deletion is intentional: background results must not resurrect deleted nodes
+    // or create new children/edges inside a container that the user removed.
+    const liveIds = new Set(current.nodes.map((node) => node.id));
+    const removedIds = new Set(previous.nodes.filter((node) => !liveIds.has(node.id)).map((node) => node.id));
+    const liveEdgeIds = new Set(current.connections.map((edge) => edge.id));
+    const removedEdges = new Set(previous.connections.filter((edge) => !liveEdgeIds.has(edge.id)).map((edge) => edge.id));
+    let expanded = true;
+    while (expanded) {
+        expanded = false;
+        for (const node of incoming.nodes) {
+            if (!liveIds.has(node.id) && node.parentId && removedIds.has(node.parentId) && !removedIds.has(node.id)) {
+                removedIds.add(node.id);
+                expanded = true;
+            }
+        }
+    }
     const projected = applyAgentCanvasPatch(
-        { ...previous, nodes, connections },
+        current,
         {
             canvasId: previous.id,
             updatedAt: incoming.updatedAt,
-            nodes: changes(previous.nodes, incoming.nodes),
-            connections: changes(previous.connections, incoming.connections),
+            nodes: changes(previous.nodes, incoming.nodes).filter((change) => !removedIds.has((change.after || change.before)!.id)),
+            connections: changes(previous.connections, incoming.connections).filter((change) => {
+                const edge = change.after || change.before!;
+                return !removedEdges.has(edge.id) && !removedIds.has(edge.fromNodeId) && !removedIds.has(edge.toNodeId);
+            }),
         },
     );
     const merged = { ...projected } as CanvasProject & Record<string, unknown>;
     const before = previous as CanvasProject & Record<string, unknown>;
     const after = incoming as CanvasProject & Record<string, unknown>;
-    const editor = { ...previous, nodes, connections } as CanvasProject & Record<string, unknown>;
+    const editor = current as CanvasProject & Record<string, unknown>;
     for (const key of new Set([...Object.keys(before), ...Object.keys(after), ...Object.keys(editor)])) {
         if (["id", "revision", "updatedAt", "remoteContentHash", "viewport", "nodes", "connections"].includes(key)) continue;
         const value = mergeValue(editor[key], before[key], after[key]);
         if (value === undefined) delete merged[key];
         else merged[key] = value;
     }
-    return { ...merged, revision: incoming.revision, updatedAt: incoming.updatedAt, viewport: editor.viewport } as CanvasProject;
+    const ids = new Set(merged.nodes.map((node) => node.id));
+    const deleted = new Set(previous.nodes.filter((node) => !ids.has(node.id)).map((node) => node.id));
+    const connections = merged.connections.filter((edge) => !deleted.has(edge.fromNodeId) && !deleted.has(edge.toNodeId));
+    return { ...merged, connections: connections.length === merged.connections.length ? merged.connections : connections, revision: incoming.revision, updatedAt: incoming.updatedAt, viewport: current.viewport } as CanvasProject;
+}
+
+export function mergeAgentCanvasEditor(previous: CanvasProject, incoming: CanvasProject, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    return mergeCanvasSnapshot(previous, { ...previous, nodes, connections }, incoming);
 }

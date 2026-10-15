@@ -33,9 +33,12 @@ export function CanvasNodeLayerDecompositionDialog({
     const [drawing, setDrawing] = useState<{ x: number; y: number } | null>(null);
     const [draft, setDraft] = useState<[number, number, number, number] | null>(null);
     const imageFrameRef = useRef<HTMLDivElement>(null);
+    const openedSource = useRef<string | null>(null);
 
     useEffect(() => {
-        if (!open) return;
+        if (!open) { openedSource.current = null; return; }
+        if (openedSource.current === dataUrl) return;
+        openedSource.current = dataUrl;
         setPrompt(DEFAULT_PROMPT);
         setGenerationConfig(config);
         setRegions([]);

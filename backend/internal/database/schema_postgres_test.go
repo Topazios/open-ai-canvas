@@ -64,6 +64,9 @@ func TestPostgresAssetIDMigration(t *testing.T) {
 	if err := MigrateSchema(db); err != nil {
 		t.Fatalf("migrate schema: %v", err)
 	}
+	if !db.Migrator().HasTable(&model.CanvasNodeShotLink{}) {
+		t.Fatal("postgres migration did not create canvas node/shot relation table")
+	}
 
 	for _, migration := range assetIDColumnMigrations {
 		var length int64

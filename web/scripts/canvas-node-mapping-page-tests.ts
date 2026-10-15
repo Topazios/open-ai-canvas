@@ -1,0 +1,262 @@
+/** Real production canvas UI; isolated APIs only, with separate Go HTTP coverage. */
+import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { ensureCanvasTestVideo } from "./canvas-test-video";
+
+const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || "playwright");
+const origin = process.env.CANVAS_TEST_ORIGIN || "http://127.0.0.1:4014";
+if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(origin) || (await (await fetch(`${origin}/api/auth/session`)).json()).data?.user?.id !== "canvas-benchmark") throw new Error("Only isolated benchmark sessions are allowed");
+const output = resolve(process.env.CANVAS_TEST_REPORT_DIR || "../.local/canvas-benchmark/canvas-node-mapping-current");
+mkdirSync(output, { recursive: true });
+const testVideo = join(output, "projection-test.webm");
+ensureCanvasTestVideo(testVideo);
+const report = { buildIndexSha256: createHash("sha256").update(await (await fetch(origin)).text()).digest("hex"), passed: [] as string[], errors: [] as string[], blocked: [] as string[] };
+const check = (condition: boolean, label: string) => { if (!condition) throw new Error(label); report.passed.push(label); };
+const canvasId = "benchmark-100-spread";
+const source = (await (await fetch(`${origin}/api/canvas-projects/${canvasId}`)).json()).data.project;
+const node = source.nodes.find((item: any) => item.type === "image");
+if (!node) throw new Error("Fixture must contain an image node");
+const projectId = "mapping-project";
+const unitId = "episode-1";
+const stamp = "2026-10-13T00:00:00.000Z";
+const project = { id: projectId, userId: "canvas-benchmark", name: "Mapping fixture", type: "short_drama", status: "active", revision: 1, createdAt: stamp, updatedAt: stamp };
+const units = [unitId, "episode-2"].map((id, position) => ({ id, projectId, kind: "episode", title: `Episode ${position + 1}`, sourceText: "Chapter content", wordCount: 15, status: "ready", position, createdAt: stamp, updatedAt: stamp }));
+const makeShot = (id: string, episode: string) => ({ id, projectId, unitId: episode, currentRevisionId: `${id}-revision-1`, title: id, description: "", position: 0, durationMs: 3000, status: "draft", createdAt: stamp, updatedAt: stamp });
+let shots = [makeShot("shot-1", unitId), makeShot("shot-2", "episode-2")];
+const artifact = { id: "selected-storyboard", projectId, unitId, shotId: "shot-1", revisionId: "shot-1-revision-1", type: "storyboard", version: 1, resourceId: "fixture-resource", status: "ready", selected: true, metadataJson: "{}", createdAt: stamp, updatedAt: stamp };
+const artifacts = [artifact, { ...artifact, id: "unselected-storyboard", selected: false }, { ...artifact, id: "wrong-type", type: "video" }];
+let cloud = { ...source, projectId, nodes: [{ ...node, position: { x: 0, y: 0 }, width: 420, height: 360 }], connections: [], viewport: { x: 450, y: 220, k: 1 } };
+let mappings: any[] = [];
+let resourceAvailable = true;
+let readFailure = false;
+const revisionText = "Pinned business shot description";
+const projectionViews = () => mappings.map((link) => {
+    const shot = shots.find((item) => item.id === link.shotId);
+    const selectedArtifact = link.artifactId ? artifacts.find((item) => item.id === link.artifactId) : undefined;
+    return { linkId: link.id, nodeId: link.nodeId, shotTitle: shot?.title, currentRevisionId: shot?.currentRevisionId,
+        state: !shot ? "shot_missing" : shot.currentRevisionId !== link.shotRevisionId ? "shot_revised" : selectedArtifact && !resourceAvailable ? "resource_unavailable" : "current",
+        revision: shot ? { id: link.shotRevisionId, shotId: shot.id, version: link.shotRevisionId.endsWith("2") ? 2 : 1, plotDescription: revisionText, action: "Shared action", dialogue: "共享对白", continuityNotes: "", durationMs: 3000 } : undefined,
+        artifact: selectedArtifact, resourceAvailable };
+});
+let failure = 0;
+let writes = 0;
+const nodePath = `/api/projects/${projectId}/canvases/${canvasId}/node-shot-links`;
+const browser = await chromium.launch({ executablePath: process.env.CHROME_BIN || "C:/Program Files/Google/Chrome/Application/chrome.exe", headless: true });
+const context = await browser.newContext({ viewport: { width: 1440, height: 945 }, serviceWorkers: "block" });
+const page = await context.newPage();
+page.setDefaultTimeout(15000);
+page.on("pageerror", (error: Error) => report.errors.push(error.message));
+await context.route("**/*", async (route: any) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== origin) { report.blocked.push(`${request.method()} ${url.href}`); return route.abort(); }
+    const path = url.pathname;
+    const envelope = (data: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ code: status === 200 ? 0 : status, data, msg: status === 200 ? "" : "fixture conflict or failure", reason: status === 409 ? "conflict" : undefined }) });
+    if (path === "/api/projects" && request.method() === "GET") return envelope({ projects: [{ project, unitCount: 2, canvasCount: 1, assetCount: 0 }] });
+    if (path === `/api/projects/${projectId}/units` && request.method() === "GET") return envelope({ units, canvasCounts: {} });
+    if (path === `/api/projects/${projectId}` && request.method() === "GET") return envelope({ project, units, assets: [], assetFolders: [], canvasUnitLinks: units.map((unit) => ({ id: `link-${unit.id}`, projectId, unitId: unit.id, canvasId, role: "storyboard", createdAt: stamp })), shots, shotArtifacts: artifacts, workflows: [] });
+    if (path === `/api/projects/${projectId}/canvas-links` && request.method() === "POST") return envelope({ link: { id: "link-episode-1", projectId, unitId, canvasId, role: "storyboard", createdAt: stamp } });
+    if (path === nodePath && request.method() === "GET") return readFailure ? envelope(null, 503) : envelope({ links: mappings.length ? mappings : null, views: projectionViews() });
+    if (path === "/api/resources/access" && request.method() === "POST") return envelope({ items: request.postDataJSON().map((item: any) => ({ resourceId: item.resourceId, access: { resourceId: item.resourceId, url: `${origin}/${item.resourceId === "fixture-video" ? "fixture-shot.webm" : "fixture-shot.png"}`, delivery: "platform-local", purpose: "display", variant: item.variant, mimeType: item.resourceId === "fixture-video" ? "video/webm" : "image/png" } })) });
+    if (path === "/fixture-shot.png") return route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5WQAAAAASUVORK5CYII=", "base64") });
+    if (path === "/fixture-shot.webm") return route.fulfill({ contentType: "video/webm", body: readFileSync(testVideo) });
+    if (path === nodePath && request.method() === "POST") {
+        writes++;
+        const input = request.postDataJSON();
+        if (failure) return envelope(null, failure);
+        if (input.expectedProjectRevision !== project.revision || input.expectedCanvasRevision !== cloud.revision) return envelope(null, 409);
+        const shot = shots.find((item) => item.id === input.shotId && item.unitId === input.unitId);
+        if (!shot || input.nodeId !== node.id || (input.artifactId && input.artifactId !== artifact.id)) return envelope(null, 400);
+        const link = { id: "mapping-1", projectId, canvasId, nodeId: input.nodeId, unitId: input.unitId, shotId: input.shotId, shotRevisionId: shot.currentRevisionId, artifactId: input.artifactId || "", createdAt: stamp, updatedAt: stamp };
+        mappings = [link]; project.revision++;
+        return envelope({ link });
+    }
+    if (path === `${nodePath}/${node.id}/unlink` && request.method() === "POST") {
+        writes++;
+        const input = request.postDataJSON();
+        if (input.expectedProjectRevision !== project.revision || input.expectedLinkId !== mappings[0]?.id) return envelope(null, 409);
+        mappings = []; project.revision++;
+        return envelope({ nodeId: node.id });
+    }
+    if (path === "/api/assets/batch" && request.method() === "POST") return envelope({ assets: [] });
+    if (path === `/api/canvas-projects/${canvasId}` && request.method() === "GET") return envelope({ project: cloud });
+    if (path === `/api/canvas-projects/${canvasId}` && request.method() === "PUT") {
+        const input = request.postDataJSON();
+        if (input.project.revision !== cloud.revision) return envelope(null, 409);
+        cloud = { ...input.project, revision: cloud.revision + 1 };
+        return envelope({ project: cloud });
+    }
+    if (request.method() !== "GET") { report.blocked.push(`${request.method()} ${path}`); return route.abort(); }
+    return route.continue();
+});
+const modal = page.getByRole("dialog", { name: "画布关联与制作流程" });
+const panel = modal.getByRole("region", { name: "画布节点与项目镜头映射" });
+const open = async () => { await page.getByRole("button", { name: "打开画布菜单" }).click(); await page.getByText("关联项目与章节", { exact: true }).last().click(); await panel.waitFor(); };
+const selectNode = async () => { await panel.getByRole("textbox", { name: "搜索画布节点" }).fill(node.id); await panel.getByRole("listitem").click(); };
+const preview = async () => { await panel.getByRole("button", { name: "保存画布并预览映射" }).click(); await panel.getByRole("region", { name: "节点镜头映射预览" }).waitFor(); };
+try {
+    await page.goto(`${origin}/canvas/${canvasId}`);
+    await page.getByRole("button", { name: "打开画布菜单" }).waitFor();
+    const guide = page.getByRole("button", { name: "关闭模型配置引导" });
+    if (await guide.isVisible()) await guide.click();
+    await open(); await selectNode();
+    check(await panel.getByRole("button", { name: "确认映射", exact: true }).isDisabled(), "Mapping requires explicit preview");
+    await panel.getByRole("combobox", { name: "目标项目镜头" }).selectOption("shot-1");
+    check(await panel.getByRole("combobox", { name: "关联已采用产物" }).locator("option").count() === 2, "Only adopted current artifacts matching node media type are offered");
+    await panel.getByRole("combobox", { name: "关联已采用产物" }).selectOption(artifact.id);
+    await preview();
+    check(writes === 0 && mappings.length === 0, "Preview does not write a mapping or adopt any artifact");
+    const beforeNodes = JSON.stringify(cloud.nodes);
+    const beforeShots = JSON.stringify(shots);
+    for (const status of [503, 409]) {
+        failure = status;
+        await panel.getByRole("button", { name: "确认映射", exact: true }).click();
+        await panel.getByRole("alert").filter({ hasText: "fixture conflict" }).waitFor();
+        check(mappings.length === 0 && JSON.stringify(cloud.nodes) === beforeNodes, `HTTP ${status} preserves nodes and does not invent a saved mapping`);
+    }
+    failure = 0;
+    await panel.getByRole("button", { name: "确认映射", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "节点映射已保存" }).waitFor();
+    check(mappings[0]?.artifactId === artifact.id && JSON.stringify(shots) === beforeShots && JSON.stringify(cloud.nodes) === beforeNodes, "Confirmation records identity and adopted version without rewriting content");
+    await page.screenshot({ path: join(output, "mapping-saved.png") });
+    await modal.locator(".ant-modal-close").click();
+    const displayedNode = page.locator(`[data-node-id='${node.id}']`);
+    const projection = displayedNode.getByRole("region", { name: "项目镜头视图" });
+    await projection.waitFor();
+    await projection.locator("img").waitFor();
+    await page.waitForFunction(() => [...document.querySelectorAll('[aria-label="项目镜头视图"] img')].some((item) => (item as HTMLImageElement).naturalWidth > 0));
+    check(true, "Mapped image displays and decodes the project artifact on the actual canvas");
+    check(await displayedNode.getByRole("button", { name: "项目镜头", exact: true }).getAttribute("aria-pressed") === "true", "Mapped nodes open in the business projection");
+    check((await projection.getByRole("link", { name: "编辑项目镜头" }).getAttribute("href")).includes(`/workflow/${unitId}/storyboard`), "Business editing leads to the existing shot workbench");
+    await displayedNode.getByRole("button", { name: "原节点", exact: true }).click();
+    check(await projection.count() === 0 && JSON.stringify(cloud.nodes) === beforeNodes, "Switching to original node preserves its saved content");
+    await displayedNode.getByRole("button", { name: "项目镜头", exact: true }).click();
+    resourceAvailable = false;
+    await projection.getByRole("button", { name: "刷新项目镜头" }).click();
+    await projection.getByRole("status").filter({ hasText: "产物资源不可用" }).waitFor();
+    check(await projection.locator("img,video,audio").count() === 0, "Deleted resources remove media from projection while retaining the record");
+    check((await projection.innerText()).includes(revisionText), "The pinned shot revision remains readable when its media is unavailable");
+    await open(); await selectNode();
+    await panel.getByRole("listitem").filter({ hasText: "产物资源不可用" }).waitFor();
+    check(true, "Mapping dialog uses the same server resource validity as the canvas");
+    await modal.locator(".ant-modal-close").click();
+    readFailure = true;
+    await projection.getByRole("button", { name: "刷新项目镜头" }).click();
+    await projection.getByRole("status").filter({ hasText: "项目内容暂不可用" }).waitFor();
+    check(await projection.locator("img,video,audio").count() === 0, "Failed reads do not retain a misleading current media projection");
+    readFailure = false; resourceAvailable = true;
+    await projection.getByRole("button", { name: "刷新项目镜头" }).click();
+    await projection.locator("img").waitFor();
+    const beforeView = JSON.stringify(cloud.nodes);
+    await page.screenshot({ path: join(output, "canvas-shot-projection.png") });
+    check(beforeView === beforeNodes, "Projection refreshes and media decode never save projected content into canvas");
+    await open(); await selectNode();
+    check(await panel.getByRole("combobox", { name: "目标项目镜头" }).inputValue() === "shot-1", "Reopening restores the mapped shot");
+    check(await panel.getByRole("combobox", { name: "关联已采用产物" }).inputValue() === artifact.id, "Reopening restores the adopted artifact identity");
+    await preview();
+    project.revision++;
+    await panel.getByRole("button", { name: "刷新", exact: true }).click();
+    check(await panel.getByRole("button", { name: "确认映射", exact: true }).isDisabled(), "Refreshing project data discards the old confirmation preview");
+    await preview();
+    await modal.getByRole("combobox", { name: "关联目标章节" }).selectOption("episode-2");
+    check(await panel.getByRole("button", { name: "确认映射", exact: true }).isDisabled(), "Switching episodes clears the old mapping preview");
+    check(await panel.getByRole("combobox", { name: "目标项目镜头" }).locator("option").allTextContents().then((labels: string[]) => labels.includes("1. shot-2") && !labels.includes("1. shot-1")), "Shot choices are limited to the selected episode");
+    await modal.getByRole("combobox", { name: "关联目标章节" }).selectOption(unitId);
+    await selectNode();
+    shots[0].currentRevisionId = "shot-1-revision-2"; project.revision++;
+    await panel.getByRole("button", { name: "刷新", exact: true }).click();
+    await panel.getByRole("listitem").filter({ hasText: "镜头已修订" }).waitFor();
+    check(true, "Shot revision changes mark the old mapping for review");
+    await selectNode(); await preview();
+    await panel.getByRole("button", { name: "确认映射", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "节点映射已保存" }).waitFor();
+    check(mappings[0].shotRevisionId === "shot-1-revision-2" && !mappings[0].artifactId, "Explicit remapping uses current shot revision and drops an outdated artifact");
+    await panel.getByRole("button", { name: "预览解除" }).click();
+    await panel.getByRole("region", { name: "节点镜头映射预览" }).waitFor();
+    check(mappings.length === 1, "Unlink preview preserves the existing mapping");
+    await panel.getByRole("button", { name: "确认解除", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "项目镜头保留" }).waitFor();
+    check(mappings.length === 0 && shots.length === 2, "Confirmed unlink keeps the business shot");
+    await preview(); await panel.getByRole("button", { name: "确认映射", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "节点映射已保存" }).waitFor();
+    shots = shots.filter((item) => item.id !== "shot-1"); project.revision++;
+    await panel.getByRole("button", { name: "刷新", exact: true }).click();
+    await panel.getByRole("listitem").filter({ hasText: "镜头已删除" }).waitFor();
+    check(mappings.length === 1, "Deleted shots leave a visible stale mapping instead of being recreated");
+    await panel.getByRole("button", { name: "预览解除" }).click();
+    await panel.getByRole("button", { name: "确认解除", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "项目镜头保留" }).waitFor();
+    check(mappings.length === 0 && shots.length === 1, "Stale mapping can be removed without resurrecting a deleted shot");
+    await modal.getByRole("button", { name: "保存画布并预览关联", exact: true }).click();
+    await modal.getByRole("button", { name: "确认关联", exact: true }).click();
+    await modal.getByRole("navigation", { name: "已关联章节制作流程" }).waitFor();
+    await modal.getByRole("combobox", { name: "查看映射的章节" }).selectOption("episode-2");
+    const routes = await modal.getByRole("navigation", { name: "已关联章节制作流程" }).getByRole("link").evaluateAll((links: HTMLAnchorElement[]) => links.map((link) => link.pathname));
+    check(routes.length === 8 && routes.every((path: string) => path.includes("/episode-2/")), "All eight stage links follow the chapter selection after association");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await panel.scrollIntoViewIfNeeded();
+    const bounds = await modal.boundingBox();
+    check(Boolean(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390), "Mapping dialog fits a 390px viewport");
+    check(await panel.evaluate((element: HTMLElement) => element.scrollWidth <= element.clientWidth + 1), "Mapping controls do not overflow at narrow width");
+    await page.getByText("画布已保存到云端", { exact: true }).first().waitFor({ state: "hidden" });
+    await panel.getByRole("button", { name: "确认映射", exact: true }).scrollIntoViewIfNeeded();
+    check(await panel.getByRole("button", { name: "确认映射", exact: true }).isVisible(), "Mapping confirmation remains reachable through internal scrolling");
+    await page.screenshot({ path: join(output, "mapping-narrow.png") });
+    await modal.locator(".ant-modal-close").click();
+    await page.setViewportSize({ width: 1440, height: 945 });
+    shots = [makeShot("shot-1", unitId), makeShot("shot-2", "episode-2")];
+    artifact.type = "video"; artifact.resourceId = "fixture-video";
+    cloud = { ...cloud, revision: cloud.revision + 1, nodes: [
+        { ...node, type: "video", title: "Original video A", position: { x: 0, y: 0 }, width: 400, height: 320, metadata: {} },
+        { ...node, id: "video-2", type: "video", title: "Original video B", position: { x: 460, y: 0 }, width: 400, height: 320, metadata: {} },
+    ], viewport: { x: 40, y: 220, k: 1 } };
+    mappings = cloud.nodes.map((item: any, index: number) => ({ id: `playback-link-${index}`, projectId, canvasId, unitId, nodeId: item.id, shotId: "shot-1", shotRevisionId: "shot-1-revision-1", artifactId: artifact.id, createdAt: stamp, updatedAt: stamp }));
+    await page.reload();
+    const videos = page.getByRole("region", { name: "项目镜头视图" });
+    await videos.first().waitFor();
+    await page.getByRole("button", { name: "适应画布", exact: true }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('[aria-label="项目镜头视图"]')].every((element) => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
+    }));
+    check(await videos.count() === 2 && await page.locator("video").count() === 0, "Two mapped videos share one shot and initially mount no players");
+    await videos.first().getByRole("button", { name: "播放 shot-1" }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll("video")].some((video) => video.readyState >= 2 && video.currentTime > 0));
+    check(await page.locator("video").count() === 1, "Mapped video uses the existing player and decodes local media");
+    await videos.nth(1).getByRole("button", { name: "播放 shot-1" }).click();
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-node-id="video-2"] video')) && !document.querySelector(`[data-node-id="bench-0"] video`));
+    check(await page.locator("video").count() === 1, "Switching mapped nodes releases the first player");
+    await page.locator('[data-node-id="video-2"]').getByRole("button", { name: "原节点", exact: true }).click();
+    check(await page.locator("video").count() === 0, "Returning to original empty node releases the projected player");
+    await page.locator('[data-node-id="video-2"]').getByRole("button", { name: "项目镜头", exact: true }).click();
+    check(await page.locator("video").count() === 0, "Switching back to project view does not restart playback without a play request");
+    const dragHandle = page.locator(`[data-node-id='${node.id}']`).getByRole("button", { name: "移动画布节点" });
+    const dragBox = await dragHandle.boundingBox();
+    const startBox = await page.locator(`[data-node-id='${node.id}']`).boundingBox();
+    await page.mouse.move(dragBox.x + dragBox.width / 2, dragBox.y + dragBox.height / 2);
+    await page.mouse.down(); await page.mouse.move(dragBox.x + dragBox.width / 2 + 50, dragBox.y + dragBox.height / 2 + 30, { steps: 6 }); await page.mouse.up();
+    const movedBox = await page.locator(`[data-node-id='${node.id}']`).boundingBox();
+    check(movedBox.x > startBox.x + 40 && movedBox.y > startBox.y + 20, "Mapped node can still move through the existing drag channel");
+    check(await page.locator("[data-canvas-node-panel]").count() === 0, "Dragging a projected node does not open its original generation panel");
+    const firstVideo = page.locator(`[data-node-id='${node.id}']`);
+    await firstVideo.getByRole("button", { name: "原节点", exact: true }).click();
+    await firstVideo.click({ position: { x: 100, y: 90 } });
+    await page.locator(`[data-canvas-node-panel-id='${node.id}']`).waitFor();
+    check(true, "Original view retains the existing node editor");
+    await firstVideo.getByRole("button", { name: "项目镜头", exact: true }).click();
+    await page.locator("[data-canvas-node-panel]").waitFor({ state: "hidden" });
+    check(true, "Switching to project view closes an existing original editor");
+    await page.screenshot({ path: join(output, "canvas-video-projection.png") });
+    check(report.errors.length === 0, "No uncaught page errors");
+    check(report.blocked.length === 0, "No external, generation or unexpected writes");
+} catch (error) {
+    report.errors.push(String(error));
+    await page.screenshot({ path: join(output, "failure.png"), fullPage: true });
+    process.exitCode = 1;
+} finally {
+    await browser.close();
+    writeFileSync(join(output, "report.json"), JSON.stringify(report, null, 2));
+    console.log(JSON.stringify({ passed: report.passed.length, errors: report.errors, output }, null, 2));
+}

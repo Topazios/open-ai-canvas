@@ -7,8 +7,8 @@ import { Link } from "react-router";
 import { formatShotOrdinal } from "@/lib/shot-label";
 import { saveProjectShot, type ProjectDetail } from "@/services/api/projects";
 
-import { AssetsStage, DeliveryStage, StoryStage } from "./workflow-stage-views";
-import { type ShortDramaWorkflowStage, workflowStages } from "./workflow-shared";
+import { AssetsStage, DeliveryStage, EditStage, ReviewStage, StoryStage, VoiceStage } from "./workflow-stage-views";
+import { type ShortDramaWorkflowStage, WorkflowStageLink, workflowStages, workflowStepKeyForStage } from "./workflow-shared";
 import "./workflow.css";
 
 const WorkflowProductionWorkbench = lazy(() => import("./workflow-production-workbench"));
@@ -25,7 +25,7 @@ export default function ProjectWorkflowView({ detail, projectId, unitId, stage }
     const { message } = App.useApp();
     const orderedUnits = useMemo(() => detail.units.slice().sort((left, right) => left.position - right.position), [detail.units]);
     const unit = orderedUnits.find((item) => item.id === unitId) || orderedUnits[0];
-    const activeStage = workflowStages.some((item) => item.key === stage) ? stage as ShortDramaWorkflowStage : "video";
+    const activeStage = [...workflowStages.map((item) => item.key), "previz"].includes(stage) ? stage as ShortDramaWorkflowStage : "video";
     const shots = useMemo(() => (detail.shots || []).filter((item) => item.unitId === unit?.id).slice().sort((left, right) => left.position - right.position), [detail.shots, unit?.id]);
     const workflow = useMemo(() => (detail.workflows || []).find((item) => item.instance?.unitId === unit?.id && (item.steps || []).some((step) => step.stepKey === "previz")), [detail.workflows, unit?.id]);
     const rememberedShotId = sessionStorage.getItem(`project-workflow-selected-shot:${projectId}`) || "";
@@ -72,10 +72,16 @@ export default function ProjectWorkflowView({ detail, projectId, unitId, stage }
 
     return (
         <div className="workflow-page-root">
+            <nav className="workflow-stage-nav" aria-label="短剧制作阶段">
+                {workflowStages.map((item, index) => <WorkflowStageLink key={item.key} href={`/projects/${projectId}/workflow/${unit.id}/${item.key}`} active={item.key === activeStage || (item.key === "storyboard" && activeStage === "previz")} step={workflow?.steps?.find((candidate) => candidate.stepKey === workflowStepKeyForStage(item.key))} index={index} label={item.label} shortLabel={item.shortLabel} />)}
+            </nav>
             <main className={`workflow-stage-content ${productionStage ? "is-production" : ""}`}>
                 {activeStage === "story" ? <div className="workflow-overview-scroll thin-scrollbar"><StoryStage detail={detail} projectId={projectId} unitId={unit.id} /></div> : null}
                 {activeStage === "assets" ? <div className="workflow-overview-scroll thin-scrollbar"><AssetsStage detail={detail} projectId={projectId} unitId={unit.id} /></div> : null}
+                {activeStage === "voice" ? <div className="workflow-overview-scroll thin-scrollbar"><VoiceStage detail={detail} projectId={projectId} unitId={unit.id} /></div> : null}
                 {productionStage ? <Suspense fallback={<div className="workflow-workbench-loading">正在准备分镜工作台…</div>}><WorkflowProductionWorkbench activeStage={activeStage} detail={detail} projectId={projectId} unitId={unit.id} workflowStep={activeStep} selectedShot={selectedShot} onSelectShot={setSelectedShotId} onRefresh={refresh} onAddShot={() => addShot.mutate()} addingShot={addShot.isPending} /></Suspense> : null}
+                {activeStage === "edit" ? <div className="workflow-overview-scroll thin-scrollbar"><EditStage projectId={projectId} unitId={unit.id} /></div> : null}
+                {activeStage === "review" ? <div className="workflow-overview-scroll thin-scrollbar"><ReviewStage key={`${projectId}:${unit.id}`} detail={detail} projectId={projectId} unitId={unit.id} /></div> : null}
                 {activeStage === "delivery" ? <div className="workflow-overview-scroll thin-scrollbar"><DeliveryStage detail={detail} unitId={unit.id} /></div> : null}
             </main>
         </div>

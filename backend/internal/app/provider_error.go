@@ -115,5 +115,11 @@ func normalizedProviderErrorCode(value any) string {
 }
 
 func isContentModerationFailure(value string) bool {
-	return strings.Contains(strings.ToLower(value), contentModerationErrorCode)
+	value = strings.ToLower(value)
+	for _, marker := range []string{contentModerationErrorCode, "moderation_blocked", "content_policy_violation", "rejected by the safety system", "内容审核未通过", "请求内容未通过模型服务安全审核"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }

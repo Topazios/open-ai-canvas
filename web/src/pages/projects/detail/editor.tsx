@@ -10,6 +10,7 @@ import {
     PanelRightClose,
     PanelRightOpen,
     Redo2,
+    RefreshCw,
     Sparkles,
     Undo2,
     X,
@@ -21,14 +22,18 @@ import { useEditorSlots, type EditorSlotRegistration } from "@/lib/plugins/edito
 import { pluginMayRenderEditorSlot } from "@/lib/plugins/plugin-permission-check";
 import { EditorStoreProvider } from "@/components/editor/editor-context";
 import { createEditorStore } from "@/stores/editor/editor-store";
-import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { normalizeTimelineProject } from "@/lib/timeline/timeline-tracks";
 import { formatTimelineTime } from "@/lib/timeline/timeline-view";
 import { useEditorStoreContext } from "@/components/editor/editor-context";
 import type { TimelineProject } from "@/types/timeline";
-
-const EDITOR_TIMELINE_KEY = "editor-timeline";
+import { recordLocalDeliveryRender } from "@/services/short-drama-delivery-store";
+import { shotDependencyFingerprint } from "@/lib/timeline/shot-dependencies";
+import { assignLegacyProjectTimeline, loadProjectEditorTimeline, loadProjectTimelineDrafts, previewLegacyProjectTimeline, projectTimelineVersion, restoreProjectTimelineDraft, saveProjectEditorTimeline, type ProjectTimelineDraft } from "@/services/project-editor-timeline";
+import { nanoid } from "nanoid";
+import { EditorTimelineDraftPreview } from "./editor-timeline-draft-preview";
+import { EditorShotAssembly } from "./editor-shot-assembly";
+import { EditorLegacyTimelinePreview } from "./editor-legacy-timeline-preview";
 
 /**
  * 为尚未产生本地时间线的项目建立一个可编辑的初始时间线。
@@ -118,19 +123,23 @@ function PanelTabs({
 
 /** 顶部工具栏（Concat 主菜单区）：项目名 + 全局撤销/重做 + 保存状态 + 导出主按钮。 */
 function EditorTopBar({
+    projectName,
+    unitTitle,
     onExport,
     isFullscreen,
     onToggleFullscreen,
     aiOpen,
     onToggleAi,
 }: {
+    projectName: string;
+    unitTitle?: string;
     onExport: () => void;
     isFullscreen: boolean;
     onToggleFullscreen: () => void;
     aiOpen: boolean;
     onToggleAi: () => void;
 }) {
-    const { project, history, isDirty, saving, saveError, undo, redo } = useEditorStoreContext();
+    const { project, history, isDirty, saving, saveError, undo, redo, retrySave } = useEditorStoreContext();
     const canUndo = (history?.undoStack.length ?? 0) > 0;
     const canRedo = (history?.redoStack.length ?? 0) > 0;
 
@@ -156,8 +165,14 @@ function EditorTopBar({
             >
                 <Redo2 className="size-4" />
             </button>
-            <div className="flex-1" />
+            <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium text-[var(--director-dock-fg-strong)]">{projectName}</div>
+                <div className="truncate text-[10px] text-[var(--director-dock-fg)]/50">{unitTitle || "项目时间线"}</div>
+            </div>
             <div className="flex items-center gap-1.5">
+                <span className="max-w-36 truncate text-[10px] text-[var(--director-dock-fg)]/55" title={saveError ?? (saving ? "保存中" : isDirty ? "有未保存的更改" : "已保存")}>
+                    {saveError ? "保存失败" : saving ? "保存中" : isDirty ? "未保存" : "已保存"}
+                </span>
                 <span className="grid size-8 place-items-center" title={saveError ?? (saving ? "保存中" : isDirty ? "有未保存的更改" : "已保存")}>
                     {saveError ? (
                         <AlertTriangle className="size-4 text-[var(--director-danger)]" aria-label="保存失败" />
@@ -169,6 +184,18 @@ function EditorTopBar({
                         <Check className="size-4 text-[var(--director-success)]" aria-label="已保存" />
                     )}
                 </span>
+                {saveError ? (
+                    <button
+                        type="button"
+                        aria-label="重试保存"
+                        title="重试保存"
+                        onClick={() => void retrySave()}
+                        disabled={saving}
+                        className="grid size-8 place-items-center rounded-md text-[var(--director-dock-fg)] hover:bg-[var(--director-control-hover)] disabled:pointer-events-none disabled:opacity-35"
+                    >
+                        <RefreshCw className="size-3.5" />
+                    </button>
+                ) : null}
                 <button
                     type="button"
                     aria-label="AI 剪辑助手"
@@ -225,7 +252,7 @@ function EditorStatusBar({ projectName }: { projectName: string }) {
     );
 }
 
-export default function ProjectEditorView({ detail }: { detail: ProjectDetail }) {
+export default function ProjectEditorView({ detail, unitId }: { detail: ProjectDetail; unitId?: string }) {
     // 插槽注册（全部 8 种始终注册；左/右栏 Tab 决定当前渲染哪个）。
     const previewSlots = useEditorSlots("preview-renderer");
     const timelineSlots = useEditorSlots("timeline-panel");
@@ -236,8 +263,16 @@ export default function ProjectEditorView({ detail }: { detail: ProjectDetail })
     const exportSlots = useEditorSlots("export-renderer");
     const aiSlots = useEditorSlots("ai-assistant");
 
-    const [leftTab, setLeftTab] = useState("asset");
+    const [leftTab, setLeftTab] = useState(unitId ? "shots" : "asset");
+    useEffect(() => setLeftTab(unitId ? "shots" : "asset"), [unitId]);
     const [rightTab, setRightTab] = useState("inspector");
+    const [timelineReadError, setTimelineReadError] = useState<string | null>(null);
+    const [timelineReadAttempt, setTimelineReadAttempt] = useState(0);
+    const [legacyPreview, setLegacyPreview] = useState<{ owner: string; source: TimelineProject; assignedUnitId?: string } | null>(null);
+    const [assigningTimeline, setAssigningTimeline] = useState(false);
+    const [draftPreview, setDraftPreview] = useState<{ owner: string; current: TimelineProject | null; drafts: ProjectTimelineDraft[] } | null>(null);
+    const [draftCount, setDraftCount] = useState(0);
+    const openDraftsRef = useRef(false);
 
     const [rightCollapsed, setRightCollapsed] = useState(false);
     const [assets, setAssets] = useState<ProjectAsset[]>(detail.assets);
@@ -259,7 +294,16 @@ export default function ProjectEditorView({ detail }: { detail: ProjectDetail })
     const splitterRef = useRef<{ startY: number; startH: number } | null>(null);
     const scope = getActiveUserScope();
     const projectId = detail.project.id;
+    const timelineScope = unitId ? `${projectId}:unit:${unitId}` : projectId;
+    const timelineOwner = JSON.stringify([scope, projectId, unitId]);
+    const timelineOwnerRef = useRef(timelineOwner);
+    timelineOwnerRef.current = timelineOwner;
+    const persistence = useMemo(() => ({ expectedVersion: undefined as string | null | undefined, draftId: nanoid() }), [timelineOwner]);
     const assetOwnerKey = JSON.stringify([scope, projectId]);
+    const recordDeliveryRender = useCallback(async ({ result, timeline }: { result: import("@/services/api/timeline-tasks").TimelineRenderResult; timeline: TimelineProject }) => {
+        if (!unitId) return;
+        await recordLocalDeliveryRender({ projectId, unitId, result, timeline, scope, shotDependencyFingerprint: shotDependencyFingerprint({ projectId, unitId, shots: detail.shots, artifacts: detail.shotArtifacts }) });
+    }, [detail.shotArtifacts, detail.shots, projectId, unitId, scope]);
     const activeAssetOwnerKeyRef = useRef(assetOwnerKey);
     const assetRefreshSequenceRef = useRef(0);
     activeAssetOwnerKeyRef.current = assetOwnerKey;
@@ -322,37 +366,46 @@ export default function ProjectEditorView({ detail }: { detail: ProjectDetail })
         () =>
             createEditorStore({
                 saveTimeline: async (project: TimelineProject) => {
-                    await localForageStorageForScope(scope).setItem(`${EDITOR_TIMELINE_KEY}:${projectId}`, JSON.stringify(project));
+                    if (persistence.expectedVersion === undefined) throw new Error("时间线尚未读取，暂不能保存");
+                    await saveProjectEditorTimeline(projectId, unitId, project, scope, { expectedVersion: persistence.expectedVersion, draftId: persistence.draftId });
+                    persistence.expectedVersion = projectTimelineVersion(project);
                 },
             }),
-        [projectId, scope],
+        [projectId, scope, timelineScope, persistence],
     );
+    const editorDirty = store((state) => state.isDirty || state.inPreview || state.saving);
 
     // 进入编辑器时只加载当前用户和项目作用域的本地时间线；没有真实数据时保持空时间线，禁止注入虚构片段。
     useEffect(() => {
         let cancelled = false;
+        setTimelineReadError(null);
+        setLegacyPreview(null);
+        setDraftPreview(null);
+        setDraftCount(0);
+        setAssigningTimeline(false);
         void (async () => {
             try {
-                const storage = localForageStorageForScope(scope);
-                const raw = await storage.getItem(`${EDITOR_TIMELINE_KEY}:${projectId}`);
-                let loaded = createEmptyEditorTimeline();
-                if (raw) {
-                    try {
-                        loaded = normalizeTimelineProject(JSON.parse(raw));
-                    } catch (error) {
-                        // 本地历史数据属于读展示路径：坏记录不能阻塞编辑器启动，
-                        // 但必须记录项目和存储键，后续可按键清理或迁移，而不是把坏数据伪装成有效时间线。
-                        console.warn("读取编辑器本地时间线失败，已使用空时间线", {
-                            projectId,
-                            storageKey: `${EDITOR_TIMELINE_KEY}:${projectId}`,
-                            error,
-                        });
-                    }
+                const saved = await loadProjectEditorTimeline(projectId, unitId, scope);
+                const drafts = await loadProjectTimelineDrafts(projectId, unitId, scope);
+                const legacy = !saved && unitId ? await previewLegacyProjectTimeline(projectId, scope) : null;
+                if (cancelled) return;
+                persistence.expectedVersion = projectTimelineVersion(saved);
+                setDraftCount(drafts.length);
+                if (legacy?.source?.clips.length) {
+                    setLegacyPreview({ owner: timelineOwner, source: legacy.source, assignedUnitId: legacy.assignedUnitId });
                 }
+                const showDrafts = drafts.some((draft) => draft.reason === "save-failed") || openDraftsRef.current;
+                openDraftsRef.current = false;
+                if (drafts.length && showDrafts) {
+                    setDraftPreview({ owner: timelineOwner, current: saved, drafts });
+                    return;
+                }
+                if (legacy?.source?.clips.length) return;
+                const loaded = saved ? normalizeTimelineProject(saved) : createEmptyEditorTimeline();
                 if (!cancelled) store.getState().load(loaded);
             } catch (error) {
-                // IndexedDB/localforage 不可用时不写入空时间线，避免覆盖可能仍可恢复的本地数据。
-                console.error("读取编辑器本地时间线存储失败，保留编辑器初始状态", { projectId, error });
+                // 读取失败或记录损坏时不开放空时间线编辑，避免入轨保存覆盖可恢复的旧记录。
+                if (!cancelled) setTimelineReadError(error instanceof Error ? error.message : "读取本机时间线失败");
             }
         })();
         return () => {
@@ -366,10 +419,10 @@ export default function ProjectEditorView({ detail }: { detail: ProjectDetail })
                 });
             }
         };
-    }, [scope, projectId, store]);
+    }, [scope, projectId, timelineScope, store, timelineReadAttempt, persistence, timelineOwner]);
 
     // 画布产物自动同步：detail.shotArtifacts 中当前采用(storyboard/action_board/
-    // 分镜/导出成片，且 ready + 有资源)尚未作为素材进本项目时，自动
+    // 音频/视频/分镜/导出成片，且 ready + 有资源)尚未作为素材进本项目时，自动
     // linkProjectAsset(source=canvas) 并入素材库 —— 剪辑器“素材选项”直接可用画布产物。
     // 后端幂等（已链接直接返回）；单个失败不阻塞其余资源，但会记录告警，
     // 下次进入编辑器时再次尝试补同步。
@@ -387,7 +440,7 @@ export default function ProjectEditorView({ detail }: { detail: ProjectDetail })
                 a.selected &&
                 a.status === "ready" &&
                 !!a.resourceId &&
-                ["storyboard", "action_board", "start_frame", "end_frame", "video", "delivery"].includes(a.type),
+                ["storyboard", "action_board", "start_frame", "end_frame", "video", "audio", "delivery"].includes(a.type),
         )
         .map((a) => `resource:${a.resourceId}`)
         .join(",");
@@ -425,16 +478,81 @@ export default function ProjectEditorView({ detail }: { detail: ProjectDetail })
         };
     }, [assets, canvasSyncKeys, projectId, refreshAssets]);
 
+    const confirmLegacyAssignment = async () => {
+        if (!unitId || !legacyPreview || assigningTimeline || legacyPreview.owner !== timelineOwner) return;
+        const owner = timelineOwner;
+        setAssigningTimeline(true);
+        setTimelineReadError(null);
+        try {
+            const assigned = await assignLegacyProjectTimeline(projectId, unitId, legacyPreview.source, scope);
+            if (timelineOwnerRef.current !== owner) return;
+            persistence.expectedVersion = projectTimelineVersion(assigned);
+            store.getState().load(normalizeTimelineProject(assigned));
+            setLegacyPreview(null);
+        } catch (error) {
+            if (timelineOwnerRef.current === owner) setTimelineReadError(error instanceof Error ? error.message : "旧剪辑归属失败，请重试");
+        } finally {
+            if (timelineOwnerRef.current === owner) setAssigningTimeline(false);
+        }
+    };
+
+    if (draftPreview?.owner === timelineOwner) return <EditorTimelineDraftPreview
+        key={timelineOwner} current={draftPreview.current} drafts={draftPreview.drafts} busy={assigningTimeline} error={timelineReadError}
+        onRefresh={() => { openDraftsRef.current = true; setTimelineReadAttempt((attempt) => attempt + 1); }}
+        onContinue={() => { store.getState().load(draftPreview.current ? normalizeTimelineProject(draftPreview.current) : createEmptyEditorTimeline()); setDraftPreview(null); setTimelineReadError(null); }}
+        onRestore={(draft) => {
+            if (assigningTimeline) return;
+            const owner = timelineOwner;
+            setAssigningTimeline(true);
+            setTimelineReadError(null);
+            void restoreProjectTimelineDraft(projectId, unitId, draft, projectTimelineVersion(draftPreview.current), scope).then(async (restored) => {
+                const remaining = await loadProjectTimelineDrafts(projectId, unitId, scope);
+                if (timelineOwnerRef.current !== owner) return;
+                persistence.expectedVersion = projectTimelineVersion(restored);
+                store.getState().load(normalizeTimelineProject(restored));
+                setDraftCount(remaining.length);
+                setDraftPreview(null);
+                setLegacyPreview(null);
+            }).catch((error) => {
+                if (timelineOwnerRef.current === owner) setTimelineReadError(error instanceof Error ? error.message : "草稿恢复失败");
+            }).finally(() => {
+                if (timelineOwnerRef.current === owner) setAssigningTimeline(false);
+            });
+        }}
+    />;
+
+    if (unitId && legacyPreview?.owner === timelineOwner) return <EditorLegacyTimelinePreview
+        projectId={projectId} unitId={unitId} units={detail.units} source={legacyPreview.source} assignedUnitId={legacyPreview.assignedUnitId}
+        busy={assigningTimeline} error={timelineReadError} onAssign={() => void confirmLegacyAssignment()}
+        onRefresh={() => setTimelineReadAttempt((attempt) => attempt + 1)}
+        onEmpty={() => { store.getState().load(createEmptyEditorTimeline()); setLegacyPreview(null); setTimelineReadError(null); }}
+    />;
+
     return (
-        <EditorStoreProvider store={store} host={{ projectId, assets, refreshAssets }}>
+        <EditorStoreProvider key={JSON.stringify([scope, projectId, unitId])} store={store} host={{ projectId, unitId, assets, refreshAssets, onDeliveryRender: recordDeliveryRender }}>
             <div ref={workbenchRef} className="editor-workbench relative flex h-full min-h-0 flex-col bg-[var(--director-workspace-bg)]">
                 <EditorTopBar
+                    projectName={detail.project.name}
+                    unitTitle={unitId ? detail.units.find((unit) => unit.id === unitId)?.title : undefined}
                     onExport={() => setRightTab("export")}
                     isFullscreen={isFullscreen}
                     onToggleFullscreen={toggleFullscreen}
                     aiOpen={aiOpen}
                     onToggleAi={() => setAiOpen((v) => !v)}
                 />
+                {draftCount > 0 ? <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs text-foreground/60">
+                    <span>{draftCount} 份本机草稿或恢复前备份</span>
+                    <button type="button" disabled={editorDirty} title={editorDirty ? "当前修改保存完成后可查看" : "查看本机剪辑草稿"} className="text-[var(--workspace-accent)] disabled:opacity-40" onClick={() => { openDraftsRef.current = true; setTimelineReadAttempt((attempt) => attempt + 1); }}>查看本机剪辑草稿</button>
+                </div> : null}
+                {timelineReadError ? (
+                    <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-[var(--director-sequencer-border)] px-3 py-2 text-xs text-[var(--director-danger)]">
+                        <AlertTriangle className="size-4 shrink-0" />
+                        <span className="min-w-0 flex-1 break-words">时间线读取失败：{timelineReadError}</span>
+                        <button type="button" title="重试读取时间线" aria-label="重试读取时间线" onClick={() => setTimelineReadAttempt((value) => value + 1)} className="grid size-7 shrink-0 place-items-center rounded-md hover:bg-[var(--director-control-hover)]">
+                            <RefreshCw className="size-3.5" />
+                        </button>
+                    </div>
+                ) : null}
                 {/* AI 助手浮层：常驻挂载、随开关显隐，关闭再开保留会话与输入（状态在 SlotStack 内）。 */}
                 <div className={aiOpen ? "contents" : "hidden"}>
                     <button
@@ -475,13 +593,16 @@ export default function ProjectEditorView({ detail }: { detail: ProjectDetail })
                         <aside className="flex h-full w-64 shrink-0 flex-col overflow-hidden rounded-xl bg-[var(--director-sequencer-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.3)]">
                             <PanelTabs
                                 tabs={[
+                                    ...(unitId ? [{ id: "shots", label: "当前集镜头" }] : []),
                                     { id: "asset", label: "素材" },
                                     { id: "transcription", label: "转写" },
                                 ]}
                                 active={leftTab}
                                 onChange={setLeftTab}
                             />
-                            {leftTab === "asset" ? (
+                            {leftTab === "shots" && unitId ? (
+                                <EditorShotAssembly detail={detail} unitId={unitId} assets={assets} store={store} />
+                            ) : leftTab === "asset" ? (
                                 <SlotStack slots={assetSlots} emptyHint="素材库插件未加载。" />
                             ) : (
                                 <SlotStack slots={transcriptionSlots} emptyHint="转写插件未加载。" />

@@ -75,8 +75,8 @@ func (r *Repository) ClaimNextTask(owner string, leaseDuration time.Duration) (*
 		updated := claim.
 			Updates(map[string]any{
 				"status":           model.TaskStatusRunning,
-				"stage":            "后端接管任务",
-				"progress":         15,
+				"stage":            gorm.Expr("CASE WHEN operation = ? THEN stage ELSE ? END", "short_drama_batch", "后端接管任务"),
+				"progress":         gorm.Expr("CASE WHEN operation = ? THEN progress ELSE ? END", "short_drama_batch", 15),
 				"attempts":         gorm.Expr("attempts + ?", 1),
 				"started_at":       gorm.Expr("COALESCE(started_at, ?)", now),
 				"lease_owner":      owner,
@@ -376,7 +376,7 @@ func (r *Repository) Tasks(userID string, limit int, projectID string, activeOnl
 		limit = 50
 	}
 	query := r.db.Select("id", "project_id", "type", "status", "stage", "media_stage", "media_recovery_json", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at", "agent_run_id", "generation_id", "approval_id", "authorized_charge_microcredits", "execution_diagnostic_json", "cancellation_source", "cancellation_actor_id", "cancellation_requested_at").
-		Where("user_id = ?", userID)
+		Where("user_id = ? AND removed_at IS NULL", userID)
 	if strings.TrimSpace(projectID) != "" {
 		query = query.Where("project_id = ?", strings.TrimSpace(projectID))
 	}

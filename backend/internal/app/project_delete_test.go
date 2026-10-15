@@ -26,6 +26,7 @@ func newProjectDeleteTestService(t *testing.T) (*Service, *gorm.DB) {
 		&model.CanvasSnapshotResource{},
 		&model.CanvasShare{},
 		&model.CanvasUnitLink{},
+		&model.CanvasNodeShotLink{},
 		&model.ProjectAssetLink{},
 		&model.ProjectAssetFolder{},
 		&model.ProjectAssetCandidate{},
@@ -58,6 +59,7 @@ func TestDeleteProjectUnlinksCanvasAndKeepsIndependentRecords(t *testing.T) {
 		&model.CanvasShare{ID: "share-1", UserID: "user-1", ProjectID: project.ID},
 		&model.ProjectUnit{ID: "unit-1", ProjectID: project.ID, Title: "第一集"},
 		&model.CanvasUnitLink{ID: "canvas-link-1", ProjectID: project.ID, CanvasID: canvas.ID, UnitID: "unit-1"},
+		&model.CanvasNodeShotLink{ID: "node-shot-link-1", ProjectID: project.ID, CanvasID: canvas.ID, UnitID: "unit-1", NodeID: "node-1", ShotID: "shot-1", ShotRevisionID: "revision-1"},
 		&asset,
 		&model.ProjectAssetLink{ID: "asset-link-1", ProjectID: project.ID, AssetID: asset.ID},
 		&model.ProjectAssetFolder{ID: "folder-1", ProjectID: project.ID, Name: "角色", NameKey: "角色"},
@@ -105,6 +107,7 @@ func TestDeleteProjectUnlinksCanvasAndKeepsIndependentRecords(t *testing.T) {
 	}{
 		{name: "canvas share", model: &model.CanvasShare{}, where: "project_id = ?"},
 		{name: "canvas unit link", model: &model.CanvasUnitLink{}, where: "project_id = ?"},
+		{name: "canvas node shot link", model: &model.CanvasNodeShotLink{}, where: "project_id = ?"},
 		{name: "project unit", model: &model.ProjectUnit{}, where: "project_id = ?"},
 		{name: "asset link", model: &model.ProjectAssetLink{}, where: "project_id = ?"},
 		{name: "asset folder", model: &model.ProjectAssetFolder{}, where: "project_id = ?"},

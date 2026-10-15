@@ -49,7 +49,7 @@ func (r *taskBillingRepositoryStub) BillingOrder(string) (*model.BillingOrder, e
 	return r.order, r.orderErr
 }
 
-func (r *taskBillingRepositoryStub) TaskHasSuccessfulBillableCall(string) (bool, error) {
+func (r *taskBillingRepositoryStub) TaskHasSuccessfulBillableCall(string, string) (bool, error) {
 	return r.hasSuccessfulCall, r.callErr
 }
 

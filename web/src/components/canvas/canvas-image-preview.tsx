@@ -1,151 +1,47 @@
 import { useEffect, useState } from "react";
-import { Image as ImageIcon, LoaderCircle } from "lucide-react";
-
+import { Button, Image } from "antd";
+import { Image as ImageIcon, LoaderCircle, RotateCcw, RotateCw, Scan, X, ZoomIn, ZoomOut } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { resourceStorageKeyFromURL } from "@/services/api/resources";
 import { resolveImageUrl } from "@/services/image-storage";
+import "./canvas-image-preview.css";
 
-type CanvasImagePreviewProps = {
-    src?: string;
-    storageKey?: string;
-    alt?: string;
-    onClose: () => void;
-};
+type CanvasImagePreviewProps = { src?: string; storageKey?: string; alt?: string; onClose: () => void };
 
 export function CanvasImagePreview({ src = "", storageKey, alt = "图片", onClose }: CanvasImagePreviewProps) {
-    const effectiveStorageKey = storageKey || resourceStorageKeyFromURL(src);
-    const [resolvedSrc, setResolvedSrc] = useState(effectiveStorageKey ? "" : src);
-    const [loading, setLoading] = useState(Boolean(src || storageKey));
+    const [resolved, setResolved] = useState<{ source: string; url: string } | null>(null);
     const [error, setError] = useState(false);
-
+    const [attempt, setAttempt] = useState(0);
+    const source = `${storageKey || ""}:${src}`;
+    const resolvedSrc = resolved?.source === source ? resolved.url : "";
     useEffect(() => {
         let cancelled = false;
-        const nextStorageKey = storageKey || resourceStorageKeyFromURL(src);
-        setResolvedSrc(nextStorageKey ? "" : src);
-        setLoading(Boolean(src || storageKey));
-        setError(false);
-        if (!src && !storageKey) return () => {
-            cancelled = true;
-        };
-        void resolveImageUrl(nextStorageKey, src)
-            .then((url) => {
-                if (cancelled) return;
-                if (!url) {
-                    setLoading(false);
-                    setError(true);
-                    return;
-                }
-                setResolvedSrc(url);
-            })
-            .catch(() => {
-                if (!cancelled) {
-                    setLoading(false);
-                    setError(true);
-                }
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [src, storageKey]);
-
+        setResolved(null); setError(false);
+        if (src || storageKey) void resolveImageUrl(storageKey || resourceStorageKeyFromURL(src), src)
+            .then((url) => { if (!cancelled) { setResolved({ source, url }); setError(!url); } })
+            .catch(() => { if (!cancelled) setError(true); });
+        return () => { cancelled = true; };
+    }, [src, storageKey, source, attempt]);
     if (!src && !storageKey) return null;
-
-    return (
-        <AppModal
-            open
-            flush
-            title={
-                <div className="flex min-w-0 items-center gap-2.5">
-                    <span
-                        className="grid size-7 shrink-0 place-items-center rounded-[var(--r-sm)] border"
-                        style={{
-                            borderColor: "var(--workspace-border)",
-                            background: "color-mix(in srgb, var(--workspace-surface-strong) 72%, var(--workspace-surface))",
-                            color: "var(--workspace-text-muted)",
-                        }}
-                    >
-                        <ImageIcon className="size-4" />
-                    </span>
-                    <span className="min-w-0 truncate text-sm font-semibold" title={alt}>{alt}</span>
-                </div>
-            }
-            footer={null}
-            centered
-            width="min(1160px, calc(100vw - 32px))"
-            onCancel={onClose}
-            className="canvas-image-preview-modal"
-        >
-            <div
-                className="flex min-h-[min(72dvh,680px)] items-center justify-center border-t p-4 sm:p-6"
-                style={{
-                    borderColor: "var(--workspace-border)",
-                    background: "color-mix(in srgb, var(--workspace-surface) 86%, var(--background))",
-                }}
-            >
-                <div
-                    className="relative flex min-h-[min(62dvh,560px)] w-full items-center justify-center overflow-hidden rounded-[var(--r-lg)] border p-3 sm:p-5"
-                    style={{
-                        borderColor: "var(--workspace-border-strong)",
-                        background: "var(--workspace-surface-strong)",
-                        boxShadow: "inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent), 0 18px 50px color-mix(in srgb, var(--foreground) 14%, transparent)",
-                    }}
-                >
-                    {loading && !error ? (
-                        <div
-                            className="absolute inset-3 grid place-items-center rounded-[var(--r-md)] border border-dashed sm:inset-5"
-                            style={{
-                                borderColor: "var(--workspace-border)",
-                                background: "color-mix(in srgb, var(--workspace-surface-strong) 68%, var(--workspace-surface))",
-                            }}
-                            role="status"
-                            aria-label="图片加载中"
-                        >
-                            <div className="flex flex-col items-center gap-3" style={{ color: "var(--workspace-text-muted)" }}>
-                                <span className="grid size-11 place-items-center rounded-full border bg-[var(--workspace-surface-strong)]" style={{ borderColor: "var(--workspace-border)" }}>
-                                    <LoaderCircle className="size-5 animate-spin motion-reduce:animate-none" />
-                                </span>
-                                <span className="text-xs font-medium">正在加载高清图片</span>
-                            </div>
-                        </div>
-                    ) : null}
-                    {error ? (
-                        <div
-                            className="absolute inset-3 grid place-items-center rounded-[var(--r-md)] border border-dashed sm:inset-5"
-                            style={{
-                                borderColor: "var(--workspace-border-strong)",
-                                background: "color-mix(in srgb, var(--workspace-surface-strong) 68%, var(--workspace-surface))",
-                                color: "var(--workspace-text-muted)",
-                            }}
-                            role="alert"
-                        >
-                            <div className="flex flex-col items-center gap-3 text-center">
-                                <ImageIcon className="size-8 opacity-45" />
-                                <div>
-                                    <div className="text-sm font-medium">图片暂时无法显示</div>
-                                    <div className="mt-1 text-xs opacity-70">请关闭预览后重试</div>
-                                </div>
-                            </div>
-                        </div>
-                    ) : null}
-                    {resolvedSrc ? (
-                        <img
-                            src={resolvedSrc}
-                            alt={alt}
-                            draggable={false}
-                            className={`max-h-[min(66dvh,620px)] max-w-full rounded-[var(--r-sm)] border object-contain shadow-xl transition-opacity duration-200 motion-reduce:transition-none ${loading || error ? "opacity-0" : "opacity-100"}`}
-                            style={{ borderColor: "var(--workspace-border-strong)" }}
-                            onLoad={() => {
-                                setLoading(false);
-                                setError(false);
-                            }}
-                            onError={() => {
-                                setLoading(false);
-                                setError(true);
-                            }}
-                        />
-                    ) : null}
-                </div>
-            </div>
-        </AppModal>
-    );
+    if (!resolvedSrc || error) return <AppModal open title={alt} footer={null} centered onCancel={onClose} className="canvas-image-preview-modal">
+        <div className="flex min-h-48 flex-col items-center justify-center gap-4" role={error ? "alert" : "status"}>
+            {error ? <><ImageIcon /><span>图片暂时无法显示</span><Button onClick={() => setAttempt((value) => value + 1)}>重新加载</Button></> : <><LoaderCircle className="animate-spin motion-reduce:animate-none" /><span>正在加载高清图片</span></>}
+        </div>
+    </AppModal>;
+    return <Image key={`${source}:${attempt}`} src={resolvedSrc} alt={alt} draggable={false}
+        styles={{ root: { display: "none" } }} classNames={{ popup: { root: "canvas-image-lightbox" } }}
+        onError={() => setError(true)}
+        preview={{ open: true, movable: true, minScale: 0.25, maxScale: 8, scaleStep: 0.25,
+            onOpenChange: (open) => { if (!open) onClose(); },
+            closeIcon: <X aria-label="关闭图片预览" />,
+            imageRender: (image) => <>{image}<div className="canvas-image-preview-title" title={alt}>{alt}</div></>,
+            actionsRender: (_, { actions, transform }) => <div className="canvas-image-preview-tools" data-canvas-no-zoom>
+                <button type="button" aria-label="缩小图片" title="缩小" disabled={transform.scale <= 0.25} onClick={actions.onZoomOut}><ZoomOut size={18} /></button>
+                <output aria-label="图片缩放比例">{Math.round(transform.scale * 100)}%</output>
+                <button type="button" aria-label="放大图片" title="放大" disabled={transform.scale >= 8} onClick={actions.onZoomIn}><ZoomIn size={18} /></button>
+                <button type="button" aria-label="复位图片" title="复位" onClick={actions.onReset}><Scan size={18} /></button>
+                <button type="button" aria-label="向左旋转图片" title="向左旋转" onClick={actions.onRotateLeft}><RotateCcw size={18} /></button>
+                <button type="button" aria-label="向右旋转图片" title="向右旋转" onClick={actions.onRotateRight}><RotateCw size={18} /></button>
+            </div>,
+        }} />;
 }

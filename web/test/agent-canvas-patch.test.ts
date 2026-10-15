@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyAgentCanvasPatch, mergeAgentCanvasEditor, type AgentCanvasPatch } from "@/lib/canvas/agent-canvas-patch";
+import { applyAgentCanvasPatch, mergeCanvasSnapshot, mergeAgentCanvasEditor, type AgentCanvasPatch } from "@/lib/canvas/agent-canvas-patch";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
@@ -76,4 +76,28 @@ test("full Agent refresh removes unchanged nodes but preserves conflicting local
     const local = { ...node, title: "Unsaved local title" };
     expect(() => mergeAgentCanvasEditor(previous, incoming, [local, remaining], [])).toThrow("冲突");
     expect(local.title).toBe("Unsaved local title");
+});
+
+test("deleting a container prevents its late new children and edges from entering the merged canvas", () => {
+    const frame = { ...node, id: "frame", type: CanvasNodeType.Frame };
+    const before = { ...project, revision: 1, nodes: [frame, { ...node, parentId: frame.id }] };
+    const incoming = { ...before, revision: 2, nodes: [...before.nodes, { ...node, id: "late-child", parentId: frame.id }], connections: [{ id: "edge", fromNodeId: node.id, toNodeId: "late-child" }] };
+    const current = { ...before, nodes: [{ ...node, parentId: undefined }] };
+    const merged = mergeCanvasSnapshot(before, current, incoming);
+    expect(merged.nodes).toEqual(current.nodes);
+    expect(merged.connections).toEqual([]);
+    expect(merged.revision).toBe(2);
+});
+
+test("new metadata fields merge independently but the same content field still conflicts", () => {
+    const before = { ...project, nodes: [{ ...node, metadata: undefined }] };
+    const current = { ...before, nodes: [{ ...node, metadata: { prompt: "local prompt" } }] };
+    const incoming = { ...before, nodes: [{ ...node, metadata: { status: "success" as const } }] };
+    expect(mergeCanvasSnapshot(before, current, incoming).nodes[0].metadata).toEqual({ prompt: "local prompt", status: "success" });
+    expect(() => mergeCanvasSnapshot(before, current, { ...incoming, nodes: [{ ...node, metadata: { prompt: "remote prompt" } }] })).toThrow("冲突");
+});
+
+test("snapshot reconciliation cannot apply old task results to a rebound node", () => {
+    const current = { ...project, nodes: [{ ...node, metadata: { ...node.metadata, taskId: "replacement" } }] };
+    expect(() => mergeCanvasSnapshot(project, current, { ...project, nodes: [failed] })).toThrow("冲突");
 });

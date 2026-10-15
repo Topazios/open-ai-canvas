@@ -27,6 +27,104 @@ tags:
   - name: admin
   - name: skills
 paths:
+  /projects/{id}/canvases/{canvasId}/node-shot-links:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+      - {name: canvasId, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [projects, canvas]
+      summary: 读取画布节点与项目镜头映射
+      description: 校验当前用户拥有项目和画布，且画布归属此项目。links 保留旧映射用于复核；views 返回关联修订和产物的只读投影、读取时的资源就绪状态。修订变化不自动采用新版本；资源不可用时禁用媒体展示。读取不写画布、镜头或审核记录，不保证后续媒体传输成功。
+      responses:
+        "200":
+          description: 映射列表，空结果为 null 或空数组
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          links:
+                            type: array
+                            nullable: true
+                            items: {$ref: "#/components/schemas/CanvasNodeShotLink"}
+                          views:
+                            type: array
+                            items: {$ref: "#/components/schemas/CanvasNodeShotView"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+    post:
+      tags: [projects, canvas]
+      summary: 确认建立或替换节点镜头映射
+      description: 使用已保存画布和预览时项目 revision。节点必须存在，画布必须已关联目标章节，镜头及其当前修订必须有效。可选产物必须为同镜头当前修订已采用、类型匹配的就绪产物，且资源属于当前用户并就绪。映射变更与项目 revision 加一同事务；不修改画布快照或镜头内容。完全相同且仍有效的关系重试幂等，其他版本冲突返回 409、reason conflict。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/LinkCanvasNodeShotRequest"}
+      responses:
+        "200":
+          description: 已持久化的映射
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          link: {$ref: "#/components/schemas/CanvasNodeShotLink"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
+  /projects/{id}/canvases/{canvasId}/node-shot-links/{nodeId}/unlink:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+      - {name: canvasId, in: path, required: true, schema: {type: string}}
+      - {name: nodeId, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [projects, canvas]
+      summary: 确认解除节点镜头映射，保留镜头与画布内容
+      description: 请求必须携带预览的映射 ID 和项目 revision。已解除的相同节点重试不推进版本；新映射或版本变化拒绝旧预览。允许清理镜头或节点删除后留下的映射。归档项目不可写。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedLinkId, expectedProjectRevision]
+              properties:
+                expectedLinkId: {type: string, minLength: 1}
+                expectedProjectRevision: {type: integer, format: int64, minimum: 1}
+      responses:
+        "200":
+          description: 解除结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          nodeId: {type: string}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+        "500": {$ref: "#/components/responses/Error"}
   /admin/settings/appearance/live2d:
     post:
       tags: [admin]
@@ -825,6 +923,60 @@ paths:
       responses:
         "200":
           description: 信封 data.accepted
+  /canvas-projects/{id}/tasks/reconcile:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [agent]
+      summary: 清理已删除节点的生成任务和制作 Agent
+      description: 仅处理当前用户画布。先取消执行及子调用，确认本地执行停止后逻辑删除；保留账务、上游取消核对和幂等记录。服务端仍存在的节点不会被清理，未首次保存的普通任务不会因节点暂缺被误删。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deletedNodeIds:
+                  type: array
+                  maxItems: 5000
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: 信封 data.accepted；未发现孤立任务也是成功
+        "400":
+          description: 请求无效
+        "404":
+          description: 当前用户画布不存在
+        "409":
+          description: 任务尚未停止，保留记录等待重试
+  /agent/runs/{id}/production-control:
+    parameters:
+      - $ref: "#/components/parameters/AgentRunID"
+    post:
+      tags: [agent]
+      summary: 暂停或继续当前用户的制作 Agent
+      description: 暂停在模型调用边界生效。失败任务继续前核对来源版本、调用回执和预算；取消不能作为暂停恢复。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [pause, resume]
+      responses:
+        "200":
+          description: 信封 data.accepted
+        "400":
+          description: 非制作任务、已结束、预算耗尽或来源变化
   /agent/runs/{id}/undo:
     parameters:
       - $ref: "#/components/parameters/AgentRunID"
@@ -1318,9 +1470,42 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
   /tasks:
+    get:
+      tags: [tasks]
+      summary: 当前用户的生成任务摘要
+      description: |
+        剧情创作任务的 clientContext 仅返回 storyNodeId 和 clientOperationId，供提交回执丢失时关联原任务。
+        不包含完整 inputJson、config 或凭据，也不使用通用 nodeId 自动采用创作结果。结果须用任务详情读取。
+        clientOperationId 是关联标识，不是 POST 幂等保证；客户端不得在提交结果不确定时自动重发。
+      parameters:
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, default: 50 }
+        - in: query
+          name: projectId
+          schema: { type: string }
+        - in: query
+          name: activeOnly
+          schema: { type: boolean }
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "401":
+          $ref: "#/components/responses/Error"
     post:
       tags: [tasks]
       summary: 创建生成任务
+      description: |
+        普通文本任务可携带 input.workflowBatch: {version: 1, units: [{label, text}]}。
+        资产步骤使用 version: 2，并增加 scope（流程范围）、category（bible/characters/environments/props/special）和 context（辅助约束单元）。
+        version 2 的 units 只含正文；同用户、项目、流程、模型配置和正文单元复用持久化事实解析，辅助约束不作为正文解析。
+        context 最多 512 单元，其字符数与正文一起计入总容量；每个输出独立归并，缓存命中不重复创建模型调用。
+        每单元最多 24000 Unicode 字符，最多 512 单元，总计 400 万字符。
+        服务端验证后将 operation 设置为 short_drama_batch，父任务只协调、不计费。
+        子模型调用各自通过正常准入和计费，后台逐批执行并归并；关闭页面不停止执行。
+        stage/progress 返回批次进度，成功 resultJson 保持 {mode: text, text: 最终文稿}。
+        显式重试父任务复用成功批次；未知创建回执不构成可自动重发的幂等保证。
+        父任务可取消，但不会取消其它输出复用的解析子任务。事实 JSON 和原文证据校验失败不生成最终资产，显式重试可重新解析。
       responses:
         "200":
           $ref: "#/components/responses/Envelope"
@@ -1441,6 +1626,81 @@ components:
       in: cookie
       name: open_ai_canvas_session
   schemas:
+    CanvasNodeShotView:
+      type: object
+      required: [linkId, nodeId, state, resourceAvailable]
+      properties:
+        linkId: {type: string}
+        nodeId: {type: string}
+        state:
+          type: string
+          enum: [current, node_missing, unit_missing, shot_missing, revision_missing, shot_revised, artifact_changed, node_type_changed, resource_unavailable]
+        shotTitle: {type: string}
+        currentRevisionId: {type: string}
+        resourceAvailable: {type: boolean, description: 读取时关联产物的资源属于当前用户并 ready；不代表审核通过或实际媒体解码成功}
+        revision:
+          type: object
+          description: 映射钉住的 ShotRevision，失效或无有效镜头时省略；不自动使用 currentRevisionId 替换
+          properties:
+            id: {type: string}
+            shotId: {type: string}
+            version: {type: integer}
+            plotDescription: {type: string}
+            action: {type: string}
+            dialogue: {type: string}
+            shotSize: {type: string}
+            cameraAngle: {type: string}
+            cameraMovement: {type: string}
+            durationMs: {type: integer, format: int64}
+            imagePrompt: {type: string}
+            videoPrompt: {type: string}
+            negativePrompt: {type: string}
+            continuityNotes: {type: string}
+            actionBeatsJson: {type: string}
+            createdBy: {type: string}
+            createdAt: {type: string, format: date-time}
+        artifact:
+          type: object
+          description: 映射产物，必须仍属于同一项目/章节/镜头/关联修订才返回；是否可展示还需检查 state 和 resourceAvailable
+          properties:
+            id: {type: string}
+            projectId: {type: string}
+            unitId: {type: string}
+            shotId: {type: string}
+            revisionId: {type: string}
+            taskId: {type: string}
+            type: {type: string}
+            version: {type: integer}
+            resourceId: {type: string}
+            status: {type: string}
+            selected: {type: boolean}
+            metadataJson: {type: string}
+            createdAt: {type: string, format: date-time}
+            updatedAt: {type: string, format: date-time}
+    CanvasNodeShotLink:
+      type: object
+      required: [id, projectId, canvasId, unitId, nodeId, shotId, shotRevisionId, createdAt, updatedAt]
+      properties:
+        id: {type: string}
+        projectId: {type: string}
+        canvasId: {type: string}
+        unitId: {type: string}
+        nodeId: {type: string}
+        shotId: {type: string}
+        shotRevisionId: {type: string}
+        artifactId: {type: string, description: 可选的已采用产物 ID，不等于审核确认}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    LinkCanvasNodeShotRequest:
+      type: object
+      required: [unitId, nodeId, shotId, expectedCanvasRevision, expectedProjectRevision]
+      properties:
+        unitId: {type: string, minLength: 1}
+        nodeId: {type: string, minLength: 1, maxLength: 160}
+        shotId: {type: string, minLength: 1}
+        artifactId: {type: string, maxLength: 36}
+        expectedCanvasRevision: {type: integer, format: int64, minimum: 1}
+        expectedProjectRevision: {type: integer, format: int64, minimum: 1}
     ToolMutation:
       type: object
       required: [type, label, prompt]
@@ -1592,6 +1852,14 @@ components:
       additionalProperties: false
       required: [canvasId, prompt, permissionMode, contextScope, budget, idempotencyKey]
       properties:
+        production:
+          type: object
+          additionalProperties: false
+          required: [targetNodeId]
+          description: 绑定画布中的资产提取记录。仅支持 auto 权限和 1-500 次模型调用预算；来源版本由服务端冻结。
+          properties:
+            targetNodeId:
+              type: string
         canvasId:
           type: string
           maxLength: 80
@@ -1612,7 +1880,13 @@ components:
         reasoningMode:
           type: string
           enum: [off, auto, deep]
-          description: 本轮推理策略；供应商是否支持由后端校验
+          default: auto
+          description: 旧运行的推理策略；新界面使用 reasoningEffort。显式 off 保留关闭语义。
+        reasoningEffort:
+          type: string
+          enum: [low, medium, high]
+          default: medium
+          description: 本轮文本推理强度，后台步骤与续跑沿用本轮值；不影响媒体生成。
         profileRevision:
           type: string
           description: GET /agent/profile 的生效合并 revision；变化时拒绝创建新轮次
@@ -1632,6 +1906,11 @@ components:
           additionalProperties: false
           required: [maxCredits]
           properties:
+            maxSteps:
+              type: integer
+              minimum: 0
+              maximum: 500
+              description: 制作任务必须为 1-500；普通 Agent 保持原预算语义。
             maxCredits:
               type: number
               minimum: 0

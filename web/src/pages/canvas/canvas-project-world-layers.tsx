@@ -1,9 +1,12 @@
-import { memo, useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { Link2 } from "lucide-react";
 
 import { ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasFrameNode } from "@/components/canvas/canvas-frame-node";
 import { CanvasNode } from "@/components/canvas/canvas-node";
+import { CanvasNodeGraphScope } from "@/components/canvas/canvas-node-graph-context";
+import { useCanvasDerivedArrayMap } from "./use-canvas-derived-references";
+import type { CanvasShotBinding } from "@/lib/canvas/canvas-shot-projection";
 import type { CanvasConnectionApproach } from "@/lib/canvas/canvas-connection-tilt";
 import type { CanvasBatchConnectionPreview } from "@/lib/canvas/canvas-batch-connection";
 import { sortCanvasNodesByStackOrder, type CanvasNodeStackOrder } from "@/lib/canvas/canvas-node-stack-order";
@@ -17,6 +20,10 @@ type NodeBounds = { left: number; top: number; width: number; height: number; co
 
 type CanvasProjectWorldLayersProps = {
     projectId: string;
+    shotBindings?: Map<string, CanvasShotBinding>;
+    originalNodeIds?: ReadonlySet<string>;
+    onOriginalNodeView?: (nodeId: string, original: boolean) => void;
+    onRefreshShot?: () => void;
     viewportScale: number;
     connectionLayerBounds: { left: number; top: number; width: number; height: number };
     displayConnections: CanvasDisplayConnection[];
@@ -28,7 +35,9 @@ type CanvasProjectWorldLayersProps = {
     connectionTargetNodeId: string | null;
     connectionApproach: CanvasConnectionApproach;
     nodeById: Map<string, CanvasNodeData>;
+    upstreamNodesById: Map<string, CanvasNodeData[]>;
     visibleNodes: CanvasNodeData[];
+    viewportNodeIds: Set<string>;
     nodeRenderLODById: Map<string, CanvasNodeRenderLOD>;
     nodeStackOrder: CanvasNodeStackOrder;
     frameChildrenById: Map<string, CanvasNodeData[]>;
@@ -53,7 +62,7 @@ type CanvasProjectWorldLayersProps = {
     batchConnectionPreview: CanvasBatchConnectionPreview | null;
     isNodeDragging: boolean;
     selectionBoundsElementRef: RefObject<HTMLDivElement | null>;
-    renderCanvasNodeContent: (node: CanvasNodeData) => ReactNode;
+    renderCanvasNodeContentById: Map<string, (node: CanvasNodeData) => ReactNode>;
     onConnectionSelect: (connectionId: string) => void;
     onConnectionContextMenu: (event: ReactMouseEvent<SVGPathElement>, connectionId: string) => void;
     onNodeMouseDown: (event: ReactMouseEvent, nodeId: string) => void;
@@ -69,7 +78,7 @@ type CanvasProjectWorldLayersProps = {
     onNodeContentChange: (nodeId: string, content: string) => void;
     onToggleBatch: (nodeId: string) => void;
     onSetBatchPrimary: (node: CanvasNodeData) => void;
-    onRetry: (node: CanvasNodeData) => void;
+    onRetry: (node: CanvasNodeData, options?: import("@/types/canvas").CanvasNodeRetryOptions) => void;
     onReloadResource: (node: CanvasNodeData) => void;
     onOpenTaskDetails: (node: CanvasNodeData) => void;
     onOpenVersions: (node: CanvasNodeData) => void;
@@ -86,21 +95,29 @@ const EMPTY_CANVAS_NODES: CanvasNodeData[] = [];
 
 export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
     const { viewportScale } = props;
-    const [activeMediaNodeId, setActiveMediaNodeId] = useState<string | null>(null);
+    const [mediaRequest, setMediaRequest] = useState<{ projectId: string; nodeId: string } | null>(null);
+    const requestedBinding = mediaRequest ? props.shotBindings?.get(mediaRequest.nodeId) : undefined;
+    const projectedMediaAvailable = !requestedBinding || props.originalNodeIds?.has(mediaRequest!.nodeId) || (!requestedBinding.unavailable && requestedBinding.view?.state === "current" && requestedBinding.view.resourceAvailable);
+    const activeMediaNodeId = projectedMediaAvailable && mediaRequest?.projectId === props.projectId && props.viewportNodeIds.has(mediaRequest.nodeId) && props.nodeById.has(mediaRequest.nodeId) ? mediaRequest.nodeId : null;
+    const requestMediaPlay = useCallback((nodeId: string) => setMediaRequest({ projectId: props.projectId, nodeId }), [props.projectId]);
+    const changeOriginalNodeView = useCallback((nodeId: string, original: boolean) => {
+        setMediaRequest((current) => current?.nodeId === nodeId ? null : current);
+        props.onOriginalNodeView?.(nodeId, original);
+    }, [props.onOriginalNodeView]);
     useEffect(() => {
-        if (activeMediaNodeId && !props.nodeById.has(activeMediaNodeId)) setActiveMediaNodeId(null);
-    }, [activeMediaNodeId, props.nodeById]);
+        if (mediaRequest && !activeMediaNodeId) setMediaRequest(null);
+    }, [activeMediaNodeId, mediaRequest]);
     const orderedVisibleNodes = useMemo(() => [
         ...props.visibleNodes.filter(isFrameNode),
         ...sortCanvasNodesByStackOrder(props.visibleNodes.filter((node) => !isFrameNode(node)), props.nodeStackOrder),
     ], [props.nodeStackOrder, props.visibleNodes]);
-    const batchPreviews = useMemo(() => new Map(props.visibleNodes.filter((node) => node.metadata?.isBatchRoot).map((node) => [
+    const batchPreviews = useCanvasDerivedArrayMap(useMemo(() => new Map(props.visibleNodes.filter((node) => node.metadata?.isBatchRoot).map((node) => [
         node.id,
         (node.metadata?.batchChildIds || []).filter((id) => id !== node.metadata?.primaryImageId)
             .map((id) => props.nodeById.get(id))
             .filter((child): child is CanvasNodeData => Boolean(child && child.metadata?.batchRootId === node.id))
             .slice(0, 5),
-    ])), [props.visibleNodes, props.nodeById]);
+    ])), [props.visibleNodes, props.nodeById]));
     const framePreviewNodes = (node: CanvasNodeData) => {
         const assetFolderId = node.metadata?.folder?.assetFolderId;
         if (assetFolderId) return props.linkedFolderPreviewNodesById.get(assetFolderId) || EMPTY_CANVAS_NODES;
@@ -151,22 +168,29 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         onFolderThemeChange={props.onFolderThemeChange}
                         onTitleChange={props.onNodeTitleChange}
                         onContextMenu={props.onNodeContextMenu}
+                        onOpenTaskDetails={props.onOpenTaskDetails}
                     />
                 ) : (
+                    <CanvasNodeGraphScope key={node.id} nodeId={node.id} upstreamNodes={props.upstreamNodesById.get(node.id)}>
                     <CanvasNode
                         key={node.id}
                         data={node}
+                        shotBinding={props.shotBindings?.get(node.id)}
+                        showOriginalNode={props.originalNodeIds?.has(node.id)}
+                        onOriginalNodeView={changeOriginalNodeView}
+                        onRefreshShot={props.onRefreshShot}
                         renderLOD={props.nodeRenderLODById.get(node.id) || "full"}
                         dragOffset={props.dragPreview?.nodeIds.has(node.id) ? props.dragPreview : undefined}
                         scale={viewportScale}
                         isSelected={props.selectedNodeIds.has(node.id)}
                         mediaActive={activeMediaNodeId === node.id}
-                        onMediaPlayRequest={setActiveMediaNodeId}
+                        onMediaPlayRequest={requestMediaPlay}
                         isRelated={props.relatedNodeIds.has(node.id)}
                         isFocusRelated={props.activeNodeId === node.id}
                         isConnectionTarget={props.connectionTargetNodeId === node.id || props.batchConnectionPreview?.targetNodeId === node.id}
                         connectionApproach={props.connectionApproach?.nodeId === node.id ? props.connectionApproach.point : undefined}
                         forceInputVisible={Boolean(props.batchConnectionPreview)}
+                        connectionsAtContainer={Boolean(node.parentId && props.nodeById.get(node.parentId)?.metadata?.shortDrama?.role === "collection")}
                         batchCount={props.batchChildCountById.get(node.id) || 0}
                         batchExpanded={Boolean(node.metadata?.imageBatchExpanded)}
                         batchPreviewNodes={batchPreviews.get(node.id)}
@@ -179,7 +203,7 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         reduceMediaEffects={props.reduceMediaEffects || props.mediaEffectsDisabledNodeId === node.id}
                         resourceLabel={props.resourceReferenceByNodeId.get(node.id)}
                         mentionReferences={props.mentionReferencesByNodeId.get(node.id) || EMPTY_RESOURCE_REFERENCES}
-                        renderNodeContent={props.renderCanvasNodeContent}
+                        renderNodeContent={props.renderCanvasNodeContentById.get(node.id)}
                         drawingProjectId={props.projectId}
                         onMouseDown={props.onNodeMouseDown}
                         onHoverStart={props.onNodeHoverStart}
@@ -201,6 +225,7 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         onOpenDrawing={props.onOpenDrawing}
                         onContextMenu={props.onNodeContextMenu}
                     />
+                    </CanvasNodeGraphScope>
                 ),
             )}
 

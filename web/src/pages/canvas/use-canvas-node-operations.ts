@@ -11,6 +11,7 @@ import { createCanvasNode, isHiddenBatchChild, removeCanvasNodes } from "@/lib/c
 import { isolateCopiedNodeMetadata, nextCopiedNodeTitle } from "@/lib/canvas/canvas-node-copy";
 import { CanvasNodeType, type CanvasConnection, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type CanvasNodeMetadata, type CanvasNodeTypeId, type ContextMenuState, type Position } from "@/types/canvas";
 import { cloneCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
+import { removeCanvasDisplayConnection } from "@/lib/canvas/canvas-connection-spatial-index";
 import { isDrawingEngineAvailable, type CanvasDrawingEngine } from "@/lib/canvas/canvas-drawing-engine";
 import { useUserStore } from "@/stores/use-user-store";
 import { useEffectiveConfig } from "@/stores/use-config-store";
@@ -352,7 +353,7 @@ export function useCanvasNodeOperations({
     const deleteConnection = useCallback((connectionId: string) => {
         const previousNodes = nodesRef.current;
         const previousConnections = connectionsRef.current;
-        const nextConnections = previousConnections.filter((item) => item.id !== connectionId);
+        const nextConnections = removeCanvasDisplayConnection(previousNodes, previousConnections, connectionId);
         const nextNodes = applyCanvasConnectionPromptSync(previousNodes, previousConnections, previousNodes, nextConnections);
         if (nextNodes !== previousNodes) commitNodes(nextNodes);
         commitConnections(nextConnections);

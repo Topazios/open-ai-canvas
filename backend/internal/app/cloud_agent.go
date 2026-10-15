@@ -23,18 +23,20 @@ const cloudAgentOperation = "cloud_agent"
 // turns reference the previous run, not a mutable in-memory conversation. This
 // reuses transactional billing, worker leases, cancellation and text replay.
 type CloudAgentRequest struct {
-	ReasoningMode   string   `json:"reasoningMode,omitempty"`
-	ProfileRevision string   `json:"profileRevision,omitempty"`
-	CanvasID        string   `json:"canvasId"`
-	Prompt          string   `json:"prompt"`
-	Model           string   `json:"model,omitempty"`
-	LogicalModelID  string   `json:"logicalModelId,omitempty"`
-	ChannelID       string   `json:"channelId,omitempty"`
-	ChannelModelKey string   `json:"channelModelKey,omitempty"`
-	PermissionMode  string   `json:"permissionMode"`
-	SkillIDs        []string `json:"skillIds,omitempty"`
-	ContextScope    []string `json:"contextScope"`
-	FocusNodeIDs    []string `json:"focusNodeIds,omitempty"`
+	Production      *ProductionAgentRequest `json:"production,omitempty"`
+	ReasoningMode   string                  `json:"reasoningMode,omitempty"`
+	ReasoningEffort ReasoningEffort         `json:"reasoningEffort,omitempty"`
+	ProfileRevision string                  `json:"profileRevision,omitempty"`
+	CanvasID        string                  `json:"canvasId"`
+	Prompt          string                  `json:"prompt"`
+	Model           string                  `json:"model,omitempty"`
+	LogicalModelID  string                  `json:"logicalModelId,omitempty"`
+	ChannelID       string                  `json:"channelId,omitempty"`
+	ChannelModelKey string                  `json:"channelModelKey,omitempty"`
+	PermissionMode  string                  `json:"permissionMode"`
+	SkillIDs        []string                `json:"skillIds,omitempty"`
+	ContextScope    []string                `json:"contextScope"`
+	FocusNodeIDs    []string                `json:"focusNodeIds,omitempty"`
 	Budget          struct {
 		MaxCredits         float64 `json:"maxCredits"`
 		MaxGenerationTasks int     `json:"maxGenerationTasks,omitempty"`
@@ -54,6 +56,9 @@ const cloudAgentMaxStepsLimit = 9999
 const cloudAgentMaxConfirmationRounds = 2
 
 func cloudAgentStepLimit(req CloudAgentRequest) int {
+	if req.Production != nil {
+		return 0
+	}
 	if req.Budget.MaxSteps > 0 {
 		return min(req.Budget.MaxSteps, cloudAgentMaxStepsLimit)
 	}
@@ -76,23 +81,24 @@ type cloudAgentState struct {
 }
 
 type CloudAgentRun struct {
-	ID             string              `json:"id"`
-	CanvasID       string              `json:"canvasId"`
-	ParentID       string              `json:"parentId,omitempty"`
-	Status         string              `json:"status"`
-	Revision       int64               `json:"revision"`
-	CleanupPending bool                `json:"cleanupPending,omitempty"`
-	FailureMessage string              `json:"failureMessage,omitempty"`
-	PermissionMode string              `json:"permissionMode"`
-	Model          string              `json:"model"`
-	CreatedAt      time.Time           `json:"createdAt"`
-	UpdatedAt      time.Time           `json:"updatedAt"`
-	Events         []CloudAgentEvent   `json:"events,omitempty"`
-	Skills         []cloudAgentSkill   `json:"skills,omitempty"`
-	Approval       *cloudAgentApproval `json:"approval,omitempty"`
-	SpentCredits   float64             `json:"spentCredits"`
-	Step           int                 `json:"step"`
-	ActiveMessage  map[string]string   `json:"activeMessage,omitempty"`
+	Production     *ProductionAgentProgress `json:"production,omitempty"`
+	ID             string                   `json:"id"`
+	CanvasID       string                   `json:"canvasId"`
+	ParentID       string                   `json:"parentId,omitempty"`
+	Status         string                   `json:"status"`
+	Revision       int64                    `json:"revision"`
+	CleanupPending bool                     `json:"cleanupPending,omitempty"`
+	FailureMessage string                   `json:"failureMessage,omitempty"`
+	PermissionMode string                   `json:"permissionMode"`
+	Model          string                   `json:"model"`
+	CreatedAt      time.Time                `json:"createdAt"`
+	UpdatedAt      time.Time                `json:"updatedAt"`
+	Events         []CloudAgentEvent        `json:"events,omitempty"`
+	Skills         []cloudAgentSkill        `json:"skills,omitempty"`
+	Approval       *cloudAgentApproval      `json:"approval,omitempty"`
+	SpentCredits   float64                  `json:"spentCredits"`
+	Step           int                      `json:"step"`
+	ActiveMessage  map[string]string        `json:"activeMessage,omitempty"`
 	// 事件已全量落库，运行详情只返回一页，因此必须把"这一页在整条日志里的位置"说清楚：
 	// EventSeqBase 是本次返回的首条事件之前已入库的条数（不变量 events[i].seq ==
 	// eventSeqBase + i + 1），EventCount 是该运行累计事件条数，LatestSeq 可直接当作下次
@@ -106,6 +112,7 @@ type CloudAgentRun struct {
 // CloudAgentRunViewOptions 是运行详情的读取选项：SinceSeq 只取该序号之后的增量，
 // EventLimit 覆盖默认页大小。零值即默认视图（尾部一窗）。
 type CloudAgentRunViewOptions struct {
+	BeforeSeq  int
 	SinceSeq   int
 	EventLimit int
 }
@@ -120,6 +127,14 @@ func validateCloudAgentRequest(req *CloudAgentRequest) error {
 		return err
 	}
 	req.CanvasID = strings.TrimSpace(req.CanvasID)
+	if req.Production != nil {
+		if err := validateCloudAgentID(req.Production.TargetNodeID, "制作目标节点", 80); err != nil {
+			return err
+		}
+		if req.PermissionMode != "auto" {
+			return BadAuthRequest("制作 Agent 需要明确的自动执行授权")
+		}
+	}
 	if err := validateCloudAgentPrompt(req.Prompt, 16000); err != nil {
 		return err
 	}
@@ -159,6 +174,9 @@ func validateCloudAgentRequest(req *CloudAgentRequest) error {
 	}
 	if req.ReasoningMode != "" && req.ReasoningMode != "off" && req.ReasoningMode != "auto" && req.ReasoningMode != "deep" {
 		return BadAuthRequest("无效的 Agent 推理模式")
+	}
+	if !req.ReasoningEffort.valid() {
+		return BadAuthRequest("推理强度必须是 low、medium 或 high")
 	}
 	if req.ProfileRevision != "" {
 		if err := validateCloudAgentID(req.ProfileRevision, "偏好版本", 120); err != nil {
@@ -207,7 +225,7 @@ func validateCloudAgentRequest(req *CloudAgentRequest) error {
 	if len(req.ContextScope) == 1 && req.ContextScope[0] == "canvas" {
 		req.ContextScope[0] = "canvas"
 	}
-	if math.IsNaN(req.Budget.MaxCredits) || math.IsInf(req.Budget.MaxCredits, 0) || req.Budget.MaxCredits <= 0 || req.Budget.MaxCredits > 1000000 {
+	if math.IsNaN(req.Budget.MaxCredits) || math.IsInf(req.Budget.MaxCredits, 0) || req.Budget.MaxCredits < 0 || (req.Production == nil && req.Budget.MaxCredits == 0) || req.Budget.MaxCredits > 1000000 {
 		return BadAuthRequest("本轮积分上限必须大于 0 且不超过 1000000")
 	}
 	return nil
@@ -354,6 +372,13 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 		return nil, err
 	}
 	// Resolve and freeze the effective preference document before idempotency
+	if req.Production != nil {
+		manifest, err := productionSourceManifest(canvas, req)
+		if err != nil {
+			return nil, err
+		}
+		req.Production.InputVersion = productionInputVersion(manifest)
+	}
 	// lookup. A retry without an explicit revision must still refer to the same
 	// immutable input; a changed profile therefore cannot silently create a
 	// different run under the same key.
@@ -373,6 +398,11 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 		}
 		run, runErr := s.CloudAgentRun(userID, existing.ID)
 		if runErr == nil && !cloudAgentRunTerminal(run.Status) {
+			if req.Production != nil {
+				if err := s.initializeProductionAgent(userID, existing.ID); err != nil {
+					return nil, err
+				}
+			}
 			s.startCloudAgentPi(userID, existing.ID)
 		}
 		return run, runErr
@@ -480,6 +510,9 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 		return nil, err
 	}
 	state := cloudAgentState{Version: 1, Request: req, ParentID: parentID, Fingerprint: fingerprint, CreativeAnchor: creativeAnchor, Plan: inheritedPlan, ConfirmationRounds: inheritedConfirmationRounds, ConfirmationFingerprints: inheritedConfirmationFingerprints, Skills: skillSnapshots, Profile: profile, Policy: policy}
+	if req.Production != nil {
+		system = productionCurrentPolicy(system)
+	}
 	canonical := cloudAgentCanonicalFor(system, history, req.Prompt, req, len(profile.Layers) > 0)
 	// Keep the catalog out of TextHistory (which defines conversation turns),
 	// while exposing it as a fresh data message for this run immediately before
@@ -500,7 +533,7 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 	cloudAgentRecordMemorySegment(&state.Policy, canonical.SystemPrompt)
 	canonical.PromptCacheKey = cloudAgentPromptCacheKeyForRequest(req.CanvasID, cloudAgentPromptCacheIdentity(req, policy), canonical.SystemPrompt, canonical.Tools)
 	attachCloudAgentPlan(&canonical, inheritedPlan)
-	input := map[string]any{"mode": "text", "prompt": req.Prompt, "textHistory": history, "textOptions": map[string]any{"stream": true, "thinking": cloudAgentReasoningEnabled(policy.ReasoningMode)}, "cloudAgent": state,
+	input := map[string]any{"mode": "text", "prompt": req.Prompt, "textHistory": history, "textOptions": agentReasoningOptions(req.ReasoningEffort, cloudAgentReasoningEnabled(policy.ReasoningMode)), "cloudAgent": state,
 		"agentRequests": map[string]any{"canonical": canonical},
 		"config":        map[string]any{"channelId": req.ChannelID, "channelModelKey": req.ChannelModelKey, "model": firstNonEmpty(req.ChannelModelKey, req.Model), "systemPrompt": system}}
 	input["piSessionJSONL"] = ""
@@ -520,6 +553,11 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 			}
 			run, runErr := s.CloudAgentRun(userID, existing.ID)
 			if runErr == nil && !cloudAgentRunTerminal(run.Status) {
+				if req.Production != nil {
+					if err := s.initializeProductionAgent(userID, existing.ID); err != nil {
+						return nil, err
+					}
+				}
 				s.startCloudAgentPi(userID, existing.ID)
 			}
 			return run, runErr
@@ -529,6 +567,11 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 	run, err := s.CloudAgentRun(userID, task.ID)
 	if err != nil {
 		return nil, err
+	}
+	if req.Production != nil {
+		if err := s.initializeProductionAgent(userID, task.ID); err != nil {
+			return nil, err
+		}
 	}
 	s.startCloudAgentPi(userID, task.ID)
 	return run, nil

@@ -1,4 +1,5 @@
 import { getMediaBlob } from "@/services/file-storage";
+import { normalizeReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-effort";
 import { getImageBlob } from "@/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { createGenerationTask, waitForGenerationTask, type GenerationTask, type CreateTaskInput } from "@/services/api/task-center";
@@ -6,7 +7,7 @@ import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { grokImagePromptLimitError } from "@/lib/grok-image-prompt-limit";
 import { resolveGenerationWorkflowExecution, type GenerationWorkflowExecution } from "@/lib/generation-workflow-execution";
 import { isArkPlanBaseUrl } from "@/lib/seedance-video";
-import { resolveVideoOperation } from "@/lib/model-selection";
+import { modelPromptLengthError, resolveVideoOperation } from "@/lib/model-selection";
 import { logicalModelIDForConfig, modelOptionName, resolveModelChannel, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -29,6 +30,7 @@ export type BackendGenerationResult = {
 };
 
 type BackendGenerationTaskOptions = {
+    workflowBatch?: import("@/lib/canvas/workflow-text-batch").WorkflowTextBatch;
     projectId?: string;
     mode: BackendGenerationMode;
     prompt: string;
@@ -43,7 +45,7 @@ type BackendGenerationTaskOptions = {
     onTaskUpdate?: (task: GenerationTask) => void;
     onTextDelta?: (text: string) => void;
     streamText?: boolean;
-    enableThinking?: boolean;
+    reasoningEffort?: ReasoningEffort;
     maxOutputTokens?: number;
     structuredOutput?: {
         name: string;
@@ -92,12 +94,13 @@ export async function runBackendGenerationTask(
         onTaskUpdate,
         onTextDelta,
         streamText,
-        enableThinking,
+        reasoningEffort,
         maxOutputTokens,
         structuredOutput,
         clientOperationId,
         retryOf,
         attemptGroupId,
+        workflowBatch,
     }: BackendGenerationTaskOptions,
     dependencies: GenerationTaskDependencies = defaultDependencies,
 ) {
@@ -106,7 +109,7 @@ export async function runBackendGenerationTask(
     assertBackendRuntimeConfigured(config, mode);
     const prepared = await prepareGenerationReferences({ config, mode, referenceImages, referenceVideos, referenceAudios, mask });
     throwIfAborted(signal);
-    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate, onTextDelta, streamText, enableThinking, maxOutputTokens, structuredOutput, clientOperationId, retryOf, attemptGroupId }, prepared, dependencies);
+    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate, onTextDelta, streamText, reasoningEffort, maxOutputTokens, structuredOutput, clientOperationId, retryOf, attemptGroupId, workflowBatch }, prepared, dependencies);
 }
 
 // 分镜等后台生产流程只需要可靠提交任务；任务状态与产物由项目工作区轮询和
@@ -164,7 +167,7 @@ export function prepareBackendToolGenerationTask(options: BackendToolGenerationO
             prompt: options.prompt,
             config: backendProviderConfig(options.config, "text"),
             agentRequests: buildBackendToolRequests(options.messages, options.tools, options.toolChoice, options.config),
-            textOptions: { stream: modelCapabilityConfigFor(options.config, requestConfig.model).text?.streaming !== false },
+            textOptions: { stream: modelCapabilityConfigFor(options.config, requestConfig.model).text?.streaming !== false, reasoningEffort: normalizeReasoningEffort(options.config.textReasoningEffort) },
             referenceImages: [...imageKeys].map((storageKey) => ({ storageKey })),
             metadata: options.metadata || { source: "canvas-online-agent" },
         },
@@ -237,7 +240,9 @@ function throwIfAborted(signal?: AbortSignal) {
 function assertClientPromptLimit(mode: BackendGenerationMode, prompt: string, config: AiConfig, metadata?: Record<string, unknown>) {
     if (mode !== "image" || metadata?.promptTemplateOperation || (config.taskWorkflowProvider || "model") !== "model") return;
     const requestConfig = resolveModelRequestConfig(config, config.model);
-    const promptLimitError = grokImagePromptLimitError(prompt, requestConfig.interfaceType, requestConfig.model);
+    const fullPrompt = config.systemPrompt?.trim() ? `${config.systemPrompt.trim()}\n\n${prompt}` : prompt;
+    const promptLimitError = grokImagePromptLimitError(fullPrompt, requestConfig.interfaceType, requestConfig.model)
+        || modelPromptLengthError(config, config.model, "image", fullPrompt);
     if (promptLimitError) throw new Error(promptLimitError);
 }
 
@@ -305,6 +310,7 @@ function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepa
         input: {
             mode,
             prompt,
+            ...(options.workflowBatch ? { workflowBatch: options.workflowBatch } : {}),
             ...(workflow ? { execution: workflowPublicExecution(workflow) } : {}),
             config: backendProviderConfig(config, mode),
             capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
@@ -313,7 +319,7 @@ function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepa
                 ? {
                       textOptions: {
                           stream: options.streamText !== false,
-                          thinking: options.enableThinking === true,
+                          reasoningEffort: normalizeReasoningEffort(options.reasoningEffort ?? config.textReasoningEffort),
                           ...(options.maxOutputTokens && options.maxOutputTokens > 0 ? { maxOutputTokens: options.maxOutputTokens } : {}),
                           ...(options.structuredOutput ? { structuredOutput: options.structuredOutput } : {}),
                       },

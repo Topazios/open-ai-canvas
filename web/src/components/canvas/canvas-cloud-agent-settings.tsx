@@ -3,9 +3,10 @@ import { Button, Checkbox, Input } from "antd";
 import { ArrowLeft, BookMarked, Check, ChevronRight, Cpu, Gauge, LockKeyhole, PlugZap, Search, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
+import { ReasoningEffortSelect } from "@/components/reasoning-effort-select";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import AgentMemoryPane from "@/pages/settings/agent-memory-pane";
-import type { AgentPermissionMode, AgentProfileLayer, AgentProfileScope, AgentProfileView, AgentReasoningMode } from "@/services/api/agent";
+import type { AgentPermissionMode, AgentProfileLayer, AgentProfileScope, AgentProfileView } from "@/services/api/agent";
 import type { Skill } from "@/services/api/skills";
 import type { AiConfig } from "@/stores/use-config-store";
 
@@ -17,8 +18,6 @@ type AgentSettingsProps = {
     config: AiConfig;
     selectedModel: string;
     permissionMode: AgentPermissionMode;
-    reasoningMode: AgentReasoningMode;
-    onReasoningModeChange: (value: AgentReasoningMode) => void;
     profileView: AgentProfileView | null;
     profileLoading: boolean;
     profileSaving: boolean;
@@ -61,12 +60,6 @@ const contextOptions: Array<{ value: AgentContextKey; label: string; description
     { value: "canvas", label: "画布节点目录", description: "每次请求只带节点 id、类型和标题；正文按页读取，不含媒体或未同步修改" },
 ];
 
-const reasoningOptions: Array<{ value: AgentReasoningMode; label: string; description: string }> = [
-    { value: "off", label: "关闭", description: "直接执行" },
-    { value: "auto", label: "自动", description: "按任务决定" },
-    { value: "deep", label: "深入", description: "复杂任务优先规划" },
-];
-
 export function CanvasCloudAgentSettings(props: AgentSettingsProps) {
     const [section, setSection] = useState<SettingsSection>("home");
     const [skillTab, setSkillTab] = useState<"installed" | "market">("installed");
@@ -97,9 +90,7 @@ function SettingsHome({ props, theme, onOpen }: { props: AgentSettingsProps; the
     return (
         <div className="canvas-agent-settings-scroll thin-scrollbar min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
             <section>
-                <SettingLabel label="推理模式" hint="新运行生效" />
-                <div className="grid grid-cols-3 gap-2">{reasoningOptions.map((option) => <button key={option.value} type="button" aria-pressed={props.reasoningMode === option.value} onClick={() => props.onReasoningModeChange(option.value)} className="rounded-xl p-3 text-left" style={{ background: props.reasoningMode === option.value ? theme.toolbar.itemHover : theme.node.fill, border: `1px solid ${props.reasoningMode === option.value ? theme.accent.primary : 'transparent'}` }}><div className="text-xs font-semibold">{option.label}</div><div className="mt-1 text-[10px] opacity-50">{option.description}</div></button>)}</div>
-                <p className="mt-2 text-xs leading-5" style={{ color: theme.node.muted }}>推理只用于目标拆解、缺口判断和下一步工具选择，不会把内部思考过程展示给用户。</p>
+                <ReasoningEffortSelect />
             </section>
             <section>
                 <SettingLabel label="对话模型" hint="新运行生效" />

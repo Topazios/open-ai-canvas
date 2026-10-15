@@ -44,6 +44,7 @@ type CanvasProjectContextMenuProps = {
     onCopySelection: () => void;
     onDeleteSelection: () => void;
     onSendToAgent: () => void;
+    workflowActions?: Array<{ label: string; disabled?: boolean; run: () => void }>;
 };
 
 export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props }: CanvasProjectContextMenuProps) {
@@ -59,6 +60,7 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             canRedo={props.canRedo}
             canPaste={props.canPaste}
             selectedCount={props.selectedCount}
+            workflowActions={props.workflowActions}
             onClose={props.onClose}
             onAddNode={(type) => {
                 if (menu.type === "canvas") props.onAddNode(type, menu.position);

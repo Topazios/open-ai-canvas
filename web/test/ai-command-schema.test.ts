@@ -29,7 +29,7 @@ describe("AI 命令 schema 黄金同步（防漂移）", () => {
     test("golden fixture op 集/版本与源码一致", () => {
         expect(aiGolden.schemaVersion).toBe(AI_COMMAND_SCHEMA_VERSION);
         expect(aiGolden.ops).toEqual([...EDITOR_COMMAND_OPS]);
-        expect(aiGolden.ops.length).toBe(12);
+        expect(aiGolden.ops.length).toBe(13);
     });
     test("catalog 每条契约含 op/desc/payload 三段", () => {
         for (const entry of AI_EDITING_OP_CATALOG) {

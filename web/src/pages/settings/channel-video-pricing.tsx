@@ -4,6 +4,7 @@ import { ChevronRight, FlaskConical, Settings2 } from "lucide-react";
 
 import { ModelEditorModal } from "@/components/model-editor-modal";
 import { ModelProtocolBrowser } from "@/components/model-protocol-browser";
+import { ModelProtocolRouting } from "@/components/model-protocol-routing";
 import { testChannelModelConnection } from "@/lib/model-connection-test";
 import { ModelCapabilityEditor } from "@/components/model-capability-editor";
 import { type ModelCapabilityChoice } from "@/components/model-protocol-picker";
@@ -169,6 +170,9 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                     })}
                                 />
                             </section>
+                            {activeCapability === "text" ? <ModelProtocolRouting primary={activeProtocol} value={activeModelCost?.capabilityConfig?.protocols} protocols={availableProtocols} disabled={protocolLoading || Boolean(protocolError)} onChange={(protocols) => updateCost(activeModel, {
+                                capabilityConfig: { ...(activeModelCost?.capabilityConfig || defaultModelCapabilityConfig(activeProtocol, activeModel)), protocols },
+                            })} /> : null}
                         </div>,
                     },
                     {

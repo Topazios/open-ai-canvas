@@ -1,6 +1,6 @@
 export const CONTENT_MODERATION_ERROR_CODE = "sensitive_words_detected";
 
-export const CONTENT_MODERATION_MESSAGE = "内容审核未通过，本次平台积分未扣除或已退还。请修改提示词后重新生成。";
+export const CONTENT_MODERATION_MESSAGE = "内容审核未通过，请修改生成要求后重新生成。费用以账单记录为准。";
 
 const DEFAULT_GENERATION_ERROR_MESSAGE = "生成失败，请稍后重试。";
 const NETWORK_ERROR_MESSAGE = "网络异常。";
@@ -45,7 +45,7 @@ export function generationErrorMessage(error: unknown) {
 
 function contentModerationMessage(raw: string) {
     const detailIndex = raw.indexOf("；上游：");
-    // 保留服务端过滤后的拒绝原因，同时保持平台审核的积分提示及重试保护。
+    // 保留服务端过滤后的拒绝原因及重试保护，费用以真实账单为准。
     return detailIndex >= 0 && !containsInfrastructureDetails(raw)
         ? CONTENT_MODERATION_MESSAGE + raw.slice(detailIndex)
         : CONTENT_MODERATION_MESSAGE;
@@ -61,7 +61,7 @@ export function generationErrorCode(error: unknown) {
 
 export function isContentModerationError(value: unknown) {
     const text = value instanceof Error ? value.message : String(value || "");
-    return text.toLowerCase().includes(CONTENT_MODERATION_ERROR_CODE) || text.includes("内容审核未通过");
+    return [CONTENT_MODERATION_ERROR_CODE, "moderation_blocked", "content_policy_violation", "rejected by the safety system", "内容审核未通过", "请求内容未通过模型服务安全审核"].some((marker) => text.toLowerCase().includes(marker));
 }
 
 export function unchangedModeratedPrompt(metadata: { errorDetails?: string; generationErrorCode?: string; failedPromptFingerprint?: string } | undefined, prompt: string) {

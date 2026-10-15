@@ -35,6 +35,13 @@ func (s *Service) buildEnhancedPiRequest(ctx context.Context, params EnhancedPiR
 
 	// 1. 构建工具列表（包括画布工具）
 	tools := s.buildCompletePiTools(params.Canonical.Tools)
+	if params.RuntimeState.Request.Production != nil {
+		tools = piToolDefinitions(productionAgentTools())
+		return cloudAgentPiProcessRequest{SessionFile: params.SessionFile, SessionJSONL: params.SessionJSONL, SessionDir: params.SessionDir, Cwd: s.dataDir, AgentDir: params.SessionDir,
+			SessionId: params.RunID, UserId: params.UserID, CanvasId: params.CanvasID, RunId: params.RunID, Prompt: params.Prompt, SystemPrompt: productionCurrentPolicy(params.SystemPrompt),
+			Tools: tools, Compaction: s.buildCompactionStrategy(params.UserID, params.CanvasID), Model: s.buildModelConfig(params.ModelID, params.RuntimeState),
+			Permissions: map[string]any{"maxSteps": productionStepLimit(params.RuntimeState)}}, nil
+	}
 
 	// 2. 构建 Skills 配置
 	skillPaths := s.buildSkillPaths(params.RuntimeState.Skills)
@@ -245,16 +252,17 @@ func (s *Service) buildPermissionsConfig(userID, canvasID string) map[string]any
 // buildModelConfig 构建模型配置
 func (s *Service) buildModelConfig(modelID string, state *cloudAgentRuntime) map[string]any {
 	return map[string]any{
-		"id":            modelID,
-		"name":          modelID,
-		"reasoning":     cloudAgentReasoningEnabled(state.Policy.ReasoningMode),
-		"input":         []string{"text", "image"},
-		"contextWindow": 200000,
-		"maxTokens":     8192,
-		"provider":      state.Request.ChannelID,
-		"switchable":    true,
-		"temperature":   0.7,
-		"topP":          0.9,
+		"id":              modelID,
+		"name":            modelID,
+		"reasoning":       cloudAgentReasoningEnabled(state.Policy.ReasoningMode),
+		"reasoningEffort": state.Request.ReasoningEffort.effective(),
+		"input":           []string{"text", "image"},
+		"contextWindow":   200000,
+		"maxTokens":       8192,
+		"provider":        state.Request.ChannelID,
+		"switchable":      true,
+		"temperature":     0.7,
+		"topP":            0.9,
 	}
 }
 

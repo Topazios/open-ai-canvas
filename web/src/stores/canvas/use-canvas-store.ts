@@ -7,6 +7,8 @@ import { canvasAppearanceForTheme, DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanv
 import { parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument, type CanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
+import { preserveCanvasSyncDraftLocked } from "@/services/canvas-sync-draft-storage";
+import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { DEFAULT_CANVAS_COLOR_THEME, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasStarterMode } from "@/lib/canvas/canvas-starter";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
@@ -56,10 +58,13 @@ type QueuedCanvasPersist = {
     baseRevision: number;
     state: PersistedCanvasState;
     token: number;
+    replacementIds?: Set<string>;
 };
 
 type ObservedCanvasPersist = {
     projects: CanvasProject[];
+    localProjects?: CanvasProject[];
+    localConflictIds?: Set<string>;
     revision: number;
 };
 
@@ -145,15 +150,61 @@ export async function commitPendingCanvasStorePersistenceLocked(scope: string) {
         if (!queued) return committed;
 
         const durable = parseCanvasStorageDocument(await storage.getItem(queued.name), queued.baseProjects);
-        const rebased = rebaseCanvasProjects({
+        const replacementIds = queued.replacementIds;
+        for (const project of durable.state.projects) {
+            if (replacementIds?.has(project.id) && !sameCanvasContent(project, queued.state.projects.find((candidate) => candidate.id === project.id))) {
+                await preserveCanvasSyncDraftLocked(project, scope);
+            }
+        }
+        const result = rebaseCanvasProjects({
             document: durable,
-            baseProjects: queued.baseProjects,
-            localProjects: queued.state.projects,
+            baseProjects: replacementIds?.size ? queued.baseProjects.filter((project) => !replacementIds.has(project.id)) : queued.baseProjects,
+            localProjects: replacementIds?.size ? queued.state.projects.filter((project) => !replacementIds.has(project.id)) : queued.state.projects,
             baseRevision: queued.baseRevision,
-        }).document;
+        });
+        if (replacementIds?.size) {
+            result.document = rebaseCanvasProjects({
+                document: result.document,
+                baseProjects: result.document.state.projects.filter((project) => replacementIds.has(project.id)),
+                localProjects: queued.state.projects.filter((project) => replacementIds.has(project.id)),
+                baseRevision: result.document.storageRevision,
+            }).document;
+        }
+        const rebased = result.document;
+        const conflictIds = new Set(result.conflicts.map((conflict) => conflict.projectId ?? conflict.id));
+        const previousConflictIds = observedCanvasPersists.get(scope)?.localConflictIds;
+        const draftCounts = new Map<string, number>();
+        const durableById = new Map(rebased.state.projects.map((project) => [project.id, project]));
+        const baseById = new Map(queued.baseProjects.map((project) => [project.id, project]));
+        for (const project of queued.state.projects) {
+            if (replacementIds?.has(project.id)) continue;
+            const base = baseById.get(project.id);
+            // The editor is not a live collaboration client. Even disjoint local merges must not
+            // be followed by a whole-project cloud PUT from its stale in-memory projection.
+            const mergedOtherEdits = !sameCanvasContent(base, project) && !sameCanvasContent(durableById.get(project.id), project);
+            const unresolved = previousConflictIds?.has(project.id) && base?.revision === project.revision;
+            if (!conflictIds.has(project.id) && !unresolved && !mergedOtherEdits) continue;
+            conflictIds.add(project.id);
+            try {
+                draftCounts.set(project.id, await preserveCanvasSyncDraftLocked(project, scope));
+            } catch (error) {
+                if (getActiveUserScope() === scope) useSyncProgressStore.getState().setProjectProgress(project.id, {
+                    phase: "error", draftCount: undefined, message: "本地草稿保存失败，请勿关闭页面；请先下载本地副本后重试",
+                });
+                throw error;
+            }
+        }
         await storage.setItem(queued.name, serializeCanvasStorageDocument(rebased));
         committed = rebased;
         recordCanvasStorageDocument(scope, rebased);
+        // Diff future edits against what this editor submitted, not another tab's merged fields.
+        observedCanvasPersists.get(scope)!.localProjects = queued.state.projects;
+        observedCanvasPersists.get(scope)!.localConflictIds = conflictIds;
+        if (getActiveUserScope() === scope) for (const [projectId, draftCount] of draftCounts) {
+            useSyncProgressStore.getState().setProjectProgress(projectId, {
+                phase: "conflict", draftCount, message: "画布存在并发修改，本地编辑已保存为草稿；请在版本记录中查看或下载",
+            });
+        }
 
         const latest = queuedCanvasPersists.get(scope);
         if (!latest || latest.token === queued.token) {
@@ -163,16 +214,46 @@ export async function commitPendingCanvasStorePersistenceLocked(scope: string) {
 
         latest.baseProjects = queued.state.projects;
         latest.baseRevision = rebased.storageRevision;
+        // A replacement authorizes one commit, not later edits queued during its write.
+        if (replacementIds) for (const id of replacementIds) latest.replacementIds?.delete(id);
     }
 }
 
 async function writeQueuedCanvasPersist(scope: string, _token: number) {
-    await withCanvasStorePersistenceLock(scope, () => commitPendingCanvasStorePersistenceLocked(scope));
+    try {
+        await withCanvasStorePersistenceLock(scope, () => commitPendingCanvasStorePersistenceLocked(scope));
+    } catch (error) {
+        const queued = queuedCanvasPersists.get(scope);
+        const baseById = new Map(queued?.baseProjects.map((project) => [project.id, project]));
+        if (getActiveUserScope() === scope) for (const project of queued?.state.projects ?? []) {
+            const base = baseById.get(project.id);
+            if (sameCanvasContent(base, project) && base?.revision === project.revision && samePersistenceValue(base?.viewport, project.viewport)) continue;
+            const phase = useSyncProgressStore.getState().syncingProjects[project.id]?.phase;
+            useSyncProgressStore.getState().setProjectProgress(project.id, {
+                phase: phase === "conflict" ? "conflict" : "error", message: "本地保存失败，请勿关闭页面；请先下载本地副本后重试",
+            });
+        }
+        throw error;
+    }
+}
+
+export function hasCanvasStorePersistenceConflict(scope: string, projectId: string) {
+    return observedCanvasPersists.get(scope)?.localConflictIds?.has(projectId) ?? false;
 }
 
 export function pendingCanvasStorePersistence(scope: string) {
     const queued = queuedCanvasPersists.get(scope);
     return queued ? { projects: queued.state.projects, token: queued.token } : null;
+}
+
+/** Only for an explicit load-latest/history restore, after the live editor draft is preserved. */
+export function replaceCanvasProjectFromRemote(project: CanvasProject) {
+    const scope = getActiveUserScope();
+    const projects = useCanvasStore.getState().projects;
+    useCanvasStore.setState({ projects: projects.some((item) => item.id === project.id)
+        ? projects.map((item) => item.id === project.id ? project : item) : [...projects, project] });
+    const queued = queuedCanvasPersists.get(scope);
+    if (queued) (queued.replacementIds ??= new Set()).add(project.id);
 }
 
 export function rebasePendingCanvasStorePersistenceAfterGenerationCommitLocked(scope: string, committed: CanvasStorageDocument) {
@@ -405,7 +486,7 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         const observed = observedCanvasPersists.get(scope);
         const token = (canvasPersistTokens.get(scope) || 0) + 1;
         canvasPersistTokens.set(scope, token);
-        const baseProjects = queued?.baseProjects ?? observed?.projects ?? [];
+        const baseProjects = queued?.baseProjects ?? observed?.localProjects ?? observed?.projects ?? [];
         queuedCanvasPersists.set(scope, {
             name,
             scope,
@@ -414,6 +495,7 @@ const canvasStorage: PersistStorage<CanvasStore> = {
             // generationEffectKeys 由专用 generation durable commit 管理；普通队列只能携带已确认 stamp。
             state: ordinaryCanvasPersistenceState(scope, nextState, observed?.projects ?? baseProjects),
             token,
+            replacementIds: queued?.replacementIds ? new Set(queued.replacementIds) : undefined,
         });
         clearCanvasSaveTimer(scope);
         const timer = setTimeout(() => {

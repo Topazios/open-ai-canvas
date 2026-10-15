@@ -13,6 +13,9 @@ import (
 )
 
 type PluginProviderCatalogItem struct {
+	Contract          protocol.Contract           `json:"contract"`
+	ContractLabel     string                      `json:"contractLabel"`
+	AgentSupported    bool                        `json:"agentSupported"`
 	ID                string                      `json:"id"`
 	Version           string                      `json:"version"`
 	Name              string                      `json:"name"`
@@ -46,6 +49,9 @@ func (s *Service) PluginProviderCatalog(scope, capability string, includeUnavail
 			if adapter, ok := canonicalProviderAdapter(s.protocolRegistry(), provider.ID); ok {
 				metadata := adapter.Metadata()
 				item.Create, item.Poll, item.ContentType = metadata.Create, metadata.Poll, metadata.ContentType
+				item.Contract = protocol.ContractForAdapter(metadata.ID)
+				item.ContractLabel = item.Contract.Label()
+				item.AgentSupported = protocolAdapterSupportsAgent(adapter)
 			}
 			if includeUnavailable || item.Enabled {
 				items = append(items, item)

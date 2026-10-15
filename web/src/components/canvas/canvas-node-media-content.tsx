@@ -16,6 +16,7 @@ import { CanvasAudioPlayer } from "./canvas-audio-player";
 import { buildLibTVImagePreviewUrl, buildLibTVVideoSourceUrl } from "@/lib/canvas/libtv-import";
 import { bindCanvasVideoHoverPreview } from "@/lib/canvas/canvas-video-hover-preview";
 import { resolveMediaUrl } from "@/services/file-storage";
+import { resolveImageUrl } from "@/services/image-storage";
 import { hydrateCanvasVideoPreview } from "@/services/canvas-video-preview";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
@@ -317,33 +318,30 @@ export function useVideoPlaybackUrl(node: CanvasNodeData, active: boolean) {
     const rawContent = node.metadata?.content || "";
     const fallback = node.metadata?.importSource?.provider === "libtv" ? buildLibTVVideoSourceUrl(rawContent) : rawContent;
     const storageKey = node.metadata?.storageKey || "";
-    const [url, setUrl] = useState("");
-    const [loading, setLoading] = useState(false);
+    const [playback, setPlayback] = useState<{ storageKey: string; fallback: string; url: string; loading: boolean } | null>(null);
 
     useEffect(() => {
         let cancelled = false;
         if (!active) {
-            setUrl("");
-            setLoading(false);
+            setPlayback(null);
             return;
         }
-        setLoading(true);
+        setPlayback({ storageKey, fallback, url: "", loading: true });
         void resolveMediaUrl(storageKey, fallback)
             .then((resolved) => {
-                if (!cancelled) setUrl(resolved);
+                if (!cancelled) setPlayback({ storageKey, fallback, url: resolved, loading: false });
             })
             .catch(() => {
-                if (!cancelled) setUrl(fallback);
-            })
-            .finally(() => {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) setPlayback({ storageKey, fallback, url: fallback, loading: false });
             });
         return () => {
             cancelled = true;
         };
     }, [active, fallback, storageKey]);
 
-    return { url, loading };
+    // Never mount the old source while a replacement URL is being resolved.
+    const current = active && playback?.storageKey === storageKey && playback.fallback === fallback ? playback : null;
+    return { url: current?.url || "", loading: active && (current?.loading ?? true) };
 }
 
 export function InactiveMediaCard({ icon, title, hint, theme }: { icon: ReactNode; title: string; hint: string; theme: CanvasTheme }) {
@@ -555,19 +553,21 @@ export function useNodeResourceUrl(node: CanvasNodeData, eager: boolean, variant
             ? content
             : node.metadata?.previewContent || (node.type === CanvasNodeType.Image && node.metadata?.importSource?.provider === "libtv" ? buildLibTVImagePreviewUrl(content) : content);
     const isRemoteResource = storageKey.startsWith("resource:");
+    const isLocalImageResource = node.type === CanvasNodeType.Image && Boolean(storageKey) && !isRemoteResource;
+    const needsResolution = isRemoteResource || isLocalImageResource;
     // Inline data URLs are already local, but decoding thousands of them is
     // still expensive. Images must wait for the same viewport gate as remote
     // resources; otherwise DOM virtualization does not reduce image work.
     const isLazyVisual = node.type === CanvasNodeType.Image;
     const isHttpUrl = Boolean(fallback && !fallback.startsWith("data:"));
-    const initialUrl = eager && !isRemoteResource && isLazyVisual && isHttpUrl ? fallback : isRemoteResource || isLazyVisual ? "" : fallback;
+    const initialUrl = eager && !needsResolution && isLazyVisual && isHttpUrl ? fallback : needsResolution || isLazyVisual ? "" : fallback;
     const scope = getActiveUserScope();
     const identity = `${scope}:${node.id}:${storageKey || fallback}`;
-    const [resolved, setResolved] = useState<{ identity: string; url: string; loading: boolean; originalWidth?: number; originalHeight?: number }>(() => ({ identity, url: initialUrl, loading: !initialUrl && isRemoteResource && eager }));
-    const current = resolved.identity === identity ? resolved : { identity, url: initialUrl, loading: isRemoteResource && eager };
+    const [resolved, setResolved] = useState<{ identity: string; url: string; loading: boolean; originalWidth?: number; originalHeight?: number }>(() => ({ identity, url: initialUrl, loading: !initialUrl && needsResolution && eager }));
+    const current = resolved.identity === identity ? resolved : { identity, url: initialUrl, loading: needsResolution && eager };
 
     useEffect(() => {
-        if (!isRemoteResource) {
+        if (!needsResolution) {
             setResolved({ identity, url: isLazyVisual && !eager ? "" : fallback, loading: false });
             return;
         }
@@ -576,18 +576,26 @@ export function useNodeResourceUrl(node: CanvasNodeData, eager: boolean, variant
             return;
         }
         let cancelled = false;
+        const isCurrent = () => !cancelled && getActiveUserScope() === scope;
+        const recoverableFallback = isLocalImageResource && fallback.startsWith("blob:") ? "" : fallback;
         setResolved({ identity, url: "", loading: true });
-        void getResourceAccess(storageKey, "display", variant)
-            .then((access) => {
-                if (!cancelled) setResolved({ identity, url: resolveResourceAccessURL(access.url), loading: false, originalWidth: access.originalWidth, originalHeight: access.originalHeight });
+        const load = async () => {
+            // Persisted blob URLs belong to the old document; the local key is the durable source.
+            if (isLocalImageResource) return { url: await resolveImageUrl(storageKey, recoverableFallback) };
+            const access = await getResourceAccess(storageKey, "display", variant);
+            return { url: resolveResourceAccessURL(access.url), originalWidth: access.originalWidth, originalHeight: access.originalHeight };
+        };
+        void load()
+            .then((resource) => {
+                if (isCurrent()) setResolved({ identity, ...resource, loading: false });
             })
             .catch(() => {
-                if (!cancelled) setResolved({ identity, url: fallback, loading: false });
+                if (isCurrent()) setResolved({ identity, url: recoverableFallback, loading: false });
             });
         return () => {
             cancelled = true;
         };
-    }, [eager, fallback, identity, isLazyVisual, isRemoteResource, storageKey, variant]);
+    }, [eager, fallback, identity, isLazyVisual, isLocalImageResource, needsResolution, scope, storageKey, variant]);
 
     const isThumbnail = variant === "thumbnail";
     return { url: current.url, loading: current.loading, originalWidth: isThumbnail ? current.originalWidth : undefined, originalHeight: isThumbnail ? current.originalHeight : undefined };

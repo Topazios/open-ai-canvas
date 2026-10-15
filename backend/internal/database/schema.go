@@ -17,6 +17,9 @@ import (
 func Models() []any {
 	return []any{
 		&model.CloudAgentExecution{},
+		&model.ProductionAgentJob{},
+		&model.ProductionAgentPage{},
+		&model.ProductionAgentArtifact{},
 		&model.CloudAgentPiSession{},
 		&model.CloudAgentEventRecord{},
 		&model.CloudAgentMessageRecord{},
@@ -89,6 +92,7 @@ func Models() []any {
 		&model.StyleProfile{},
 		&model.ProjectUnit{},
 		&model.CanvasUnitLink{},
+		&model.CanvasNodeShotLink{},
 		&model.Shot{},
 		&model.ShotRevision{},
 		&model.ShotArtifact{},

@@ -19,7 +19,7 @@ func newProjectWorkbenchReadTestService(t *testing.T) (*Service, *gorm.DB) {
 		t.Fatal(err)
 	}
 	if err := db.AutoMigrate(
-		&model.Project{}, &model.ProjectUnit{}, &model.CanvasProject{}, &model.CanvasUnitLink{},
+		&model.Project{}, &model.ProjectUnit{}, &model.CanvasProject{}, &model.CanvasUnitLink{}, &model.CanvasNodeShotLink{},
 		&model.Asset{}, &model.AssetVersion{}, &model.AssetRepresentation{}, &model.ProjectAssetLink{}, &model.ProjectAssetCandidate{},
 		&model.CharacterVoiceBinding{}, &model.VoiceProfile{},
 		&model.Shot{}, &model.ShotRevision{}, &model.ShotArtifact{}, &model.ShotAssetReference{},

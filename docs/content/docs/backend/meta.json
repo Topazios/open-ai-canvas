@@ -6,6 +6,8 @@
     "local-development",
     "canvas-agent-appearance",
     "http-api",
+    "text-protocol-impact",
+    "production-rules",
     "code-map",
     "backend-database",
     "video-token-billing",

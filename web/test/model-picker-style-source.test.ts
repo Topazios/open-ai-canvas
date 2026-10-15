@@ -24,7 +24,7 @@ test("模型行只保留选中高亮，价格使用独立的彩色标签", async
     expect(badge).toContain("padding: 2px 5px");
     expect(price).toContain("--model-price-ink: #946900");
     expect(component).toContain('<Coins className="model-picker-price-icon" aria-hidden="true" />');
-    expect(styles).toContain("width: min(800px, calc(100vw - 24px))");
+    expect(styles).toContain("width: min(560px, calc(100vw - 24px))");
 });
 
 test("每次打开菜单都展开当前选中模型所属目录，无有效选中时显示一级目录", async () => {
@@ -34,12 +34,12 @@ test("每次打开菜单都展开当前选中模型所属目录，无有效选�
     expect(opening).not.toContain("setActiveGroupKey(null)");
 });
 
-test("选择模型保留菜单及行内焦点，仍可通过 Escape 和外部点击关闭", async () => {
+test("选择模型关闭菜单并恢复触发器焦点，也支持 Escape 和外部点击", async () => {
     const component = await Bun.file(new URL("../src/components/model-picker.tsx", import.meta.url)).text();
     const selection = component.match(/onClick=\{\(\) => \{\s*if \(!model\) return;([\s\S]*?)\}\}/)?.[1] || "";
     expect(selection).toContain("onChange(model)");
-    expect(selection).not.toContain("setOpen(false)");
-    expect(selection).not.toContain("focus()");
+    expect(selection).toContain("setOpen(false)");
+    expect(selection).toContain("focus()");
     expect(component).toContain('event.key === "Escape"');
     expect(component).toContain('window.addEventListener("pointerdown", closeOnOutsidePointer, true)');
 });
@@ -64,8 +64,11 @@ test("ModelPicker 样式独立加载，并保留模型列表的视口边界", as
     expect(pickerStyles).toContain(".creation-model-picker-surface .creation-model-picker-menu.is-brand-list");
 
     const modelList = pickerStyles.match(/\.creation-model-picker-surface \.creation-model-picker-menu\.is-model-list \{([\s\S]*?)\}/)?.[1] || "";
-    expect(modelList).toContain("max-height: min(460px, calc(100vh - 24px)) !important;");
-    expect(modelList).toContain("overflow-y: auto !important;");
+    expect(modelList).toContain("max-height: min(460px, calc(100dvh - 32px)) !important;");
+    expect(modelList).toContain("overflow-y: hidden !important;");
+    const brands = pickerStyles.match(/\.creation-model-picker-surface \.creation-model-picker-menu\.is-brand-list \{([\s\S]*?)\}/)?.[1] || "";
+    expect(brands).toContain("max-height: min(460px, calc(100dvh - 32px)) !important;");
+    expect(brands).toContain("overflow-y: auto !important;");
     expect(pickerStyles).not.toContain(".app-user-workspace .creation-model-picker-menu {");
     expect(pickerStyles).not.toContain(".creation-model-picker-surface .creation-model-picker-menu {");
 });

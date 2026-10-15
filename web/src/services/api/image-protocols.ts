@@ -29,7 +29,7 @@ export function toResponseTool(tool: ResponseFunctionTool): ResponseApiToolDefin
         name: tool.function.name,
         description: tool.function.description,
         parameters: tool.function.parameters,
-        strict: tool.function.strict,
+        strict: tool.function.strict ?? false,
     };
 }
 

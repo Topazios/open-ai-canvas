@@ -330,6 +330,7 @@ export function updateAdminChannelModelsEnabled(channelId: string, modelIds: str
 }
 
 export type ChannelModelBatchSettings = {
+    protocols?: import("@/lib/model-protocols").ModelProtocolConfig;
     modelIds: string[];
     enabled?: boolean;
     displayName?: string;

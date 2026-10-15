@@ -1,10 +1,11 @@
-import type { ModelProtocol, ModelProtocolWorkflow } from "@/lib/model-protocols";
+import type { ModelProtocol, ModelProtocolWorkflow, ModelProtocolConfig } from "@/lib/model-protocols";
 import type { ImageResolutionOption, ImageResolutionTier } from "@/lib/image-resolution-tiers";
 import { type WorkflowVideoFieldLike, workflowImageCapabilityConfig, workflowVideoCapabilityConfig } from "./model-capabilities-workflow";
 
 export { workflowFieldChoiceValues, workflowFieldConfigurationError, workflowFieldCurrentValue, workflowFieldHasStoredValue, workflowFieldKey, workflowFieldNumberBounds, workflowFieldPresetOptions, workflowFieldRandomKey, workflowFieldRole, workflowFieldSafeToOverride, workflowFieldSource, workflowFieldSubmissionValue, workflowFieldValueError, workflowImageCapabilityConfig, workflowOutputSizeValue, workflowParameterFields, workflowVideoCapabilityConfig, workflowVideoDefaultSize, workflowVideoFieldsFromJson, type WorkflowFieldNumberBounds, type WorkflowVideoFieldLike } from "./model-capabilities-workflow";
 
 export type ModelCapabilityConfig = {
+    protocols?: ModelProtocolConfig;
     version: number;
     text?: TextCapabilityConfig;
     image?: ImageCapabilityConfig;

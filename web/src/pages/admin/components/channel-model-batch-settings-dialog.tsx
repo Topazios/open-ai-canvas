@@ -3,7 +3,8 @@ import { Alert, App, Button, Checkbox, Input, Radio, Segmented } from "antd";
 import { AdminModal } from "@/pages/admin/ui/overlays";
 import { ModelIconPicker } from "@/components/model-logo";
 import { ModelProtocolBrowser } from "@/components/model-protocol-browser";
-import type { ModelProtocolDefinition, ProtocolCapability } from "@/lib/model-protocols";
+import { ModelProtocolRouting } from "@/components/model-protocol-routing";
+import { groupedModelProtocols, type ModelProtocolConfig, type ModelProtocolDefinition, type ProtocolCapability } from "@/lib/model-protocols";
 import { updateAdminChannelModelsSettings, type ChannelModel } from "@/services/api/wallet";
 
 type ApplyState = {
@@ -44,9 +45,10 @@ export function ChannelModelBatchSettingsDialog({
     const [capability, setCapability] = useState<ProtocolCapability>(getCommonCapability(items));
     const [protocol, setProtocol] = useState<string | undefined>(() => getInitialProtocol(items, protocols, getCommonCapability(items)));
     const [saving, setSaving] = useState(false);
+    const [protocolRouting, setProtocolRouting] = useState<ModelProtocolConfig | undefined>(() => items.length === 1 ? items[0].capabilityConfig?.protocols : undefined);
 
     const selectedCount = Object.values(apply).filter(Boolean).length;
-    const availableProtocols = protocols.filter((item) => item.capability === capability && item.enabled !== false);
+    const availableProtocols = groupedModelProtocols(protocols.filter((item) => item.capability === capability), protocol);
     const selectedProtocol = availableProtocols.some((item) => item.value === protocol) ? protocol : availableProtocols[0]?.value;
     const save = async () => {
         if (!selectedCount || saving) return;
@@ -67,7 +69,7 @@ export function ChannelModelBatchSettingsDialog({
                 ...(apply.channelLabel ? { channelLabel: channelLabel.trim() } : {}),
                 ...(apply.description ? { description: description.trim() } : {}),
                 ...(apply.icon ? { icon: icon.trim() } : {}),
-                ...(apply.contract ? { capability, protocol: selectedProtocol } : {}),
+                ...(apply.contract ? { capability, protocol: selectedProtocol, ...(capability === "text" ? { protocols: protocolRouting || { policy: "auto", supported: [selectedProtocol!] } } : {}) } : {}),
             });
             message.success(`已更新 ${result.updated} 个模型`);
             await onSaved();
@@ -99,7 +101,7 @@ export function ChannelModelBatchSettingsDialog({
             onOk={() => void save()}
         >
             <div className="space-y-4">
-                <Alert type="info" showIcon title="只修改勾选的参数。能力或协议变更后，对应能力参数会恢复为当前模型的默认值，价格仍需单独核对。" />
+                <Alert type="info" showIcon title="只修改勾选的参数。切换能力或默认协议会重置能力参数；仅调整协议策略与支持列表时保留原参数。价格仍需单独核对。" />
                 <div className="grid gap-3">
                     <BatchSettingRow checked={apply.enabled} onToggle={() => toggle("enabled")} label="模型状态">
                         <Radio.Group
@@ -127,10 +129,12 @@ export function ChannelModelBatchSettingsDialog({
                                 onChange={(value) => {
                                     const nextCapability = value as ProtocolCapability;
                                     setCapability(nextCapability);
-                                    setProtocol(protocols.find((item) => item.capability === nextCapability && item.enabled !== false)?.value);
+                                    setProtocol(groupedModelProtocols(protocols.filter((item) => item.capability === nextCapability))[0]?.value);
+                                    setProtocolRouting(undefined);
                                 }}
                             />
-                            <ModelProtocolBrowser value={selectedProtocol} onChange={setProtocol} capability={capability} protocols={protocols} loading={protocolLoading} error={protocolError} disabled={!apply.contract} />
+                            <ModelProtocolBrowser value={selectedProtocol} onChange={(next) => { setProtocol(next); setProtocolRouting(undefined); }} capability={capability} protocols={protocols} loading={protocolLoading} error={protocolError} disabled={!apply.contract} />
+                            {capability === "text" ? <ModelProtocolRouting primary={selectedProtocol} value={protocolRouting} onChange={setProtocolRouting} protocols={protocols} disabled={!apply.contract || protocolLoading || Boolean(protocolError)} /> : null}
                             {protocolError ? (
                                 <Button size="small" onClick={onRetryProtocols}>
                                     重试读取协议目录
@@ -179,5 +183,5 @@ function getInitialProtocol(items: ChannelModel[], protocols: ModelProtocolDefin
     if (protocol && items.every((item) => item.protocol === protocol) && protocols.some((item) => item.value === protocol && item.capability === capability && item.enabled !== false)) {
         return protocol;
     }
-    return protocols.find((item) => item.capability === capability && item.enabled !== false)?.value;
+    return groupedModelProtocols(protocols.filter((item) => item.capability === capability))[0]?.value;
 }

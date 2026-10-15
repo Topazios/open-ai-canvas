@@ -117,12 +117,12 @@ export function validateAiCommandBatch(project: TimelineProject, plan: AiCommand
 // ---------------------------------------------------------------------------
 
 /** AI 命令 schema 版本；提示词契约或解析规则变化时递增，用于 golden 测试和缓存失效对齐。 */
-export const AI_COMMAND_SCHEMA_VERSION = 1;
+export const AI_COMMAND_SCHEMA_VERSION = 2;
 
 /** 单次 AI 编辑最多允许的命令条数，防止一次模型输出造成不可控的大范围变更。 */
 export const AI_EDITING_MAX_COMMANDS = 8;
 
-/** 12 个黄金 op 的 LLM 可读 payload 契约；op 集合与注册表黄金同步（见测试）。 */
+/** 命令的 LLM 可读 payload 契约；op 集合与注册表黄金同步（见测试）。 */
 export const AI_EDITING_OP_CATALOG: ReadonlyArray<{
     op: string;
     desc: string;
@@ -187,6 +187,11 @@ export const AI_EDITING_OP_CATALOG: ReadonlyArray<{
         op: "setTrackFlag",
         desc: "轨道开关",
         payload: "{ trackId, flag: visible|muted, value: boolean }",
+    },
+    {
+        op: "replaceShotMedia",
+        desc: "替换同镜头整组视频来源，保留所有剪辑区间；必须有已核对的新采用版本、真实时长和完整旧片段快照，缺少时引导用户在当前集镜头面板查看替换",
+        payload: "{ expectedClips: [完整且未变化的 TimelineClip 快照], source: { projectId, unitId, shotId, revisionId, artifactId, resourceId }, durationMs(已确认的新素材时长), title }；轨道锁定、片段增删/编辑或新素材过短则整批拒绝；禁止猜测来源 ID 和时长",
     },
 ];
 

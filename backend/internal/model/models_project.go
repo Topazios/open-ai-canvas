@@ -265,6 +265,21 @@ type CanvasUnitLink struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// CanvasNodeShotLink only binds a canvas display node to an existing shot/version.
+// Canvas content and the project's shot/artifact remain independently owned.
+type CanvasNodeShotLink struct {
+	ID             string    `json:"id" gorm:"primaryKey;size:36"`
+	ProjectID      string    `json:"projectId" gorm:"index;size:36"`
+	CanvasID       string    `json:"canvasId" gorm:"index;size:80;uniqueIndex:idx_canvas_node_shot_links_node,priority:1"`
+	UnitID         string    `json:"unitId" gorm:"index;size:36"`
+	NodeID         string    `json:"nodeId" gorm:"size:160;uniqueIndex:idx_canvas_node_shot_links_node,priority:2"`
+	ShotID         string    `json:"shotId" gorm:"index;size:36"`
+	ShotRevisionID string    `json:"shotRevisionId" gorm:"index;size:36"`
+	ArtifactID     string    `json:"artifactId,omitempty" gorm:"index;size:36"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
 type Shot struct {
 	ID                string    `json:"id" gorm:"primaryKey;size:36"`
 	ProjectID         string    `json:"projectId" gorm:"index;size:36;index:idx_shots_project_unit_position,priority:1"`

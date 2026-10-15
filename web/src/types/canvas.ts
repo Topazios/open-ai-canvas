@@ -1,4 +1,5 @@
 import type { CanvasColorGrade } from "@/lib/canvas/canvas-color-grade";
+import type { ReasoningEffort } from "@/lib/reasoning-effort";
 import type { MediaConversionNodeState } from "@/lib/media-conversion/contracts";
 import type { AssetCategory } from "@/lib/asset-category";
 import type { PortraitTextureSettings } from "@/lib/canvas/canvas-portrait-texture";
@@ -8,6 +9,7 @@ import type { CameraControlOptions } from "@/lib/canvas/camera-prompt-library";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@/types/timeline";
 import type { GenerationSpec } from "@/lib/canvas/generation-contract.generated";
 import type { GenerationTask } from "@/services/api/task-center";
+import type { ShortDramaWorkflowData } from "@/lib/short-drama-steps";
 
 export type Position = {
     x: number;
@@ -50,6 +52,7 @@ export function isBuiltinCanvasNodeType(type: CanvasNodeTypeId): type is CanvasN
 }
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
+export type CanvasNodeRetryOptions = { adjustPrompt?: boolean };
 export type CanvasMediaPerformanceMode = "auto" | "quality" | "performance";
 export type CanvasWorkspaceMode = "simple" | "professional";
 export type CanvasToolMode = "move" | "box-select";
@@ -217,7 +220,30 @@ export type CanvasSkillSnapshot = {
     tags: string[];
 };
 
+export type StoryDevelopmentStage = "topic" | "plan" | "outline" | "episodes" | "body";
+export type StoryDevelopmentBrief = {
+    genre: string;
+    style: string;
+    premise: string;
+    audience: string;
+    episodeCount: number;
+    minutesPerEpisode: string;
+    topicCount?: number;
+};
+export type StoryTopicCandidate = { id: string; title: string; logline: string; conflict: string; appeal: string };
+export type StoryDevelopmentData = {
+    stage: StoryDevelopmentStage;
+    pipelineId: string;
+    sourceNodeIds: string[];
+    brief?: StoryDevelopmentBrief;
+    candidates?: StoryTopicCandidate[];
+    selectedTopicId?: string;
+    episodeNumber?: number;
+    sourceSignatures?: Record<string, string>;
+};
+
 export type CanvasNodeMetadata = {
+    reasoningEffort?: ReasoningEffort;
     /** Credential-free editable generation contract; submitted recipes live with tasks. */
     generationSpec?: GenerationSpec;
     /** Namespaced extension ownership for nodes contributed by a unified plugin. */
@@ -327,6 +353,8 @@ export type CanvasNodeMetadata = {
     assetTags?: string[];
     assetCategory?: AssetCategory;
     workflowKind?: CanvasWorkflowKind;
+    storyDevelopment?: StoryDevelopmentData;
+    shortDrama?: ShortDramaWorkflowData;
     workflowTitle?: string;
     workflowDescription?: string;
     stylePresetId?: string;

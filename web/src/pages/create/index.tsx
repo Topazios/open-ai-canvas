@@ -41,7 +41,6 @@ const loadCreationRuntime = () => import("./creation-runtime");
 type CreationRuntime = Awaited<ReturnType<typeof loadCreationRuntime>>;
 
 const TEXT_STREAMING_PREF_KEY = "creation.composer.text-streaming";
-const TEXT_THINKING_PREF_KEY = "creation.composer.text-thinking";
 
 function creationLibraryDisabledReason(mode: CreationMode, kind: string | undefined, videoLimits?: CreationReferenceLimits) {
     if (!kind) return undefined;
@@ -111,7 +110,6 @@ export default function CreatePage() {
     const [videoQuality, setVideoQuality] = useState(config.vquality || "720");
     const [count, setCount] = useState(String(Math.max(1, Math.min(4, Number(config.count) || 1))));
     const [textStreaming, setTextStreaming] = useState(() => readComposerPref(TEXT_STREAMING_PREF_KEY, true));
-    const [textThinking, setTextThinking] = useState(() => readComposerPref(TEXT_THINKING_PREF_KEY, false));
     const [busy, setBusy] = useState(false);
     const [referenceReplacementBusy, setReferenceReplacementBusy] = useState(false);
     const [historyOpen, setHistoryOpen] = useState(false);
@@ -198,8 +196,7 @@ export default function CreatePage() {
 
     useEffect(() => {
         writeComposerPref(TEXT_STREAMING_PREF_KEY, textStreaming);
-        writeComposerPref(TEXT_THINKING_PREF_KEY, textThinking);
-    }, [textStreaming, textThinking]);
+    }, [textStreaming]);
     useEffect(() => {
         if (!composerPreferencesHydrated || composerPreferencesInitialized) return;
         const saved = useCreationPreferencesStore.getState().preferences;
@@ -685,7 +682,7 @@ export default function CreatePage() {
                     metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...referenceMetadata },
                     onTaskUpdate: bindTask,
                     streamText: textStreaming,
-                    enableThinking: textThinking,
+                    reasoningEffort: config.textReasoningEffort || "medium",
                     onTextDelta: textStreaming ? (value) => updateOriginAssistant((item) => ({ ...item, content: value })) : undefined,
                     ...retryContext,
                 }));
@@ -1003,8 +1000,6 @@ export default function CreatePage() {
         setCount: setComposerCount,
         textStreaming,
         setTextStreaming,
-        textThinking,
-        setTextThinking,
         promptOptimizerProvider,
         composerFocusRef,
         onPromptFocus: loadAddedSkills,

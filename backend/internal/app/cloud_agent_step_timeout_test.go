@@ -220,6 +220,9 @@ func TestCloudAgentStepTimeoutRetriesThenFailsWithReadableReason(t *testing.T) {
 	if options["thinking"] != false {
 		t.Fatalf("重试请求没有关思考: %+v", options)
 	}
+	if options["reasoningDisabled"] != true {
+		t.Fatalf("恢复请求未覆盖默认推理强度: %+v", options)
+	}
 	if options["maxOutputTokens"] != float64(platform.DefaultRuntimeAgentStepOutputTokens) {
 		t.Fatalf("重试请求的输出上限 = %v", options["maxOutputTokens"])
 	}

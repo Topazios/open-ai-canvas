@@ -1,30 +1,31 @@
 import type { ReactNode } from "react";
-import { Check, CircleAlert } from "lucide-react";
+import { Check, CircleAlert, Minus } from "lucide-react";
 import { Link } from "react-router";
 
 import { StatusBadge } from "@/components/ui/base/badges";
 import { assetCategoryLabel as sharedAssetCategoryLabel } from "@/lib/asset-category";
 import type { ProjectDetail, ProjectShot, ShotArtifact, ShotRevision, WorkflowStep } from "@/services/api/projects";
 import type { TaskStatus } from "@/services/api/task-center";
+import { shortDramaStages, type ShortDramaStageId } from "@/lib/short-drama-stages";
 
-export type ShortDramaWorkflowStage = "story" | "assets" | "storyboard" | "previz" | "video" | "delivery";
+export type ShortDramaWorkflowStage = ShortDramaStageId | "previz";
 
-export const workflowStages: Array<{ key: ShortDramaWorkflowStage; label: string; shortLabel: string }> = [
-    { key: "story", label: "剧情与章节", shortLabel: "剧情" },
-    { key: "assets", label: "资产拆分", shortLabel: "资产" },
-    { key: "storyboard", label: "分镜脚本", shortLabel: "分镜" },
-    { key: "previz", label: "黑白动作预演", shortLabel: "预演" },
-    { key: "video", label: "视频生成", shortLabel: "视频" },
-    { key: "delivery", label: "交付与打包", shortLabel: "交付" },
-];
+export const workflowStages = shortDramaStages;
+
+export function workflowStepKeyForStage(stage: ShortDramaWorkflowStage) {
+    if (stage === "previz") return "previz";
+    if (stage === "voice" || stage === "edit" || stage === "review") return undefined;
+    return stage;
+}
 
 export function WorkflowStageLink({ href, active, step, index, label, shortLabel }: { href: string; active: boolean; step?: WorkflowStep; index: number; label: string; shortLabel: string }) {
-    const completed = step?.status === "completed" || step?.status === "skipped";
+    const completed = step?.status === "completed";
+    const skipped = step?.status === "skipped";
     const failed = step?.status === "failed";
     return (
         <Link to={href} className={`workflow-stage-link ${active ? "is-active" : ""}`} aria-current={active ? "step" : undefined}>
-            <span className={`workflow-stage-index ${completed ? "is-completed" : failed ? "is-failed" : ""}`}>
-                {completed ? <Check className="size-3" /> : failed ? <CircleAlert className="size-3" /> : index + 1}
+            <span className={`workflow-stage-index ${completed ? "is-completed" : skipped ? "is-skipped" : failed ? "is-failed" : ""}`} title={skipped ? "此阶段已跳过" : undefined}>
+                {completed ? <Check className="size-3" /> : skipped ? <Minus className="size-3" /> : failed ? <CircleAlert className="size-3" /> : index + 1}
             </span>
             <span className="sm:hidden">{shortLabel}</span>
             <span className="hidden sm:inline">{label}</span>

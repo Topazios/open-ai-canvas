@@ -55,6 +55,11 @@ export function nodeSizeFromRatio(size: string, baseWidth: number, baseHeight: n
 export function ensureMediaNodeMinimumSize(node: CanvasNodeData) {
     if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video) return node;
     const title = node.title === "New Generation" ? "图片" : node.title === "Video" ? "视频" : node.title;
+    // Workflow image containers own their fixed cells; the generic 420px minimum
+    // would enlarge them around their centers and overlap neighbouring rows.
+    if (node.type === CanvasNodeType.Image && node.parentId && node.metadata?.manualSize &&
+        node.metadata.shortDrama?.mediaKind === "image" && node.metadata.shortDrama.mediaSubjectId &&
+        node.width > 0 && node.height > 0) return title === node.title ? node : { ...node, title };
     let width = node.width;
     let height = node.height;
     const emptyStage = isBuiltinCanvasNodeType(node.type) ? NODE_DEFAULT_SIZE[node.type] : undefined;

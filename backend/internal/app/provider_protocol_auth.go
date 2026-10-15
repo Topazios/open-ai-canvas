@@ -249,6 +249,18 @@ func protocolCredentialField(config providerConfig, field string) string {
 	}
 }
 
+func protocolRequestURLForAdapter(config providerConfig, spec protocol.RequestSpec) (string, error) {
+	// A conventional default /v1 in a standard text adapter is not an
+	// instruction to replace the channel's explicit /v2 or /api/v3 base.
+	contract := protocol.ContractForAdapter(config.InterfaceType)
+	if !spec.OriginPath && (contract == protocol.ContractChatCompletions || contract == protocol.ContractResponses || contract == protocol.ContractMessages) {
+		if strings.HasPrefix(spec.Path, "/v1/") {
+			spec.Path = strings.TrimPrefix(spec.Path, "/v1")
+		}
+	}
+	return protocolRequestURL(config.BaseURL, spec)
+}
+
 func protocolRequestURL(baseURL string, spec protocol.RequestSpec) (string, error) {
 	if !spec.OriginPath {
 		return appendProtocolQuery(apiURL(baseURL, spec.Path), spec.Query)

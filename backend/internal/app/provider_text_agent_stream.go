@@ -117,6 +117,10 @@ func (p *streamingAgentParser) consumeFrame(frame string) {
 		p.err = err
 		return
 	}
+	if eventName == "error" {
+		p.err = errors.New("上游流式请求失败，生成未完成")
+		return
+	}
 	switch p.protocol {
 	case "responses":
 		p.consumeResponsesEvent(eventName, payload)
@@ -136,6 +140,15 @@ func (p *streamingAgentParser) consumeResponsesEvent(eventName string, payload m
 		p.appendReasoning(stringField(payload, "delta"))
 	case "response.completed":
 		p.completed, _ = payload["response"].(map[string]interface{})
+		if p.completed == nil {
+			p.err = errors.New("Responses 完成事件缺少结果")
+		}
+	case "response.failed", "response.incomplete", "error":
+		response, _ := payload["response"].(map[string]interface{})
+		p.err = validateResponsesCompletion(response)
+		if p.err == nil {
+			p.err = errors.New("Responses 流式生成未完成")
+		}
 	case "response.output_item.added":
 		item, _ := payload["item"].(map[string]interface{})
 		if stringField(item, "type") == "function_call" {
@@ -268,12 +281,15 @@ func (p *streamingAgentParser) result() (map[string]interface{}, error) {
 	if p.err != nil {
 		return nil, p.err
 	}
+	if p.protocol == "responses" && p.completed == nil {
+		return nil, errors.New("Responses 流中断或缺少完成事件，生成未完成")
+	}
 	if p.completed != nil {
 		result, err := parseAgentToolPayload(p.completed, p.protocol)
 		if err != nil {
 			return nil, err
 		}
-		if p.text.Len() > 0 {
+		if stringField(result, "text") == "" && p.text.Len() > 0 {
 			result["text"] = p.text.String()
 		}
 		if p.reasoning.Len() > 0 {

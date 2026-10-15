@@ -1,4 +1,5 @@
 import { http, apiBaseURL } from "@/services/api/request";
+import type { ReasoningEffort } from "@/lib/reasoning-effort";
 import { consumeTaskTextStream, createTaskTextStreamParser } from "@/services/api/task-text-stream";
 
 export type AgentPermissionMode = "read_only" | "auto" | "request_approval";
@@ -62,6 +63,9 @@ export type AgentApproval = {
 };
 
 export type AgentRun = {
+    production?: { targetNodeId: string; paused: boolean; waitingForBoundary: boolean; waitingForSharedFacts?: boolean; processedPages: number; totalPages: number; artifactCount: number; validated: boolean; maxSteps?: number };
+    eventCount?: number;
+    eventSeqBase?: number;
     id: string;
     canvasId: string;
     status: "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "rejected";
@@ -103,7 +107,9 @@ export class AgentStreamError extends Error {
 }
 
 export type CreateAgentRunInput = {
+    production?: { targetNodeId: string };
     reasoningMode?: AgentReasoningMode;
+    reasoningEffort?: ReasoningEffort;
     profileRevision?: string;
     canvasId: string;
     prompt: string;
@@ -167,12 +173,21 @@ export function updateAgentProfile(input: { scope: AgentProfileScope; projectId?
     return http.patch<AgentProfileView>("/agent/profile", input, { timeout: 15_000 });
 }
 
-export function getAgentRun(runId: string, signal?: AbortSignal) {
-    return http.get<{ run: AgentRun }>(`/agent/runs/${encodeURIComponent(runId)}`, { signal });
+export function getAgentRun(runId: string, signal?: AbortSignal, options?: { beforeSeq?: number; sinceSeq?: number; eventLimit?: number }) {
+    const query = options ? `?${new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]))}` : "";
+    return http.get<{ run: AgentRun }>(`/agent/runs/${encodeURIComponent(runId)}${query}`, { signal });
 }
 
 export function cancelAgentRun(runId: string) {
     return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/cancel`, undefined, { timeout: 15_000 });
+}
+
+export function reconcileCanvasNodeTasks(canvasId: string, deletedNodeIds: string[] = []) {
+    return http.post<{ accepted: boolean }>(`/canvas-projects/${encodeURIComponent(canvasId)}/tasks/reconcile`, { deletedNodeIds }, { timeout: 30_000 });
+}
+
+export function controlProductionAgent(runId: string, action: "pause" | "resume", maxSteps?: number) {
+    return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/production-control`, { action, maxSteps });
 }
 
 export function undoAgentCanvasRun(runId: string, input: { stepId?: string; expectedSnapshotHash: string; reason?: string }, signal?: AbortSignal) {

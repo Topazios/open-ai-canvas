@@ -34,6 +34,8 @@ func main() {
 	logging.Setup(logConfig)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	ctx, localStop := localShutdownContext(ctx, os.Getenv("CANVAS_LOCAL_STOP_FILE"))
+	defer localStop()
 	if err := run(ctx); err != nil {
 		log.Fatal(err)
 	}

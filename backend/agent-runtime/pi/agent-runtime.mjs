@@ -239,6 +239,7 @@ async function run() {
     modelRuntime,
     model,
     resourceLoader,
+    thinkingLevel: request.model?.reasoning ? (request.model.reasoningEffort || "medium") : "off",
     sessionManager,
     customTools: tools,
   };
@@ -282,6 +283,9 @@ async function run() {
   sessionConfig.tools = platformToolNames;
   
   ({ session } = await createAgentSession(sessionConfig));
+  // A restored Pi session may contain a previous level; this run's durable
+  // request owns the setting, including continuations after a process restart.
+  session.setThinkingLevel(sessionConfig.thinkingLevel);
 
   const compactionConfig = request.compaction || {
     enabled: true,

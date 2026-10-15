@@ -1,7 +1,10 @@
 import { http } from "@/services/api/request";
-import type { ModelProtocolDefinition, ProtocolCapability } from "@/lib/model-protocols";
+import type { ModelProtocolDefinition, ProtocolCapability, ProtocolContract } from "@/lib/model-protocols";
 
 type PluginProviderCatalogItem = {
+    contract?: ProtocolContract;
+    contractLabel?: string;
+    agentSupported?: boolean;
     id: string;
     version: string;
     name: string;
@@ -32,6 +35,9 @@ export async function fetchPluginProviderCatalog(scope: string, capability?: Pro
 function toProviderDefinition(item: PluginProviderCatalogItem): ModelProtocolDefinition {
     return {
         value: item.id,
+        contract: item.contract,
+        contractLabel: item.contractLabel,
+        agentSupported: item.agentSupported,
         label: item.name,
         vendor: item.vendor,
         capability: (item.categories[0] || "text") as ProtocolCapability,

@@ -10364,14 +10364,14 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
         text-align: center;
     }
 
-    [data-canvas-viewport-interacting="true"] .canvas-node-shell,
-    [data-canvas-viewport-interacting="true"] .canvas-frame-shell,
-    [data-canvas-viewport-interacting="true"] .aceternity-comet-card {
+    [data-canvas-viewport][data-canvas-viewport-interacting="true"] .canvas-node-shell,
+    [data-canvas-viewport][data-canvas-viewport-interacting="true"] .canvas-frame-shell,
+    [data-canvas-viewport][data-canvas-viewport-interacting="true"] .aceternity-comet-card {
         transition: none !important;
     }
 
     /* 平移时优先保证世界层合成，暂时关闭每个媒体卡片的滤镜和阴影绘制。 */
-    [data-canvas-viewport-interacting="true"] :where(.canvas-node-shell, .canvas-frame-shell, .canvas-folder-preview, .canvas-folder-front, .aceternity-comet-card) {
+    [data-canvas-viewport][data-canvas-viewport-interacting="true"] :where(.canvas-node-shell, .canvas-frame-shell, .canvas-folder-preview, .canvas-folder-front, .aceternity-comet-card) {
         box-shadow: none !important;
         filter: none !important;
         backdrop-filter: none !important;
@@ -10406,7 +10406,6 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
 
     /* 静止期用最终倍率重新排版 DOM，避免 Windows Chromium 复用交互期的低分辨率合成纹理。 */
     .canvas-world-layer {
-        transform: translate(var(--canvas-live-x), var(--canvas-live-y)) scale(var(--canvas-live-scale-ratio));
         transform-origin: 0 0;
     }
 
@@ -10416,12 +10415,11 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
         transform-origin: 0 0;
     }
 
-    [data-canvas-viewport-interacting="true"] .canvas-world-layer {
-        transform: translate3d(var(--canvas-live-x), var(--canvas-live-y), 0) scale(var(--canvas-live-scale-ratio));
+    [data-canvas-viewport][data-canvas-viewport-interacting="true"] .canvas-world-layer {
         will-change: transform;
     }
 
-    [data-canvas-viewport-interacting="true"] :where(.canvas-connection-flow, .canvas-connection-comet, .canvas-connection-draft) {
+    [data-canvas-viewport][data-canvas-viewport-interacting="true"] :where(.canvas-connection-flow, .canvas-connection-comet, .canvas-connection-draft) {
         animation: none !important;
     }
 
@@ -10529,6 +10527,13 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
     .canvas-node-inspector { height: min(64vh, 560px); min-height: 360px; font-size: var(--fs-body); }
     .canvas-node-inspector-scroll, .canvas-node-inspector-json { height: 100%; overflow: auto; }
     .canvas-node-inspector-scroll { padding-right: 4px; }
+    .canvas-node-task-modal .canvas-node-inspector { height: min(72dvh, 720px); min-height: 0; }
+    .canvas-node-task-modal .canvas-node-inspector-scroll { overscroll-behavior: contain; scrollbar-gutter: stable; }
+    .canvas-node-inspector-metadata { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+    .canvas-node-inspector-metadata > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--muted-foreground); font-size: var(--fs-label); list-style: none; }
+    .canvas-node-inspector-metadata > summary::-webkit-details-marker { display: none; }
+    .canvas-node-inspector-metadata[open] > summary > svg { transform: rotate(90deg); }
+    .canvas-node-task-modal .canvas-node-inspector-prompt { height: auto; min-height: 0; overflow: visible; }
     .canvas-node-inspector-section { padding: 14px 2px; }
     .canvas-node-inspector-section + .canvas-node-inspector-section { margin-top: 8px; }
     .canvas-node-inspector-section-heading { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 10px; }

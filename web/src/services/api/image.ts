@@ -15,6 +15,7 @@ import { normalizeGrokImageResolution, normalizeQuality, normalizeVolcengineArkI
 import { parseGeminiImagePayload, parseImagePayload, readAxiosError } from "@/services/api/image-response";
 import { toChatCompletionMessages, toChatCompletionToolChoice, toClaudeBody, toGeminiBody, toGeminiToolOptions, toResponseInput, toResponseTool, withSystemMessage } from "@/services/api/image-protocols";
 import { requestGeminiStreamingResponse, requestStreamingChatCompletion, requestStreamingClaude, requestStreamingResponse } from "@/services/api/image-streaming";
+import { resolveTextRequestConfig } from "@/services/api/text-protocol-routing";
 export { buildBackendToolRequests } from "@/services/api/image-protocols";
 export type { AiTextContentPart, AiTextMessage, ResponseFunctionTool, ResponseInputMessage, ResponseToolCall, ToolChoice, ToolResponseResult } from "@/services/api/image-contracts";
 
@@ -230,7 +231,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 }
 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+    const requestConfig = resolveTextRequestConfig(config);
     try {
         if (requestConfig.apiFormat === "gemini") {
             const answer = (await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages), onDelta, options)).content || "没有返回内容";
@@ -258,6 +259,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
             if (answer === "没有返回内容") onDelta(answer);
             return answer;
         }
+        if (requestConfig.interfaceType !== "openai-response") throw new Error("当前扩展协议需通过后台生成任务执行，不能推断为 Responses");
         const answer =
             (
                 await requestStreamingResponse(
@@ -278,7 +280,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
 }
 
 export async function requestToolResponse(config: AiConfig, messages: ResponseInputMessage[], tools: ResponseFunctionTool[], toolChoice: ToolChoice = "auto", onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+    const requestConfig = resolveTextRequestConfig(config);
     try {
         if (requestConfig.apiFormat === "gemini") {
             return await requestGeminiStreamingResponse(requestConfig, toGeminiBody(requestConfig, messages, toGeminiToolOptions(tools, toolChoice)), onDelta, options);
@@ -310,6 +312,7 @@ export async function requestToolResponse(config: AiConfig, messages: ResponseIn
                 return await requestStreamingChatCompletion(requestConfig, withoutToolChoice, onDelta, options);
             }
         }
+        if (requestConfig.interfaceType !== "openai-response") throw new Error("当前扩展协议需通过后台生成任务执行，不能推断为 Responses");
         return await requestStreamingResponse(
             requestConfig,
             withOpenAIPromptCacheKey(

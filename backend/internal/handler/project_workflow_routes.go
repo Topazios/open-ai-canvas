@@ -139,6 +139,19 @@ func registerProjectWorkflowRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"deleted": true})
 	})
+	r.POST("/projects/:id/shots/:shotId/artifacts/:artifactId/select", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		artifact, err := svc.SelectShotArtifact(user.ID, c.Param("id"), c.Param("shotId"), c.Param("artifactId"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"artifact": artifact})
+	})
 	r.POST("/projects/:id/shots/:shotId/assets", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

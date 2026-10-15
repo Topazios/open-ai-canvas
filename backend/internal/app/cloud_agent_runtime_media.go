@@ -38,16 +38,20 @@ func cloudAgentMediaCall(call cloudAgentCall) cloudAgentCall {
 }
 
 func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *cloudAgentRuntime, req CreateTaskRequest, media *cloudAgentMediaPlan) error {
-	orders, err := s.repo.BillingOrdersByTaskIDs(run.UserID, state.TaskIDs)
-	if err != nil {
-		return err
-	}
-	remaining := int64(math.Floor(state.Request.Budget.MaxCredits * float64(CreditScale)))
-	for _, order := range orders {
-		remaining -= order.AmountMicrocredits
-	}
-	if remaining < 0 {
-		return s.failCloudAgent(run, state, "Agent 累计预算已耗尽")
+	unbounded := state.Request.Production != nil && media == nil
+	remaining := int64(0)
+	if !unbounded {
+		orders, err := s.repo.BillingOrdersByTaskIDs(run.UserID, state.TaskIDs)
+		if err != nil {
+			return err
+		}
+		remaining = int64(math.Floor(state.Request.Budget.MaxCredits * float64(CreditScale)))
+		for _, order := range orders {
+			remaining -= order.AmountMicrocredits
+		}
+		if remaining < 0 {
+			return s.failCloudAgent(run, state, "Agent 累计预算已耗尽")
+		}
 	}
 	var prepared *cloudAgentPreparedMedia
 	approvalID, generationID := "", ""
@@ -78,7 +82,7 @@ func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *c
 		}
 	}
 	prepare := &creationTaskPreparation{}
-	req.admission = &taskAdmission{ID: cloudAgentID(run.UserID, fmt.Sprintf("%s:task:%d", run.ID, len(state.TaskIDs))), MaxCharge: remaining, AgentRunID: run.ID, GenerationID: generationID, ApprovalID: approvalID}
+	req.admission = &taskAdmission{ID: cloudAgentID(run.UserID, fmt.Sprintf("%s:task:%d", run.ID, len(state.TaskIDs))), MaxCharge: remaining, UnboundedAgentBudget: unbounded, AgentRunID: run.ID, GenerationID: generationID, ApprovalID: approvalID}
 	req.creationPrepare = prepare
 	task, err := s.CreateTask(run.UserID, req)
 	if err != nil {
@@ -187,6 +191,12 @@ func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *c
 			state.AutoPreparedCallHash = ""
 		}
 		state.TaskIDs = append(state.TaskIDs, task.ID)
+		if state.Request.Production != nil && state.ProductionModelKey != "" && media == nil {
+			if state.ProductionModelReceipts == nil {
+				state.ProductionModelReceipts = map[string]string{}
+			}
+			state.ProductionModelReceipts[state.ProductionModelKey] = task.ID
+		}
 		if media != nil {
 			state.MediaTaskID = task.ID
 			state.Generations++
@@ -222,6 +232,9 @@ func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *c
 					state.LastStepWindowTokens = contextPressure.ContextWindowTokens
 				}
 				state.Step++
+				if state.Request.Production != nil {
+					state.event(run.ID, "production_model_started", map[string]any{"step": state.Step, "taskId": task.ID, "text": "已调度模型调用"})
+				}
 			}
 		}
 		return cloudAgentSave(current, state)
@@ -625,6 +638,7 @@ func (s *Service) saveCloudAgentPiResumePrompt(userID, id, prompt string) error 
 }
 
 func (s *Service) CancelCloudAgent(ctx context.Context, userID, id string) error {
+	defer s.projectProductionAgentStatus(userID, id)
 	s.stopCloudAgentPi(id)
 	// Cancellation is a control-plane operation. It must remain available even
 	// when the user-facing runtime blob is damaged, so authenticate/authorize

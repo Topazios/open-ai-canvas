@@ -1,4 +1,5 @@
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
+import { layoutWorkflowImageGroups } from "./canvas-workflow-image-layout";
 import { PromptTemplateOperation } from "@/lib/prompts";
 import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@/lib/canvas/canvas-storyboard-layout";
 import { normalizeStoryboardAssetBindings } from "@/lib/canvas/canvas-storyboard-assets";
@@ -496,7 +497,11 @@ export function removeCanvasNodes(nodes: CanvasNodeData[], requestedIds: Set<str
     });
     const remainingNodes = nodes.filter((node) => !removedIds.has(node.id));
     const cleanedNodes = remainingNodes.map((node) => {
-        const detached = node.parentId && removedIds.has(node.parentId) ? { ...node, parentId: undefined } : node;
+        let detached = node.parentId && removedIds.has(node.parentId) ? { ...node, parentId: undefined } : node;
+        const workflow = detached.metadata?.shortDrama;
+        if (workflow?.mediaGroup && workflow.sourceNodeIds.some((id) => removedIds.has(id))) {
+            detached = { ...detached, metadata: { ...detached.metadata, shortDrama: { ...workflow, sourceNodeIds: workflow.sourceNodeIds.filter((id) => !removedIds.has(id)) } } };
+        }
         const storyboard = detached.metadata?.storyboard;
         const cleaned = storyboard
             ? {
@@ -524,7 +529,8 @@ export function removeCanvasNodes(nodes: CanvasNodeData[], requestedIds: Set<str
         return primaryNode ? applyBatchPrimaryImage(batchRoot, primaryNode) : batchRoot;
     });
     const nextNodes = cleanedNodes.map((node) => reconcileImageBatchRoot(node, cleanedNodes));
-    return { removedIds, nodes: nextNodes };
+    const affectedImageGroups = new Set(nodes.filter((node) => node.metadata?.shortDrama?.mediaGroup && node.metadata.shortDrama.sourceNodeIds.some((id) => removedIds.has(id))).map((node) => node.id));
+    return { removedIds, nodes: affectedImageGroups.size ? layoutWorkflowImageGroups(nextNodes, affectedImageGroups) : nextNodes };
 }
 
 export function buildAngleLabel(params: CanvasImageAngleParams) {

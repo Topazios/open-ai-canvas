@@ -651,6 +651,82 @@ func TestRequireSchemaVersionRejectsUninitializedDatabase(t *testing.T) {
 	}
 }
 
+func TestMigrateSchemaV44AddsCanvasNodeShotLinks(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-canvas-node-shot-links-v44?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasTable(&model.CanvasNodeShotLink{}) {
+		t.Fatal("migration v44 did not create canvas node/shot relation table")
+	}
+	for _, field := range []string{"ProjectID", "CanvasID", "UnitID", "NodeID", "ShotID", "ShotRevisionID", "ArtifactID"} {
+		if !db.Migrator().HasColumn(&model.CanvasNodeShotLink{}, field) {
+			t.Fatalf("migration v44 did not add %s", field)
+		}
+	}
+	first := model.CanvasNodeShotLink{ID: "mapping-1", ProjectID: "project-1", CanvasID: "canvas-1", UnitID: "unit-1", NodeID: "node-1", ShotID: "shot-1"}
+	second := model.CanvasNodeShotLink{ID: "mapping-2", ProjectID: "project-1", CanvasID: "canvas-1", UnitID: "unit-1", NodeID: "node-1", ShotID: "shot-2"}
+	if err := db.Create(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&second).Error; err == nil {
+		t.Fatal("canvas node uniqueness was not enforced")
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal("repeat migration", err)
+	}
+	var stored model.CanvasNodeShotLink
+	if err := db.First(&stored, "id = ?", first.ID).Error; err != nil || stored.ShotID != first.ShotID {
+		t.Fatalf("repeat migration changed mapping: %v", err)
+	}
+}
+
+func TestMigrateSchemaV44UpgradesExistingDatabaseWithoutRewritingCanvas(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-canvas-node-shot-links-v44-upgrade?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrator().DropTable(&model.CanvasNodeShotLink{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&schemaMigration{}, "version = ?", 44).Error; err != nil {
+		t.Fatal(err)
+	}
+	canvas := model.CanvasProject{ID: "legacy-canvas", UserID: "user-1", ProjectID: "project-1", Revision: 17, PayloadJSON: `{"nodes":[{"id":"original"}],"unknown":{"keep":true}}`}
+	if err := db.Create(&canvas).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireSchemaVersion(db); err == nil {
+		t.Fatal("old schema incorrectly accepted")
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireSchemaVersion(db); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasTable(&model.CanvasNodeShotLink{}) {
+		t.Fatal("upgrade did not create mapping table")
+	}
+	var saved model.CanvasProject
+	if err := db.First(&saved, "id = ?", canvas.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Revision != canvas.Revision || saved.PayloadJSON != canvas.PayloadJSON || saved.ProjectID != canvas.ProjectID {
+		t.Fatal("upgrade rewrote canvas")
+	}
+	var count int64
+	if err := db.Model(&model.CanvasNodeShotLink{}).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("upgrade invented mappings: %v", err)
+	}
+}
+
 func TestMigrateSchemaV13AddsCloudAgentCanvasMutation(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-cloud-agent-canvas-mutation?mode=memory&cache=shared"})
 	if err != nil {

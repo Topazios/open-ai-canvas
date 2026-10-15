@@ -5,6 +5,12 @@ description: 影策后端核心持久化表与状态边界
 
 # 后端数据库
 
+## 模型协议选择
+
+本轮不增加表、列或结构迁移。`channel_models.capability_config_json` 增加可选 `protocols: {policy: "auto" | "fixed", supported: string[]}`，列表保存 provider ID；原 `protocol` 列仍为默认适配配置。后端能力规范化与前端参数编辑均保留该字段。缺失时只使用原默认协议。
+
+任务输入 JSON 的 `config.selectedProtocol` 为准入时由服务端写入的执行选择，同一尝试的恢复和直接重试使用同一适配配置，不因之后更改模型默认协议而改变任务端点。逻辑模型按既有允许条件重新选路（包括重新选路的用户重试）时清理旧选择，再按新渠道声明写入选择，避免跨渠道沿用旧协议。字段不含密钥；继续通过现有任务输入加密与存储边界落盘。回退到旧代码时不要继续执行使用新选择字段创建的未完成任务，旧执行器会忽略该字段并重新采用默认协议；先等待任务完成再回退。
+
 ## 画布 Agent 外观配置
 
 `system_settings` 的 `appearance` JSON 合同版本 9 新增 `canvas`：助手名称、入口标签、面板标题、欢迎文案、输入提示、`avatarType`（`orb|live2d`）、`avatarHeight`（120–360）、`live2dResourceId` 和服务端确认的 `live2dEntry`。独立于站点品牌；缺失时读取内置画布默认值。不新增数据库结构迁移，不改变全局 schema 版本。
@@ -19,11 +25,35 @@ description: 影策后端核心持久化表与状态边界
 
 ## 结构迁移与版本
 
-当前结构版本为 42。版本 42 `cloud_agent_pi_sessions` 新增 `cloud_agent_pi_sessions` 表，按运行 ID 保存 Pi 原生 JSONL 会话快照、用户 ID、乐观并发 revision 和更新时间；会话正文由 Agent runtime 管理，Go 只将其作为不透明快照读写，不替代有界控制检查点、事件日志或任务记录。版本 41 `resource_thumbnail` 为 `resources` 增加缩略图元数据。版本 40 `builtin_skill_tombstones` 新增内置技能删除记录，管理员删除平台技能后，后续启动同步不会重新创建该技能；版本 39 `skill_library_categories` 新增 `skill_library_categories` 表，并为 `user_skill_states` 增加 `library_category_id`，保存个人技能库分类及每个用户对技能的归类；分类不改变 `skills.tag` 的技能广场共享分类。版本 38 `prefixed_id_sequence_reconcile` 创建（若缺失）并校准 `id_sequences`：`CHANNEL`、`MODEL`、`PTIER`、`ATTEMPT`、`LMODEL`、`REVISION`、`ROUTE` 按对应业务表的最大有效 ID 前移，包含软删除记录，不回退已有序列、不重写业务 ID。分配新 ID 时再次校准并检查冲突；SQLite → PostgreSQL 迁移完成后也校准序列。
+当前结构版本为 46。版本 46 `canvas_task_removal` 为 `tasks` 增加可空时间 `node_bound_at` 和带索引的 `removed_at`：前者记录节点已落盘或用户明确删除的绑定证据，后者仅在任务及关联调用停止后写入。普通任务首次保存前的节点暂缺不会触发删除；制作 Agent 在准入时已验证目标节点。用户任务列表排除已移除记录，账务、上游取消核对、生成资源和幂等回执保留，已移除任务禁止重试或继续。此变更不重写画布正文和来源关系。版本 45 `production_agent_artifacts` 新增制作作业、共享正文页/事实及产物回执三张表，详见下节。版本 44 `canvas_node_shot_links` 新建节点与镜头映射表，不重写旧画布或补造历史映射。版本 43 `topup_sale_strategies` 更新充值产品和支付订单结构。版本 42 `cloud_agent_pi_sessions` 按运行 ID 保存 Pi 原生 JSONL 会话快照、用户 ID、并发 revision 和更新时间，不替代控制检查点、事件日志或任务记录。版本 41 `resource_thumbnail` 增加缩略图元数据。版本 40 `builtin_skill_tombstones` 保存内置技能删除记录；版本 39 `skill_library_categories` 保存个人技能库分类；版本 38 `prefixed_id_sequence_reconcile` 校准 ID 序列，不回退序列或重写已有 ID。
+
+### 制作 Agent 持久化（v45）
+
+| 表 | 归属与内容 |
+| --- | --- |
+| `production_agent_jobs` | run_id 主键；user_id、canvas_id、来源版本/集合依赖/读取记录 manifest_json、validated 和时间戳 |
+| `production_agent_pages` | 内容版本哈希主键；user_id、canvas_id、原文、事实 JSON、processed 和时间戳 |
+| `production_agent_artifacts` | run_id + key 联合主键；user_id、node_id、内容哈希、事实引用 JSON 和创建时间 |
+
+共享页按用户、画布、制作流程、来源节点及版本、提取合同、模型配置和页位置隔离。资产正文仍存在原画布文本节点；删除单个资产保留回执以阻止后台复活。删除整个画布同步清除这三类制作数据；历史任务和会话仍遵循原审计规则。manifest、原文、事实与回执计入任务数据配额，按最多 4 字节/字符保守估计。暂无独立过期缓存清理策略。
+
+升级前保存一致性数据库副本及对应程序；开发自动迁移或部署独立迁移沿用现有流程。旧 v44 二进制不能直接运行 v45 数据库。本批不提供降级迁移；需要代码回退时保留 v45 模型与迁移兼容性，不用升级前备份覆盖新产生的用户内容。
 
 版本 36 `cloud_agent_gemini_cache` 创建 `cloud_agent_gemini_caches`，保存用户范围内的官方 Gemini 缓存元数据；版本 37 `cloud_agent_gemini_cache_identity` 将缓存标识约束修正为 `(user_id, cache_key)`，移除旧的全局 cache_key 唯一索引。版本 35 `auth_notifications` 为认证通知与组合验证补齐 `auth_verifications`、`notification_quotas`、`sms_channels`、`sms_records` 四张表，并为 `users` 增加 `phone`、`email_verified_at`、`phone_verified_at`，为 `email_verification_codes` 增加 `attempts`；同时创建非空手机号唯一索引。版本 34 `task_media_recovery` 为 `tasks` 增加 `media_recovery_json`（text）和 `media_stage`（最长 24 字）。版本 33 `oauth_state_accepted_terms` 为 `o_auth_states` 增加非空布尔列 `accepted_terms`，默认 `false`，不替历史流程补造同意记录。
 
-升级前备份，按既有流程执行 `migrate-schema up` 和 `verify` 后再启动新后端。旧版本二进制不支持版本 42，回退需恢复匹配的数据库备份，并评估备份之后的新写入；不能只切回旧镜像。关闭自动迁移的生产环境必须运行正式迁移；手工改表不能更新 `schema_migrations` 的版本与校验和记录。
+升级前制作一致性备份，按既有流程执行 `migrate-schema up` 和 `verify` 后先启动新后端，再发布依赖新接口的前端。数据库版本高于旧二进制支持版本时，旧程序会拒绝启动；不能只切回旧镜像。出现问题优先停用新增入口并前向修复，或使用仍兼容当前 schema 的回退构建；不得恢复旧库覆盖用户升级后的新作品。关闭自动迁移的生产环境必须运行正式迁移；手工改表不能更新 `schema_migrations` 的版本与校验和记录。
+
+### 节点与镜头映射（版本 44）
+
+`canvas_node_shot_links` 保存 `id`、`project_id`、`canvas_id`、`unit_id`、`node_id`、`shot_id`、`shot_revision_id`、可选 `artifact_id`、`created_at` 和 `updated_at`。`(canvas_id, node_id)` 唯一；同一镜头可以被不同画布的节点引用。`project_id/canvas_id/unit_id/shot_id/shot_revision_id/artifact_id` 分别有查询索引。
+
+写入要求预览的项目和画布 revision，事务内检查归属、章节关系、节点、镜头修订、已采用产物及资源，再写映射并推进项目 revision；映射不修改画布正文、画布 revision 或镜头正文。相同有效关系重试幂等；解除携带映射 ID 和项目 revision，不能用旧预览解除新关联。
+
+删除节点或镜头不会通过映射复活业务内容，旧映射保留供复核或解除。删除项目/章节/画布、解除项目归属或章节关系时，沿既有事务清理对应范围的映射；其他画布或章节的映射保留。映射不是媒体副本或审核记录，不能以映射存在判定制作通过。
+
+SQLite 自动测试覆盖新表、唯一性、重复迁移和从版本 43 升级保留旧画布。PostgreSQL 真实迁移仍需配置 `CANVAS_TEST_POSTGRES_DSN` 后验证；静态 schema 检查不替代该验证。
+
+映射读取的 `views` 是即时关联查询，不增加表或 schema 版本，也不写入画布 JSON。它返回已关联修订、产物及当前有效性，检查当前用户资源归属和 ready 状态；旧版本不被自动换成新版本。投影媒体使用既有资源访问授权，不把签名地址存入节点或映射表。
 
 ### 生成成功后的作品保存恢复
 

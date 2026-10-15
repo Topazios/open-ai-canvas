@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 	"unicode/utf8"
@@ -42,7 +41,7 @@ func (s *Service) cloudAgentExecutionOutput(task *model.Task, initial cloudAgent
 	}
 	// 事件已全量落库，运行详情只返回一页：默认是尾部窗口，sinceSeq 只取增量。
 	// 四个位置字段与 events 一起返回，客户端据此判断"是否还有更早的记录"。
-	out.Events = s.cloudAgentRunEventsForView(task.UserID, run, &state, view.SinceSeq, view.EventLimit)
+	out.Events = s.cloudAgentRunEventsForView(task.UserID, run, &state, view.SinceSeq, view.EventLimit, view.BeforeSeq)
 	// EventSeqBase 必须与真正返回的这一页对齐（eventLimit 把它收窄时也一样），
 	// 不变量 events[i].seq == eventSeqBase + i + 1 才成立。页为空时退回窗口水位：
 	// 那时没有"首条事件"，但仍然要能说明窗口在整条日志里的位置。
@@ -62,6 +61,7 @@ func (s *Service) cloudAgentExecutionOutput(task *model.Task, initial cloudAgent
 		out.Approval = nil
 	}
 	out.Step = state.Step
+	out.Production = s.productionAgentProgress(task.UserID, run.ID, &state)
 	if stateErr == nil && state.ActiveTaskID != "" && (run.Status == "running" || run.Status == "queued") {
 		active, err := s.repo.TaskForUser(task.UserID, state.ActiveTaskID)
 		if err != nil {
@@ -335,6 +335,16 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 						return cloudAgentSave(current, &state)
 					}
 				}
+				if state.Request.Production != nil {
+					// Production runs use Pi in production; retain the same completion
+					// guard in the deterministic scheduler used by recovery tests.
+					job, err := repo.ProductionAgentJob(run.UserID, run.ID)
+					if err != nil || !job.Validated {
+						current.Status = "failed"
+						current.FailureMessage = "制作覆盖检查未通过"
+						return cloudAgentSave(current, &state)
+					}
+				}
 				current.Status = "completed"
 			}
 			return cloudAgentSave(current, &state)
@@ -360,8 +370,8 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 		// Evicted read bodies must be obtainable again after compaction.
 		state.ProfileReads = nil
 	}
-	if stepLimit := cloudAgentStepLimit(state.Request); stepLimit > 0 && state.Step >= stepLimit {
-		return s.failCloudAgent(run, &state, fmt.Sprintf("达到 %d 次模型调用上限，本轮已停止", stepLimit))
+	if cloudAgentStepBudgetExhausted(&state) {
+		return s.failCloudAgent(run, &state, "达到模型调用上限，本轮已停止；已有制作进度保留")
 	}
 	cloudAgentDrainInterjections(run.ID, &state)
 	// 上一步的模型调用已经回来，先用它的上游实测用量更新压力锚点，再发下一步：
@@ -399,7 +409,9 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 	// 思考模型可以把单步拖到几分钟）；空输出升级重试时改为关思考 + 放大预算。
 	stepThinking := cloudAgentReasoningEnabled(state.Policy.ReasoningMode) && !state.ForceThinkingOff
 	stepOutputTokens := cloudAgentStepOutputBudget(state.StepLimits, state.BoostStepOutputBudget)
-	input := map[string]any{"mode": "text", "prompt": state.Request.Prompt, "agentRequests": map[string]any{"canonical": canonical}, "config": map[string]any{"channelId": state.Request.ChannelID, "channelModelKey": state.Request.ChannelModelKey, "model": firstNonEmpty(state.Request.ChannelModelKey, state.Request.Model)}, "textOptions": map[string]any{"stream": true, "thinking": stepThinking, "maxOutputTokens": stepOutputTokens}}
+	textOptions := agentReasoningOptions(state.Request.ReasoningEffort, stepThinking)
+	textOptions["maxOutputTokens"] = stepOutputTokens
+	input := map[string]any{"mode": "text", "prompt": state.Request.Prompt, "agentRequests": map[string]any{"canonical": canonical}, "config": map[string]any{"channelId": state.Request.ChannelID, "channelModelKey": state.Request.ChannelModelKey, "model": firstNonEmpty(state.Request.ChannelModelKey, state.Request.Model)}, "textOptions": textOptions}
 	if len(references) > 0 {
 		input["referenceImages"] = references
 	}

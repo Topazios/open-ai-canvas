@@ -7,6 +7,7 @@ const (
 	TaskCancellationParentCancelled = "parent_cancelled"
 	TaskCancellationParentFailed    = "parent_failed"
 	TaskCancellationWorkerContext   = "worker_context"
+	TaskCancellationNodeDeleted     = "node_deleted"
 )
 
 // TaskExecutionDiagnostic records execution facts independently of the node's

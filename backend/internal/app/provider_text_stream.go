@@ -13,6 +13,7 @@ import (
 )
 
 func requestTextProvider(ctx context.Context, config providerConfig, path string, body map[string]interface{}, protocol string, stream bool, onDelta func(string)) (providerTextResult, error) {
+	applyResponsesRequestDefaults(body, protocol)
 	if stream {
 		return postStreamingTextResult(ctx, config, path, body, protocol, onDelta)
 	}
@@ -77,9 +78,18 @@ func validateTextPayload(payload map[string]interface{}) error {
 		return providerPayloadError{raw: rawMessage, message: providerPayloadErrorMessage(rawMessage)}
 	}
 	if errValue, ok := payload["error"].(map[string]interface{}); ok {
+		// A gateway may send HTTP 200 followed by a structured SSE failure.
+		// Classify the exact code, not words in a message that may echo user input.
+		if stringField(errValue, "code") == "upstream_http2_stream_error" {
+			return providerPayloadError{raw: "upstream_http2_stream_error", message: "上游渠道报告 HTTP/2 流中断（upstream_http2_stream_error），生成未完成；请更换渠道或联系渠道服务方排查"}
+		}
 		if message := stringField(errValue, "message"); message != "" {
 			return providerPayloadError{raw: message, message: providerPayloadErrorMessage(message)}
 		}
+		return errors.New("上游返回错误，生成未完成")
+	}
+	if message, ok := payload["error"].(string); ok && strings.TrimSpace(message) != "" {
+		return providerPayloadError{raw: message, message: providerPayloadErrorMessage(message)}
 	}
 	return nil
 }

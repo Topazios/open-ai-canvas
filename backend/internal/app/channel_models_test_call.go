@@ -29,6 +29,15 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 			return nil, err
 		}
 	}
+	var protocolPolicy *ModelProtocolConfig
+	if req.CapabilityConfig != nil {
+		protocolPolicy = req.CapabilityConfig.Protocols
+	}
+	selectedProtocol, err := selectModelProtocol(s.protocolRegistry(), capability, string(protocol), protocolPolicy, false)
+	if err != nil {
+		return nil, err
+	}
+	protocol = model.ChannelInterfaceType(selectedProtocol)
 	if strings.TrimSpace(channel.BaseURL) == "" || strings.TrimSpace(channel.APIKey) == "" {
 		return nil, BadAuthRequest("请先在渠道中配置 Base URL 和 API Key")
 	}
@@ -79,7 +88,7 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 		Prompt: prompt,
 		Config: providerConfig{
 			ChannelID:          channel.ID,
-			APIFormat:          channel.APIFormat,
+			APIFormat:          channelAPIFormatForProtocol(channel.APIFormat, protocol),
 			InterfaceType:      string(protocol),
 			BaseURL:            channel.BaseURL,
 			APIKey:             channel.APIKey,

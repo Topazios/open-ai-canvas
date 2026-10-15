@@ -202,7 +202,7 @@ export function useCanvasSelectionController({
         const draggedRenderNodeIds = initialSelectedNodes.map((item) => item.id);
         const draggedRenderNodeIdSet = new Set(draggedRenderNodeIds);
         dragRef.current = { isDraggingNode: true, hasMoved: false, openPanelOnClick: !isMultiSelectClick, startX: event.clientX, startY: event.clientY, draggedNodeIds, draggedRenderNodeIds, draggedRenderNodeIdSet, initialSelectedNodes };
-        historyPausedRef.current = true;
+        // Drag previews never write document state. Keep concurrent generation edits saveable.
         nodeDraggingRef.current = true;
         pendingNodeDragRef.current = { x: 0, y: 0 };
         alignmentContextRef.current = createNodeAlignmentContext(currentNodes, initialSelectedNodes);
@@ -219,8 +219,9 @@ export function useCanvasSelectionController({
             dragFrameRef.current = null;
         }
         if (!dragRef.current.isDraggingNode) return;
+        const completed = clientX != null && clientY != null;
         const shouldOpenPanelOnClick = dragRef.current.openPanelOnClick;
-        const wasClick = shouldOpenPanelOnClick && !dragRef.current.hasMoved && dragRef.current.draggedNodeIds.length === 1;
+        const wasClick = completed && shouldOpenPanelOnClick && !dragRef.current.hasMoved && dragRef.current.draggedNodeIds.length === 1;
         const clickedNodeId = dragRef.current.draggedNodeIds[0];
         const currentViewport = viewportRef.current;
         const rawOffset = { x: clientX == null ? 0 : (clientX - dragRef.current.startX) / currentViewport.k, y: clientY == null ? 0 : (clientY - dragRef.current.startY) / currentViewport.k };
@@ -234,19 +235,28 @@ export function useCanvasSelectionController({
         setIsNodeDragging(false);
         setDragPreview(null);
         setAlignmentGuides({});
-        if (dragRef.current.hasMoved) {
-            const draggedNodeIds = new Set(dragRef.current.draggedNodeIds);
-            const positioned = clientX == null || clientY == null ? nodesRef.current : nodesRef.current.map((node) => {
+        if (completed && dragRef.current.hasMoved) {
+            const liveIds = new Set(nodesRef.current.map((node) => node.id));
+            const draggedNodeIds = new Set(dragRef.current.draggedNodeIds.filter((id) => liveIds.has(id)));
+            const positioned = nodesRef.current.map((node) => {
                 const initial = initialById.get(node.id);
-                return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node;
+                if (!initial || (node.position.x === initial.x + dx && node.position.y === initial.y + dy)) return node;
+                return { ...node, position: { x: initial.x + dx, y: initial.y + dy } };
             });
-            const targetId = findFrameDropTargetFromIndex(frameDropIndexRef.current, draggedNodesRef.current, draggedNodeIds, { x: dx, y: dy });
+            // A frame may have moved or been deleted by an Agent during the preview.
+            const liveDraggedNodes = nodesRef.current.filter((node) => draggedNodeIds.has(node.id)).map((node) => {
+                const initial = initialById.get(node.id);
+                return initial ? { ...node, position: { x: initial.x, y: initial.y } } : node;
+            });
+            const targetId = findFrameDropTargetFromIndex(buildCanvasFrameDropIndex(nodesRef.current), liveDraggedNodes, draggedNodeIds, { x: dx, y: dy });
             const target = targetId ? positioned.find((node) => node.id === targetId) : undefined;
             const linkedFolder = target?.metadata?.folder?.assetFolderId ? target : undefined;
             // 素材库文件夹只建立归档关系，不把画布节点变成其本地子节点。
-            setNodes(linkedFolder ? positioned : applyFrameDrop(positioned, draggedNodeIds, targetId));
-            if (linkedFolder) onLinkedFolderDrop?.(linkedFolder, positioned.filter((node) => draggedNodeIds.has(node.id)));
-            if (clickedNodeId) onNodeDragEnd?.(clickedNodeId);
+            if (draggedNodeIds.size) {
+                setNodes(linkedFolder ? positioned : applyFrameDrop(positioned, draggedNodeIds, targetId));
+                if (linkedFolder) onLinkedFolderDrop?.(linkedFolder, positioned.filter((node) => draggedNodeIds.has(node.id)));
+                if (clickedNodeId && liveIds.has(clickedNodeId)) onNodeDragEnd?.(clickedNodeId);
+            }
         }
         setFrameDropTargetId(null);
         alignmentContextRef.current = null;
@@ -256,7 +266,7 @@ export function useCanvasSelectionController({
             const clickedNode = nodesRef.current.find((node) => node.id === clickedNodeId);
             if (clickedNode) onNodeClick(clickedNode);
         }
-    }, [historyPausedRef, nodesRef, onLinkedFolderDrop, onNodeClick, onNodeDragEnd, setNodes, viewportRef]);
+    }, [containerRef, historyPausedRef, nodesRef, onLinkedFolderDrop, onNodeClick, onNodeDragEnd, setNodes, viewportRef]);
 
     const handleNodeDragMove = useCallback((event: MouseEvent | PointerEvent) => {
         if (!dragRef.current.isDraggingNode) return;
@@ -366,24 +376,37 @@ export function useCanvasSelectionController({
         };
         const onMouseMove = (event: MouseEvent) => gestureHandlersRef.current.handleNodeDragMove(event);
         const onPointerMove = (event: PointerEvent) => gestureHandlersRef.current.handlePointerMove(event);
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" || event.isComposing || !dragRef.current.isDraggingNode) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            cancel();
+        };
         window.addEventListener("mousemove", onMouseMove);
         window.addEventListener("mouseup", handleMouseUp);
         window.addEventListener("pointermove", onPointerMove);
         window.addEventListener("pointerup", handlePointerUp);
         window.addEventListener("pointercancel", cancel);
         window.addEventListener("blur", cancel);
+        window.addEventListener("keydown", onKeyDown, true);
         return () => {
             if (dragFrameRef.current) cancelAnimationFrame(dragFrameRef.current);
             if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
             applyCanvasNodeDragPreview(containerRef.current, null);
+            if (dragRef.current.isDraggingNode) historyPausedRef.current = false;
+            nodeDraggingRef.current = false;
+            dragRef.current = { ...EMPTY_DRAG_STATE };
+            alignmentContextRef.current = null;
+            draggedNodesRef.current = [];
             window.removeEventListener("mousemove", onMouseMove);
             window.removeEventListener("mouseup", handleMouseUp);
             window.removeEventListener("pointermove", onPointerMove);
             window.removeEventListener("pointerup", handlePointerUp);
             window.removeEventListener("pointercancel", cancel);
             window.removeEventListener("blur", cancel);
+            window.removeEventListener("keydown", onKeyDown, true);
         };
-    }, [containerRef]);
+    }, [containerRef, historyPausedRef]);
 
     return {
         alignmentGuides,

@@ -8,7 +8,8 @@ import { CanvasFrameNode } from "@/components/canvas/canvas-frame-node";
 import { ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasNodeActionContext } from "@/components/canvas/canvas-node-action-context";
 import { CanvasNodeGraphContext } from "@/components/canvas/canvas-node-graph-context";
-import { isFrameNode, isNodeHiddenByCollapsedFrame, resolveFrameConnection } from "@/lib/canvas/canvas-frame";
+import { isFrameNode, isNodeHiddenByCollapsedFrame } from "@/lib/canvas/canvas-frame";
+import { resolveCanvasDisplayConnections } from "@/lib/canvas/canvas-connection-spatial-index";
 import { getCanvasNodesBounds, viewportAtScale, viewportForBounds } from "@/lib/canvas/canvas-viewport";
 import { resolveCanvasAppearance } from "@/lib/canvas/canvas-appearance";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
@@ -60,11 +61,7 @@ export function CanvasVersionPreview({ preview, onReturn, onShowVersions }: { pr
     );
     const visibleNodes = useMemo(() => nodes.filter((node) => !isNodeHiddenByCollapsedFrame(node, nodes)), [nodes]);
     const connections = useMemo(
-        () =>
-            (project?.connections || []).flatMap((connection) => {
-                const resolved = resolveFrameConnection(connection, nodes);
-                return resolved ? [{ connection, ...resolved }] : [];
-            }),
+        () => resolveCanvasDisplayConnections(nodes, project?.connections || []),
         [project, nodes],
     );
     const graph = useMemo(() => {

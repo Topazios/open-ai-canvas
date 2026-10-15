@@ -256,6 +256,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             setNodes((current) =>
                 current.map((node) => {
                     if (node.id !== targetNodeId) return node;
+                    if (node.metadata?.shortDrama?.materializedTaskId === task.id) return node;
                     const failed = task.status === "failed" || task.status === "cancelled";
                     const hasCompletedContent = task.status === "succeeded" && Boolean(node.metadata?.content || node.metadata?.storageKey);
                     const failure = failed ? generationFailureMetadata(task.error || (task.status === "cancelled" ? "任务已取消" : "任务失败"), node.metadata?.composerContent || node.metadata?.prompt || task.prompt || "") : undefined;
@@ -376,7 +377,9 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
         async (startedProjectId: string, signal: AbortSignal, isCurrentProject: () => boolean) => {
             if (!isCurrentProject()) return;
             const recoveryNodes = nodesRef.current.filter((node) => {
+				if (node.metadata?.shortDrama?.productionAgent) return false;
                 const pendingAgentContinuation = node.metadata?.agentGenerationContinuation?.status === "pending";
+                if (!pendingAgentContinuation && node.metadata?.taskId && node.metadata.shortDrama?.materializedTaskId === node.metadata.taskId) return false;
                 const aggregateBatchRoot = node.metadata?.isBatchRoot && node.metadata.batchChildIds?.length;
                 if (aggregateBatchRoot && !pendingAgentContinuation) return false;
                 return pendingAgentContinuation || node.metadata?.status === NODE_STATUS_LOADING || node.metadata?.errorDetails === "页面刷新后生成已中断，请重新生成。" || Boolean(node.metadata?.taskId && node.metadata.status !== NODE_STATUS_SUCCESS);

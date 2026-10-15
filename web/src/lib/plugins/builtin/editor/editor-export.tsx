@@ -18,6 +18,7 @@ type ExportState = {
     percent: number;
     detail: string;
     result: TimelineRenderResult | null;
+    registration?: { timeline: TimelineProject; error: string };
 };
 
 /** 从时间线 clip 收集渲染源（按 nodeId 关联；directMedia 提供本地媒体定位）。 */
@@ -43,8 +44,9 @@ function collectRenderSources(project: TimelineProject): TimelineRenderSource[] 
 
 export function EditorExport() {
     const { project } = useEditorStoreContext();
-    const { projectId } = useEditorHostContext();
+    const { projectId, onDeliveryRender } = useEditorHostContext();
     const [state, setState] = useState<ExportState>({ phase: "idle", mode: null, percent: 0, detail: "", result: null });
+    const [savingRecord, setSavingRecord] = useState(false);
 
     const sources = useMemo(() => (project ? collectRenderSources(project) : []), [project]);
     const plan = useMemo(() => (project ? buildTimelineRenderPlan(project, sources) : null), [project, sources]);
@@ -52,9 +54,10 @@ export function EditorExport() {
     // 主路径：提交后端渲染任务并轮询（服务端任务上限 60 分钟，前端多留余量）。
     const renderRemote = async () => {
         if (!project || sources.length === 0 || state.phase === "running") return;
+        const timeline = structuredClone(project);
         setState({ phase: "running", mode: "remote", percent: 0, detail: "提交渲染任务…", result: null });
         try {
-            const created = await createTimelineRenderTask({ projectId, timeline: project });
+            const created = await createTimelineRenderTask({ projectId, timeline });
             const done = await waitForGenerationTask(created.id, {
                 timeoutMs: 62 * 60 * 1000,
                 intervalMs: 3000,
@@ -71,12 +74,25 @@ export function EditorExport() {
             });
             const parsed = JSON.parse(done.resultJson ?? "{}") as TimelineRenderResult;
             if (!parsed.resourceId) throw new Error("渲染任务未返回产物");
+            let deliveryNote = "";
+            let registration: ExportState["registration"];
+            if (onDeliveryRender) {
+                try {
+                    await onDeliveryRender({ result: parsed, timeline });
+                } catch (error) {
+                    console.warn("成片已生成，但当前集交付记录保存失败", { projectId, error });
+                    const reason = error instanceof Error ? error.message : "保存失败";
+                    deliveryNote = `；交付记录未更新：${reason}`;
+                    registration = { timeline, error: reason };
+                }
+            }
             setState({
                 phase: "done",
                 mode: "remote",
                 percent: 100,
-                detail: `渲染完成：${parsed.fileName ?? "timeline.mp4"}`,
+                detail: `渲染完成：${parsed.fileName ?? "timeline.mp4"}${deliveryNote}`,
                 result: parsed,
+                registration,
             });
         } catch (error) {
             setState({
@@ -87,6 +103,20 @@ export function EditorExport() {
                 result: null,
             });
         }
+    };
+
+    const retryDeliveryRecord = async () => {
+        if (!state.result || !state.registration || !onDeliveryRender || savingRecord) return;
+        const result = state.result;
+        const registration = state.registration;
+        setSavingRecord(true);
+        try {
+            await onDeliveryRender({ result, timeline: registration.timeline });
+            setState((current) => ({ ...current, registration: undefined, detail: `渲染完成：${result.fileName || "timeline.mp4"}；审片记录已保存` }));
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : "保存失败";
+            setState((current) => ({ ...current, registration: { ...registration, error: reason }, detail: `交付记录未更新：${reason}` }));
+        } finally { setSavingRecord(false); }
     };
 
     // 降级路径：ffmpeg.wasm 浏览器本地合成（无后端/离线时可用）。
@@ -156,7 +186,7 @@ export function EditorExport() {
                 <button
                     type="button"
                     onClick={renderRemote}
-                    disabled={sources.length === 0 || state.phase === "running"}
+                    disabled={sources.length === 0 || state.phase === "running" || savingRecord}
                     className="flex w-full items-center justify-center gap-2 rounded-md bg-[var(--director-accent)] px-2 py-1.5 text-xs font-medium text-[var(--director-on-accent)] hover:bg-[var(--director-accent-hover)] disabled:opacity-40"
                 >
                     {state.phase === "running" && state.mode === "remote" ? (
@@ -170,7 +200,7 @@ export function EditorExport() {
                 <button
                     type="button"
                     onClick={exportLocalMp4}
-                    disabled={sources.length === 0 || state.phase === "running"}
+                    disabled={sources.length === 0 || state.phase === "running" || savingRecord}
                     className="mt-1.5 flex w-full items-center justify-center gap-2 rounded-md border border-[var(--director-sequencer-border)] px-2 py-1.5 text-xs text-[var(--director-dock-fg)]/80 hover:bg-[var(--director-control-hover)] disabled:opacity-40"
                 >
                     {state.phase === "running" && state.mode === "local" ? (
@@ -193,6 +223,8 @@ export function EditorExport() {
                                 style={{ width: `${state.percent}%` }}
                             />
                         </div>
+                        <p role="status" className="px-2 pb-2 text-[11px] leading-5 text-[var(--director-dock-fg)]/80">{state.detail}</p>
+                        {state.registration ? <button type="button" disabled={savingRecord} onClick={() => void retryDeliveryRecord()} className="m-2 inline-flex items-center gap-2 rounded-md border border-[var(--director-sequencer-border)] px-2 py-1.5 text-xs text-[var(--director-dock-fg)] disabled:opacity-40">{savingRecord ? <Loader2 className="size-3.5 animate-spin" /> : <PackageOpen className="size-3.5" />}重试保存审片记录</button> : null}
                     </div>
                 )}
 

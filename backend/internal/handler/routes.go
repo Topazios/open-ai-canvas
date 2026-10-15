@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -195,9 +196,16 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		task, err := svc.RetryTask(user.ID, c.Param("id"))
+		var req struct {
+			AcknowledgedBillingOrderID string `json:"acknowledgedBillingOrderId"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			fail(c, http.StatusBadRequest, errors.New("重试参数无效"))
+			return
+		}
+		task, err := svc.RetryTask(user.ID, c.Param("id"), req.AcknowledgedBillingOrderID)
 		if err != nil {
-			fail(c, http.StatusBadRequest, err)
+			failService(c, err)
 			return
 		}
 		ok(c, task)

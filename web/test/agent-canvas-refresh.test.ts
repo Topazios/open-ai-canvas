@@ -66,14 +66,16 @@ test("unsaved editor conflicts preserve store and acknowledged baseline", async 
     expect(useCanvasStore.getState().projects[0]).toMatchObject(remote);
 });
 
-test("dirty persisted edits are not replaced or delivered to the editor", async () => {
+test("independent local title and remote nodes merge and remain pending", async () => {
     await setup();
     useCanvasStore.setState({ projects: [{ ...initial, title: "本地修改" }] });
     let notified = false;
     unsubscribe = subscribeAgentCanvasRefresh(() => { notified = true; });
-    await expect(refreshCanvasAfterAgent(initial.id)).rejects.toThrow("本地存在未同步编辑");
-    expect(notified).toBe(false);
+    await refreshCanvasAfterAgent(initial.id);
+    expect(notified).toBe(true);
     expect(useCanvasStore.getState().projects[0].title).toBe("本地修改");
+    expect(useCanvasStore.getState().projects[0].nodes).toEqual(remote.nodes);
+    expect(useSyncProgressStore.getState().syncingProjects[initial.id].phase).toBe("pending");
 });
 
 test("automatic focus and panning do not block Agent updates or reset the local viewport", async () => {
@@ -178,10 +180,10 @@ test("a delta gap reconciles against the cloud before declaring a conflict", asy
 });
 
 test("reconciliation after a delta gap still protects genuinely conflicting edits", async () => {
-    await setup();
+    await setup({ ...remote, title: "远端也改了标题" });
     useCanvasStore.setState({ projects: [{ ...initial, title: "未保存标题" }] });
     await expect(applyAgentCanvasPatches(initial.id, [{ canvasId: initial.id, baseRevision: 2, revision: 3, nodes: [], connections: [] }])).rejects.toThrow("版本不连续");
-    await expect(refreshCanvasAfterAgent(initial.id)).rejects.toThrow("本地存在未同步编辑");
+    await expect(refreshCanvasAfterAgent(initial.id)).rejects.toThrow("冲突");
     expect(useSyncProgressStore.getState().syncingProjects[initial.id].phase).toBe("conflict");
     expect((await readCanvasSyncDrafts(initial.id))[0].project.title).toBe("未保存标题");
     await expect(saveRemoteUserDataNow(initial.id)).rejects.toThrow("云端画布已有更新");
@@ -209,14 +211,14 @@ test("replayed events against an unchanged cloud ancestor preserve pending local
     expect(await readCanvasSyncDrafts(initial.id)).toHaveLength(0);
 });
 
-test("an unverified dirty cache cannot become a save baseline merely because revisions match", async () => {
+test("a reopened dirty cache uses the hash-verified server ancestor, not the draft, as baseline", async () => {
     await setup(initial);
     const edited = { ...initial, title: "离线标题" };
     useCanvasStore.setState({ projects: [edited] });
     await initializeRemoteUserDataSession("agent-user");
-    await expect(refreshCanvasAfterAgent(initial.id)).rejects.toThrow("本地存在未同步编辑");
-    expect(useCanvasStore.getState().projects[0]).toBe(edited);
-    expect((await readCanvasSyncDrafts(initial.id))[0].project.title).toBe(edited.title);
+    await refreshCanvasAfterAgent(initial.id);
+    expect(useCanvasStore.getState().projects[0].title).toBe(edited.title);
+    expect(useSyncProgressStore.getState().syncingProjects[initial.id].phase).toBe("pending");
 });
 
 test("Agent updates merge a local title edit and the next save uses the new revision", async () => {

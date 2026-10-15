@@ -51,7 +51,6 @@ const CATEGORY_OPTIONS = [
 ] satisfies Array<{ value: TextAssetBatchCategory; label: string }>;
 
 const CONCURRENCY_OPTIONS = [1, 3, 5, 10].map((value) => ({ value, label: `${value} 个并发` }));
-const TEXT_ASSET_ANALYSIS_MODEL_KEY = "yingce.canvas.text-asset-analysis-model";
 type AnalysisStatus = "idle" | "analyzing" | "success" | "error";
 
 export function CanvasTextBatchGenerationModal({ open, sourceNode, projectId, config, projectStyle, onClose, onConfirm }: Props) {
@@ -86,8 +85,7 @@ export function CanvasTextBatchGenerationModal({ open, sourceNode, projectId, co
         setAnalysisStatus("idle");
         setAnalysisError("");
         const previousModel = sourceNode?.metadata?.model;
-        const rememberedModel = typeof window !== "undefined" ? window.localStorage.getItem(TEXT_ASSET_ANALYSIS_MODEL_KEY) || "" : "";
-        const preferredModel = rememberedModel || previousModel || config.textModel || config.textModels[0] || config.model || "";
+        const preferredModel = config.textModel || previousModel || config.textModels[0] || config.model || "";
         setAnalysisModel(preferredModel && (config.textModels.includes(preferredModel) || !config.textModels.length) ? preferredModel : config.textModel || config.textModels[0] || config.model || "");
     }, [open, projectStyle, sourceNode?.id]);
 
@@ -138,7 +136,6 @@ export function CanvasTextBatchGenerationModal({ open, sourceNode, projectId, co
 
     const handleAnalysisModelChange = (model: string) => {
         setAnalysisModel(model);
-        if (typeof window !== "undefined") window.localStorage.setItem(TEXT_ASSET_ANALYSIS_MODEL_KEY, model);
     };
 
     const updateConcurrency = (value: number | null) => {

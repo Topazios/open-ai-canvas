@@ -61,6 +61,8 @@ export type GenerationTask = {
         status: TaskBillingStatus;
     };
     clientContext?: {
+        storyNodeId?: string;
+        clientOperationId?: string;
         conversationId?: string;
         messageId?: string;
         nodeId?: string;
@@ -280,8 +282,8 @@ export function queryTaskTextReplay(id: string, after = 0) {
     return http.get<TaskTextReplay>(`/tasks/${encodeURIComponent(id)}/text-deltas`, { params: { after } });
 }
 
-export function retryGenerationTask(id: string) {
-    return http.post<GenerationTask>(`/tasks/${encodeURIComponent(id)}/retry`);
+export function retryGenerationTask(id: string, acknowledgedBillingOrderId?: string) {
+    return http.post<GenerationTask>(`/tasks/${encodeURIComponent(id)}/retry`, acknowledgedBillingOrderId ? { acknowledgedBillingOrderId } : undefined);
 }
 
 export function recoverGenerationTaskMedia(id: string) {

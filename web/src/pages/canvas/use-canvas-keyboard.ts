@@ -2,6 +2,12 @@ import { useEffect, type Dispatch, type SetStateAction } from "react";
 
 import type { CanvasNodeData, ContextMenuState } from "@/types/canvas";
 
+const CANVAS_KEYBOARD_OVERLAY_SELECTOR = ".canvas-node-toolbar, .canvas-node-toolbar-menu, .ant-modal-wrap, .ant-drawer, .ant-dropdown, .ant-popover, .ant-select-dropdown, .ant-picker-dropdown, [role='dialog'], [role='menu']";
+
+function isCanvasTextEditingTarget(target: Element | null) {
+    return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+}
+
 type UseCanvasKeyboardOptions = {
     enabled?: boolean;
     nodesRef: { current: CanvasNodeData[] };
@@ -88,11 +94,20 @@ export function useCanvasKeyboard({
     useEffect(() => {
         if (!enabled) return;
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
             const target = event.target instanceof Element ? event.target : null;
-            if (target?.closest(".canvas-node-toolbar, .canvas-node-toolbar-menu")) return;
+            if (target?.closest(CANVAS_KEYBOARD_OVERLAY_SELECTOR)) return;
             const key = event.key.toLowerCase();
             const isModifierShortcut = event.metaKey || event.ctrlKey;
-            const isTextEditingTarget = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || Boolean(target?.closest("[contenteditable='true']"));
+            const isTextEditingTarget = isCanvasTextEditingTarget(target);
+
+            if (isModifierShortcut && !event.altKey && key === "s") {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!event.repeat) void saveCanvasProject();
+                return;
+            }
+            if (isTextEditingTarget) return;
 
             if (isModifierShortcut && !event.altKey && (key === "+" || key === "=" || event.code === "NumpadAdd")) {
                 event.preventDefault();
@@ -110,14 +125,7 @@ export function useCanvasKeyboard({
                 return;
             }
 
-            if (isModifierShortcut && !event.altKey && key === "s") {
-                event.preventDefault();
-                event.stopPropagation();
-                if (!event.repeat) void saveCanvasProject();
-                return;
-            }
             if (isModifierShortcut && !event.altKey && key === "f") {
-                if (target?.closest(".ant-modal-wrap, .ant-dropdown, .ant-popover")) return;
                 event.preventDefault();
                 event.stopPropagation();
                 if (!event.repeat) {
@@ -126,7 +134,6 @@ export function useCanvasKeyboard({
                 }
                 return;
             }
-            if (isTextEditingTarget) return;
             const isCanvasControlTarget = Boolean(target?.closest("[data-canvas-no-zoom]"));
             if (isCanvasControlTarget && !(isModifierShortcut && !event.altKey && (key === "c" || key === "v"))) return;
             if (event.altKey && !isModifierShortcut && key === "l") {
@@ -204,7 +211,7 @@ export function useCanvasKeyboard({
 
         const handlePaste = (event: ClipboardEvent) => {
             const target = event.target instanceof Element ? event.target : null;
-            if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || target?.closest("[contenteditable='true']")) return;
+            if (event.defaultPrevented || isCanvasTextEditingTarget(target) || target?.closest(CANVAS_KEYBOARD_OVERLAY_SELECTOR)) return;
             // 节点标记写入失败或仍在写入时避开旧系统图片，其余情况保持系统内容优先。
             event.preventDefault();
             const text = event.clipboardData?.getData("text/plain") || "";

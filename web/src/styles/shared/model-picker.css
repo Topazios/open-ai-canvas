@@ -7,6 +7,27 @@
 
 @layer utilities {
 
+    .reasoning-effort-select {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 30px;
+        font-size: 12px;
+        color: inherit;
+    }
+    .reasoning-effort-select select {
+        min-width: 64px;
+        padding: 4px 8px;
+        border: 1px solid var(--workspace-border);
+        border-radius: var(--r-sm);
+        background: var(--workspace-surface-strong);
+        color: inherit;
+    }
+    .canvas-model-picker-reasoning {
+        padding: 4px 8px 8px;
+        border-bottom: 1px solid var(--workspace-border);
+    }
+
 .creation-model-picker.canvas-composer-model-picker {
         width: min(210px, 25vw);
         height: 36px;
@@ -45,8 +66,8 @@
 
     .creation-model-picker-surface {
         border: 1px solid rgba(220, 225, 231, .82) !important;
-        border-radius: 14px !important;
-        background: rgba(255, 255, 255, .78) !important;
+        border-radius: var(--r-sm) !important;
+        background: var(--workspace-surface-strong) !important;
         box-shadow: 0 18px 46px rgba(20, 26, 35, .14), inset 0 1px 0 rgba(255, 255, 255, .78) !important;
         overflow: hidden;
         padding: 0 !important;
@@ -57,7 +78,7 @@
 
     .dark .creation-model-picker-surface {
         border-color: rgba(61, 66, 76, .72) !important;
-        background: rgba(25, 27, 32, .92) !important;
+        background: var(--workspace-surface-strong) !important;
         box-shadow: 0 20px 52px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .055) !important;
     }
 
@@ -514,7 +535,7 @@ html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-m
     overflow: hidden;
     border: 0 !important;
     border-radius: 10px !important;
-    background: rgba(30, 32, 37, .92) !important;
+    background: var(--workspace-surface-strong) !important;
     box-shadow: 0 18px 44px rgba(0, 0, 0, .3) !important;
     backdrop-filter: blur(18px) saturate(120%);
     -webkit-backdrop-filter: blur(18px) saturate(120%);
@@ -531,7 +552,7 @@ html:not(.dark) .creation-chat-composer .creation-model-picker.canvas-composer-m
 .creation-model-picker-menu .canvas-model-picker-option > span:first-child > span:first-child { width: 26px; height: 26px; border: 0; border-radius: 5px; background: rgba(255, 255, 255, .07) !important; }
 .creation-model-picker-menu .canvas-model-picker-option > span:first-child > span:nth-child(2) > span:first-child { font-size: 11px; }
 
-html:not(.dark) .creation-model-picker-surface { background: rgba(255, 255, 255, .94) !important; box-shadow: 0 16px 38px rgba(28, 32, 37, .12) !important; }
+html:not(.dark) .creation-model-picker-surface { background: var(--workspace-surface-strong) !important; box-shadow: 0 16px 38px rgba(28, 32, 37, .12) !important; }
 html:not(.dark) .creation-model-picker-menu { color: #727980 !important; }
 html:not(.dark) .creation-model-picker-heading strong { color: #20242a; }
 html:not(.dark) .creation-model-picker-menu .canvas-model-picker-option > span:first-child > span:first-child { background: rgba(28, 32, 37, .06) !important; }
@@ -631,30 +652,54 @@ html:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.ca
     width: min(360px, calc(100vw - 24px));
 }
 .canvas-model-picker-menu.is-model-list {
-    width: min(800px, calc(100vw - 24px));
+    width: min(560px, calc(100vw - 24px));
+    overflow: hidden;
 }
 .canvas-model-picker-two-pane {
     display: grid;
     width: 100%;
-    grid-template-columns: 250px minmax(0, 1fr);
-    gap: 14px;
+    grid-template-columns: 190px minmax(0, 1fr);
+    gap: 8px;
     min-width: 0;
-    align-items: start;
+    height: min(360px, calc(100dvh - 64px));
+    min-height: 0;
+}
+.canvas-model-picker-menu:has(.canvas-model-picker-reasoning) .canvas-model-picker-two-pane {
+    height: min(360px, calc(100dvh - 108px));
 }
 .canvas-model-picker-menu.is-model-list .canvas-model-picker-brand-rail {
     display: grid;
     align-content: start;
     gap: 5px;
     border-right: 1px solid var(--workspace-border);
-    padding-right: 14px;
+    padding-right: 8px;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 .canvas-model-picker-menu.is-model-list .canvas-model-picker-brand {
     width: 100%;
 }
 .canvas-model-picker-model-pane {
     min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border: 0;
+    margin: 0;
+    padding: 0;
 }
-@media (max-width: 720px) {
+.canvas-model-picker-options {
+    overflow-y: auto;
+    min-height: 0;
+    align-content: start;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+}
+.canvas-model-picker-secondary-head {
+    flex-shrink: 0;
+}
+@media (max-width: 580px) {
     .canvas-model-picker-menu:is(.is-brand-list, .is-model-list) {
         width: calc(100vw - 24px);
     }
@@ -798,17 +843,18 @@ html:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.ca
 .app-user-workspace .creation-launchpad .creation-model-picker.canvas-composer-model-picker {
     width: min(232px, 60cqw) !important;
 }
-/* 模型选择器：先选品牌，再选模型；品牌列表保持完整可见，不用内部滚动条。 */
+/* 模型选择器：品牌与模型均受窗口高度约束，长列表保留内部滚动。 */
 .app-user-workspace .creation-model-picker-menu.is-brand-list {
-    max-height: none !important;
-    overflow: visible !important;
+    max-height: min(460px, calc(100dvh - 32px)) !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
     padding: 10px !important;
 }
 .app-user-workspace .creation-model-picker-menu .canvas-model-picker-brands { display: grid; gap: 5px; }
 .app-user-workspace .creation-model-picker-menu .canvas-model-picker-subheading { display: flex; align-items: baseline; justify-content: space-between; padding: 3px 5px 8px; color: var(--user-ink); font-size: 12px; font-weight: 650; }
 .app-user-workspace .creation-model-picker-menu .canvas-model-picker-subheading small { color: var(--user-ink-soft); font-size: 10px; font-weight: 500; }
-.app-user-workspace .creation-model-picker-menu .canvas-model-picker-brand { display: flex; min-height: 58px; align-items: center; gap: 10px; border: 1px solid transparent; border-radius: 13px; padding: 8px 10px; background: transparent; color: var(--user-ink); text-align: left; transition: background-color 160ms ease, border-color 160ms ease; }
-.app-user-workspace .creation-model-picker-menu .canvas-model-picker-brand-icon { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; border-radius: 11px; background: var(--user-surface-muted); color: var(--user-ink-muted); }
+.app-user-workspace .creation-model-picker-menu .canvas-model-picker-brand { display: flex; min-height: 44px; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: var(--r-sm); padding: 5px 6px; background: transparent; color: var(--user-ink); text-align: left; transition: background-color 160ms ease, border-color 160ms ease; }
+.app-user-workspace .creation-model-picker-menu .canvas-model-picker-brand-icon { display: grid; width: 26px; height: 26px; flex: 0 0 26px; place-items: center; border-radius: var(--r-sm); background: var(--user-surface-muted); color: var(--user-ink-muted); }
 .app-user-workspace .creation-model-picker-menu .canvas-model-picker-brand-copy { display: grid; min-width: 0; flex: 1; gap: 4px; }
 .app-user-workspace .creation-model-picker-menu .canvas-model-picker-brand-copy strong { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .app-user-workspace .creation-model-picker-menu .canvas-model-picker-brand-copy small { color: var(--user-ink-muted); font-size: 10px; }
@@ -834,20 +880,21 @@ html:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.ca
     height: 32px !important;
 }
 .creation-model-picker-surface .creation-model-picker-menu.is-model-list {
-    max-height: min(460px, calc(100vh - 24px)) !important;
+    max-height: min(460px, calc(100dvh - 32px)) !important;
     overflow-x: hidden !important;
-    overflow-y: auto !important;
+    overflow-y: hidden !important;
 }
 .creation-model-picker-surface .creation-model-picker-menu.is-brand-list {
-    max-height: none !important;
-    overflow: visible !important;
+    max-height: min(460px, calc(100dvh - 32px)) !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
     padding: 10px !important;
 }
 .creation-model-picker-surface .canvas-model-picker-brands { display: grid; gap: 5px; }
 .creation-model-picker-surface .canvas-model-picker-subheading { display: flex; align-items: baseline; justify-content: space-between; padding: 3px 5px 8px; color: var(--foreground); font-size: 12px; font-weight: 650; }
 .creation-model-picker-surface .canvas-model-picker-subheading small { color: color-mix(in srgb, var(--foreground) 52%, transparent); font-size: 10px; font-weight: 500; }
-.creation-model-picker-surface .canvas-model-picker-brand { display: flex; min-height: 58px; align-items: center; gap: 10px; border: 1px solid transparent; border-radius: 13px; padding: 8px 10px; background: transparent; color: var(--foreground); text-align: left; transition: background-color 160ms ease, border-color 160ms ease; }
-.creation-model-picker-surface .canvas-model-picker-brand-icon { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; border-radius: 11px; background: var(--workspace-surface-hover); color: var(--foreground); }
+.creation-model-picker-surface .canvas-model-picker-brand { display: flex; min-height: 44px; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: var(--r-sm); padding: 5px 6px; background: transparent; color: var(--foreground); text-align: left; transition: background-color 160ms ease, border-color 160ms ease; }
+.creation-model-picker-surface .canvas-model-picker-brand-icon { display: grid; width: 26px; height: 26px; flex: 0 0 26px; place-items: center; border-radius: var(--r-sm); background: var(--workspace-surface-hover); color: var(--foreground); }
 .creation-model-picker-surface .canvas-model-picker-brand-copy { display: grid; min-width: 0; flex: 1; gap: 4px; }
 .creation-model-picker-surface .canvas-model-picker-brand-copy strong { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .creation-model-picker-surface .canvas-model-picker-brand-copy small { color: color-mix(in srgb, var(--foreground) 55%, transparent); font-size: 10px; }
@@ -858,7 +905,7 @@ html:not(.dark) .creation-home .creation-chat-composer .creation-model-picker.ca
 .creation-model-picker-surface .canvas-model-picker-secondary-head > span { display: grid; gap: 2px; }
 .creation-model-picker-surface .canvas-model-picker-secondary-head strong { color: var(--foreground); font-size: 13px; }
 .creation-model-picker-surface .canvas-model-picker-secondary-head small { color: color-mix(in srgb, var(--foreground) 52%, transparent); font-size: 10px; }
-.creation-model-picker-surface .canvas-model-picker-option { min-height: 55px; border-radius: 12px; padding: 8px 9px; }
+.creation-model-picker-surface .canvas-model-picker-option { min-height: 46px; border-radius: var(--r-sm); padding: 6px 7px; }
 .creation-model-picker-surface .canvas-model-picker-option > span:first-child > span:first-child { width: 32px; height: 32px; border-radius: 10px; background: color-mix(in srgb, var(--workspace-accent) 10%, var(--workspace-surface-strong)) !important; color: var(--workspace-accent); }
 .creation-model-picker-surface .canvas-model-picker-option > span:first-child > span:first-child svg { color: currentColor !important; opacity: 1 !important; }
 .creation-model-picker-surface .canvas-model-picker-option:nth-child(3n) > span:first-child > span:first-child { color: #d57b16; }

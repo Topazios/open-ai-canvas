@@ -65,7 +65,8 @@ type AdminChannelModelImportRequest struct {
 }
 
 type AdminChannelModelBatchSettingsRequest struct {
-	ModelIDs     []string                  `json:"modelIds"`
+	Protocols    *ModelProtocolConfig     `json:"protocols"`
+	ModelIDs     []string                 `json:"modelIds"`
 	Enabled      *bool                    `json:"enabled"`
 	DisplayName  *string                  `json:"displayName"`
 	ChannelLabel *string                  `json:"channelLabel"`
@@ -297,6 +298,11 @@ func normalizeChannelModelContractWithRegistry(registry *protocol.Registry, chan
 	if (protocol == model.ChannelInterfaceVolcengineJiMengImage || protocol == model.ChannelInterfaceVolcengineJiMengVideo) && (strings.TrimSpace(channel.APIKey) == "" || strings.TrimSpace(channel.SecretKey) == "") {
 		return "", "", "", "", BadAuthRequest("即梦官方协议需要先在渠道中配置 Access Key 和 Secret Key")
 	}
+	if req.CapabilityConfig != nil {
+		if err := validateModelProtocolConfig(registry, capability, string(protocol), req.CapabilityConfig.Protocols); err != nil {
+			return "", "", "", "", err
+		}
+	}
 	return modelKey, providerModelKey, capability, protocol, nil
 }
 
@@ -359,6 +365,9 @@ func (s *Service) UpdateAdminChannelModelsSettings(actor *model.User, channelID 
 	if (req.Capability == nil) != (req.Protocol == nil) {
 		return 0, BadAuthRequest("批量设置模型能力时必须同时选择调用协议")
 	}
+	if req.Protocols != nil && req.Protocol == nil {
+		return 0, BadAuthRequest("设置协议策略时必须同时选择模型能力和默认协议")
+	}
 	if req.DisplayName != nil && len([]rune(strings.TrimSpace(*req.DisplayName))) > 160 {
 		return 0, BadAuthRequest("模型展示名不能超过 160 字")
 	}
@@ -420,6 +429,9 @@ func (s *Service) UpdateAdminChannelModelsSettings(actor *model.User, channelID 
 		if targetCapability == "" || targetProtocol == "" {
 			return 0, BadAuthRequest("模型能力和调用协议不能为空")
 		}
+		if err := validateModelProtocolConfig(s.protocolRegistry(), targetCapability, targetProtocol, req.Protocols); err != nil {
+			return 0, err
+		}
 		updatesByModel = make(map[string]map[string]any, len(modelIDs))
 		selectedIDs := make(map[string]bool, len(modelIDs))
 		for _, id := range modelIDs {
@@ -449,6 +461,19 @@ func (s *Service) UpdateAdminChannelModelsSettings(actor *model.User, channelID 
 			itemUpdates["protocol"] = targetProtocol
 			if targetCapability != "audio" {
 				profile := DefaultModelCapabilityConfigForModel(targetProtocol, providerModelKey)
+				// Keep tuned limits when only protocol support changes.
+				if item.Capability == targetCapability && string(item.Protocol) == targetProtocol && item.CapabilityConfigJSON != "" {
+					previous, decodeErr := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
+					if decodeErr != nil {
+						return 0, decodeErr
+					}
+					if previous != nil {
+						profile = previous
+					}
+				}
+				if req.Protocols != nil {
+					profile.Protocols = req.Protocols
+				}
 				normalized, normalizeErr := NormalizeModelCapabilityConfigForModel(targetCapability, targetProtocol, providerModelKey, profile)
 				if normalizeErr != nil {
 					return 0, normalizeErr

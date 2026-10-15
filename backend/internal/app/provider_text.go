@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -32,8 +33,51 @@ func runTextTask(ctx context.Context, input canvasGenerationInput) (map[string]i
 // while sharing the SSE parser used by text generation and Agent requests.
 func executeProtocolCreateRequest(ctx context.Context, input canvasGenerationInput, spec protocol.RequestSpec) ([]byte, *protocol.Result, error) {
 	wire, streamable := streamingProtocolForRequest(input, spec)
+	contract := protocol.ContractForAdapter(input.Config.InterfaceType)
+	if input.Mode == "text" && contract == protocol.ContractGenerateContent {
+		body := protocolBodyObject(spec.Body)
+		if body == nil {
+			return nil, nil, errors.New("声明式文本请求体必须是 JSON 对象")
+		}
+		body = cloneStringAnyMap(body)
+		applyTextThinking(body, input, "gemini")
+		spec.Body = body
+	}
+	if input.Mode == "text" && streamable && contract != protocol.ContractCustom {
+		body := protocolBodyObject(spec.Body)
+		if body == nil {
+			return nil, nil, errors.New("声明式文本请求体必须是 JSON 对象")
+		}
+		body = cloneStringAnyMap(body)
+		if wire == "responses" {
+			// The generic manifest message view uses Chat content parts. Build
+			// Responses input through the same converter as the builtin path.
+			if len(input.ReferenceAudios) > 0 {
+				return nil, nil, errors.New("Responses 文本协议当前不支持音频参考，请选择支持音频输入的协议")
+			}
+			requestInput := input
+			requestInput.Config.SystemPrompt = "" // The manifest already maps instructions.
+			converted, err := textResponseInput(requestInput)
+			if err != nil {
+				return nil, nil, err
+			}
+			body["input"] = converted
+		}
+		applyResponsesRequestDefaults(body, wire)
+		applyTextThinking(body, input, wire)
+		applyAgentOutputLimit(body, agentStepOutputLimit(input), wire)
+		applyStructuredTextOutput(body, input, wire)
+		if !input.StreamText {
+			delete(body, "stream")
+		}
+		spec.Body = body
+	}
 	if input.Mode != "text" || !input.StreamText || !streamable {
 		data, err := executeProtocolRequest(ctx, input.Config, spec)
+		if err == nil && input.Mode == "text" && wire == "responses" {
+			result, parseErr := parseProtocolResponsesText(data)
+			return data, result, parseErr
+		}
 		return data, nil, err
 	}
 	body := protocolBodyObject(spec.Body)
@@ -51,6 +95,10 @@ func executeProtocolCreateRequest(ctx context.Context, input canvasGenerationInp
 	parser.emitReasoning = input.OnReasoningDelta
 	data, mimeType, err := executeProtocolBinaryRequestWithConsumer(ctx, input.Config, spec, parser.consume)
 	if err != nil || !strings.Contains(strings.ToLower(mimeType), "event-stream") {
+		if err == nil && wire == "responses" {
+			result, parseErr := parseProtocolResponsesText(data)
+			return data, result, parseErr
+		}
 		return data, nil, err
 	}
 	parser.flush()
@@ -62,7 +110,27 @@ func executeProtocolCreateRequest(ctx context.Context, input canvasGenerationInp
 	if text == "" {
 		return nil, nil, errors.New("流式文本接口没有返回内容")
 	}
-	return data, &protocol.Result{Text: text, Reasoning: stringField(parsed, "reasoning")}, nil
+	usage, _ := parsed["usage"].(map[string]interface{})
+	return data, &protocol.Result{Text: text, Reasoning: stringField(parsed, "reasoning"), Usage: usage}, nil
+}
+
+func parseProtocolResponsesText(data []byte) (*protocol.Result, error) {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	if err := validateTextPayload(payload); err != nil {
+		return nil, err
+	}
+	if err := validateResponsesCompletion(payload); err != nil {
+		return nil, err
+	}
+	text := firstNonEmptyString(stringField(payload, "output_text"), extractResponseText(payload))
+	if strings.TrimSpace(text) == "" {
+		return nil, errors.New("Responses 接口没有返回文本内容")
+	}
+	usage, _ := payload["usage"].(map[string]interface{})
+	return &protocol.Result{Text: text, Reasoning: extractResponseReasoning(payload), Usage: usage}, nil
 }
 
 func streamingProtocolForRequest(input canvasGenerationInput, spec protocol.RequestSpec) (string, bool) {
@@ -188,16 +256,76 @@ func runClaudeTextTask(ctx context.Context, input canvasGenerationInput) (map[st
 }
 
 func applyTextThinking(body map[string]interface{}, input canvasGenerationInput, protocol string) {
-	if !input.TextOptions.Thinking {
+	if input.TextOptions.ReasoningDisabled {
+		switch protocol {
+		case "responses":
+			delete(body, "reasoning")
+		case "chat-completion":
+			delete(body, "reasoning_effort")
+		case "claude-api":
+			delete(body, "thinking")
+			if output, ok := body["output_config"].(map[string]interface{}); ok {
+				delete(output, "effort")
+			}
+		case "gemini":
+			if generation, ok := body["generationConfig"].(map[string]interface{}); ok {
+				delete(generation, "thinkingConfig")
+			}
+		}
 		return
 	}
+	effort := string(input.TextOptions.ReasoningEffort.effective())
 	switch protocol {
 	case "responses":
-		body["reasoning"] = map[string]interface{}{"effort": "medium", "summary": "auto"}
+		reasoning, _ := body["reasoning"].(map[string]interface{})
+		reasoning = cloneStringAnyMap(reasoning)
+		if reasoning == nil {
+			reasoning = map[string]interface{}{}
+		}
+		reasoning["effort"] = effort
+		if reasoning["summary"] == nil {
+			reasoning["summary"] = "auto"
+		}
+		body["reasoning"] = reasoning
 	case "chat-completion":
-		body["reasoning_effort"] = "medium"
+		body["reasoning_effort"] = effort
 	case "claude-api":
-		body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": 1024}
+		if usesClaudeAdaptiveThinking(input.Config.Model) {
+			body["thinking"] = map[string]interface{}{"type": "adaptive"}
+			output, _ := body["output_config"].(map[string]interface{})
+			output = cloneStringAnyMap(output)
+			if output == nil {
+				output = map[string]interface{}{}
+			}
+			output["effort"] = effort
+			body["output_config"] = output
+			return
+		}
+		budget := map[string]int{"low": 1024, "medium": 4096, "high": 8192}[effort]
+		limit := agentStepOutputLimit(input)
+		if limit == 0 {
+			switch value := body["max_tokens"].(type) {
+			case int:
+				limit = value
+			case float64:
+				limit = int(value)
+			}
+		}
+		if limit > 0 && limit <= 1024 {
+			return
+		}
+		if limit > 1024 && budget >= limit {
+			budget = max(1024, limit/2)
+		}
+		body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": budget}
+	case "gemini":
+		generation, _ := body["generationConfig"].(map[string]interface{})
+		generation = cloneStringAnyMap(generation)
+		if generation == nil {
+			generation = map[string]interface{}{}
+		}
+		generation["thinkingConfig"] = geminiReasoningConfig(input.Config.Model, input.TextOptions.ReasoningEffort)
+		body["generationConfig"] = generation
 	}
 }
 
@@ -206,7 +334,7 @@ func applyTextThinking(body map[string]interface{}, input canvasGenerationInput,
 // disagree on forced choices. Normalize before the first network request while
 // preserving required/named choices for non-reasoning structured tasks.
 func normalizeAgentToolChoice(body map[string]interface{}, input canvasGenerationInput, protocol string) {
-	if protocol == "chat-completion" && (input.TextOptions.Thinking || isAutoAgentToolChoice(body["tool_choice"])) {
+	if protocol == "chat-completion" && (!input.TextOptions.ReasoningDisabled || isAutoAgentToolChoice(body["tool_choice"])) {
 		delete(body, "tool_choice")
 	}
 }

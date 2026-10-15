@@ -97,7 +97,9 @@ func (r *Repository) BillingOrdersByTaskIDs(userID string, taskIDs []string) (ma
 		return result, nil
 	}
 	var orders []model.BillingOrder
-	if err := r.db.Where("user_id = ? AND task_id IN ?", userID, taskIDs).Find(&orders).Error; err != nil {
+	if err := r.db.Model(&model.BillingOrder{}).Select("billing_orders.*").
+		Joins("JOIN tasks ON tasks.billing_order_id = billing_orders.id AND tasks.user_id = billing_orders.user_id").
+		Where("billing_orders.user_id = ? AND tasks.id IN ?", userID, taskIDs).Find(&orders).Error; err != nil {
 		return nil, err
 	}
 	for _, order := range orders {
@@ -137,10 +139,11 @@ func (r *Repository) AdminBillingOrders(status string, keyword string, limit int
 	return items, total, nil
 }
 
-func (r *Repository) TaskHasSuccessfulBillableCall(taskID string) (bool, error) {
+func (r *Repository) TaskHasSuccessfulBillableCall(taskID string, orderID string) (bool, error) {
 	var count int64
 	err := r.db.Model(&model.ApiCallLog{}).
 		Where("task_id = ? AND billable = ? AND status = ?", taskID, true, model.ApiCallStatusSucceeded).
+		Where("billing_order_id = ?", orderID).
 		Count(&count).Error
 	return count > 0, err
 }

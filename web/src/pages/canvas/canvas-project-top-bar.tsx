@@ -42,6 +42,7 @@ type CanvasTopBarProps = {
     mediaPerformanceMode: CanvasMediaPerformanceMode;
     onMediaPerformanceModeChange: (mode: CanvasMediaPerformanceMode) => void;
     onOpenSearch: () => void;
+    onOpenProjectAssociation?: () => void;
     projectContext?: CanvasContextSummary & { projectId: string; projectName: string };
     onEnterFocusMode: () => void;
     shortDramaGuide?: { progress: CanvasShortDramaProgress; collapsed: boolean; onToggle: () => void };
@@ -74,6 +75,7 @@ export function CanvasTopBar({
     mediaPerformanceMode,
     onMediaPerformanceModeChange,
     onOpenSearch,
+    onOpenProjectAssociation,
     projectContext,
     onEnterFocusMode,
     shortDramaGuide,
@@ -114,6 +116,7 @@ export function CanvasTopBar({
                                 items: [
                                     { key: "home", icon: <Home className="size-4" />, label: <Link to="/">主页</Link> },
                                     { key: "projects", icon: <LayoutGrid className="size-4" />, label: <Link to="/canvas">画布</Link> },
+                                    ...(onOpenProjectAssociation ? [{ key: "associate", icon: <FolderKanban className="size-4" />, label: "关联项目与章节", onClick: onOpenProjectAssociation }] : []),
                                     { type: "divider" },
                                     { key: "new", icon: <Plus className="size-4" />, label: "新建画布", onClick: onCreateProject },
                                     { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: "删除当前画布", onClick: onDeleteProject },
@@ -268,7 +271,7 @@ export function CanvasTopBar({
                                 aria-label="短剧流程"
                                 aria-pressed={!shortDramaGuide.collapsed}
                             >
-                                <span className="tabular-nums">{shortDramaGuide.progress.completedCount}/5</span>
+                                <span className="tabular-nums">{shortDramaGuide.progress.completedCount}/{shortDramaGuide.progress.steps.length}</span>
                             </Button>
                         </CanvasTopBarTooltip>
                     ) : null}

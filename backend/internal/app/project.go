@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	canvasdomain "infinite-canvas/backend/internal/canvas"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/repository"
 
@@ -61,9 +62,10 @@ type ReorderProjectUnitsRequest struct {
 }
 
 type LinkCanvasUnitRequest struct {
-	CanvasID string `json:"canvasId"`
-	UnitID   string `json:"unitId"`
-	Role     string `json:"role"`
+	CanvasID               string `json:"canvasId"`
+	UnitID                 string `json:"unitId"`
+	Role                   string `json:"role"`
+	ExpectedCanvasRevision *int64 `json:"expectedCanvasRevision,omitempty"`
 }
 
 type ProjectSummary struct {
@@ -83,19 +85,20 @@ type ProjectListPage struct {
 }
 
 type ProjectDetail struct {
-	Project         model.Project                 `json:"project"`
-	Units           []model.ProjectUnit           `json:"units"`
-	Canvases        []model.CanvasProject         `json:"canvases"`
-	CanvasUnitLinks []model.CanvasUnitLink        `json:"canvasUnitLinks"`
-	Assets          []ProjectAssetSummary         `json:"assets"`
-	AssetFolders    []model.ProjectAssetFolder    `json:"assetFolders"`
-	Workflows       []ProjectWorkflowDetail       `json:"workflows"`
-	Shots           []model.Shot                  `json:"shots"`
-	ShotRevisions   []model.ShotRevision          `json:"shotRevisions"`
-	ShotArtifacts   []model.ShotArtifact          `json:"shotArtifacts"`
-	ShotReferences  []model.ShotAssetReference    `json:"shotReferences"`
-	AssetCandidates []model.ProjectAssetCandidate `json:"assetCandidates"`
-	Tasks           []TaskSummary                 `json:"tasks"`
+	Project             model.Project                 `json:"project"`
+	Units               []model.ProjectUnit           `json:"units"`
+	Canvases            []model.CanvasProject         `json:"canvases"`
+	CanvasUnitLinks     []model.CanvasUnitLink        `json:"canvasUnitLinks"`
+	CanvasNodeShotLinks []model.CanvasNodeShotLink    `json:"canvasNodeShotLinks"`
+	Assets              []ProjectAssetSummary         `json:"assets"`
+	AssetFolders        []model.ProjectAssetFolder    `json:"assetFolders"`
+	Workflows           []ProjectWorkflowDetail       `json:"workflows"`
+	Shots               []model.Shot                  `json:"shots"`
+	ShotRevisions       []model.ShotRevision          `json:"shotRevisions"`
+	ShotArtifacts       []model.ShotArtifact          `json:"shotArtifacts"`
+	ShotReferences      []model.ShotAssetReference    `json:"shotReferences"`
+	AssetCandidates     []model.ProjectAssetCandidate `json:"assetCandidates"`
+	Tasks               []TaskSummary                 `json:"tasks"`
 }
 
 func (s *Service) ListProjects(userID string) ([]ProjectSummary, error) {
@@ -176,6 +179,10 @@ func (s *Service) ProjectDetail(userID string, id string) (ProjectDetail, error)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
+	canvasNodeShotLinks, err := s.repo.ProjectCanvasNodeShotLinks(project.ID)
+	if err != nil {
+		return ProjectDetail{}, err
+	}
 	assets, err := s.ProjectAssets(userID, project.ID)
 	if err != nil {
 		return ProjectDetail{}, err
@@ -212,7 +219,7 @@ func (s *Service) ProjectDetail(userID string, id string) (ProjectDetail, error)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
-	return ProjectDetail{Project: *project, Units: units, Canvases: canvases, CanvasUnitLinks: canvasUnitLinks, Assets: assets, AssetFolders: assetFolders, Workflows: workflows, Shots: shots, ShotRevisions: shotRevisions, ShotArtifacts: shotArtifacts, ShotReferences: shotReferences, AssetCandidates: candidates, Tasks: tasks}, nil
+	return ProjectDetail{Project: *project, Units: units, Canvases: canvases, CanvasUnitLinks: canvasUnitLinks, CanvasNodeShotLinks: canvasNodeShotLinks, Assets: assets, AssetFolders: assetFolders, Workflows: workflows, Shots: shots, ShotRevisions: shotRevisions, ShotArtifacts: shotArtifacts, ShotReferences: shotReferences, AssetCandidates: candidates, Tasks: tasks}, nil
 }
 
 func (s *Service) CreateProject(userID string, req CreateProjectRequest) (model.Project, error) {
@@ -549,7 +556,7 @@ func (s *Service) UpdateProjectUnit(userID string, projectID string, unitID stri
 }
 
 func (s *Service) LinkCanvasUnit(userID string, projectID string, req LinkCanvasUnitRequest) (model.CanvasUnitLink, error) {
-	if _, err := s.repo.ProjectForUser(userID, projectID); err != nil {
+	if _, err := s.activeProjectForUser(userID, projectID); err != nil {
 		return model.CanvasUnitLink{}, err
 	}
 	canvasID := strings.TrimSpace(req.CanvasID)
@@ -557,13 +564,14 @@ func (s *Service) LinkCanvasUnit(userID string, projectID string, req LinkCanvas
 	if canvasID == "" || unitID == "" {
 		return model.CanvasUnitLink{}, BadAuthRequest("画布和章节不能为空")
 	}
-	if _, err := s.repo.CanvasProjectForUser(userID, canvasID); err != nil {
+	canvas, err := s.repo.CanvasProjectForUser(userID, canvasID)
+	if err != nil {
 		return model.CanvasUnitLink{}, err
+	}
+	if canvas.ProjectID != "" && canvas.ProjectID != projectID {
+		return model.CanvasUnitLink{}, BadAuthRequest("画布已关联其他项目，请先核对并解除原关系")
 	}
 	if _, err := s.repo.ProjectUnit(projectID, unitID); err != nil {
-		return model.CanvasUnitLink{}, err
-	}
-	if err := s.repo.AssignCanvasToProject(userID, canvasID, projectID); err != nil {
 		return model.CanvasUnitLink{}, err
 	}
 	role := strings.TrimSpace(req.Role)
@@ -572,10 +580,22 @@ func (s *Service) LinkCanvasUnit(userID string, projectID string, req LinkCanvas
 	}
 	now := time.Now()
 	link := model.CanvasUnitLink{ID: newID(), ProjectID: projectID, CanvasID: canvasID, UnitID: unitID, Role: role, CreatedAt: now}
-	if err := s.repo.UpsertCanvasUnitLink(&link); err != nil {
-		return model.CanvasUnitLink{}, err
+	expected := canvas.Revision
+	if req.ExpectedCanvasRevision != nil {
+		expected = *req.ExpectedCanvasRevision
 	}
-	if err := s.repo.BumpProjectRevision(projectID); err != nil {
+	if expected < 1 {
+		return model.CanvasUnitLink{}, BadAuthRequest("请先保存画布，再预览章节关联")
+	}
+	if err := s.repo.LinkCanvasUnitAtomic(userID, &link, expected, now, func(txRepo *repository.Repository, before, after *model.CanvasProject) error {
+		return canvasdomain.SaveDocumentWithHistory(txRepo, before, after, "before_project_association")
+	}); err != nil {
+		if errors.Is(err, repository.ErrCanvasRevisionConflict) {
+			return model.CanvasUnitLink{}, NewAppError(409, "画布内容或归属已变化，请刷新关联预览后重试")
+		}
+		if errors.Is(err, repository.ErrProjectArchived) {
+			return model.CanvasUnitLink{}, BadAuthRequest("项目已归档，不能修改短剧生产数据")
+		}
 		return model.CanvasUnitLink{}, err
 	}
 	return link, nil

@@ -1,0 +1,172 @@
+import { describe, expect, test } from "bun:test";
+import { productionRuleBlock } from "../src/lib/production-rules";
+import { workflowImageFixture } from "./fixtures/workflow-image-project";
+import { createWorkflowImages, workflowImageSubjects, workflowImageReferences, workflowImageShots } from "@/lib/canvas/canvas-workflow-images";
+import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowAncestors, workflowSignature, workflowSignatureMatches } from "@/lib/canvas/canvas-short-drama-workflow";
+import { deriveShortDramaProgress } from "@/lib/canvas/canvas-short-drama";
+import { assetMediaSignature } from "@/lib/canvas/canvas-workflow-asset-profile";
+import { createCanvasNode } from "@/lib/canvas/canvas-project-domain";
+import { CanvasNodeType } from "@/types/canvas";
+import { prepareBackendGenerationTask } from "@/services/api/generation-task";
+import { createModelChannel, defaultConfig } from "@/stores/use-config-store";
+import { retryWorkflowGeneration } from "@/services/workflow-generation-retry";
+
+describe("direct workflow image generation", () => {
+    test("selected assets produce distinct image nodes with container provenance and isolated prompts", async () => {
+        const f = workflowImageFixture();
+        const before = JSON.stringify(f);
+        const subjects = workflowImageSubjects(f.request, f.nodes);
+        expect(subjects).toHaveLength(2);
+        const result = createWorkflowImages({ ...f.request, imageSubjectIds: subjects.map((node) => node.id) }, f.nodes, f.connections, { x: 0, y: 0 });
+        expect(JSON.stringify(f)).toBe(before);
+        expect(result.created).toHaveLength(2);
+        for (const [index, node] of result.created.entries()) {
+            expect(node.type).toBe(CanvasNodeType.Image);
+            expect(node.metadata).toMatchObject({ generationMode: "image", model: f.request.model, size: "1536x1024", count: 1 });
+            expect(nodeWorkflow(node)).toMatchObject({ step: f.request.step, mediaKind: "image", mediaSubjectId: subjects[index].id, submission: "planned", sourceNodeIds: f.request.sourceNodeIds });
+            expect(nodeWorkflow(node)?.productionAgent).toBeUndefined();
+            expect(nodeWorkflow(node)?.textBatch).toBeUndefined();
+            expect(node.metadata?.prompt).toContain(subjects[index].metadata!.content!);
+            expect(node.metadata?.prompt).not.toContain(subjects[1 - index].metadata!.content!);
+            expect(result.connections.filter((edge) => edge.toNodeId === node.parentId).map((edge) => edge.fromNodeId)).toEqual(f.request.sourceNodeIds);
+        }
+        const channel = createModelChannel({ id: "fixture", baseUrl: "https://example.invalid/v1", apiKey: "fixture-only", models: ["image"], modelCosts: [{ model: "image", capability: "image", protocol: "openai-images", billingMode: "fixed_request", unitPriceMicrocredits: 1 }] });
+        const node = result.created[0];
+        const input = await prepareBackendGenerationTask({ projectId: "fixture", mode: "image", prompt: node.metadata!.prompt!, config: { ...defaultConfig, channels: [channel], model: f.request.model, count: "1" }, clientOperationId: nodeWorkflow(node)!.operationId });
+        expect(input.type).toBe("canvas_image");
+        expect(input.input.mode).toBe("image");
+    });
+
+    test("invalid selection, changed text and missing connections cannot submit stale assets", () => {
+        const f = workflowImageFixture();
+        expect(() => createWorkflowImages(f.request, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("生成对象");
+        expect(() => createWorkflowImages({ ...f.request, imageSubjectIds: ["unrelated"] }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("生成对象");
+        const subject = workflowImageSubjects(f.request, f.nodes)[0];
+        const result = createWorkflowImages({ ...f.request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 });
+        const image = result.created[0]; image.metadata!.content = "fixture.png"; image.metadata!.status = "success";
+        expect(workflowAncestors([image.id], result.nodes, f.request.pipelineId, result.connections).at(-1)?.id).toBe(image.id);
+        expect(() => workflowAncestors([image.id], result.nodes, f.request.pipelineId, [])).toThrow("连线");
+        subject.metadata!.content += " changed";
+        expect(() => workflowAncestors([image.id], result.nodes, f.request.pipelineId, result.connections)).toThrow("前文已更新");
+    });
+
+    test("reference images are signed, passed as media and invalidated on replacement", () => {
+        const f = workflowImageFixture();
+        const subject = workflowImageSubjects(f.request, f.nodes)[0];
+        const reference = createCanvasNode(CanvasNodeType.Image, { x: 0, y: 0 }, { storageKey: "resource:fixture-reference", status: "success" });
+        f.nodes.push(reference);
+        nodeWorkflow(subject)!.assetProfile!.references = [{ nodeId: reference.id, signature: assetMediaSignature(reference), selected: true, variant: "base" }];
+        const request = { ...f.request, imageSubjectIds: [subject.id] };
+        const result = createWorkflowImages(request, f.nodes, f.connections, { x: 0, y: 0 });
+        expect(workflowImageReferences(result.created[0], result.nodes)[0].storageKey).toBe("resource:fixture-reference");
+        reference.metadata!.storageKey = "resource:changed";
+        expect(() => workflowImageReferences(result.created[0], result.nodes)).toThrow("参考图版本");
+        expect(() => createWorkflowImages(request, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("参考图版本");
+    });
+
+    test("scene and shot breakdown runs once; frames are selectable without producing all other frames", () => {
+        const f = workflowImageFixture();
+        expect(f.nodes.some((node) => nodeWorkflow(node)?.step === "direction.scenes")).toBe(false);
+        const shots = f.nodes.find((node) => nodeWorkflow(node)?.step === "direction.shots" && node.type === CanvasNodeType.Text)!;
+        expect(shots.metadata?.prompt).toContain("一次完成场次调度");
+        for (const step of ["direction.boards", "direction.start_frame", "direction.end_frame", "direction.keyframes"] as const) {
+            const request = { ...f.request, step, sourceNodeIds: defaultWorkflowSources(step, f.request.pipelineId, f.nodes).filter(Boolean), imagePrompt: "EP01-SH02: medium close-up, protagonist opens the door" };
+            const subject = workflowImageSubjects(request, f.nodes)[0];
+            const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 });
+            expect(result.created[0].metadata?.prompt).toContain("EP01-SH02");
+            expect(result.created[0].metadata?.prompt?.startsWith(productionRuleBlock("storyboard", "image"))).toBe(true);
+            expect(result.created[0].metadata?.prompt?.split("【制作执行规范 v")).toHaveLength(2);
+            expect(nodeWorkflow(result.created[0])?.episodeNumber).toBe(1);
+            expect(nodeWorkflow(result.created[0])?.sourceSteps).toEqual(["direction.production"]);
+            expect(() => createWorkflowImages({ ...request, imagePrompt: "", imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("镜头编号");
+        }
+    });
+
+    test("guide retains optional actions and requires real images for all assets", () => {
+        const f = workflowImageFixture();
+        const progress = deriveShortDramaProgress(f.nodes, f.connections);
+        const assetTasks = progress.steps.find((step) => step.id === "assets")!.tasks;
+        expect(assetTasks).toHaveLength(3);
+        expect(assetTasks[1].ready).toBe(true);
+        expect(assetTasks[1].stepIds).toContain("assets.special");
+        expect(assetTasks[2].ready).toBe(false);
+        expect(assetTasks[2].stepIds).toContain("assets.special_references");
+        const subjects = workflowImageSubjects(f.request, f.nodes);
+        const partial = createWorkflowImages({ ...f.request, imageSubjectIds: [subjects[0].id] }, f.nodes, f.connections, { x: 0, y: 0 });
+        partial.created[0].metadata!.status = "success"; partial.created[0].metadata!.storageKey = "resource:one";
+        const entry = deriveShortDramaProgress(partial.nodes, partial.connections).steps.find((step) => step.id === "assets")!.tasks[2];
+        expect(entry.entryStepId).toBe("assets.character_references");
+        expect(entry.ready).toBe(false);
+        const all = createWorkflowImages({ ...f.request, imageSubjectIds: subjects.map((node) => node.id) }, f.nodes, f.connections, { x: 0, y: 0 });
+        all.created.forEach((node) => { node.metadata!.status = "success"; node.metadata!.storageKey = `resource:${node.id}`; });
+        expect(deriveShortDramaProgress(all.nodes, all.connections).steps.find((step) => step.id === "assets")!.tasks[2].entryStepId).toBe("assets.environment_references");
+        const before = workflowSignature(all.created[0]); all.created[0].metadata!.storageKey = "resource:replacement";
+        expect(workflowSignature(all.created[0])).not.toBe(before);
+    });
+
+    test("unsubmitted image retry uses image mode and its saved model and settings", async () => {
+        const f = workflowImageFixture();
+        const subject = workflowImageSubjects(f.request, f.nodes)[0];
+        const result = createWorkflowImages({ ...f.request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 });
+        let prepared: any;
+        const api = { prepare: async (input: any) => { prepared = input; return input; }, create: async () => ({ id: "created" } as any), query: async () => { throw new Error("unexpected"); }, retry: async () => { throw new Error("unexpected"); } };
+        await retryWorkflowGeneration(result.created[0], undefined, "fixture", defaultConfig, api, result.nodes);
+        expect(prepared.mode).toBe("image"); expect(prepared.config.model).toBe(f.request.model);
+        expect(prepared.config.size).toBe("1536x1024"); expect(prepared.config.count).toBe("1");
+        expect(prepared.workflowBatch).toBeUndefined(); expect(prepared.streamText).toBe(false);
+    });
+
+    test("structured shots automatically choose the matching frame prompt without a text request", () => {
+        const f = workflowImageFixture();
+        const request = { ...f.request, step: "direction.end_frame" as const, sourceNodeIds: defaultWorkflowSources("direction.end_frame", f.request.pipelineId, f.nodes).filter(Boolean) };
+        const subject = workflowImageSubjects(request, f.nodes)[0];
+        const shots = workflowImageShots(subject, request.step);
+        expect(shots.map((shot) => shot.id)).toEqual(["SH01", "SH02"]);
+        const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imageShotId: "SH02" }, f.nodes, f.connections, { x: 0, y: 0 });
+        const node = result.created[0];
+        expect(node.metadata?.prompt).toContain("SHOT_2_END"); expect(node.metadata?.prompt).not.toContain("SHOT_1_END");
+        expect(nodeWorkflow(node)?.mediaShotId).toBe("SH02");
+        expect(workflowImageShots(subject, "direction.keyframes")[1].id).toBe("SH02/K1");
+        expect(() => createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imageShotId: "missing" }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("所选镜头");
+        subject.metadata!.content = "Legacy freeform production document";
+        expect(workflowImageShots(subject, request.step)).toEqual([]);
+    });
+
+    test("frame references cannot cross episodes, source versions or shots", () => {
+        const f = workflowImageFixture();
+        const request = { ...f.request, step: "direction.start_frame" as const, sourceNodeIds: defaultWorkflowSources("direction.start_frame", f.request.pipelineId, f.nodes).filter(Boolean) };
+        const subjects = workflowImageSubjects(request, f.nodes);
+        const first = createWorkflowImages({ ...request, imageSubjectIds: [subjects[0].id], imageShotId: "SH01" }, f.nodes, f.connections, { x: 0, y: 0 });
+        const start = first.created[0]; start.metadata!.status = "success"; start.metadata!.storageKey = "resource:first-frame";
+        const end = { ...request, step: "direction.end_frame" as const, sourceNodeIds: [...request.sourceNodeIds, start.id], imageShotId: "SH01", imageSubjectIds: [subjects[0].id] };
+        expect(createWorkflowImages(end, first.nodes, first.connections, { x: 0, y: 0 }).created).toHaveLength(1);
+        expect(() => createWorkflowImages({ ...end, imageShotId: "SH02" }, first.nodes, first.connections, { x: 0, y: 0 })).toThrow("不同镜头");
+        expect(() => createWorkflowImages({ ...end, imageSubjectIds: [subjects[1].id] }, first.nodes, first.connections, { x: 0, y: 0 })).toThrow("同一集");
+    });
+
+    test("new media signatures detect resource edits while old saved signatures stay readable", () => {
+        const f = workflowImageFixture();
+        const subject = workflowImageSubjects(f.request, f.nodes)[0];
+        const node = createWorkflowImages({ ...f.request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 }).created[0];
+        node.metadata!.storageKey = "resource:initial";
+        const oldShape = structuredClone(node); delete oldShape.metadata!.shortDrama!.mediaKind;
+        const legacy = workflowSignature(oldShape); const current = workflowSignature(node);
+        expect(legacy).toStartWith("v2:"); expect(current).toStartWith("v3:");
+        expect(workflowSignatureMatches(node, legacy)).toBe(true);
+        expect(workflowSignatureMatches(node, current)).toBe(true);
+        node.metadata!.storageKey = "resource:changed";
+        expect(workflowSignatureMatches(node, current)).toBe(false);
+    });
+
+    test("downstream text uses media descriptions and references, never image bytes as prose", () => {
+        const f = workflowImageFixture();
+        const sourceIds = defaultWorkflowSources("direction.boards", f.request.pipelineId, f.nodes).filter(Boolean);
+        const subject = workflowImageSubjects({ step: "direction.boards", sourceNodeIds: sourceIds }, f.nodes)[0];
+        const images = createWorkflowImages({ ...f.request, step: "direction.boards", sourceNodeIds: sourceIds, imageSubjectIds: [subject.id], imageShotId: "SH01" }, f.nodes, f.connections, { x: 0, y: 0 });
+        const board = images.created[0]; board.metadata!.status = "success"; board.metadata!.content = "data:image/png;base64,RAW_IMAGE_BYTES";
+        const preview = createWorkflowDocuments({ ...f.request, step: "direction.previsualization", sourceNodeIds: [subject.id, board.id], model: "fixture::text" }, images.nodes, images.connections, { x: 0, y: 0 });
+        expect(preview.created[0].metadata?.prompt).not.toContain("RAW_IMAGE_BYTES");
+        expect(preview.created[0].metadata?.prompt).toContain("SHOT_1_BOARD");
+        expect(preview.created[0].metadata?.prompt).toContain("实际画面");
+    });
+});

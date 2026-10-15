@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-type Scenario = "image-cleanup" | "scope-cleanup-switch" | "scope-cleanup-late-canvas-reference" | "video-commit-race" | "audio-commit-race" | "canvas-batch-commit-race";
+type Scenario = "image-cleanup" | "scope-cleanup-switch" | "scope-cleanup-late-canvas-reference" | "local-conflict-draft-cleanup" | "video-commit-race" | "audio-commit-race" | "canvas-batch-commit-race";
 type ScenarioResponse<T> = { ok: true; result: T } | { ok: false; error: string };
 
 test("并发生成结果经真实持久化消费链路及重新读取后保留成功、失败和用户编辑", async () => {
@@ -62,4 +62,11 @@ test("generation video and audio materialization cannot race cleanup into a cata
         expect(result.blobPresent).toBe(true);
         expect(result.generationAssetCount).toBe(1);
     }
+});
+
+test("media referenced only by a conflict draft created during cleanup survives the sweep", async () => {
+    const result = await runScenario<{ referencedPresent: boolean; unusedPresent: boolean; draftCount: number }>("local-conflict-draft-cleanup");
+    expect(result.referencedPresent).toBe(true);
+    expect(result.unusedPresent).toBe(false);
+    expect(result.draftCount).toBe(1);
 });

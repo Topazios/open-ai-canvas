@@ -19,9 +19,9 @@ describe("editor command registry (golden file)", () => {
         });
     }
 
-    test("knownOps lists the 12 golden ops", () => {
+    test("knownOps lists the 13 golden ops", () => {
         expect(createEditorCommandRegistry().knownOps().sort()).toEqual(
-            ["addClip", "addSubtitle", "moveClip", "rebuildSubtitleClips", "removeClip", "removeSubtitle", "setClipProperty", "splitClip", "trimClip", "addTrack", "removeTrack", "setTrackFlag"].sort(),
+            ["addClip", "addSubtitle", "moveClip", "rebuildSubtitleClips", "removeClip", "removeSubtitle", "setClipProperty", "splitClip", "trimClip", "addTrack", "removeTrack", "setTrackFlag", "replaceShotMedia"].sort(),
         );
     });
 });

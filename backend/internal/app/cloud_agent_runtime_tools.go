@@ -555,6 +555,16 @@ func (s *Service) advanceCloudAgentTool(run *model.CloudAgentExecution, state *c
 			} else {
 				toolErr = BadAuthRequest("工具未获本轮权限授权")
 			}
+		case state.Request.Production != nil && strings.HasPrefix(call.Function.Name, "production_"):
+			checkpoint, _ := json.Marshal(state)
+			toolErr = repo.ProductionAgentTransaction(func(tx *repository.Repository) error {
+				var err error
+				result, err = productionAgentTool(tx, run, state, call, policy)
+				return err
+			})
+			if toolErr != nil {
+				_ = json.Unmarshal(checkpoint, state)
+			}
 		case call.Function.Name == "canvas_apply_ops":
 			result, toolErr = applyCloudAgentCanvas(repo, run.UserID, state.Request.CanvasID, call, policy, cloudAgentCanvasEventRecorder(run.ID, state))
 		case call.Function.Name == "canvas_arrange_nodes":

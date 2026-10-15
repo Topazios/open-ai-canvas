@@ -1,4 +1,5 @@
 import { CollectionToolbar } from "@/components/layout/collection-toolbar";
+import { useConfirmedTaskRetry } from "@/components/use-confirmed-task-retry";
 import { App, Button, Drawer, Form, Input, Modal, Typography } from "antd";
 import { Switch } from "@/components/ui/base/switch";
 import { SegmentedControl } from "@/components/ui/base/segmented-control";
@@ -14,7 +15,7 @@ import { formatTaskKind, generationTaskStatusLabel, mediaDeliverySummary, operat
 import { buildVideoOperationPrompt } from "@/lib/prompts";
 import { backendProviderConfig, logicalModelIDForConfig } from "@/services/api/generation-task";
 
-import { createGenerationTask, formatTaskLog, listGenerationTasks, listTaskLogs, queryFailedVideoProviderTask, queryGenerationTask, retryGenerationTask, recoverGenerationTaskMedia, type CreateTaskInput, type GenerationTask, type TaskLog } from "@/services/api/task-center";
+import { createGenerationTask, formatTaskLog, listGenerationTasks, listTaskLogs, queryFailedVideoProviderTask, queryGenerationTask, recoverGenerationTaskMedia, type CreateTaskInput, type GenerationTask, type TaskLog } from "@/services/api/task-center";
 import { syncGenerationTaskToCanvasStore } from "@/lib/canvas/canvas-generation-task-sync";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { resolveModelRequestConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -299,6 +300,7 @@ export default function TasksPage() {
         };
     }, [loadTasks]);
 
+    const confirmedRetry = useConfirmedTaskRetry();
     const runAction = async (id: string) => {
         setActingId(id);
         try {
@@ -306,13 +308,14 @@ export default function TasksPage() {
             const savingMedia = Boolean(currentTask.mediaStage);
             const next = currentTask.status === "queued" || currentTask.status === "running" || currentTask.status === "succeeded"
                 ? currentTask
-                : savingMedia ? await recoverGenerationTaskMedia(id) : await retryGenerationTask(id);
+                : savingMedia ? await recoverGenerationTaskMedia(id) : await confirmedRetry(id);
             setTasks((items) => items.map((item) => (item.id === id ? next : item)));
             setDetailTask((current) => (current?.id === id ? { ...current, ...next } : current));
             setStatusFilter("active");
             setPage(1);
             message.success(next.status === "succeeded" ? "任务已完成" : savingMedia ? "正在恢复作品保存，不会重新生成" : "任务已在队列中");
         } catch (error) {
+            if (error instanceof Error && error.name === "AbortError") return;
             message.error(error instanceof Error ? error.message : "操作失败");
         } finally {
             setActingId("");

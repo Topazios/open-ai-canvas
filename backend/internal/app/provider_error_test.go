@@ -3,6 +3,8 @@ package app
 import (
 	"strings"
 	"testing"
+
+	"infinite-canvas/backend/internal/model"
 )
 
 func TestProviderFailureDetailsReadsTopLevelModerationError(t *testing.T) {
@@ -37,9 +39,14 @@ func TestProviderFailureDetailsPrefersNestedBusinessCode(t *testing.T) {
 	}
 }
 
-func TestContentModerationFailureRequiresExactProviderCode(t *testing.T) {
-	if !isContentModerationFailure(`{"code":"sensitive_words_detected"}`) {
-		t.Fatal("expected moderation error to be detected")
+func TestContentModerationFailureRecognizesProviderAndNormalizedErrors(t *testing.T) {
+	for _, value := range []string{`{"code":"sensitive_words_detected"}`, `{"error":{"code":"moderation_blocked"}}`, "content_policy_violation", "Your request was rejected by the safety system", "请求内容未通过模型服务安全审核，请调整后重试"} {
+		if !isContentModerationFailure(value) {
+			t.Fatalf("expected moderation error to be detected: %q", value)
+		}
+		if output := taskSummaryForOutput(model.Task{Error: value}); output.ErrorCode != contentModerationErrorCode {
+			t.Fatalf("missing public moderation code: %q", output.ErrorCode)
+		}
 	}
 	if isContentModerationFailure("上游 HTTP 400") {
 		t.Fatal("generic HTTP 400 must remain retryable")

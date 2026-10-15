@@ -170,6 +170,13 @@
     box-shadow: none;
 }
 
+.agent-context-popover.ant-popover {
+    z-index: calc(var(--z-toast) + 2) !important;
+    --agent-material-solid: color-mix(in srgb, var(--agent-ink) 3%, var(--agent-surface-base));
+    --agent-surface-raised: color-mix(in srgb, var(--agent-ink) 6%, var(--agent-material-solid));
+    --agent-caption: color-mix(in srgb, var(--agent-ink) 62%, var(--agent-surface-base));
+}
+
 .agent-context-popover .ant-popover-inner {
     overflow: hidden;
     padding: 0;
@@ -184,6 +191,9 @@
 
 .agent-context-panel {
     width: min(348px, calc(100vw - 32px));
+    max-height: calc(100dvh - 48px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 14px 15px 12px;
     color: var(--agent-ink, inherit);
     font-size: 12px;

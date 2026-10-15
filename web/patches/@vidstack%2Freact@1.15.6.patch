@@ -1,0 +1,39 @@
+diff --git a/dev/chunks/vidstack-DxAMdmBt.js b/dev/chunks/vidstack-DxAMdmBt.js
+index 30f2afbc74899003a7f410188e62ad5e159bda82..51f99c75f347f065eac72ec3124a9f3f4d214227 100644
+--- a/dev/chunks/vidstack-DxAMdmBt.js
++++ b/dev/chunks/vidstack-DxAMdmBt.js
+@@ -7110,6 +7110,8 @@ var SliderPreview = class extends Component {
+ 		onDispose(() => resize.disconnect());
+ 	}
+ 	#updatePlacement = animationFrameThrottle(() => {
++		// A queued frame may run after the slider and preview have detached.
++		if (!this.el) return;
+ 		const { disabled, orientation } = this.#slider;
+ 		if (disabled()) return;
+ 		const el = this.el, { offset, noClamp } = this.$props;
+diff --git a/prod/chunks/vidstack-DKRnfION.js b/prod/chunks/vidstack-DKRnfION.js
+index 4ef18e508e7d243282289a0f35b81199d127bf3d..d75b4db986622397a8a0ad9fd53d0124237de297 100644
+--- a/prod/chunks/vidstack-DKRnfION.js
++++ b/prod/chunks/vidstack-DKRnfION.js
+@@ -6836,6 +6836,8 @@ var SliderPreview = class extends Component {
+ 		onDispose(() => resize.disconnect());
+ 	}
+ 	#updatePlacement = animationFrameThrottle(() => {
++		// A queued frame may run after the slider and preview have detached.
++		if (!this.el) return;
+ 		const { disabled, orientation } = this.#slider;
+ 		if (disabled()) return;
+ 		const el = this.el, { offset, noClamp } = this.$props;
+diff --git a/server/chunks/vidstack-Dke-J4nH.js b/server/chunks/vidstack-Dke-J4nH.js
+index f8d21d7273e85f4c39382738e4c7ac8e4c2f32bc..0ff4ba7b903a01448164ed78d609377a9d899680 100644
+--- a/server/chunks/vidstack-Dke-J4nH.js
++++ b/server/chunks/vidstack-Dke-J4nH.js
+@@ -6837,6 +6837,8 @@ var SliderPreview = class extends Component {
+ 		onDispose(() => resize.disconnect());
+ 	}
+ 	#updatePlacement = animationFrameThrottle(() => {
++		// A queued frame may run after the slider and preview have detached.
++		if (!this.el) return;
+ 		const { disabled, orientation } = this.#slider;
+ 		if (disabled()) return;
+ 		const el = this.el, { offset, noClamp } = this.$props;

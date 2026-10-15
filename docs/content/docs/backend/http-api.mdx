@@ -5,13 +5,113 @@ description: 信封、错误码与 OpenAPI
 
 # HTTP API 合同
 
+## 短剧制作规范
+
+新建 `POST /tasks` 请求中，`input.metadata.source` 为 `canvas-short-drama-workflow` 或 `canvas-workflow-batch-child` 时，`workflowStage` 使用 `story | assets | storyboard | voice | video | edit | review | delivery`。`canvas-story-development` 映射为 `story`，沿用其 `stage: topic | plan | outline | episodes | body` 子步骤。明确的非法阶段或任务类型与 `input.mode` 不一致在计费前拒绝；这些字段不代替权限或节点归属校验。
+
+后端按有效阶段和输出类型注入版本化[制作规范](/docs/backend/production-rules)，并将实际执行提示词用于任务记录、原有长度与模型能力校验及计费。已有同版规范不会重复追加；普通任务不改写。制作 Agent 通过系统策略接入，批量子任务继承阶段，使用含规范的有效请求生成确定性标识。语音合成的正文保持原样，不新增不受协议支持的供应商字段。现有任务和账单不批量迁移，不因此自动重试上游审核失败任务。
+
+图片任务同时执行已有 `references.promptMaxChars` 声明的 Unicode 字符数校验，常规模型计入实际系统提示词，已配置的图片工作流也校验输入正文。超限请求在预扣前拒绝；既有 Grok 字节限制继续生效。无阶段元数据的历史内部批次保留原输入和标识；客户端不能通过声明为子任务跳过阶段校验。
+
+## 图片超时后的确认重试
+
+`POST /tasks/:id/retry` 普通重试不需要请求体。图片任务执行失败、提交结果未知、没有上游任务编号且没有可恢复作品时，如果原计费订单为 `uncertain`，返回 HTTP 409、`reason: task_billing_review_required`、`details.billingOrderId`。前端应解释原请求仍可能产生费用，并让用户选择取消或确认重新生成，不能自动确认。
+
+用户确认后提交 `{ acknowledgedBillingOrderId: "原订单 ID" }`。后端校验当前任务所属用户、终态、订单和恢复条件，原订单保持待核对，新尝试按当前配置独立创建订单、预扣和结算。任务和节点 ID 不变，`routeRun` 增加；数据库按原执行轮次与订单做条件更新，拒绝陈旧请求与并发重复提交，失败时回滚新订单预扣。已删除节点、已有结果、待保存作品、已知上游任务、取消确认中及 Agent 任务不能借此绕过各自恢复路径。没有可查询编号的网关超时不能被当作已退款或已完成核对。
+
+直接渠道的新一轮重试会在同一个事务中保存 `not_sent` 提交记录、任务状态和计费订单；累计 worker 领取次数不作为新一轮是否已发出的依据。提交记录写入失败时整个重试回滚，进程重启后仍读取同一记录，派发只能成功一次。
+
+针对旧版本明确报“旧任务已尝试执行但缺少提交记录”的重试准备失败，同一 `/retry` 接口可补齐提交记录并继续本轮，**不另开订单、不重复预扣**。此恢复要求非首轮直接渠道、匹配原准备失败诊断、没有当前轮次路由记录、没有本轮 API 调用、没有结果或上游 ID，并在事务内核对任务/订单归属及账务状态。本轮预扣从误标的待核对恢复到待执行，先前真正超时的订单保持原状。缺少日志本身不能作为安全恢复依据，已退款/结算/人工处理的订单不能走此恢复。
+
+图片任务的审核拒绝（包括 `moderation_blocked`、`content_policy_violation` 及标准化中文审核错误）统一输出 `errorCode: sensitive_words_detected`。这类原任务不能直接 `/retry`。画布流程图片提供“修改生成要求”入口，修改后通过现有 `POST /tasks` 创建关联原任务的尝试（`retryOf`、`attemptGroupId`），并更新同一节点的任务绑定；原任务及其账单保留。取消或原样提交不会发起生成，费用继续按正常账单处理，不从审核错误文案推断是否退款。
+
+## 模型协议分类与选择
+
+`GET /plugins/catalog` 的每个 provider 新增 `contract`、`contractLabel`、`agentSupported`。接口契约枚举为 `chat-completions`、`responses`、`messages`、`generate-content`、`image-generations`、`videos`、`speech`、`audio-tasks`、`workflow`、`custom`。`id` 仍标识真正执行鉴权、参数转换、响应解析的适配配置；同一契约下的适配配置不能互相无条件替换。管理端按模型能力和契约展示，扩展协议与既有适配配置继续可选。
+
+模型写接口的 `capabilityConfig.protocols` 接收 `{policy: "auto" | "fixed", supported: string[]}`。`supported` 使用目录 provider ID，最多 16 项；默认 `protocol` 隐式属于支持范围。批量设置接口同时接收顶层 `protocols`，必须与 `capability`、`protocol` 一起提交。后端校验协议已启用且能力相符。只修改策略或支持范围时保留模型上下文等既有参数。媒体模型使用一个适配配置，其生成、编辑、轮询等操作由适配器分派。
+
+`auto` 模式下，普通文本生成和 Agent 都在明确支持的协议中优先选 Responses，其次默认协议和支持列表顺序；Agent 额外要求工具调用能力。`fixed` 始终使用默认协议。未配置支持列表的模型沿用默认协议，不按模型名、厂商名或“OpenAI 兼容”猜测 Responses 支持情况，也不发送收费探测请求。后台“测试模型”采用同一普通生成选择规则；一次文本测试成功不等于工具调用、结构化输出或多模态能力全部通过。
+
+任务准入时后端重新读取模型配置，清除客户端提交的 `selectedProtocol`，再将实际选择写入任务 `config.selectedProtocol`。同一执行尝试的 worker、恢复和直接重试保留此协议；所选适配器停用或移除时明确失败，不在不确定上游执行结果时换接口重发。逻辑模型按既有允许条件重新选路或用户重试重新选路时，清除旧渠道的选择并按新渠道声明重新固定协议，不能把旧选择带到备用渠道。后续新的 Agent 模型步骤、分批子任务仍重新读取当前模型配置。
+
+标准文本适配器的常规 `/v1` 前缀作为默认值处理，优先使用渠道显式配置的版本。通用 URL 解析保留代理路径、已转义路径和查询参数，避免重复版本；插件显式 `/v2/...` 等业务路径仍有效，`originPath` 不变。不同版本不代表服务兼容，不通过尝试多个版本选择接口。
+
+旧同步文本入口（时间轴编辑、提示词优化、图片审美检查、前台连接测试）也读取协议支持声明。系统中转根据数据库重新核验请求端点，不能仅凭客户端声明切换 Responses。中转请求体已经按协议组装，后端不再重写。未知扩展协议不能隐式落入 Responses；扩展执行仍使用后台任务适配器。
+
+Responses 普通生成与 Agent 统一处理 `input_text/input_image`、`text.format`、`max_output_tokens` 和思考参数；工具未显式设置 `strict` 时保持非严格语义。默认 `store: false`，会话和恢复继续由本地任务/Agent 管理，不自动启用供应商后台模式或 `previous_response_id`。SSE 必须接收到完成结果；失败、未完成、拒绝、缺少终态、空结果都不能当作完整正文采用。同步中转的 HTTP 200 未完成结果不能按成功结算，费用进入待核对。完整影响范围和验收见 [文本协议影响评估](./text-protocol-impact)。
+
+资产五步骤的新任务调用 `POST /agent/runs`，传入 `production: { targetNodeId }`、`permissionMode: "auto"`、模型和幂等键；不要求设置 `maxCredits` 或 `maxSteps`。制作任务以来源处理、产物保存和覆盖校验作为完成条件，不应用历史请求中的累计调用次数和任务积分上限。正常模型计费、单次报价授权、账户余额、权限与数据配额继续生效；普通 Agent 的预算规则不变。后端核验当前用户画布、目标容器和同流程正文来源，冻结版本；不由浏览器上传拼接后的全文。关闭页面不停止任务。
+
+`GET /agent/runs/:id` 的 `run.production` 包含 `targetNodeId`、`paused`、`waitingForBoundary`、`waitingForSharedFacts`、`processedPages`、`totalPages`、`artifactCount`、`validated`；`maxSteps` 返回 0 表示无累计次数上限。`POST /agent/runs/:id/production-control` 使用 `{action: "pause" | "resume"}`；取消仍用原 `/cancel`，旧 `maxSteps` 参数不再改变制作任务的执行边界。继续任务保留原始请求、累计调用、计费记录、正文事实、产物和节点绑定。暂停只阻止下一次模型派发；已有上游响应允许结束。失败恢复先检查来源、计费和调用状态，未知上游取消结果禁止重发。
+
+制作事实查询在作业清单中持久记录已查询的事实 ID，续跑指引定位尚未查询的事实页。读到新事实、保存正文事实或资产计为进展；重复查询相同内容不重置无进展检测。覆盖检查通过后，下一模型边界重新核验来源、产物与覆盖；仍有效则直接结束模型循环，不再收费调用一次模型来确认完成。真实错误、用户取消和持续空转仍会停止，并保留已有结果；不把这些停止原因视为成功。
+
+运行详情支持 `beforeSeq` 向前翻页，与 `sinceSeq` 互斥；`eventLimit` 为 1–500。`beforeSeq=N` 返回序号小于 N 的最近一页，页内升序。模型调度与完成分别记录 `production_model_started/completed`（taskId、step、状态），工具执行结果、保存进度、暂停和续跑沿用原事件日志。旧运行的 `context_pressure.requestId` 可用于展示历史调度；客户端不把推理正文或整个工具参数作为执行日志展示。
+
+制作节点详情和失败重试共用执行记录入口，画布不再显示独立调度浮层。每个节点独立读取状态，单个错误不会中断其它节点。已创建运行继续由后台推进；没有回执的持久请求显示“提交待确认”，用户显式继续后携原幂等键核对/提交，页面刷新不自动重发收费请求。提交失败原因写入节点 `errorDetails`。
+
+制作工具返回 `nextAction` 指向未处理页或分类事实查询。每页校验失败提供可修正的事实序号及 schema 错误，不部分保存或丢弃无效事实；已保存页复用原结果。模型提前结束时从下一未处理页继续，而不是反复触发全剧覆盖检查。连续 12 次调用没有读取新页或保存事实、资产时停止无进展循环，保留记录供显式续跑。该保护与调用次数、积分上限分别生效，不能代替真实输出质量验收。
+
+`POST /canvas-projects/:id/tasks/reconcile` 核对完整已保存画布中的节点与任务绑定，可传 `{deletedNodeIds: string[]}`（最多 5000 项）记录用户明确删除的节点。目标仍存在时不处理；普通任务没有首次落盘绑定证据时不因暂缺节点而取消。节点确认删除后，先取消制作 Agent/普通任务及 Agent 子调用，停止后逻辑移除任务。失败保留任务并重试，不把上游取消未确认描述为已退款。用户任务列表不再显示已移除记录，账务、资源、审计和幂等回执保留。成功保存画布、打开画布核对及每 30 秒的后台分页扫描都会尝试清理；浏览器关闭不影响补偿。已移除任务不能重试或继续，撤销节点删除也不自动重新发起收费请求。
+
+制作步骤来源签名使用带 `v2:` 标识的规范 JSON 哈希，不受后端对象字段排序影响；已有未带版本签名按原写入字段顺序验证。此修复不忽略正文变化、前置缺失、移出容器或断开连线等真实失效条件。
+
+制作运行只暴露 `production_status/read/facts/query/submit/check` 工具。正文页最多 3000 Unicode 字符，目录最多 12 条；事实查询限制 12 条及约 24KB，单次参数最多 32KB。`production_submit` 使用稳定 key、结构化 document、有效 factIds 和可选 design（variants/sounds/conflicts）；document 包含 facts/design/variants/sound/prompt/negativePrompt/continuity/uncertainties，服务端按类别统一生成 Markdown。人物必须包含角色声音文稿，并同步到 sounds 索引；规范 settings 只需 facts/design/continuity/uncertainties，style 不需要 variants。缺字段返回可修正工具错误，不将残缺文稿写成完整资产。修订需 expectedHash，最多 256 条新增事实引用，旧引用由后端累积保留；未提供的变体和冲突索引沿用旧值。人工修改、删除、移出及来源变化仍拒绝旧写入。
+
+`production_query` 可用 assetKey 读取单个已保存资产的全文与 expectedHash；增量修订保留已处理批次的内容。查询和覆盖检查的 pendingWork 返回一批遗漏事实、一个待补文稿及缺失字段，旧任务续跑也使用当前工具与制作规则。取消“连续三次模型未调用工具就失败”的旧判断；未完成时继续补齐，持续无进展保护仍保留。机器校验覆盖事实引用及必需文稿章节，不证明语义质量或声线建议已经获用户认可。
+
+新统一制作规范按八类独立正文输出：settings（世界观与规则）、story_continuity（人物关系与时间线）、style（全局视觉风格）、art_direction（美术与服化道）、cinematography（摄影与剪辑）、performance（表演与配音）、sound（音乐与环境声音）、generation（生成与一致性约束）。容器的 assetGroup.sections 与持久作业的 bibleSections 保存要求的分类，节点 bibleSection 和 assetKey 保存稳定分类枚举；阶段 step 沿用 assets.settings/assets.style，后续仍整体引用容器。production_status 返回分类及职责，production_check 必须验证全部要求分类存在且覆盖通过，pendingWork.missingBibleSections 指出遗漏。八类不是八次正文提取，共享同一事实库。
+
+旧容器及已开始作业均未声明分类时沿用 settings/style 两项范围，不自动覆盖或扩张旧内容。若旧后端为已显式声明 assetGroup.sections 的新容器创建了无 bibleSections 的作业，新版在来源与目标校验通过后，为未结束或可继续的失败作业恢复该分类清单，并原子清除旧覆盖通过标记；保留正文分页、已查询事实、已有文稿和回执。已完成或已取消作业不自动重开。每次新模型调度携带当前持久分类清单，避免沿用历史对话的两项限制。生成新版时使用八类。生成完成即可作为后续来源，不需要单独确认。编辑规范会按现有来源签名机制使旧下游版本失效，不自动覆盖用户修改或已生成资产。
+
+已有分批任务保留 `input.workflowBatch: { version: 2, scope, category, units, context }`：`category` 为 `bible/characters/environments/props/special`，`scope` 为流程标识；`units` 仅含正文，`context` 含制作方案、设定和风格等辅助约束。两者的单元格式均为 `{label,text}`。正文和辅助约束各最多 512 单元、单元 24000 Unicode 字符，合计 400 万字符。其它工作流和已存在任务保留下述 version 1 合同。
+
+version 2 解析请求不包含分类输出要求。服务端按用户、项目、流程、正文单元、解析提示词版本和模型配置生成稳定子任务标识，复用排队/运行/已成功的解析任务；自定义渠道凭据仅参与哈希，不暴露到标识和日志。更换模型/配置会重新解析，变更单个正文单元只使该单元失效。事实必须是完整 JSON 且包含可定位原文证据；各输出只消费相关类别与通用设定/风格/声音事实，再结合独立辅助约束归并。跨集同名主体与歧义仍交由分类输出核对，不将字符串同名强行判为同一实体。
+
+父任务的 `stage` 区分共享正文解析、等待名额和复用解析后的分类生成。并发创建以数据库任务主键和原有积分事务去重；取消一个协调父任务不取消仍可复用的子调用。无新增缓存表，解析结果使用现有任务记录及用户存储配额；删除相关任务历史后可能重新解析。失败和无效事实只在显式重试时重新调用，原始结果保留，不自动反复扣费。既有 version 1 运行任务不迁移或改写。
+
+长正文工作流仍通过 `POST /tasks`，提交 `type: canvas_text`、原步骤要求 `prompt`，以及 `input.workflowBatch: { version: 1, units: [{ label, text }] }`。普通短输入省略该字段。服务端验证文本模式、单元边界与容量后将操作设置为 `short_drama_batch`；前端不能自行创建无计划的同名操作。最多 512 单元，每单元 24000 Unicode 字符，总计 400 万；前端使用更保守的 20000 UTF-16 字符单元。总任务不调用模型、不冻结积分，实际子任务各自走正常模型准入及计费。
+
+`GET /tasks/:id` 的 `stage/progress` 表示批次进度，成功 `resultJson` 仍为 `{ mode: "text", text: "最终文稿" }`；不会把中间结果作为最终文稿。子任务的公开输入 metadata 包含 `source: canvas-workflow-batch-child`、`parentTaskId` 和 `batchKey`，不绑定画布结果节点。显式重试总任务只重新执行未成功的批次，费用待核对的子任务先阻断。后端释放父任务 Worker 租约后等待子任务，服务重启可从现有任务记录恢复；无需数据库迁移。父任务 POST 仍遵守原有“未知回执先查任务、不可盲目重发”的合同。
+
+文本流中的 `event: error` 表示生成失败，即使 HTTP 状态是 200。嵌套 `error.code` 精确为 `upstream_http2_stream_error` 时，公开提示为上游渠道 HTTP/2 流中断，不归为剧本内容或参数错误，也不回显该事件可能包含凭据的原始消息。仅有角色开始事件不算正文；错误前的部分正文保留为未完成片段，不产生完整成功结果。此分类不启用自动重试或自动更换渠道。
+
+剧情创作任务仍使用 `POST /tasks`，输入为 `type: canvas_text`、`input.textOptions.stream: true`，`input.metadata` 包含 `source: canvas-story-development`、`storyNodeId`、`clientOperationId`、阶段及流水线标识。`GET /tasks` 摘要的 `clientContext` 为此来源返回 `storyNodeId` 与 `clientOperationId`，不返回完整输入或密钥；取得 ID 后读取 `GET /tasks/:id` 的完整结果。它们仅用于恢复关联，不能当作服务端幂等合同。客户端提交结果不确定时先查原任务，不自动再 POST；关闭页面只停止查询，明确点击停止才调用取消接口。本次不增加数据库迁移。
+
+文本推理强度使用 `input.textOptions.reasoningEffort: low | medium | high`，缺省为 `medium`；非法值在任务准入时拒绝。`POST /agent/runs` 使用同名顶层字段，持久运行、工具续步和制作任务恢复沿用创建时的值。分批子任务继承父任务强度，正文事实复用标识包含强度。前端按用户作用域记忆选择，制作节点记录提交时的强度；改变偏好只影响后续新任务。
+
+OpenAI Responses 写入 `reasoning.effort`，Chat Completions 写入 `reasoning_effort`。Claude 4.6 及以上使用 adaptive thinking 与 `output_config.effort`；旧版 Claude 使用思考 token 预算（低/中/高目标分别为 1024/4096/8192），预算受总输出上限约束，输出上限不足以容纳最小思考预算时不注入思考配置。Gemini 3 系列使用 `generationConfig.thinkingConfig.thinkingLevel`，仅支持低/高的 Gemini 3.0 Pro 将中映射到高；较早模型使用对应 token 预算。自定义未知协议不注入未经声明的字段，具体模型是否接受推理参数仍由渠道能力决定，失败不静默删除参数并重新付费请求。图片、视频、语音任务不注入文本强度。旧 Agent 显式 `reasoningMode: off`、内部压缩及超时/空输出恢复的 `reasoningDisabled: true` 不发送推理配置，不被新的默认强度覆盖。
+
 路径前缀是 `/api`。前后端一起发布，不按 `/api/v1`、`/api/v2` 做路径版本。不兼容变更随版本一起改接口和调用方。
 
 机器可读规范：运行中的 `GET /api/openapi.yaml`，源文件 `backend/internal/handler/openapi.yaml`。前端 TypeScript 仍走 `web/src/services/api` 的 `http`，不从 OpenAPI 生成客户端。
 
+`POST /api/projects/:id/canvas-links` 仍使用 `{ canvasId, unitId, role? }`；自由画布的新预览流程额外提交 `expectedCanvasRevision`。服务端校验用户/项目/章节归属与画布版本，把归属、画布文档、历史、章节链接和项目版本作为一个事务；预览过期返回 HTTP 409、`reason: conflict`。旧调用方不提交预期版本时仍以服务端当前版本建立关系，不能提供“先预览后确认”的并发保证。相同项目/画布/章节重试返回原关联而不重复更新画布。
+
 出站模型服务域名解析失败返回 HTTP / `code: 502`、`reason: upstream_dns_failed`，不归类为用户参数错误。公开消息不包含上游域名、DNS 服务器或请求 URL；原始解析错误仅保留在内部错误链。此分类不会自动重试、切换渠道或放宽 SSRF 校验；上下文取消仍按取消处理。
 
 模型 HTTP 失败及经过 Provider 错误转换的业务失败，在通用提示后追加经过过滤的 `；上游：具体原因`，供任务错误和画布卡片展示内容安全、提示词、尺寸等可操作信息。只读取上游 `error` / `message` / `msg` / `detail` 消息字段，不回传整个 JSON；消息中的 HTTP(S) URL 隐藏，包含余额、账务、凭据、请求诊断或 HTML 的消息不追加原文，保留通用分类提示。后台响应拦截规则仍对最终用户文案生效；不会修改历史任务错误或改变重试、退款策略。
+
+## 画布节点与项目镜头映射
+
+节点与镜头映射使用以下登录接口，统一返回业务信封：
+
+| 接口 | 请求与结果 |
+| --- | --- |
+| `GET /api/projects/:id/canvases/:canvasId/node-shot-links` | 返回 `{ links, views }`；空 links 可能为 `null`，views 为空数组 |
+| `POST /api/projects/:id/canvases/:canvasId/node-shot-links` | `{ unitId, nodeId, shotId, artifactId?, expectedCanvasRevision, expectedProjectRevision }`；返回 `{ link }` |
+| `POST /api/projects/:id/canvases/:canvasId/node-shot-links/:nodeId/unlink` | `{ expectedLinkId, expectedProjectRevision }`；返回 `{ nodeId }` |
+
+建立关系前须保存画布并明确确认预览。服务端检查项目/画布归属、已有章节关系、节点唯一性、镜头归属及当前修订记录；可选产物仅接受当前修订已采用且类型匹配的就绪产物，其资源须属于当前用户并处于 `ready`。映射变更与项目 revision 推进同事务，画布 revision、原节点、镜头正文和产物采用状态保持原样。相同且仍有效的关系重试不重复推进版本。
+
+无登录返回 401；项目/画布不存在或无权访问返回 404；参数、章节/镜头/产物失效或项目归档返回 400；预览 revision 或待解除映射发生变化返回 409、`reason: conflict`；真实数据库故障为 500，不能包装为成功或参数错误。解除关系允许清理已删除节点/镜头的残留映射，不删除业务镜头。
+
+`link` 保存 `projectId/canvasId/unitId/nodeId/shotId/shotRevisionId/artifactId` 和记录 ID/时间。`views` 按 `linkId` 返回关联修订、产物、镜头标题、当前修订 ID、`resourceAvailable` 和 `state`；读取沿用权限检查，资源按用户过滤并分批查询，不发起生成或改写业务记录。
+
+`state` 为 `current | node_missing | unit_missing | shot_missing | revision_missing | shot_revised | artifact_changed | node_type_changed | resource_unavailable`。旧修订只读保留，不能静默换成新采用版本；关联产物的资源后来删除或不再 ready，会返回不可用。`resourceAvailable` 是读取时数据库状态，不保证后续网络、对象存储或解码成功，资源访问仍使用原授权 API。状态既不是审核记录，也不是完成证明。
+
+画布以只读投影展示文字/图片/音视频节点的业务内容，提供原节点切换和原工作台编辑入口；投影不进入节点保存、撤销、Agent 更新或生成输入。前台每 15 秒及窗口重新聚焦刷新，用户也可手动刷新；读取失败时停用投影媒体并保留原节点。生成输入与连线消费业务投影、分组容器业务预览及审核/交付回显仍待后续接入。
 
 ## 资源访问与 OSS/CDN 分发
 

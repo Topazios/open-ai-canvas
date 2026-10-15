@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "antd";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { WandSparkles, X } from "lucide-react";
@@ -27,12 +27,14 @@ export function BatchGenerationSettingsDialog({ open, config, rowCount, concurre
     const theme = canvasThemes[useActiveTheme()];
     const [generationConfig, setGenerationConfig] = useState<AiConfig>(config);
     const [cameraControl, setCameraControl] = useState<CameraControlOptions | undefined>(undefined);
+    const wasOpen = useRef(false);
 
     useEffect(() => {
-        if (open) {
+        if (open && !wasOpen.current) {
             setGenerationConfig(config);
             setCameraControl(undefined);
         }
+        wasOpen.current = open;
     }, [config, open]);
 
     const handleConfigChange = (key: "quality" | "size" | "transparentBackground" | "count", value: string) => {

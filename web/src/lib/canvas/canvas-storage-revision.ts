@@ -2,6 +2,7 @@ import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import { normalizeAssetCategory } from "@/lib/asset-category";
 import { sameCanvasContent } from "@/lib/canvas/canvas-content";
+import { canonicalize } from "json-canonicalize";
 
 export type CanvasStorageTombstones = {
     projects: Record<string, number>;
@@ -105,7 +106,7 @@ export function serializeCanvasStorageDocument(document: CanvasStorageDocument) 
 
 function deepEqual(left: unknown, right: unknown) {
     if (Object.is(left, right)) return true;
-    return JSON.stringify(left) === JSON.stringify(right);
+    return canonicalize(left) === canonicalize(right);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

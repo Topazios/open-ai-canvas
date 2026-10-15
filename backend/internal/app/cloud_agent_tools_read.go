@@ -25,10 +25,14 @@ func cloudAgentWrite(name string) bool {
 	return name == "canvas_apply_ops" || name == "canvas_arrange_nodes" || name == "generate_media" || name == "image_layer_split" || name == "canvas_create_storyboard" || name == "canvas_edit_storyboard" || name == "canvas_edit_batch_table"
 }
 
-// 同参缓存只能拦住“原样重复”的读取。模型也可能不断修改 offset、nodeIds 或
-// profile scope 来绕过缓存，因此本轮还要限制所有只读快照工具的累计调用次数。
-// 该上限高于正常画布分页读取所需次数，但足以在异常循环继续消耗模型额度前止损。
+// 同参缓存只能拦住“原样重复”的读取。普通画布 Agent 还需要限制所有只读
+// 快照工具的累计调用次数，避免模型在异常循环中持续消耗请求。制作 Agent
+// 使用 production_* 工具和持久化进度，不使用这条普通画布护栏。
 const cloudAgentMaxReadToolCallsPerRun = 32
+
+func cloudAgentReadToolBudgetEnabled(state *cloudAgentRuntime) bool {
+	return state == nil || state.Request.Production == nil
+}
 
 func cloudAgentReadToolCacheable(name string) bool {
 	switch name {
@@ -114,10 +118,12 @@ func cloudAgentReadToolCached(repo *repository.Repository, userID string, state 
 		return nil, errors.New("Agent 只读工具缺少运行时状态")
 	}
 	if !cloudAgentReadToolCacheable(call.Function.Name) {
-		if state.ReadToolCalls >= cloudAgentMaxReadToolCallsPerRun {
+		if cloudAgentReadToolBudgetEnabled(state) && state.ReadToolCalls >= cloudAgentMaxReadToolCallsPerRun {
 			return nil, &cloudAgentReadLoopError{ToolName: call.Function.Name, Count: state.ReadToolCalls + 1, Budget: true, ReasonCode: "read_budget_exceeded"}
 		}
-		state.ReadToolCalls++
+		if cloudAgentReadToolBudgetEnabled(state) {
+			state.ReadToolCalls++
+		}
 		return cloudAgentReadTool(repo, userID, state, call, services...)
 	}
 	key := cloudAgentReadCacheKeyForState(repo, userID, state, call)
@@ -158,13 +164,15 @@ func cloudAgentReadToolCached(repo *repository.Repository, userID string, state 
 			}
 		}
 	}
-	if state.ReadToolCalls >= cloudAgentMaxReadToolCallsPerRun {
+	if cloudAgentReadToolBudgetEnabled(state) && state.ReadToolCalls >= cloudAgentMaxReadToolCallsPerRun {
 		return nil, &cloudAgentReadLoopError{ToolName: call.Function.Name, Count: state.ReadToolCalls + 1, Budget: true, ReasonCode: "read_budget_exceeded"}
 	}
 	// Cache replays are not new reads. Only a cache miss consumes the bounded
 	// read budget; otherwise a model repeating the same skill/page would still
 	// terminate after 32 harmless acknowledgements.
-	state.ReadToolCalls++
+	if cloudAgentReadToolBudgetEnabled(state) {
+		state.ReadToolCalls++
+	}
 
 	state.readCacheExecution = true
 	result, err := cloudAgentReadTool(repo, userID, state, call, services...)

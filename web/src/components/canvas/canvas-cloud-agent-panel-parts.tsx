@@ -154,8 +154,31 @@ export function formatContextBytes(bytes: number | undefined) {
     return `${Math.round(bytes).toLocaleString("zh-CN")} 字节`;
 }
 
-export function AgentContextRing({ view }: { view: AgentContextUsageView }) {
+export function AgentContextRing({ view, theme }: { view: AgentContextUsageView; theme: CanvasTheme }) {
     const [open, setOpen] = useState(false);
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    const detailRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!open) return;
+        const closeOutside = (event: PointerEvent) => {
+            if (!(event.target instanceof Node)) return;
+            if (triggerRef.current?.contains(event.target) || detailRef.current?.closest(".agent-context-popover")?.contains(event.target)) return;
+            setOpen(false);
+        };
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" || event.isComposing) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setOpen(false);
+            triggerRef.current?.focus({ preventScroll: true });
+        };
+        window.addEventListener("pointerdown", closeOutside, true);
+        window.addEventListener("keydown", closeOnEscape, true);
+        return () => {
+            window.removeEventListener("pointerdown", closeOutside, true);
+            window.removeEventListener("keydown", closeOnEscape, true);
+        };
+    }, [open]);
     const marker = view.compactRatio && view.compactRatio > 0 && view.compactRatio < 1 ? view.compactRatio : undefined;
     const percent = view.ratio === undefined ? view.label : `${Math.round(view.ratio * 100)}%`;
     const meterLabel = view.ratio === undefined ? "—" : percent;
@@ -174,11 +197,14 @@ export function AgentContextRing({ view }: { view: AgentContextUsageView }) {
             onOpenChange={setOpen}
             trigger="click"
             placement="bottomRight"
+            // Keep the detail readable while its parent panel scrolls the trigger out of view.
+            align={{ offset: [0, 0], overflow: { adjustX: true, adjustY: true, shiftX: true, shiftY: -Infinity } }}
             arrow={false}
             overlayClassName="agent-context-popover"
-            getPopupContainer={(trigger) => trigger.closest<HTMLElement>(".canvas-agent-panel") ?? document.body}
+            getPopupContainer={() => document.body}
+            styles={{ root: { "--agent-surface-base": theme.node.panel, "--agent-ink": theme.node.text, "--agent-accent": theme.accent.primary } as CSSProperties }}
             content={
-                <div className="agent-context-panel" data-phase={view.phase}>
+                <div ref={detailRef} className="agent-context-panel" data-phase={view.phase} data-canvas-no-zoom data-canvas-wheel-scroll onWheel={(event) => event.stopPropagation()}>
                     <span className="agent-context-eyebrow">下一次请求 · 上下文窗口占用</span>
                     <div className="agent-context-panel-head">
                         <strong>{usageHeading}</strong>
@@ -243,7 +269,7 @@ export function AgentContextRing({ view }: { view: AgentContextUsageView }) {
                 </div>
             }
         >
-            <button type="button" className={`agent-context-ring is-${view.phase}`} aria-label={`${usageHeading}，${phaseLabel}。点击查看明细`} aria-expanded={open} title="查看上下文用量" onPointerDown={(event) => event.stopPropagation()}>
+            <button ref={triggerRef} type="button" className={`agent-context-ring is-${view.phase}`} aria-label={`${usageHeading}，${phaseLabel}。点击查看明细`} aria-expanded={open} title="查看上下文用量" onPointerDown={(event) => event.stopPropagation()}>
                 <span
                     className="agent-context-ring-visual"
                     aria-hidden="true"

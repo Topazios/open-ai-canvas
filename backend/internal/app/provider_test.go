@@ -657,7 +657,7 @@ func TestRunDeclarativeAgentTaskOmitsToolChoiceBeforeThinkingRequest(t *testing.
 	}
 }
 
-func TestRunAgentToolTaskFallsBackToolChoiceForImplicitThinking(t *testing.T) {
+func TestRunAgentToolTaskFallsBackToolChoiceForUpstreamImplicitThinking(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	var choices []interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -667,7 +667,7 @@ func TestRunAgentToolTaskFallsBackToolChoiceForImplicitThinking(t *testing.T) {
 		}
 		choice, exists := body["tool_choice"]
 		if _, exists := body["reasoning_effort"]; exists {
-			t.Errorf("undeclared thinking should not add reasoning options: %#v", body["reasoning_effort"])
+			t.Errorf("explicitly disabled reasoning should not add effort: %#v", body["reasoning_effort"])
 		}
 		if exists {
 			choices = append(choices, choice)
@@ -686,6 +686,7 @@ func TestRunAgentToolTaskFallsBackToolChoiceForImplicitThinking(t *testing.T) {
 	config := providerConfig{BaseURL: server.URL, APIKey: "key", Model: "thinking-model"}
 	result, err := runAgentToolTask(context.Background(), canvasGenerationInput{
 		Config:        config,
+		TextOptions:   canvasTextOptions{ReasoningDisabled: true},
 		AgentRequests: &agentToolRequests{ChatCompletion: map[string]interface{}{"messages": []interface{}{}, "tool_choice": "required"}},
 	})
 	if err != nil {

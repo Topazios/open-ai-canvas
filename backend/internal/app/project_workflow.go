@@ -56,6 +56,38 @@ type RegisterTaskOutputRequest struct {
 	OutputJSON     string `json:"outputJson"`
 }
 
+func (s *Service) SelectShotArtifact(userID string, projectID string, shotID string, artifactID string) (model.ShotArtifact, error) {
+	if _, err := s.activeProjectForUser(userID, projectID); err != nil {
+		return model.ShotArtifact{}, err
+	}
+	shot, err := s.repo.ShotForProject(projectID, shotID)
+	if err != nil {
+		return model.ShotArtifact{}, err
+	}
+	artifact, err := s.repo.ShotArtifactForProject(projectID, artifactID)
+	if err != nil {
+		return model.ShotArtifact{}, err
+	}
+	if artifact.ShotID != shot.ID {
+		return model.ShotArtifact{}, BadAuthRequest("产物不属于指定镜头")
+	}
+	if artifact.Status != "ready" {
+		return model.ShotArtifact{}, BadAuthRequest("只有已就绪产物才能被采用")
+	}
+	if artifact.RevisionID != "" && shot.CurrentRevisionID != "" && artifact.RevisionID != shot.CurrentRevisionID {
+		return model.ShotArtifact{}, BadAuthRequest("产物对应的镜头版本已过期")
+	}
+	updatedAt := time.Now()
+	if err := s.repo.SelectShotArtifact(projectID, shotID, artifactID, updatedAt); err != nil {
+		return model.ShotArtifact{}, err
+	}
+	selected, err := s.repo.ShotArtifactForProject(projectID, artifactID)
+	if err != nil {
+		return model.ShotArtifact{}, err
+	}
+	return *selected, nil
+}
+
 func (s *Service) EnsureBuiltinProjectWorkflowTemplate() error {
 	if _, err := s.repo.WorkflowTemplateVersion(builtinShortDramaWorkflowKey, builtinShortDramaWorkflowVersion); err == nil {
 		return nil

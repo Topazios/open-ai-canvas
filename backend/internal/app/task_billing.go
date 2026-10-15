@@ -24,7 +24,7 @@ type taskBillingRepository interface {
 	RefundBillingOrder(orderID string, errorText string) error
 	MarkBillingUncertain(orderID string, errorText string) error
 	BillingOrder(orderID string) (*model.BillingOrder, error)
-	TaskHasSuccessfulBillableCall(taskID string) (bool, error)
+	TaskHasSuccessfulBillableCall(taskID string, orderID string) (bool, error)
 }
 
 var (
@@ -103,7 +103,7 @@ func (c *taskBillingCoordinator) BillingFailureRequiresReview(orderID string, ta
 	if orderErr != nil || order == nil || order.Status == model.BillingStatusUncertain {
 		return true
 	}
-	hasSuccessfulCall, logErr := c.repo.TaskHasSuccessfulBillableCall(taskID)
+	hasSuccessfulCall, logErr := c.repo.TaskHasSuccessfulBillableCall(taskID, orderID)
 	return logErr != nil || hasSuccessfulCall
 }
 

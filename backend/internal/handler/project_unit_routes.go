@@ -205,6 +205,56 @@ func registerProjectUnitRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"canvasId": c.Param("canvasId"), "unitId": c.Param("unitId")})
 	})
+	r.GET("/projects/:id/canvases/:canvasId/node-shot-links", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		links, views, err := svc.CanvasNodeShotMappingViews(user.ID, c.Param("id"), c.Param("canvasId"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"links": links, "views": views})
+	})
+	r.POST("/projects/:id/canvases/:canvasId/node-shot-links", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
+		var req service.LinkCanvasNodeShotRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		link, err := svc.LinkCanvasNodeShot(user.ID, c.Param("id"), c.Param("canvasId"), req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"link": link})
+	})
+	r.POST("/projects/:id/canvases/:canvasId/node-shot-links/:nodeId/unlink", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
+		var req service.UnlinkCanvasNodeShotRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		if err := svc.UnlinkCanvasNodeShot(user.ID, c.Param("id"), c.Param("canvasId"), c.Param("nodeId"), req); err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"nodeId": c.Param("nodeId")})
+	})
 	r.DELETE("/projects/:id/canvases/:canvasId", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

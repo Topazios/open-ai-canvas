@@ -73,6 +73,9 @@ var errCloudAgentTruncatedToolArguments = errors.New("truncated tool arguments")
 
 // runCloudAgentModelStep 调度并等待一次模型步骤；第二个返回值表示失败是否值得重试。
 func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID string, messages []map[string]any, thinkingLevel string, correction ...map[string]any) (any, bool, error) {
+	if err := s.waitProductionAgentBoundary(ctx, userID, runID); err != nil {
+		return nil, false, err
+	}
 	// 运行时发起 /model 的同时会并发推送事件（message_start、session_snapshot 等），
 	// 这些事件也会推进运行 revision。调度模型步骤是 CAS 写入：冲突时重新读取
 	// 最新状态再调度，而不是把整轮判失败。冲突时事务整体回滚，不会产生任务或扣费。
@@ -89,9 +92,46 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		if cloudAgentRunTerminal(run.Status) {
 			return nil, false, fmt.Errorf("run already terminated")
 		}
-		if cloudAgentStepBudgetExhausted(&state) {
-			return nil, false, fmt.Errorf("step budget exhausted")
+		productionPolicy := state.Canonical.SystemPrompt
+		if state.Request.Production != nil && state.ActiveTaskID == "" {
+			job, manifest, doc, err := productionLoad(s.repo, run, &state)
+			if err != nil {
+				return nil, false, err
+			}
+			productionPolicy = productionScopedPolicy(state.Canonical.SystemPrompt, manifest)
+			if job.Validated {
+				facts, done, total, err := productionFacts(s.repo, userID, manifest)
+				if err != nil {
+					return nil, false, err
+				}
+				artifacts, err := s.repo.ProductionAgentArtifacts(userID, runID)
+				if err != nil {
+					return nil, false, err
+				}
+				if productionCoverage(manifest, doc, facts, artifacts, done, total)["valid"] == true {
+					return map[string]any{"text": fmt.Sprintf("已解析 %d/%d 页并保存 %d 项资产，覆盖检查通过；语义质量待人工验收。", done, total, len(artifacts)), "toolCalls": []any{}}, false, nil
+				}
+			}
 		}
+		if state.Request.Production != nil {
+			state.ProductionModelKey = productionHash([]any{messages, thinkingLevel, correction})
+			if receipt := state.ProductionModelReceipts[state.ProductionModelKey]; receipt != "" {
+				state.ActiveTaskID = receipt
+				break
+			}
+			if state.ActiveTaskID != "" {
+				break
+			}
+		}
+		if cloudAgentStepBudgetExhausted(&state) {
+			return nil, false, BadAuthRequest("本轮调用次数已用完，已保存进度；可在节点详情追加次数并继续")
+		}
+		// Production work is completion-driven. A fixed number of model steps
+		// without a newly saved artifact is not a reliable signal of a loop: a
+		// long repair pass may query already-indexed facts before submitting the
+		// next document. production_nextAction and production_check provide the
+		// actual progress boundary, so do not turn this diagnostic into a task
+		// quota or terminate a recoverable production run here.
 		if state.StepLimits, err = s.cloudAgentStepLimits(); err != nil {
 			return nil, false, err
 		}
@@ -107,12 +147,16 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			continue
 		}
 
+		if state.Request.Production != nil {
+			state.Canonical.Tools = productionAgentTools()
+			state.Canonical.SystemPrompt = productionPolicy
+		}
 		canonical := canonicalFromRuntimeMessages(messages, state.Canonical.Tools, state.Canonical.SystemPrompt)
 		// A continuation starts a fresh Pi process. If its session snapshot was
 		// unavailable, the runtime transcript is shorter than the server-authored
 		// canonical history. Reuse canonical directly so provider tool_calls are
 		// not accidentally converted as if they were Pi content blocks.
-		if len(state.Canonical.Messages) > len(messages) {
+		if len(state.Canonical.Messages) > len(messages) && state.Request.Production == nil {
 			canonical = state.Canonical
 		}
 		canonical.PromptCacheKey = state.Canonical.PromptCacheKey
@@ -134,9 +178,11 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 				"model":           firstNonEmpty(state.Request.ChannelModelKey, state.Request.Model),
 			},
 			"textOptions": map[string]any{
-				"stream":          true,
-				"thinking":        cloudAgentPiThinkingEnabled(thinkingLevel),
-				"maxOutputTokens": cloudAgentStepOutputBudget(state.StepLimits, state.BoostStepOutputBudget),
+				"stream":            true,
+				"thinking":          cloudAgentPiThinkingEnabled(thinkingLevel) && !state.ForceThinkingOff,
+				"reasoningEffort":   state.Request.ReasoningEffort.effective(),
+				"reasoningDisabled": !cloudAgentPiThinkingEnabled(thinkingLevel) || state.ForceThinkingOff,
+				"maxOutputTokens":   cloudAgentStepOutputBudget(state.StepLimits, state.BoostStepOutputBudget),
 			},
 		}
 		req := CreateTaskRequest{
@@ -195,6 +241,34 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 	if err := s.finishCloudAgentPiModelStep(userID, runID, task.ID, result.Text, result.Reasoning); err != nil {
 		return nil, false, err
 	}
+	if state.Request.Production != nil && len(result.ToolCalls) == 0 {
+		run, err := s.repo.CloudAgent(userID, runID)
+		if err != nil {
+			return nil, false, err
+		}
+		job, manifest, doc, err := productionLoad(s.repo, run, &state)
+		if err != nil {
+			return nil, false, err
+		}
+		facts, done, total, err := productionFacts(s.repo, userID, manifest)
+		if err != nil {
+			return nil, false, err
+		}
+		artifacts, err := s.repo.ProductionAgentArtifacts(userID, runID)
+		if err != nil {
+			return nil, false, err
+		}
+		if !job.Validated || productionCoverage(manifest, doc, facts, artifacts, done, total)["valid"] != true {
+			if err := s.productionAgentRepair(userID, runID); err != nil {
+				return nil, false, err
+			}
+			call, err := s.productionRepairCall(userID, runID, task.ID)
+			if err != nil {
+				return nil, false, err
+			}
+			result.ToolCalls = []cloudAgentCall{call}
+		}
+	}
 	return map[string]any{"text": result.Text, "reasoning": result.Reasoning, "toolCalls": runtimeToolCalls(result.ToolCalls)}, false, nil
 }
 
@@ -239,7 +313,7 @@ func (s *Service) finishCloudAgentPiModelStep(userID, runID, taskID, text, reaso
 		if err != nil {
 			return err
 		}
-		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 			fresh, err := cloudAgentDecode(current)
 			if err != nil {
 				return err
@@ -249,6 +323,22 @@ func (s *Service) finishCloudAgentPiModelStep(userID, runID, taskID, text, reaso
 			}
 			fresh.ActiveTaskID = ""
 			fresh.ActiveTextDraft = ""
+			if fresh.Request.Production != nil {
+				if task, err := repo.TaskForUser(userID, taskID); err == nil {
+					payload := map[string]any{"taskId": taskID, "step": fresh.Step, "status": task.Status, "text": "模型调用已完成"}
+					if task.Status != model.TaskStatusSucceeded {
+						payload["text"] = cloudAgentSafeMediaTaskError(task)
+					}
+					fresh.event(runID, "production_model_completed", payload)
+				}
+				if task, err := repo.TaskForUser(userID, taskID); err == nil && task.Status != model.TaskStatusSucceeded {
+					for key, id := range fresh.ProductionModelReceipts {
+						if id == taskID {
+							delete(fresh.ProductionModelReceipts, key)
+						}
+					}
+				}
+			}
 			if reasoning != "" {
 				fresh.event(runID, "reasoning_message", map[string]any{"messageId": taskID + ":reasoning", "text": truncateRunes(reasoning, 8000)})
 			}

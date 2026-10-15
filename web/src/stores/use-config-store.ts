@@ -1,4 +1,5 @@
 import { scopedLocalStorage } from "@/lib/user-scope";
+import { DEFAULT_REASONING_EFFORT, normalizeReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-effort";
 import { useMemo } from "react";
 import type { ModelTag } from "@/lib/model-tags";
 import { create } from "zustand";
@@ -125,6 +126,7 @@ export type AiConfig = {
     imageModel: string;
     videoModel: string;
     textModel: string;
+    textReasoningEffort?: ReasoningEffort;
     audioModel: string;
     audioVoice: string;
     audioFormat: string;
@@ -177,6 +179,7 @@ export const defaultConfig: AiConfig = {
     imageModel: "",
     videoModel: "",
     textModel: "",
+    textReasoningEffort: DEFAULT_REASONING_EFFORT,
     audioModel: "",
     audioVoice: "alloy",
     audioFormat: "mp3",
@@ -213,6 +216,7 @@ export const defaultConfig: AiConfig = {
 type ConfigStore = {
     config: AiConfig;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
+    rememberModel: (capability: ModelCapability, model: string) => void;
     replaceConfig: (config: AiConfig) => void;
     mergeSystemChannels: (channels: ModelChannel[]) => void;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
@@ -341,6 +345,11 @@ export const useConfigStore = create<ConfigStore>()(
     persist(
         (set) => ({
             config: defaultConfig,
+            rememberModel: (capability, model) => set((state) => {
+                const key = `${capability}Model` as const;
+                if (!model.trim() || state.config[key] === model || !selectableModelsByCapability(state.config, capability).includes(model)) return state;
+                return { config: { ...state.config, [key]: model } };
+            }),
             updateConfig: (key, value) =>
                 set((state) => ({
                     config: {
@@ -434,6 +443,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
             imageModel: normalizeSelectedModel(config.imageModel || model, channels, imageModels),
             videoModel: normalizeSelectedModel(config.videoModel, channels, videoModels),
             textModel: normalizeSelectedModel(config.textModel || model, channels, textModels),
+            textReasoningEffort: normalizeReasoningEffort(config.textReasoningEffort),
             audioModel: normalizeSelectedModel(config.audioModel || defaultConfig.audioModel, channels, audioModels),
             audioVoice: config.audioVoice || defaultConfig.audioVoice,
             audioFormat: config.audioFormat || defaultConfig.audioFormat,
@@ -615,24 +625,19 @@ export function buildApiUrl(baseUrl: string, path: string) {
     const requestPath = path.startsWith("/") ? path : `/${path}`;
     if (isSystemProxyBaseUrl(normalizedBaseUrl)) return `${normalizedBaseUrl}${requestPath}`;
 
-    const knownPrefixes = ["/api/plan/v3", "/api/v3", "/v1beta", "/v1", "/v2", "/v3"];
-    const requestPrefixFor = (value: string) =>
-        knownPrefixes.find((prefix) => {
-            const lower = value.toLowerCase();
-            return lower === prefix || lower.startsWith(`${prefix}/`) || lower.startsWith(`${prefix}?`) || lower.startsWith(`${prefix}#`);
-        }) || "";
-    const basePrefixFor = (value: string) =>
-        knownPrefixes.find((prefix) => {
-            const lower = value.toLowerCase();
-            return lower.endsWith(prefix) || lower.includes(`${prefix}/`) || lower.includes(`${prefix}?`) || lower.includes(`${prefix}#`);
-        }) || "";
-    const basePrefix = basePrefixFor(normalizedBaseUrl);
-    const requestPrefix = requestPrefixFor(requestPath);
-    if (requestPrefix) {
-        const root = basePrefix ? normalizedBaseUrl.slice(0, -basePrefix.length) : normalizedBaseUrl;
-        return `${root}${requestPath}`;
-    }
-    return `${normalizedBaseUrl}${basePrefix ? "" : "/v1"}${requestPath}`;
+    const base = new URL(normalizedBaseUrl);
+    const request = new URL(requestPath, base.origin);
+    const version = /\/(?:api\/(?:plan\/)?)?v\d+(?:(?:alpha|beta)\d*)?(?=\/|$)/i;
+    const basePath = base.pathname.replace(/\/+$/, "");
+    const baseVersion = basePath.match(version);
+    const requestVersion = request.pathname.match(version);
+    const root = requestVersion?.index === 0 && baseVersion
+        ? basePath.slice(0, baseVersion.index)
+        : basePath;
+    base.pathname = `${root}${baseVersion || requestVersion?.index === 0 ? "" : "/v1"}${request.pathname}`;
+    request.searchParams.forEach((value, key) => base.searchParams.set(key, value));
+    base.hash = "";
+    return base.toString();
 }
 
 export function resolveBackendApiUrl(value: string) {

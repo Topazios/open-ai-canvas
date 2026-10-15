@@ -19,32 +19,44 @@ export async function requestStreamingResponse(config: AiConfig, body: Record<st
     const response = await fetch(request.url, {
         method: "POST",
         headers: request.headers,
-        body: JSON.stringify({ ...body, stream: true }),
+        body: JSON.stringify({ store: false, ...body, stream: true }),
         signal: options?.signal,
         credentials: request.credentials,
     });
     if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
-    if (!response.body) {
-        const payload = (await response.json()) as ResponseApiPayload;
+    if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+        const payload = await readJsonPayload<ResponseApiPayload>(response, "请求失败");
         validateResponsePayload(payload);
-        return parseToolResponse(payload);
+        const result = parseToolResponse(payload);
+        if (!result.content && !result.toolCalls.length) throw new Error("Responses 接口没有返回文本或工具调用");
+        if (result.content) onDelta?.(result.content);
+        if (result.reasoning) options?.onReasoning?.(result.reasoning);
+        return result;
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const state: ResponseStreamState = { buffer: "", text: "", reasoning: "" };
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        consumeResponseStreamText(state, decoder.decode(value, { stream: true }), onDelta, options?.onReasoning);
-        if (state.error) throw new Error(state.error);
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            consumeResponseStreamText(state, decoder.decode(value, { stream: true }), onDelta, options?.onReasoning);
+            if (state.error) throw new Error(state.error);
+        }
+    } catch (error) {
+        await reader.cancel().catch(() => undefined);
+        throw error;
+    } finally {
+        reader.releaseLock();
     }
     consumeResponseStreamText(state, decoder.decode(), onDelta, options?.onReasoning, true);
     if (state.error) throw new Error(state.error);
-    if (!state.payload) return { content: state.text, toolCalls: [], ...(state.reasoning ? { reasoning: state.reasoning } : {}) };
+    if (!state.payload) throw new Error("Responses 流中断或缺少完成事件，生成未完成");
     validateResponsePayload(state.payload);
     const result = parseToolResponse(state.payload);
-    return { ...result, content: state.text || result.content, ...(state.reasoning ? { reasoning: state.reasoning } : {}) };
+    if (!state.text && !result.content && !result.toolCalls.length) throw new Error("Responses 接口没有返回文本或工具调用");
+    return { ...result, content: result.content || state.text, ...(state.reasoning ? { reasoning: state.reasoning } : {}) };
 }
 
 export async function requestStreamingChatCompletion(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {

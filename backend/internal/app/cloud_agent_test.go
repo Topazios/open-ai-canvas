@@ -511,6 +511,7 @@ func TestCloudAgentToolLoopPersistsApprovalAndAppliesCanvasWrite(t *testing.T) {
 	}
 	req := agentTestRequest()
 	req.ReasoningMode = "deep"
+	req.ReasoningEffort = ReasoningHigh
 	req.PermissionMode = "request_approval"
 	root, err := s.CreateCloudAgentRun("user", req, "")
 	if err != nil {
@@ -544,6 +545,9 @@ func TestCloudAgentToolLoopPersistsApprovalAndAppliesCanvasWrite(t *testing.T) {
 	var rootInput canvasGenerationInput
 	if err := json.Unmarshal([]byte(rootTask.InputJSON), &rootInput); err != nil || !rootInput.TextOptions.Thinking {
 		t.Fatalf("initial task lost thinking option: %v", err)
+	}
+	if rootInput.TextOptions.ReasoningEffort != ReasoningHigh {
+		t.Fatal("initial task lost reasoning effort")
 	}
 	if err := db.Model(&model.Task{}).Where("id = ?", root.ID).Updates(map[string]any{"status": model.TaskStatusSucceeded, "result_json": string(result), "input_json": publicTaskInputJSON(rootTask.InputJSON)}).Error; err != nil {
 		t.Fatal(err)
@@ -614,6 +618,9 @@ func TestCloudAgentToolLoopPersistsApprovalAndAppliesCanvasWrite(t *testing.T) {
 	var nextInput canvasGenerationInput
 	if err := json.Unmarshal([]byte(nextTask.InputJSON), &nextInput); err != nil || !nextInput.TextOptions.Thinking || nextTask.ID == root.ID {
 		t.Fatalf("tool continuation lost thinking option or failed to enqueue: %v", err)
+	}
+	if nextInput.TextOptions.ReasoningEffort != ReasoningHigh {
+		t.Fatal("continuation lost reasoning effort")
 	}
 }
 

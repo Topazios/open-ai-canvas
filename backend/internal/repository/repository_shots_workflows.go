@@ -207,6 +207,35 @@ func (r *Repository) ProjectShotArtifacts(projectID string) ([]model.ShotArtifac
 	return artifacts, err
 }
 
+func (r *Repository) ShotArtifactForProject(projectID string, artifactID string) (*model.ShotArtifact, error) {
+	var artifact model.ShotArtifact
+	if err := r.db.First(&artifact, "id = ? AND project_id = ?", artifactID, projectID).Error; err != nil {
+		return nil, err
+	}
+	return &artifact, nil
+}
+
+// SelectShotArtifact 在同一事务中切换镜头当前产物，历史版本保持不变。
+func (r *Repository) SelectShotArtifact(projectID string, shotID string, artifactID string, updatedAt time.Time) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var artifact model.ShotArtifact
+		if err := tx.First(&artifact, "id = ? AND project_id = ? AND shot_id = ?", artifactID, projectID, shotID).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.ShotArtifact{}).Where("project_id = ? AND shot_id = ? AND type = ?", projectID, shotID, artifact.Type).Updates(map[string]any{"selected": false, "updated_at": updatedAt}).Error; err != nil {
+			return err
+		}
+		result := tx.Model(&model.ShotArtifact{}).Where("id = ? AND project_id = ? AND shot_id = ?", artifactID, projectID, shotID).Updates(map[string]any{"selected": true, "updated_at": updatedAt})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return tx.Model(&model.Project{}).Where("id = ?", projectID).Updates(map[string]any{"revision": gorm.Expr("revision + 1"), "updated_at": updatedAt}).Error
+	})
+}
+
 func (r *Repository) CreateShotArtifact(artifact *model.ShotArtifact) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var currentVersion int

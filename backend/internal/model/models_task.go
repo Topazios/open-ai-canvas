@@ -3,6 +3,8 @@ package model
 import "time"
 
 type Task struct {
+	RemovedAt                    *time.Time               `json:"-" gorm:"index"`
+	NodeBoundAt                  *time.Time               `json:"-"`
 	AgentRunID                   string                   `json:"agentRunId,omitempty" gorm:"size:36;index"`
 	GenerationID                 string                   `json:"generationId,omitempty" gorm:"size:36;index"`
 	ApprovalID                   string                   `json:"approvalId,omitempty" gorm:"size:160"`

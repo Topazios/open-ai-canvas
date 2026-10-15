@@ -38,6 +38,7 @@ func TestCloudAgentPiModelRetriesTruncatedToolArguments(t *testing.T) {
 	s.disablePiRuntime = true
 	req := agentTestRequest()
 	req.PermissionMode = "auto"
+	req.ReasoningMode = "off"
 	root, err := s.CreateCloudAgentRun("user", req, "")
 	if err != nil {
 		t.Fatal(err)

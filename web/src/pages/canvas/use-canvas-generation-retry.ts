@@ -1,5 +1,7 @@
-import { useCallback, type Dispatch, type SetStateAction } from "react";
-import { App } from "antd";
+import { createElement, useCallback, useRef, type Dispatch, type SetStateAction } from "react";
+import { App, Button, Input } from "antd";
+import { WandSparkles } from "lucide-react";
+import { useConfirmedTaskRetry } from "@/components/use-confirmed-task-retry";
 
 import { buildNodeGenerationContext, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { producedModelCandidateForGeneration } from "@/lib/canvas/produced-model";
@@ -26,16 +28,22 @@ import {
 import { isCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture";
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
-import { generationFailureMetadata, unchangedModeratedPrompt } from "@/lib/generation-error";
+import { generationFailureMetadata, generationPromptFingerprint, isContentModerationError, unchangedModeratedPrompt } from "@/lib/generation-error";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import type { Skill } from "@/services/api/skills";
 import { skillRuntime, type SkillRuntimeMetadata } from "@/services/skill-runtime";
 import { queryGenerationTask, recoverGenerationTaskMedia, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { resolveImageUrl } from "@/services/image-storage";
+import { retryWorkflowGeneration } from "@/services/workflow-generation-retry";
+import { adjustWorkflowImagePrompt } from "@/lib/canvas/canvas-image-prompt-adjustment";
+import { controlProductionAgent } from "@/services/api/agent";
+import { submitProductionAgent } from "@/services/production-agent";
+import { refreshCanvasAfterAgent } from "@/services/user-data-sync";
+import { restoreEmptyWorkflowAssetGroup } from "@/lib/canvas/canvas-workflow-assets";
 import { resolveModelRequestConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import type { Asset } from "@/stores/use-asset-store";
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeTypeId } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeTypeId, type CanvasNodeRetryOptions } from "@/types/canvas";
 
 type UseCanvasGenerationRetryOptions = {
     projectId: string;
@@ -70,12 +78,24 @@ export function useCanvasGenerationRetry({
     bindGenerationTask,
     applyGenerationTaskResult,
 }: UseCanvasGenerationRetryOptions) {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
+    const retryTask = useConfirmedTaskRetry();
+    const pendingRetries = useRef(new Set<string>());
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
 
-    return useCallback(
-        async (node: CanvasNodeData) => {
+    const runRetry = useCallback(
+        async (node: CanvasNodeData, options?: CanvasNodeRetryOptions) => {
+            const production = node.metadata?.shortDrama?.productionAgent;
+            if (production) {
+                try {
+                    if (production.runId) await controlProductionAgent(production.runId, "resume");
+                    else if (production.request) await submitProductionAgent(production.request);
+                    else throw new Error("制作任务尚未提交，请使用继续提交入口");
+                    await refreshCanvasAfterAgent(projectId);
+                } catch (cause) { message.error(cause instanceof Error ? cause.message : "恢复制作任务失败"); }
+                return;
+            }
             // Canvas caches may predate the failure. Consult the original task
             // before deciding to submit another paid generation.
             let sourceTask: GenerationTask | undefined;
@@ -86,6 +106,66 @@ export function useCanvasGenerationRetry({
                     message.error(error instanceof Error ? error.message : "无法核对原任务，请稍后重试");
                     return;
                 }
+            }
+            if (options?.adjustPrompt && !(sourceTask?.status === "failed" && (isContentModerationError(sourceTask.errorCode) || isContentModerationError(sourceTask.error)))) {
+                message.info("任务状态已变化，请刷新后查看；未重复提交");
+                return;
+            }
+            if (node.metadata?.shortDrama && (node.type === CanvasNodeType.Text || (node.metadata.shortDrama.mediaKind === "image" && !sourceTask?.mediaStage))) {
+                if (node.metadata.shortDrama.mediaKind === "image" && sourceTask?.status === "failed" && (isContentModerationError(sourceTask.errorCode) || isContentModerationError(sourceTask.error))) {
+                    const previousPrompt = sourceTask.prompt;
+                    const adjust = () => adjustWorkflowImagePrompt(node, nodesRef.current, previousPrompt || "");
+                    let revised: string | null;
+                    if (options?.adjustPrompt) {
+                        try { revised = adjust(); }
+                        catch (error) { message.error(error instanceof Error ? error.message : "自动调整失败，未提交生成"); return; }
+                    } else revised = await new Promise<string | null>((resolve) => {
+                        let draft = node.metadata?.prompt || previousPrompt || "";
+                        const dialog = modal.confirm({
+                            title: "修改生成要求", width: 720,
+                            content: createElement(Input.TextArea, { "aria-label": "图片生成要求", defaultValue: draft, autoSize: { minRows: 8, maxRows: 14 }, onChange: (event) => { draft = event.target.value; } }),
+                            okText: "保存并生成", cancelText: "取消", maskClosable: false,
+                            footer: (_, { OkBtn, CancelBtn }) => createElement("div", { className: "flex flex-wrap justify-end gap-2" },
+                                createElement(CancelBtn),
+                                node.metadata?.shortDrama?.assetSheet ? createElement(Button, { icon: createElement(WandSparkles, { size: 14 }), onClick: () => {
+                                    try { const prompt = adjust(); resolve(prompt); dialog.destroy(); }
+                                    catch (error) { message.error(error instanceof Error ? error.message : "自动调整失败，未提交生成"); }
+                                } }, "自动调整并重试") : null,
+                                createElement(OkBtn)),
+                            onOk: (close: () => void) => {
+                                if (!draft.trim() || generationPromptFingerprint(draft) === generationPromptFingerprint(previousPrompt || "")) {
+                                    message.warning("请先修改生成要求，不能原样重试审核未通过的内容");
+                                    return;
+                                }
+                                resolve(draft.trim());
+                                close();
+                            },
+                            onCancel: () => { resolve(null); }, afterClose: () => { resolve(null); },
+                        });
+                    });
+                    if (!revised) return;
+                    const latest = nodesRef.current.find((item) => item.id === node.id);
+                    if (!latest || latest.metadata?.taskId !== sourceTask.id) return;
+                    node = { ...latest, metadata: { ...latest.metadata, prompt: revised, composerContent: revised } };
+                    setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, prompt: revised, composerContent: revised } } : item));
+                }
+                const controller = startGenerationRequest(node.id, node.id, node.id);
+                try {
+                    const initialTask = await retryWorkflowGeneration(node, sourceTask, projectId, effectiveConfig, undefined, nodesRef.current, retryTask);
+                    if (controller.signal.aborted) return;
+                    bindGenerationTask(node.id, initialTask);
+                    setNodes((current) => restoreEmptyWorkflowAssetGroup(current, node.id));
+                    const completed = await waitForGenerationTask(initialTask.id, {
+                        initialTask, signal: controller.signal, timeoutMs: 25 * 60_000,
+                        onTaskUpdate: (task) => bindGenerationTask(node.id, task),
+                    });
+                    if (!controller.signal.aborted) await applyGenerationTaskResult(node.id, completed);
+                } catch (error) {
+                    if (!controller.signal.aborted && !isGenerationCanceled(error)) message.error(error instanceof Error ? error.message : "恢复流程任务失败");
+                } finally {
+                    finishGenerationRequest(node.id, controller);
+                }
+                return;
             }
             if (sourceTask?.mediaStage && sourceTask.status !== "cancelled") {
                 const controller = startGenerationRequest(node.id, node.id, node.id);
@@ -437,8 +517,17 @@ export function useCanvasGenerationRetry({
                 setRunningNodeId(null);
             }
         },
-        [addedSkills, applyGenerationTaskResult, assets, bindGenerationTask, connectionsRef, domainProjectId, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, nodesRef, projectId, setNodes, setRunningNodeId, startGenerationRequest],
+        [addedSkills, applyGenerationTaskResult, assets, bindGenerationTask, connectionsRef, domainProjectId, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, modal, nodesRef, projectId, retryTask, setNodes, setRunningNodeId, startGenerationRequest],
     );
+    return useCallback(async (node: CanvasNodeData, options?: CanvasNodeRetryOptions) => {
+        if (pendingRetries.current.has(node.id)) return;
+        pendingRetries.current.add(node.id);
+        try {
+            await runRetry(node, options);
+        } finally {
+            pendingRetries.current.delete(node.id);
+        }
+    }, [runRetry]);
 }
 
 // 生成类型必须由明确的节点契约决定，未知节点不能降级成图片任务。

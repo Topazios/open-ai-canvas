@@ -4,7 +4,7 @@ import { getActiveUserScope, setActiveUserScope } from "../../src/lib/user-scope
 
 type InstanceHook = (storeName: string, key: string, value: unknown) => Promise<void> | void;
 
-type Scenario = "image-cleanup" | "scope-cleanup-switch" | "scope-cleanup-late-canvas-reference" | "video-commit-race" | "audio-commit-race" | "canvas-batch-commit-race";
+type Scenario = "image-cleanup" | "scope-cleanup-switch" | "scope-cleanup-late-canvas-reference" | "local-conflict-draft-cleanup" | "video-commit-race" | "audio-commit-race" | "canvas-batch-commit-race";
 
 function installStorageHarness() {
     const originalCreateInstance = localforage.createInstance.bind(localforage);
@@ -244,7 +244,7 @@ async function runScopeCleanupAfterSwitch() {
     }
 }
 
-async function runScopeCleanupAfterLateCanvasReference() {
+async function runScopeCleanupAfterLateCanvasReference(conflictDraft = false) {
     const previousScope = getActiveUserScope();
     const harness = installStorageHarness();
     const scope = "cleanup-late-canvas-reference";
@@ -255,15 +255,17 @@ async function runScopeCleanupAfterLateCanvasReference() {
         setActiveUserScope(scope);
         const imageStorage = await import("../../src/services/image-storage.ts?scope-cleanup-late-canvas-reference-worker");
         const { useAssetStore } = await import("../../src/stores/use-asset-store");
-        const { useCanvasStore } = await import("../../src/stores/canvas/use-canvas-store");
+        const { useCanvasStore, CANVAS_STORE_KEY, flushCanvasStorePersistence } = await import("../../src/stores/canvas/use-canvas-store");
         await imageStorage.setImageBlob(referencedKey, new Blob(["late-canvas-reference"], { type: "image/png" }));
         await imageStorage.setImageBlob(unusedKey, new Blob(["still-unused"], { type: "image/png" }));
         useAssetStore.setState({ assets: [] });
         useCanvasStore.setState({ projects: [] });
 
-        useAssetStore.getState().cleanupImages({ assets: [] });
-        const cleanupRun = harness.scheduled.at(-1);
-        if (!cleanupRun) throw new Error("cleanup was not scheduled");
+        let cleanupRun: Promise<void> | undefined;
+        if (!conflictDraft) {
+            void useAssetStore.getState().cleanupImages({ assets: [] });
+            cleanupRun = harness.scheduled.at(-1);
+        }
 
         useCanvasStore.setState({
             projects: [
@@ -294,11 +296,32 @@ async function runScopeCleanupAfterLateCanvasReference() {
             ],
         } as never);
 
+        if (conflictDraft) {
+            await flushCanvasStorePersistence();
+            const { parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument } = await import("../../src/lib/canvas/canvas-storage-revision");
+            const { localForageStorageForScope } = await import("../../src/lib/localforage-storage");
+            const storage = localForageStorageForScope(scope);
+            const document = parseCanvasStorageDocument(await storage.getItem(CANVAS_STORE_KEY));
+            const deleted = rebaseCanvasProjects({ document, baseProjects: document.state.projects,
+                localProjects: document.state.projects.map((project) => ({ ...project, nodes: [] })), baseRevision: document.storageRevision });
+            await storage.setItem(CANVAS_STORE_KEY, serializeCanvasStorageDocument(deleted.document));
+            const project = useCanvasStore.getState().projects[0];
+            useCanvasStore.getState().updateProject(project.id, { nodes: project.nodes.map((node) => ({ ...node, title: "stale local edit" })) });
+        }
+
+        if (conflictDraft) {
+            void useAssetStore.getState().cleanupImages({ assets: [] });
+            cleanupRun = harness.scheduled.at(-1);
+        }
+        if (!cleanupRun) throw new Error("cleanup was not scheduled");
+
         await cleanupRun;
 
+        const { readAllCanvasSyncDrafts } = await import("../../src/services/canvas-sync-drafts");
         return {
             referencedPresent: (await imageStorage.getImageBlob(referencedKey)) instanceof Blob,
             unusedPresent: (await imageStorage.getImageBlob(unusedKey)) instanceof Blob,
+            draftCount: (await readAllCanvasSyncDrafts(scope)).length,
         };
     } finally {
         setActiveUserScope(previousScope);
@@ -494,8 +517,8 @@ self.onmessage = async (event: MessageEvent<Scenario>) => {
                 ? await runImageCleanup()
                 : event.data === "scope-cleanup-switch"
                   ? await runScopeCleanupAfterSwitch()
-                  : event.data === "scope-cleanup-late-canvas-reference"
-                    ? await runScopeCleanupAfterLateCanvasReference()
+                  : event.data === "scope-cleanup-late-canvas-reference" || event.data === "local-conflict-draft-cleanup"
+                    ? await runScopeCleanupAfterLateCanvasReference(event.data === "local-conflict-draft-cleanup")
                     : event.data === "canvas-batch-commit-race"
                       ? await runCanvasBatchCommitRace()
                       : await runMediaCommitRace(event.data === "audio-commit-race" ? "audio" : "video");

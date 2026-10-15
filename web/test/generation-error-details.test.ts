@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { CONTENT_MODERATION_MESSAGE, generationErrorMessage, generationFailureMetadata } from "../src/lib/generation-error";
+import { CONTENT_MODERATION_MESSAGE, generationErrorMessage, generationFailureMetadata, isContentModerationError } from "../src/lib/generation-error";
 
 describe("safe upstream error details", () => {
+    test("recognizes both upstream and normalized moderation without promising a refund", () => {
+        for (const value of ["moderation_blocked", "content_policy_violation", "Your request was rejected by the safety system", "请求内容未通过模型服务安全审核，请调整后重试"]) {
+            expect(isContentModerationError(value)).toBe(true);
+            expect(generationFailureMetadata(value, "prompt").generationErrorCode).toBe("sensitive_words_detected");
+        }
+        expect(isContentModerationError("上游 HTTP 400")).toBe(false);
+        expect(CONTENT_MODERATION_MESSAGE).not.toContain("已退");
+    });
     const detail = "非常抱歉，生成的图片可能违反了关于裸露、色情或情色内容的防护限制。请重试或修改提示语。";
     test("keeps the specific image rejection on the card", () => {
         const message = `模型服务拒绝了请求，请检查模型和参数；上游：${detail}`;

@@ -9,6 +9,7 @@ import { batchSourceRestriction, buildBatchConnectionCreateRequest, hasBatchConn
 import { batchReferenceHandleAtY } from "@/lib/canvas/canvas-batch-table";
 import { connectedNodeCenterFromEdgeDrop } from "@/lib/canvas/canvas-connected-node-placement";
 import { canvasConnectionError } from "@/lib/canvas/canvas-connection-policy";
+import { closestBorderPoint } from "@/lib/canvas/canvas-connection-routing";
 import { attachNodeToStoryboardRow, createCanvasNode, getConnectionTargetAnchor, isHiddenBatchChild, normalizeConnection, storyboardHandleAtY, storyboardPromptTemplateMetadata, storyboardRowFromHandle } from "@/lib/canvas/canvas-project-domain";
 import { createCanvasDrawingFromImage } from "@/lib/canvas/canvas-drawing-storage";
 import { isDrawingEngineAvailable, type CanvasDrawingEngine } from "@/lib/canvas/canvas-drawing-engine";
@@ -429,15 +430,10 @@ export function useCanvasConnectionController({
                 const scrollTop = scriptScrollTopById[node.id] || 0;
                 const targetHandleId = node.type === CanvasNodeType.Script ? storyboardHandleAtY(node, world.y, scrollTop) : node.type === CanvasNodeType.BatchTable ? batchReferenceHandleAtY(node, world.y, handleRadius) : undefined;
                 if ((node.type === CanvasNodeType.Script || node.type === CanvasNodeType.BatchTable) && !targetHandleId) return;
-                // Ordinary nodes expose one centered input/output port. Only
-                // storyboard rows have a meaningful vertical target position.
                 const targetAnchorRatio = undefined;
-                const anchor = getConnectionTargetAnchor(node, current, targetHandleId, scrollTop);
+                const anchor = targetHandleId ? getConnectionTargetAnchor(node, current, targetHandleId, scrollTop) : closestBorderPoint(node, world);
                 const dx = world.x - anchor.x;
                 const dy = world.y - anchor.y;
-                // Do not treat the node body or a rectangular padding band as a
-                // connection target. LibTV snaps only inside the circular
-                // quick-add area centred on the corresponding side handle.
                 const hitsSnapZone = dx * dx + dy * dy <= handleRadius * handleRadius;
                 if (!hitsSnapZone) return;
                 isNearNode = true;
@@ -477,7 +473,7 @@ export function useCanvasConnectionController({
                 const targetHandleId = node.type === CanvasNodeType.Script ? storyboardHandleAtY(node, world.y, scrollTop) : node.type === CanvasNodeType.BatchTable ? batchReferenceHandleAtY(node, world.y, handleRadius) : undefined;
                 if ((node.type === CanvasNodeType.Script || node.type === CanvasNodeType.BatchTable) && !targetHandleId) return;
                 const targetAnchorRatio = undefined;
-                const anchor = getConnectionTargetAnchor(node, current, targetHandleId, scrollTop);
+                const anchor = targetHandleId ? getConnectionTargetAnchor(node, current, targetHandleId, scrollTop) : closestBorderPoint(node, world);
                 const dx = world.x - anchor.x;
                 const dy = world.y - anchor.y;
                 const hitsSnapZone = dx * dx + dy * dy <= handleRadius * handleRadius;

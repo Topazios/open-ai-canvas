@@ -3,6 +3,7 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { ArrowLeft, AtSign, Check, ChevronRight, Clipboard, CloudUpload, Copy, FolderOpen, FolderPlus, Image as ImageIcon, Images, Layers3, LayoutTemplate, Link2, Maximize2, PanelTop, Pencil, Plus, Redo2, Tags, Trash2, Undo2, Upload, UserRound } from "lucide-react";
 
 import { CanvasCreateMenu, type CanvasCreateCommand } from "@/components/canvas/canvas-create-menu";
+import { useCanvasMenuPosition } from "@/components/canvas/use-canvas-menu-position";
 import { ASSET_CATEGORY_OPTIONS } from "@/lib/asset-category";
 import { aceternityMotion } from "@/lib/aceternity-motion";
 import { SpotlightSurface } from "@/components/ui/aceternity/spotlight-surface";
@@ -57,6 +58,7 @@ type CanvasNodeContextMenuProps = {
     onCopySelection?: () => void;
     onDeleteSelection?: () => void;
     onSendToAgent?: () => void;
+    workflowActions?: Array<{ label: string; disabled?: boolean; run: () => void }>;
 };
 
 export function CanvasNodeContextMenu({
@@ -98,6 +100,7 @@ export function CanvasNodeContextMenu({
     onCopySelection,
     onDeleteSelection,
     onSendToAgent,
+    workflowActions,
 }: CanvasNodeContextMenuProps) {
     const theme = canvasThemes[useActiveTheme()];
     const [addOpen, setAddOpen] = useState(false);
@@ -148,20 +151,29 @@ export function CanvasNodeContextMenu({
     const canCopyMediaUrl = Boolean(isMedia && hasNodeContent);
     const assetCategory = node ? canvasNodeAssetCategory(node) : "other";
     const hasMultiSelection = selectedCount >= 2;
-    const position = getContextMenuPosition(menu, hasMultiSelection);
+    const { ref: menuRef, position } = useCanvasMenuPosition({ left: menu.x, top: menu.y }, 224);
+    const workflowMenu = workflowActions?.length ? <>
+        <MenuSection label="短剧流程" />
+        {workflowActions.map((action) => <MenuButton key={action.label} icon={<ChevronRight />} label={action.label} disabled={action.disabled} onClick={() => runAction(action.run)} />)}
+        <MenuDivider />
+    </> : null;
 
     return (
         <>
             <SpotlightSurface
+                ref={menuRef}
                 spotlightColor={theme.toolbar.itemHover}
                 data-canvas-context-menu
+                data-canvas-no-zoom
+                data-canvas-wheel-scroll
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: aceternityMotion.duration.instant, ease: aceternityMotion.easing.enter }}
-                className="aceternity-floating-panel fixed z-[var(--z-popover)] flex w-[224px] max-h-[calc(100vh-56px)] origin-top-left flex-col overflow-hidden rounded-xl border p-1.5 backdrop-blur-2xl"
-                style={{ left: position.left, top: position.top, background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text }}
+                className="aceternity-floating-panel fixed z-[var(--z-popover)] flex origin-top-left flex-col overflow-hidden rounded-xl border p-1.5 backdrop-blur-2xl"
+                style={{ ...position, background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text }}
                 onContextMenu={(event) => event.preventDefault()}
                 onPointerDown={(event) => event.stopPropagation()}
+                onWheel={(event) => event.stopPropagation()}
             >
                 <div className="absolute inset-x-8 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${theme.toolbar.border}, transparent)` }} />
                 <div className="thin-scrollbar min-h-0 overflow-y-auto">
@@ -182,6 +194,7 @@ export function CanvasNodeContextMenu({
                     ) : menu.type === "canvas" ? (
                         <>
                             <MenuHeader title="画布命令" />
+                            {workflowMenu}
                             {hasMultiSelection ? (
                                 <>
                                     <MenuButton icon={<LayoutTemplate className="size-4" />} label="自适应整理画布" detail="保持相对布局并加大边距" disabled={!onSpreadSelection} onClick={() => onSpreadSelection && runAction(onSpreadSelection)} />
@@ -200,6 +213,7 @@ export function CanvasNodeContextMenu({
                     ) : menu.type === "node" && hasMultiSelection ? (
                         <>
                             <MenuHeader title={`已选 ${selectedCount} 个节点`} />
+                            {workflowMenu}
                             <MenuSection label="选区" />
                             <MenuButton icon={<LayoutTemplate />} label="自适应整理画布" detail="保持相对布局并加大边距" disabled={!onSpreadSelection} onClick={() => onSpreadSelection && runAction(onSpreadSelection)} />
                             <MenuDivider />
@@ -241,6 +255,7 @@ export function CanvasNodeContextMenu({
                             ) : (
                                 <>
                                     <MenuHeader title={node?.title || nodeTypeLabel(node)} />
+                                    {workflowMenu}
                                     <MenuSection label="节点操作" />
                                     {isFrame ? <MenuButton icon={isFolder ? <FolderOpen /> : <PanelTop />} label={node?.metadata?.frame?.collapsed ? `展开${isFolder ? "文件夹" : "背板"}` : `折叠${isFolder ? "文件夹" : "背板"}`} onClick={() => runAction(onToggleFrame)} /> : <MenuButton icon={<FolderPlus />} label="保存到我的素材" disabled={!canSaveAsset} onClick={() => runAction(onSaveAsset)} />}
                                     {isText ? <MenuButton icon={<Maximize2 />} label="放大编辑" onClick={() => runAction(onEditText)} /> : null}
@@ -287,11 +302,11 @@ export function CanvasNodeContextMenu({
     );
 }
 
-function AddNodeContextMenu({ parentPosition, workspaceMode, isProjectLinked, onAddNode, onAddFolder, onChooseStyle, onOpenDirector, onUpload, onOpenAssets, onOpenProjectCharacters }: { parentPosition: { left: number; top: number }; workspaceMode: CanvasWorkspaceMode; isProjectLinked: boolean; onAddNode: (type: CanvasNodeTypeId) => void; onAddFolder: () => void; onChooseStyle: () => void; onOpenDirector: () => void; onUpload: () => void; onOpenAssets: () => void; onOpenProjectCharacters: () => void }) {
+function AddNodeContextMenu({ parentPosition, workspaceMode, isProjectLinked, onAddNode, onAddFolder, onChooseStyle, onOpenDirector, onUpload, onOpenAssets, onOpenProjectCharacters }: { parentPosition: { left: number; top: number; width: number }; workspaceMode: CanvasWorkspaceMode; isProjectLinked: boolean; onAddNode: (type: CanvasNodeTypeId) => void; onAddFolder: () => void; onChooseStyle: () => void; onOpenDirector: () => void; onUpload: () => void; onOpenAssets: () => void; onOpenProjectCharacters: () => void }) {
     const theme = canvasThemes[useActiveTheme()];
     const installations = usePluginStore((state) => state.installations);
     const pluginStates = usePluginStore((state) => state.pluginStates);
-    const left = getSubmenuLeft(parentPosition.left);
+    const { ref: menuRef, position } = useCanvasMenuPosition(parentPosition, 360, parentPosition.width);
     const createContext: AddNodeMenuContext = {
         workspaceMode,
         isProjectLinked,
@@ -325,17 +340,22 @@ function AddNodeContextMenu({ parentPosition, workspaceMode, isProjectLinked, on
 
     return (
         <SpotlightSurface
+            ref={menuRef}
             spotlightColor={theme.toolbar.itemHover}
+            data-canvas-context-submenu
+            data-canvas-no-zoom
+            data-canvas-wheel-scroll
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: aceternityMotion.duration.instant, ease: aceternityMotion.easing.enter }}
-            className="aceternity-floating-panel fixed z-[var(--z-popover)] w-[360px] origin-top overflow-hidden rounded-[var(--dock-radius)] border p-2 backdrop-blur-2xl"
-            style={{ left, top: parentPosition.top, background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text }}
+            className="aceternity-floating-panel fixed z-[var(--z-popover)] flex flex-col origin-top overflow-hidden rounded-[var(--dock-radius)] border p-2 backdrop-blur-2xl"
+            style={{ ...position, background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text }}
             onContextMenu={(event) => event.preventDefault()}
             onPointerDown={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
         >
-            <CanvasCreateMenu commands={commands} />
+            <div className="thin-scrollbar min-h-0 overflow-y-auto"><CanvasCreateMenu commands={commands} /></div>
         </SpotlightSurface>
     );
 }
@@ -376,25 +396,6 @@ function MenuButton({ icon, label, detail, shortcut, badge, chevron = false, act
 function MenuDivider() {
     const theme = canvasThemes[useActiveTheme()];
     return <div className="mx-1.5 my-1 h-px" style={{ background: `linear-gradient(90deg, transparent, ${theme.toolbar.border}, transparent)` }} />;
-}
-
-function getContextMenuPosition(menu: ContextMenuState, hasMultiSelection = false) {
-    if (typeof window === "undefined") return { left: menu.x, top: menu.y };
-    const width = 224;
-    const estimatedHeight = menu.type === "node" ? Math.min(hasMultiSelection ? 240 : 360, window.innerHeight - 72) : menu.type === "canvas" ? (hasMultiSelection ? 300 : 250) : 84;
-    return {
-        left: clamp(menu.x, 12, Math.max(12, window.innerWidth - width - 12)),
-        top: clamp(menu.y, 68, Math.max(68, window.innerHeight - estimatedHeight - 12)),
-    };
-}
-
-function getSubmenuLeft(parentLeft: number) {
-    if (typeof window === "undefined") return parentLeft + 192;
-    return parentLeft + 224 + 8 + 360 <= window.innerWidth - 12 ? parentLeft + 232 : Math.max(12, parentLeft - 368);
-}
-
-function clamp(value: number, min: number, max: number) {
-    return Math.min(Math.max(value, min), max);
 }
 
 function nodeTypeLabel(node?: CanvasNodeData | null) {

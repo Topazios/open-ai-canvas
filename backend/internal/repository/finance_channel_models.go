@@ -229,6 +229,120 @@ func (r *Repository) DeleteChannelModel(channelID string, id string, now time.Ti
 	return nil
 }
 
+// UpdateChannelModelsEnabled atomically updates a complete model selection and
+// refreshes the channel compatibility list after the write.
+func (r *Repository) UpdateChannelModelsEnabled(channelID string, ids []string, enabled bool, now time.Time) (int64, error) {
+	ids = uniqueStrings(ids)
+	if len(ids) == 0 {
+		return 0, gorm.ErrRecordNotFound
+	}
+	var updated int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockSystemChannelForModelMutation(tx, channelID); err != nil {
+			return err
+		}
+		var existing int64
+		if err := tx.Model(&model.ChannelModel{}).
+			Where("channel_id = ? AND id IN ?", channelID, ids).
+			Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing != int64(len(ids)) {
+			return gorm.ErrRecordNotFound
+		}
+		result := tx.Model(&model.ChannelModel{}).
+			Where("channel_id = ? AND id IN ?", channelID, ids).
+			Updates(map[string]any{"enabled": enabled, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != int64(len(ids)) {
+			return gorm.ErrRecordNotFound
+		}
+		updated = result.RowsAffected
+		return refreshChannelModelNames(tx, channelID, now)
+	})
+	return updated, err
+}
+
+// UpdateChannelModelsSettings updates one complete selection in a single
+// transaction so a concurrent delete cannot produce a partial batch.
+func (r *Repository) UpdateChannelModelsSettings(channelID string, ids []string, updates map[string]any) (int64, error) {
+	ids = uniqueStrings(ids)
+	if len(ids) == 0 {
+		return 0, gorm.ErrRecordNotFound
+	}
+	var updated int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockSystemChannelForModelMutation(tx, channelID); err != nil {
+			return err
+		}
+		var existing int64
+		if err := tx.Model(&model.ChannelModel{}).
+			Where("channel_id = ? AND id IN ?", channelID, ids).
+			Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing != int64(len(ids)) {
+			return gorm.ErrRecordNotFound
+		}
+		result := tx.Model(&model.ChannelModel{}).
+			Where("channel_id = ? AND id IN ?", channelID, ids).
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != int64(len(ids)) {
+			return gorm.ErrRecordNotFound
+		}
+		updated = result.RowsAffected
+		return refreshChannelModelNames(tx, channelID, time.Now())
+	})
+	return updated, err
+}
+
+// UpdateChannelModelsSettingsPerModel applies model-specific settings
+// atomically while preserving each model's independently calculated values.
+func (r *Repository) UpdateChannelModelsSettingsPerModel(channelID string, updatesByModel map[string]map[string]any) (int64, error) {
+	if len(updatesByModel) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(updatesByModel))
+	for id := range updatesByModel {
+		ids = append(ids, id)
+	}
+	ids = uniqueStrings(ids)
+	var updated int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockSystemChannelForModelMutation(tx, channelID); err != nil {
+			return err
+		}
+		var existing int64
+		if err := tx.Model(&model.ChannelModel{}).
+			Where("channel_id = ? AND id IN ?", channelID, ids).
+			Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing != int64(len(ids)) {
+			return gorm.ErrRecordNotFound
+		}
+		for id, updates := range updatesByModel {
+			result := tx.Model(&model.ChannelModel{}).
+				Where("channel_id = ? AND id = ?", channelID, id).
+				Updates(updates)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return gorm.ErrRecordNotFound
+			}
+			updated++
+		}
+		return refreshChannelModelNames(tx, channelID, time.Now())
+	})
+	return updated, err
+}
+
 // DeleteChannelModels atomically removes a selection and refreshes the channel's
 // compatibility model list. Any active route or task reference aborts the whole
 // transaction so a bulk action cannot leave the administrator with a partial result.

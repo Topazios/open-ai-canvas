@@ -1,4 +1,5 @@
 import { ImageSizePicker } from "@/components/image-size-picker";
+import { ReasoningEffortSelect } from "@/components/reasoning-effort-select";
 import { imageResolutionUsesQuality } from "@/lib/image-size-presets";
 import { createPortal } from "react-dom";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
@@ -117,8 +118,6 @@ type ComposerProps = {
     setCount: (value: string) => void;
     textStreaming: boolean;
     setTextStreaming: (value: boolean) => void;
-    textThinking: boolean;
-    setTextThinking: (value: boolean) => void;
     promptOptimizerProvider: PromptOptimizerProvider | null;
     composerFocusRef: RefObject<HTMLTextAreaElement | null>;
     onPromptFocus: () => void;
@@ -390,7 +389,7 @@ export function CreationComposer(props: ComposerProps) {
                 {props.mode === "video" ? <DurationMenu profile={props.videoProfile} seconds={props.seconds} onChange={props.setSeconds} /> : null}
                 {props.mode === "text" ? <>
                     <Tooltip title={interactionBusy ? "生成中，此开关将在下次发送时生效" : (props.textStreaming ? "流式输出已开启" : "流式输出已关闭")}><button type="button" className="creation-chat-control" aria-pressed={props.textStreaming} disabled={interactionBusy} onClick={() => props.setTextStreaming(!props.textStreaming)}><Waves /><span>流式</span></button></Tooltip>
-                    <Tooltip title={interactionBusy ? "生成中，此开关将在下次发送时生效" : (props.textThinking ? "思考已开启，会展示模型返回的推理摘要" : "开启模型思考")}><button type="button" className="creation-chat-control" aria-pressed={props.textThinking} disabled={interactionBusy} onClick={() => props.setTextThinking(!props.textThinking)}><Brain /><span>思考</span></button></Tooltip>
+                    <ReasoningEffortSelect disabled={interactionBusy} />
                 </> : null}
                 {props.prompt.trim() || props.attachments.length || props.references.some((reference) => reference.active) ? <Tooltip title="清空提示词和参考内容"><button type="button" className="creation-chat-control is-clear" onClick={props.onClearComposer} disabled={interactionBusy} aria-label="清空提示词和参考内容"><Trash2 /><span>清空</span></button></Tooltip> : null}
             </div>

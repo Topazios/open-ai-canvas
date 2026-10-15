@@ -78,6 +78,8 @@ func TestDeclarativeTextStreaming(t *testing.T) {
 					}
 					if scenario == "cancel" {
 						<-r.Context().Done()
+					} else if wire.id == "openai-response" {
+						fmt.Fprint(w, "event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"output_text\":\"hello\"}}\n\n")
 					}
 				}))
 				defer server.Close()

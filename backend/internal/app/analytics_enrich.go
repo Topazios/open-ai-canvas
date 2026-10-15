@@ -147,7 +147,7 @@ func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[str
 		log.ProviderRequestID = firstNonEmpty(nestedTaskID, log.ProviderRequestID)
 	}
 	log.ProviderStatus = strings.ToLower(firstNonEmpty(stringField(payload, "status"), log.ProviderStatus))
-	if log.ProviderStatus == "failed" || log.ProviderStatus == "cancelled" || log.ProviderStatus == "expired" {
+	if log.ProviderStatus == "failed" || log.ProviderStatus == "cancelled" || log.ProviderStatus == "expired" || log.ProviderStatus == "incomplete" {
 		log.Status = model.ApiCallStatusFailed
 		errorCode, errorMessage := providerFailureDetails(payload)
 		log.ErrorCode = firstNonEmpty(errorCode, log.ErrorCode)

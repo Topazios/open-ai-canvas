@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ChevronDown, Coins } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Coins } from "lucide-react";
 import { Popover } from "antd";
+import { ReasoningEffortSelect } from "@/components/reasoning-effort-select";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@/lib/model-capabilities";
@@ -8,7 +9,7 @@ import { formatPriceRange, modelQuoteDescription, modelQuoteRequest, normalizeTi
 import { compatibleModelInGroup, configuredModelDisplayName, modelCompatibilityError, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
 import { groupModelsForPicker, isDirectSystemModel, modelChannelLabel } from "@/lib/model-picker-groups";
 import { cn } from "@/lib/utils";
-import { modelDisplayName, modelIcon, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { modelDisplayName, modelIcon, modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { ModelLogo } from "@/components/model-logo";
@@ -116,7 +117,8 @@ export function ModelPicker({
     };
     const focusMenuOption = (last = false) => {
         window.requestAnimationFrame(() => {
-            const buttons = menuRef.current?.querySelectorAll<HTMLButtonElement>('[data-model-picker-item]:not(:disabled)');
+            const region = menuRef.current?.querySelector('.canvas-model-picker-options') || menuRef.current;
+            const buttons = region?.querySelectorAll<HTMLButtonElement>('[data-model-picker-item]:not(:disabled)');
             const target = last ? buttons?.item((buttons?.length || 1) - 1) : buttons?.item(0);
             target?.focus();
         });
@@ -141,7 +143,8 @@ export function ModelPicker({
             return;
         }
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-        const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[data-model-picker-item]:not(:disabled)'));
+        const region = (event.target as HTMLElement).closest('[data-model-picker-region]') || event.currentTarget;
+        const buttons = Array.from(region.querySelectorAll<HTMLButtonElement>('[data-model-picker-item]:not(:disabled)'));
         if (!buttons.length) return;
         event.preventDefault();
         const activeIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
@@ -162,7 +165,9 @@ export function ModelPicker({
             onKeyDown={handleMenuKeyDown}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
         >
+            {capability === "text" ? <div className="canvas-model-picker-reasoning"><ReasoningEffortSelect /></div> : null}
             {optionGroups.length ? (
                 activeGroupKey === null ? (
                     <div className="canvas-model-picker-brands" aria-label="选择产品模型">
@@ -176,9 +181,9 @@ export function ModelPicker({
                         })}
                     </div>
                 ) : <div className="canvas-model-picker-two-pane">
-                    <div className="canvas-model-picker-brand-rail" aria-label="产品模型">
+                    <div className="canvas-model-picker-brand-rail" data-model-picker-region data-canvas-wheel-scroll aria-label="产品模型">
                         {optionGroups.map((group) => {
-                            return <button key={group.key} type="button" className={cn("canvas-model-picker-brand", activeGroupKey === group.key && "is-active")} aria-pressed={activeGroupKey === group.key} onClick={() => setActiveGroupKey(group.key)}>
+                            return <button key={group.key} type="button" data-model-picker-item className={cn("canvas-model-picker-brand", activeGroupKey === group.key && "is-active")} aria-pressed={activeGroupKey === group.key} title={group.label} onClick={() => setActiveGroupKey(group.key)}>
                                 <span className="canvas-model-picker-brand-icon"><ModelLogo icon={group.icon} size={22} /></span>
                                 <span className="canvas-model-picker-brand-copy"><strong>{group.label}</strong><small>{group.models.length} 个{group.kind === "product" ? "渠道" : "模型"}{group.scope ? ` · ${group.scope}` : ""}</small></span>
                                 <ChevronDown className="canvas-model-picker-brand-arrow" aria-hidden="true" />
@@ -186,7 +191,11 @@ export function ModelPicker({
                         })}
                     </div>
                     {optionGroups.filter((group) => group.key === activeGroupKey).map((group) => <section key={group.key} className="canvas-model-picker-group canvas-model-picker-model-pane min-w-0 overflow-hidden">
-                        <div className="grid min-w-0 gap-1">
+                        <div className="canvas-model-picker-secondary-head">
+                            <button type="button" className="canvas-model-picker-back" aria-label="返回产品模型" title="返回产品模型" onClick={() => { setActiveGroupKey(null); focusMenuOption(); }}><ArrowLeft /></button>
+                            <span><strong title={group.label}>{group.label}</strong><small>{group.models.length} 个{group.kind === "product" ? "渠道" : "模型"}</small></span>
+                        </div>
+                        <div className="canvas-model-picker-options grid min-w-0 gap-1" data-model-picker-region data-canvas-wheel-scroll>
                             {group.models.map((modelGroup) => {
                                 const selected = modelGroup.models.includes(current);
                                 const model = compatibleModelInGroup(config, modelGroup.models, selectionRequirements, selected ? current : undefined);
@@ -205,7 +214,10 @@ export function ModelPicker({
                                         style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text }}
                                         onClick={() => {
                                             if (!model) return;
+                                            if (capability) useConfigStore.getState().rememberModel(capability, model);
                                             onChange(model);
+                                            setOpen(false);
+                                            triggerRef.current?.focus();
                                         }}
                                     >
                                         <ModelLabel
@@ -243,6 +255,8 @@ export function ModelPicker({
                 onOpenChange={setPickerOpen}
                 trigger="click"
                 placement="bottomLeft"
+                // Untether shifting when a resized panel moves its trigger outside the viewport.
+                align={{ offset: [0, 0], overflow: { adjustX: true, adjustY: true, shiftX: true, shiftY: -Infinity } }}
                 arrow={false}
                 content={content}
                 classNames={{

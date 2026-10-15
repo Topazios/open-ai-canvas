@@ -22,6 +22,118 @@ function makeProject(): TimelineProject {
 }
 
 describe("editor store (command dispatch)", () => {
+    test("a failed batch commits no partial commands, history or saves", async () => {
+        const saves: TimelineProject[] = [];
+        const store = createEditorStore({ saveTimeline: async (project) => { saves.push(project); } });
+        const original = makeProject();
+        store.getState().load(original);
+        expect(store.getState().dispatchBatch([
+            { op: "moveClip", payload: { id: "clip-a", startMs: 1000 } },
+            { op: "trimClip", payload: { id: "clip-a", durationMs: 20000 } },
+        ])).toBe(false);
+        expect(store.getState().project).toBe(original);
+        expect(store.getState().history?.undoStack).toHaveLength(0);
+        expect(store.getState().isDirty).toBe(false);
+        expect(store.getState().saveError).toContain("sourceDurationMs");
+        await store.getState().flushSave();
+        expect(saves).toHaveLength(0);
+    });
+
+    test("a batch rejects a stale preview snapshot and an active gesture", () => {
+        const store = createEditorStore();
+        const original = makeProject();
+        store.getState().load(original);
+        const command = { op: "moveClip", payload: { id: "clip-a", startMs: 1000 } };
+        store.getState().dispatch(command);
+        const edited = store.getState().project;
+        expect(store.getState().dispatchBatch([command], original)).toBe(false);
+        expect(store.getState().project).toBe(edited);
+        store.getState().previewGesture(command);
+        expect(store.getState().dispatchBatch([command])).toBe(false);
+        store.getState().cancelGesture();
+        expect(store.getState().history?.undoStack).toHaveLength(1);
+    });
+
+    test("an empty batch does not add history or mark the project dirty", () => {
+        const store = createEditorStore();
+        store.getState().load(makeProject());
+        expect(store.getState().dispatchBatch([])).toBe(true);
+        expect(store.getState().history?.undoStack).toHaveLength(0);
+        expect(store.getState().isDirty).toBe(false);
+    });
+
+    test("batch save failure keeps the assembled timeline for retry", async () => {
+        let fail = true;
+        const saves: TimelineProject[] = [];
+        const store = createEditorStore({ saveTimeline: async (project) => {
+            if (fail) throw new Error("Storage full");
+            saves.push(project);
+        } });
+        store.getState().load(makeProject());
+        store.getState().dispatchBatch([
+            { op: "moveClip", payload: { id: "clip-a", startMs: 1000 } },
+            { op: "setClipProperty", payload: { id: "clip-a", patch: { volume: 0.2 } } },
+        ]);
+        const edited = store.getState().project!;
+        await store.getState().flushSave();
+        expect(store.getState().isDirty).toBe(true);
+        expect(store.getState().saveError).toBe("Storage full");
+        fail = false;
+        await store.getState().retrySave();
+        expect(saves).toEqual([edited]);
+        expect(store.getState().isDirty).toBe(false);
+        expect(store.getState().history?.undoStack).toHaveLength(1);
+    });
+
+    test("a debounce save during dragging persists the committed edit, not the preview", async () => {
+        const saves: TimelineProject[] = [];
+        const store = createEditorStore({ debounceMs: 20, saveTimeline: async (project) => { saves.push(project); } });
+        store.getState().load(makeProject());
+        store.getState().dispatch({ op: "moveClip", payload: { id: "clip-a", startMs: 1000 } });
+        store.getState().previewGesture({ op: "moveClip", payload: { id: "clip-a", startMs: 2000 } });
+        await sleep(50);
+        expect(saves[0].clips[0].startMs).toBe(1000);
+        store.getState().cancelGesture();
+        expect(store.getState().project?.clips[0].startMs).toBe(1000);
+        expect(store.getState().isDirty).toBe(false);
+    });
+
+    test("a previous load's failed save cannot mark a new loaded project dirty", async () => {
+        let release!: () => void;
+        let entered!: () => void;
+        const started = new Promise<void>((resolve) => { entered = resolve; });
+        const pending = new Promise<void>((resolve) => { release = resolve; });
+        const store = createEditorStore({ debounceMs: 0, saveTimeline: async () => { entered(); await pending; throw new Error("old failure"); } });
+        store.getState().load(makeProject());
+        store.getState().dispatch({ op: "moveClip", payload: { id: "clip-a", startMs: 1000 } });
+        await started;
+        store.getState().load(makeProject());
+        release();
+        await sleep(10);
+        expect(store.getState().saveError).toBeNull();
+        expect(store.getState().isDirty).toBe(false);
+    });
+
+    test("an earlier save does not clear edits waiting for the next debounce", async () => {
+        const saves: TimelineProject[] = [];
+        let release!: () => void;
+        let entered!: () => void;
+        const started = new Promise<void>((resolve) => { entered = resolve; });
+        const firstSave = new Promise<void>((resolve) => { release = resolve; });
+        const store = createEditorStore({ debounceMs: 20, saveTimeline: async (project) => {
+            saves.push(project);
+            if (saves.length === 1) { entered(); await firstSave; }
+        } });
+        store.getState().load(makeProject());
+        store.getState().dispatch({ op: "moveClip", payload: { id: "clip-a", startMs: 1000 } });
+        await started;
+        store.getState().dispatch({ op: "moveClip", payload: { id: "clip-a", startMs: 2000 } });
+        release();
+        await sleep(50);
+        expect(saves.map((project) => project.clips[0].startMs)).toEqual([1000, 2000]);
+        expect(store.getState().isDirty).toBe(false);
+    });
+
     test("load initializes project and history without saving", async () => {
         const saves: TimelineProject[] = [];
         const store = createEditorStore({ saveTimeline: async (p) => void saves.push(p) });
@@ -125,6 +237,25 @@ describe("editor store (command dispatch)", () => {
         await sleep(10);
         expect(store.getState().saveError).toBeNull();
         expect(store.getState().isDirty).toBe(false);
+    });
+
+    test("retrySave retries a failed dirty snapshot without another edit", async () => {
+        let attempts = 0;
+        const store = createEditorStore({
+            saveTimeline: async () => {
+                attempts += 1;
+                if (attempts === 1) throw new Error("temporary storage failure");
+            },
+            debounceMs: 10_000,
+        });
+        store.getState().load(makeProject());
+        store.getState().dispatch({ op: "moveClip", payload: { id: "clip-a", startMs: 1200 } });
+        await expect(store.getState().flushSave()).resolves.toBeUndefined();
+        expect(store.getState().isDirty).toBe(true);
+        await expect(store.getState().retrySave()).resolves.toBeUndefined();
+        expect(store.getState().isDirty).toBe(false);
+        expect(store.getState().saveError).toBeNull();
+        expect(attempts).toBe(2);
     });
 
     test("flushSave persists immediately and clears pending debounce", async () => {

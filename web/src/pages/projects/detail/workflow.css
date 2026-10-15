@@ -10,6 +10,37 @@
     background: var(--workspace-content);
 }
 
+.workflow-stage-nav {
+    display: flex;
+    min-width: 0;
+    flex: 0 0 auto;
+    gap: 4px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--workspace-border);
+    background: var(--workspace-surface);
+    padding: 8px 12px;
+}
+
+.workflow-stage-nav .workflow-stage-link {
+    display: inline-flex;
+    min-height: 34px;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 7px;
+    border-radius: var(--r-md);
+    padding: 5px 9px;
+    color: color-mix(in srgb, var(--foreground) 52%, transparent);
+    font-size: var(--fs-caption);
+    white-space: nowrap;
+}
+
+.workflow-stage-nav .workflow-stage-link:hover,
+.workflow-stage-nav .workflow-stage-link.is-active { background: var(--workspace-accent-soft); color: var(--foreground); }
+.workflow-stage-nav .workflow-stage-index { display: grid; width: 21px; height: 21px; place-items: center; border: 1px solid var(--workspace-border-strong); border-radius: var(--r-full); color: color-mix(in srgb, var(--foreground) 48%, transparent); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+.workflow-stage-nav .workflow-stage-index.is-completed { border-color: var(--workspace-accent); background: var(--workspace-accent); color: var(--workspace-content); }
+.workflow-stage-nav .workflow-stage-index.is-skipped { border-color: var(--workspace-border-strong); background: color-mix(in srgb, var(--foreground) 7%, transparent); color: color-mix(in srgb, var(--foreground) 58%, transparent); }
+.workflow-stage-nav .workflow-stage-index.is-failed { border-color: var(--status-error); color: var(--status-error); }
+
 .workflow-stage-content {
     width: 100%;
     max-width: 100%;
@@ -752,6 +783,14 @@ video.workflow-preview-media {
 .workflow-history button.is-active { border-color: var(--workspace-border-strong); background: var(--surface-hover); }
 .workflow-history button:hover { transform: translateY(-1px); }
 .workflow-history button.is-active { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--workspace-accent) 55%, transparent); }
+.workflow-history-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.workflow-history-item + .workflow-history-item { margin-top: 7px; }
+.workflow-history-preview { display: flex; width: 100%; min-width: 0; align-items: center; gap: 9px; border: 1px solid var(--workspace-border); border-radius: var(--r-md); padding: 6px; text-align: left; transition: border-color var(--motion-instant) var(--motion-ease-out), background-color var(--motion-instant) var(--motion-ease-out); }
+.workflow-history-preview:hover, .workflow-history-item.is-active .workflow-history-preview { border-color: var(--workspace-border-strong); background: var(--surface-hover); }
+.workflow-history-current, .workflow-history-adopt { flex: 0 0 auto; color: color-mix(in srgb, var(--foreground) 45%, transparent); font-size: var(--fs-micro); white-space: nowrap; }
+.workflow-history-adopt { display: block; width: auto; min-height: 0; margin-top: 0 !important; border: 1px solid var(--workspace-border); border-radius: var(--r-sm); padding: 5px 7px; color: var(--foreground); }
+.workflow-history-adopt:hover:not(:disabled) { border-color: var(--workspace-accent); background: var(--workspace-accent-soft); }
+.workflow-history-adopt:disabled { cursor: wait; opacity: .6; }
 .workflow-history img,
 .workflow-history video,
 .workflow-history-placeholder { width: 66px; height: 40px; flex: 0 0 auto; border-radius: var(--r-sm); background: color-mix(in srgb, var(--foreground) 6%, transparent); object-fit: cover; }
@@ -759,6 +798,29 @@ video.workflow-preview-media {
 .workflow-history-placeholder svg { width: 16px; height: 16px; }
 .workflow-history strong { display: block; font-size: var(--fs-caption); font-weight: 600; }
 .workflow-history small { display: block; margin-top: 2px; color: color-mix(in srgb, var(--foreground) 38%, transparent); font-size: var(--fs-micro); }
+
+.workflow-shot-impact {
+    display: flex;
+    min-height: 34px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px 10px;
+    border-bottom: 1px solid var(--workspace-border);
+    padding: 8px 16px;
+    color: color-mix(in srgb, var(--foreground) 54%, transparent);
+    font-size: var(--fs-micro);
+    line-height: 1.45;
+}
+
+.workflow-shot-impact.is-warning {
+    background: color-mix(in srgb, var(--status-warning) 8%, transparent);
+    color: color-mix(in srgb, var(--status-warning) 82%, var(--foreground));
+}
+
+.workflow-shot-impact small {
+    color: color-mix(in srgb, var(--foreground) 38%, transparent);
+    font-size: inherit;
+}
 
 .workflow-shot-timeline {
     display: flex;

@@ -60,10 +60,13 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
     const [operation, setOperation] = useState<CanvasVideoEditOperation>("extend");
     const [videoAction, setVideoAction] = useState<"extract" | "create-generation-nodes">("extract");
     const eligibleModels = useMemo(() => listVideoReferenceModels(config), [config]);
+    const openingConfig = useRef({ config, eligibleModels });
+    openingConfig.current = { config, eligibleModels };
 
     // 打开弹窗时解析视频地址，读取时长并初始化起止时间。
     useEffect(() => {
         if (!open) return;
+        const { config, eligibleModels } = openingConfig.current;
         let cancelled = false;
         setVideoUrl("");
         setVideoError(false);
@@ -87,7 +90,7 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
         return () => {
             cancelled = true;
         };
-    }, [config, eligibleModels, node, open]);
+    }, [node.id, node.metadata?.storageKey, node.metadata?.content, open]);
 
     // 视频模式等待时长元数据就绪后，默认放入一个完整时长的片段。
     useEffect(() => {

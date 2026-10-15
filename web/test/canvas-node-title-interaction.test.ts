@@ -10,11 +10,11 @@ const liveViewportSource = readFileSync(resolve(import.meta.dir, "../src/lib/can
 describe("canvas node title interaction", () => {
     test("disables iframe hit testing only during node dragging", () => {
         expect(canvasStylesSource).toMatch(/\[data-canvas-node-dragging="true"\] \.node-element iframe\s*\{\s*pointer-events: none;/);
-        expect(liveViewportSource).toContain('if (preview) container.dataset.canvasNodeDragging = "true"');
-        expect(liveViewportSource).toContain("else delete container.dataset.canvasNodeDragging");
+        expect(liveViewportSource).toMatch(/if \(preview\) \{\s*if \(container.dataset.canvasNodeDragging !== "true"\) container.dataset.canvasNodeDragging = "true";/);
+        expect(liveViewportSource).toMatch(/} else \{\s*delete container.dataset.canvasNodeDragging;/);
     });
     test("keeps title editing separate from node-body dragging and protects locked titles", () => {
-        expect(nodeSource).toContain("editable={!readOnly && !data.metadata?.locked && Boolean(onTitleChange)}");
+        expect(nodeSource).toContain("editable={!projectView && !readOnly && !data.metadata?.locked && Boolean(onTitleChange)}");
         expect(nodeSource).toContain("onMouseDown={(event) => onMouseDown(event, data.id)}");
         const selection = readFileSync(resolve(import.meta.dir, "../src/pages/canvas/use-canvas-selection-controller.ts"), "utf8");
         expect(selection).toContain("if (clickedNode?.metadata?.locked)");

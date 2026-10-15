@@ -10,6 +10,8 @@ import (
 
 type providerSubmissionKeyContext struct{}
 
+const missingDirectSubmissionMessage = "旧任务已尝试执行但缺少提交记录，为避免重复扣费已停止自动重发"
+
 func withProviderSubmissionKey(ctx context.Context, attempt *model.RouteAttempt) context.Context {
 	if attempt == nil {
 		return ctx
@@ -22,13 +24,12 @@ func withProviderSubmissionKey(ctx context.Context, attempt *model.RouteAttempt)
 
 func (s *Service) createDirectTaskAttempt(task *model.Task) (*model.RouteAttempt, error) {
 	if task.Attempts > 1 && task.ProviderRequestID == "" {
-		return nil, routeDispatchUncertainError{"旧任务已尝试执行但缺少提交记录，为避免重复扣费已停止自动重发"}
+		return nil, routeDispatchUncertainError{missingDirectSubmissionMessage}
 	}
-	id, err := s.repo.NextPrefixedID("ATTEMPT")
+	attempt, err := s.newDirectTaskAttempt(task, task.RouteRun)
 	if err != nil {
 		return nil, err
 	}
-	attempt := &model.RouteAttempt{ID: id, TaskID: task.ID, RouteRun: task.RouteRun, AttemptNumber: 1, ChannelModelID: task.ChannelModelID, Status: "selected", DispatchState: "not_sent", StartedAt: time.Now()}
 	if task.ProviderRequestID != "" {
 		attempt.ProviderRequestID, attempt.DispatchState = task.ProviderRequestID, "accepted"
 	}
@@ -36,4 +37,19 @@ func (s *Service) createDirectTaskAttempt(task *model.Task) (*model.RouteAttempt
 		return nil, err
 	}
 	return attempt, nil
+}
+
+func (s *Service) newDirectTaskAttempt(task *model.Task, routeRun int) (*model.RouteAttempt, error) {
+	id, err := s.repo.NextPrefixedID("ATTEMPT")
+	if err != nil {
+		return nil, err
+	}
+	return &model.RouteAttempt{ID: id, TaskID: task.ID, RouteRun: routeRun, AttemptNumber: 1, ChannelModelID: task.ChannelModelID, Status: "selected", DispatchState: "not_sent", StartedAt: time.Now()}, nil
+}
+
+func unsubmittedDirectRetry(task *model.Task) bool {
+	diagnostic := taskExecutionDiagnostic(task)
+	return task.LogicalModelID == "" && task.RouteRun > 0 && task.Status == model.TaskStatusFailed &&
+		task.Error == missingDirectSubmissionMessage && task.ProviderRequestID == "" && task.ResultJSON == "" &&
+		diagnostic != nil && diagnostic.Phase == "preparation" && diagnostic.Code == "preparation_failed" && diagnostic.SubmissionOutcome == "unknown"
 }

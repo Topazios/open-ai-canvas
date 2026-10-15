@@ -1,4 +1,5 @@
 import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
+import { materializeWorkflowAssetGroup } from "./canvas-workflow-assets";
 
 /** 异步阶段只准备结果；提交时按节点身份合并，绝不能用旧文档覆盖当前文档。 */
 export function commitCanvasGenerationResult(current: CanvasNodeData[], before: CanvasNodeData, result: CanvasNodeData, taskId: string): CanvasNodeData[] {
@@ -7,6 +8,7 @@ export function commitCanvasGenerationResult(current: CanvasNodeData[], before: 
     if (result.id !== before.id || (live.metadata?.taskId && live.metadata.taskId !== taskId) || (before.metadata?.taskId && !live.metadata?.taskId)) {
         throw new Error("节点已绑定其他生成任务，旧任务结果不能覆盖当前节点");
     }
+    if (live.metadata?.shortDrama?.materializedTaskId === taskId) return current;
     const metadata: CanvasNodeMetadata = { ...live.metadata };
     for (const key of new Set([...Object.keys(before.metadata || {}), ...Object.keys(result.metadata || {})]) as Set<keyof CanvasNodeMetadata>) {
         if (JSON.stringify(before.metadata?.[key]) === JSON.stringify(result.metadata?.[key])) continue;
@@ -24,9 +26,10 @@ export function commitCanvasGenerationResult(current: CanvasNodeData[], before: 
         metadata,
     };
     const versionRootId = merged.metadata?.versionOfNodeId;
-    return current.map((node) => {
+    const nodes = current.map((node) => {
         if (node.id === merged.id) return versionRootId ? { ...merged, metadata: { ...merged.metadata, versionPrimary: true } } : merged;
         if (!versionRootId || (node.metadata?.versionOfNodeId || node.id) !== versionRootId) return node;
         return { ...node, metadata: { ...node.metadata, versionPrimary: false } };
     });
+    return materializeWorkflowAssetGroup(nodes, merged, taskId);
 }

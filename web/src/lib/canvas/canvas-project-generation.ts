@@ -557,7 +557,7 @@ export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
                 : mediaNode.type === CanvasNodeType.Script && mediaNode.height < NODE_DEFAULT_SIZE[CanvasNodeType.Script].height
                   ? { ...mediaNode, height: NODE_DEFAULT_SIZE[CanvasNodeType.Script].height }
                   : mediaNode;
-        const restoredNode = resizedNode.metadata?.status === "loading" ? { ...resizedNode, metadata: { ...resizedNode.metadata, errorDetails: "正在从任务中心恢复生成状态..." } } : resizedNode;
+        const restoredNode = resizedNode.metadata?.status === "loading" && !resizedNode.metadata.shortDrama?.productionAgent ? { ...resizedNode, metadata: { ...resizedNode.metadata, errorDetails: "正在从任务中心恢复生成状态..." } } : resizedNode;
         if (restoredNode !== node) changed = true;
         return restoredNode;
     });

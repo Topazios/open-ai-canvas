@@ -590,7 +590,7 @@ function NodeDockMenuButton({ menuId, label, icon, tools, openMenuId, onOpenChan
     );
 }
 
-export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, readOnly = false, onUnauthorized }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; onMetadataChange?: (nodeId: string, metadata: Partial<CanvasNodeMetadata>) => void; readOnly?: boolean; onUnauthorized?: () => void }) {
+export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, readOnly = false, onUnauthorized, children }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; onMetadataChange?: (nodeId: string, metadata: Partial<CanvasNodeMetadata>) => void; readOnly?: boolean; onUnauthorized?: () => void; children?: ReactNode }) {
     const theme = canvasThemes[useActiveTheme()];
     const config = useEffectiveConfig();
     const [assetTags, setAssetTags] = useState<string[]>([]);
@@ -635,15 +635,15 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
     const title = (
         <div className="canvas-node-inspector-title">
             <div className="min-w-0">
-                <div className="text-[var(--fs-heading-lg)] font-semibold">节点信息</div>
-                {node ? <div className="canvas-node-inspector-id">{node.id}</div> : null}
+                <div className="text-[var(--fs-heading-lg)] font-semibold">{children ? "任务详情" : "节点信息"}</div>
+                {node && !children ? <div className="canvas-node-inspector-id">{node.id}</div> : null}
             </div>
         </div>
     );
 
     return (
         <Modal
-            className="workspace-modal canvas-node-info-modal"
+            className={`workspace-modal canvas-node-info-modal${children ? " canvas-node-task-modal" : ""}`}
             title={title}
             open={open && Boolean(node)}
             centered
@@ -655,6 +655,8 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
             {node ? (
                 <div className="canvas-node-inspector" style={{ color: theme.node.text }}>
                         <div className="thin-scrollbar canvas-node-inspector-scroll">
+                            {children}
+                            {!children ? <>
                             <section className="canvas-node-inspector-section">
                                 <div className="canvas-node-inspector-section-heading"><span>基础信息</span><em>{node.metadata?.status || "idle"}</em></div>
                                 <div className="canvas-node-inspector-facts">
@@ -741,11 +743,12 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
                                 </section>
                             ) : null}
 
-                            {node.metadata?.errorDetails ? (
+                            {node.metadata?.errorDetails && !children ? (
                                 <section className="canvas-node-inspector-error">
                                     {generationErrorMessage(node.metadata.errorDetails)}
                                 </section>
                             ) : null}
+                            </> : null}
                         </div>
                 </div>
             ) : null}

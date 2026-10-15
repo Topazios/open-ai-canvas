@@ -2,15 +2,17 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import localforage from "localforage";
 import { apiClient } from "../src/services/api/request";
 import { canvasContentHash } from "../src/lib/canvas/canvas-content";
-import { rebaseCanvasProjects, parseCanvasStorageDocument } from "../src/lib/canvas/canvas-storage-revision";
+import { rebaseCanvasProjects, parseCanvasStorageDocument, serializeCanvasStorageDocument } from "../src/lib/canvas/canvas-storage-revision";
 import { readCanvasSyncDrafts } from "../src/services/canvas-sync-drafts";
 import { applyAgentCanvasPatches, deleteCanvasProjectsWithRemoteSync, refreshCanvasAfterAgent, initializeRemoteUserDataSession, installRemoteUserDataAutoSync, loadCanvasProjectForEditing, resetRemoteUserDataSync, saveRemoteUserDataNow, syncRemoteUserData } from "../src/services/user-data-sync";
 import { createAgentCanvasSync } from "../src/services/agent-canvas-sync";
-import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "../src/stores/canvas/use-canvas-store";
+import { CANVAS_STORE_KEY, flushCanvasStorePersistence, pendingCanvasStorePersistence, useCanvasStore, type CanvasProject } from "../src/stores/canvas/use-canvas-store";
 import { flushAssetStorePersistence, useAssetStore } from "../src/stores/use-asset-store";
 import { useSyncProgressStore } from "../src/stores/use-sync-progress-store";
 import { CanvasNodeType } from "../src/types/canvas";
 import { resourceFileUrl } from "../src/services/api/resources";
+import { useUserStore } from "../src/stores/use-user-store";
+import { invalidateAuthSessionCache } from "../src/services/api/auth";
 
 const originalWindow = globalThis.window;
 const originalAdapter = apiClient.defaults.adapter;
@@ -138,6 +140,8 @@ async function waitForSyncState(predicate: () => boolean) {
 }
 
 afterEach(async () => {
+    useUserStore.getState().clearSession();
+    invalidateAuthSessionCache();
     resetRemoteUserDataSync();
     await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
     apiClient.defaults.adapter = originalAdapter;
@@ -145,6 +149,244 @@ afterEach(async () => {
     localforage.setItem = originalSet;
     if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
     else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+});
+
+function allowSessionRecovery() {
+    const user = { id: scope, username: "fixture", displayName: "fixture", role: "user" as const, status: "active" as const };
+    useUserStore.getState().setUser(user);
+    useUserStore.getState().setHydrated(true);
+    const adapter = apiClient.defaults.adapter as (config: any) => Promise<any>;
+    apiClient.defaults.adapter = async (config) => {
+        if (config.url !== "/auth/session") return adapter(config);
+        requests.push({ method: "get", id: "session" });
+        return { config, status: 200, statusText: "", headers: {}, data: { code: 0, data: { user } } };
+    };
+}
+
+test("missing sync session recovers authenticated baselines without acknowledging unsaved nodes", async () => {
+    allowSessionRecovery();
+    useCanvasStore.getState().renameProject("canvas", "pending generation");
+    resetRemoteUserDataSync();
+    requests = [];
+    await Promise.all([saveRemoteUserDataNow("canvas"), saveRemoteUserDataNow("canvas")]);
+    expect(remote.get("canvas")!.title).toBe("pending generation");
+    expect(requests.filter((request) => request.method === "put")).toHaveLength(1);
+    expect(requests.filter((request) => request.id === "session")).toHaveLength(1);
+});
+
+test("recovering sync preserves node deletions and saves them instead of restoring the remote nodes", async () => {
+    allowSessionRecovery();
+    useCanvasStore.getState().updateProject("canvas", { nodes: [] });
+    resetRemoteUserDataSync();
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.nodes).toHaveLength(0);
+    expect(useCanvasStore.getState().openProject("canvas")!.nodes).toHaveLength(0);
+});
+
+test("sync recovery preserves conflicts and never authorizes another account's drafts", async () => {
+    allowSessionRecovery();
+    useCanvasStore.getState().renameProject("canvas", "local edit");
+    remote.set("canvas", { ...remote.get("canvas")!, title: "remote edit", revision: 2 });
+    resetRemoteUserDataSync();
+    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow();
+    expect(remote.get("canvas")!.title).toBe("remote edit");
+    expect(useCanvasStore.getState().openProject("canvas")!.title).toBe("local edit");
+    resetRemoteUserDataSync();
+    scope = "different-account";
+    requests = [];
+    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow("同步会话");
+    expect(requests).toHaveLength(0);
+});
+
+test("logout during recovery stops writes and the failed recovery can be retried", async () => {
+    allowSessionRecovery();
+    useCanvasStore.getState().renameProject("canvas", "draft");
+    resetRemoteUserDataSync();
+    const adapter = apiClient.defaults.adapter as (config: any) => Promise<any>;
+    apiClient.defaults.adapter = async (config) => {
+        if (String(config.url).endsWith("snapshot")) useUserStore.getState().clearSession();
+        return adapter(config);
+    };
+    requests = [];
+    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow("账号已切换");
+    expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
+    apiClient.defaults.adapter = adapter;
+    allowSessionRecovery();
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.title).toBe("draft");
+});
+
+async function otherTabEdit(update: (project: CanvasProject) => CanvasProject) {
+    await flushCanvasStorePersistence();
+    const key = `${CANVAS_STORE_KEY}:user:${scope}`;
+    const document = parseCanvasStorageDocument(indexed.get(key) || null);
+    const changed = rebaseCanvasProjects({ document, baseProjects: document.state.projects,
+        localProjects: document.state.projects.map((project) => project.id === "canvas" ? update(structuredClone(project)) : project), baseRevision: document.storageRevision });
+    indexed.set(key, serializeCanvasStorageDocument(changed.document));
+    return key;
+}
+
+test("same-field local conflicts preserve a draft, stop cloud upload and keep subsequent edits recoverable", async () => {
+    const key = await otherTabEdit((project) => ({ ...project, title: "other tab" }));
+    useCanvasStore.getState().renameProject("canvas", "this tab");
+    requests = [];
+    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow();
+    expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
+    expect(useSyncProgressStore.getState().syncingProjects.canvas).toMatchObject({ phase: "conflict", draftCount: 1 });
+    expect(parseCanvasStorageDocument(indexed.get(key)!).state.projects.find((project) => project.id === "canvas")!.title).toBe("other tab");
+    expect((await readCanvasSyncDrafts("canvas"))[0].project.title).toBe("this tab");
+    const current = useCanvasStore.getState().openProject("canvas")!;
+    useCanvasStore.getState().updateProject("canvas", { nodes: current.nodes.map((node) => ({ ...node, title: "continued editing" })) });
+    await flushCanvasStorePersistence();
+    const drafts = await readCanvasSyncDrafts("canvas");
+    expect(drafts).toHaveLength(2);
+    expect(drafts[1].project.title).toBe("this tab");
+    expect(drafts[1].project.nodes[0].title).toBe("continued editing");
+    expect(parseCanvasStorageDocument(indexed.get(key)!).state.projects.find((project) => project.id === "canvas")!.title).toBe("other tab");
+    await useCanvasStore.persist.rehydrate();
+    expect(useCanvasStore.getState().openProject("canvas")!.title).toBe("other tab");
+    expect(await readCanvasSyncDrafts("canvas")).toHaveLength(2);
+});
+
+test("failed local conflict backup leaves the original document and queued edit available for retry", async () => {
+    const key = await otherTabEdit((project) => ({ ...project, title: "other tab" }));
+    const before = indexed.get(key);
+    const write = localforage.setItem;
+    localforage.setItem = (async (key: string, value: string) => {
+        if (key.includes("sync-drafts:")) throw new Error("Synthetic disk full");
+        return write(key, value);
+    }) as typeof localforage.setItem;
+    useCanvasStore.getState().renameProject("canvas", "unsaved local title");
+    try {
+        await expect(flushCanvasStorePersistence()).rejects.toThrow("Synthetic disk full");
+        expect(indexed.get(key)).toBe(before);
+        expect(pendingCanvasStorePersistence(scope)?.projects.find((project) => project.id === "canvas")!.title).toBe("unsaved local title");
+        expect(useSyncProgressStore.getState().syncingProjects.canvas).toMatchObject({ phase: "error", draftCount: undefined });
+        expect(useSyncProgressStore.getState().syncingProjects.canvas.message).toContain("请勿关闭");
+    } finally { localforage.setItem = write; }
+    await flushCanvasStorePersistence();
+    expect(pendingCanvasStorePersistence(scope)).toBeNull();
+    expect((await readCanvasSyncDrafts("canvas"))[0].project.title).toBe("unsaved local title");
+});
+
+test("explicit load latest resolves a local conflict without discarding either tab's draft", async () => {
+    const key = await otherTabEdit((project) => ({ ...project, title: "other tab" }));
+    useCanvasStore.getState().renameProject("canvas", "this tab");
+    await flushCanvasStorePersistence();
+    await loadCanvasProjectForEditing("canvas", { latest: true });
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+    expect(parseCanvasStorageDocument(indexed.get(key)!).state.projects.find((project) => project.id === "canvas")!.title).toBe("canvas");
+    expect((await readCanvasSyncDrafts("canvas")).map((draft) => draft.project.title).sort()).toEqual(["other tab", "this tab"]);
+    useCanvasStore.getState().renameProject("canvas", "resolved edit");
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.title).toBe("resolved edit");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+});
+
+test("ordinary local write failures remain retryable and cannot be reported as saved to cloud", async () => {
+    await flushCanvasStorePersistence();
+    const write = localforage.setItem;
+    localforage.setItem = (async (key: string, value: string) => {
+        if (key.includes(CANVAS_STORE_KEY)) throw new Error("Synthetic local write failure");
+        return write(key, value);
+    }) as typeof localforage.setItem;
+    useCanvasStore.getState().renameProject("canvas", "retry local write");
+    requests = [];
+    try {
+        await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow("Synthetic local write failure");
+        expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
+        expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("error");
+        expect(useSyncProgressStore.getState().syncingProjects.canvas.message).toContain("本地保存失败");
+        expect(pendingCanvasStorePersistence(scope)).not.toBeNull();
+    } finally { localforage.setItem = write; }
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.title).toBe("retry local write");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+    expect(pendingCanvasStorePersistence(scope)).toBeNull();
+});
+
+test("edits during an explicit replacement remain pending and are saved against the loaded revision", async () => {
+    await otherTabEdit((project) => ({ ...project, title: "other tab" }));
+    useCanvasStore.getState().renameProject("canvas", "this tab");
+    await flushCanvasStorePersistence();
+    const write = localforage.setItem;
+    let injected = false;
+    localforage.setItem = (async (key: string, value: string) => {
+        const result = await write(key, value);
+        if (!injected && key.includes(CANVAS_STORE_KEY)) {
+            injected = true;
+            useCanvasStore.getState().renameProject("canvas", "edit during replacement");
+        }
+        return result;
+    }) as typeof localforage.setItem;
+    try { await loadCanvasProjectForEditing("canvas", { latest: true }); } finally { localforage.setItem = write; }
+    expect(injected).toBe(true);
+    expect(useCanvasStore.getState().openProject("canvas")!.title).toBe("edit during replacement");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("pending");
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.title).toBe("edit during replacement");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+});
+
+test("a conflict committed after account switch cannot publish status into the new account", async () => {
+    await otherTabEdit((project) => ({ ...project, title: "other tab" }));
+    const originalScope = scope;
+    const write = localforage.setItem;
+    localforage.setItem = (async (key: string, value: string) => {
+        if (key.includes("sync-drafts:")) {
+            scope = "new-account";
+            useSyncProgressStore.getState().clearAll();
+        }
+        return write(key, value);
+    }) as typeof localforage.setItem;
+    useCanvasStore.getState().renameProject("canvas", "old account edit");
+    try {
+        await flushCanvasStorePersistence();
+        expect(useSyncProgressStore.getState().syncingProjects).toEqual({});
+        expect((await readCanvasSyncDrafts("canvas", originalScope))[0].project.title).toBe("old account edit");
+        expect(await readCanvasSyncDrafts("canvas", "new-account")).toHaveLength(0);
+    } finally { localforage.setItem = write; scope = originalScope; }
+});
+
+test("successive local writes merge independent fields but cannot upload a stale full projection", async () => {
+    const key = await otherTabEdit((project) => ({ ...project, nodes: project.nodes.map((node) => ({ ...node, title: "other node title" })) }));
+    useCanvasStore.getState().renameProject("canvas", "first local title");
+    await flushCanvasStorePersistence();
+    useCanvasStore.getState().renameProject("canvas", "second local title");
+    await flushCanvasStorePersistence();
+    const durable = parseCanvasStorageDocument(indexed.get(key)!).state.projects.find((project) => project.id === "canvas")!;
+    expect(durable.title).toBe("second local title");
+    expect(durable.nodes[0].title).toBe("other node title");
+    expect(await readCanvasSyncDrafts("canvas")).toHaveLength(2);
+    requests = [];
+    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow();
+    expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
+});
+
+test("local conflict backup includes edits arriving while the first draft is being written", async () => {
+    await otherTabEdit((project) => ({ ...project, title: "other tab" }));
+    const write = localforage.setItem;
+    let injected = false;
+    localforage.setItem = (async (key: string, value: string) => {
+        if (key.includes("sync-drafts:") && !injected) {
+            injected = true;
+            useCanvasStore.getState().renameProject("canvas", "newer local edit");
+        }
+        return write(key, value);
+    }) as typeof localforage.setItem;
+    useCanvasStore.getState().renameProject("canvas", "older local edit");
+    try { await flushCanvasStorePersistence(); } finally { localforage.setItem = write; }
+    expect((await readCanvasSyncDrafts("canvas")).map((draft) => draft.project.title)).toEqual(["older local edit", "newer local edit"]);
+    expect(pendingCanvasStorePersistence(scope)).toBeNull();
+});
+
+test("a stale edit cannot revive a deleted node and remains available in a draft", async () => {
+    const key = await otherTabEdit((project) => ({ ...project, nodes: [] }));
+    const current = useCanvasStore.getState().openProject("canvas")!;
+    useCanvasStore.getState().updateProject("canvas", { nodes: current.nodes.map((node) => ({ ...node, title: "stale edit" })) });
+    await flushCanvasStorePersistence();
+    expect(parseCanvasStorageDocument(indexed.get(key)!).state.projects.find((project) => project.id === "canvas")!.nodes).toHaveLength(0);
+    expect((await readCanvasSyncDrafts("canvas"))[0].project.nodes[0].title).toBe("stale edit");
 });
 
 test("deletion skips editing and invalid MIME assets, including an uncached canvas", async () => {
@@ -264,13 +506,14 @@ test("a stale save auto-reconciles when the cloud already contains the identical
     await expect(saveRemoteUserDataNow("canvas")).resolves.toBeUndefined();
 
     expect(useCanvasStore.getState().openProject("canvas")).toMatchObject({ title: "same content saved elsewhere", revision: 2 });
-    expect(useSyncProgressStore.getState().syncingProjects.canvas).toMatchObject({ phase: "done", message: "云端内容一致，已自动校准版本" });
+    expect(useSyncProgressStore.getState().syncingProjects.canvas).toMatchObject({ phase: "done" });
     expect(await readCanvasSyncDrafts("canvas")).toHaveLength(0);
 });
 
 test("a conflict preserves drafts, stops retries and does not block another canvas", async () => {
-    remote.set("canvas", { ...addNode(canvas(), "remote-video"), revision: 2 });
+    remote.set("canvas", { ...addNode(canvas(), "remote-video"), title: "remote title", revision: 2 });
     useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "local-video").nodes });
+    useCanvasStore.getState().renameProject("canvas", "local title");
     useCanvasStore.getState().renameProject("other", "other edit");
     await expect(saveRemoteUserDataNow()).rejects.toThrow("版本冲突");
     expect(remote.get("canvas")!.nodes.map((node) => node.id)).toEqual(["old-image", "remote-video"]);
@@ -292,6 +535,128 @@ test("a conflict preserves drafts, stops retries and does not block another canv
     await useCanvasStore.persist.rehydrate();
     await syncRemoteUserData(scope);
     expect(useSyncProgressStore.getState().syncingProjects.canvas.draftCount).toBe(2);
+});
+
+test("generation save rebases independent nodes and retries with the current revision", async () => {
+    remote.set("canvas", { ...addNode(canvas(), "agent-result"), revision: 2 });
+    useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "generation-target").nodes });
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.nodes.map((node) => node.id).sort()).toEqual(["agent-result", "generation-target", "old-image"]);
+    expect(remote.get("canvas")!.revision).toBe(3);
+    expect(requests.filter((request) => request.method === "put").map((request) => request.project!.revision)).toEqual([1, 2]);
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+});
+
+test("deleting a node wins over background completion and drops its new connections", async () => {
+    const completed = addNode(canvas(), "other-result");
+    completed.nodes[0] = { ...completed.nodes[0], metadata: { status: "success", content: "completed" } };
+    completed.connections = [{ id: "late-edge", fromNodeId: "old-image", toNodeId: "other-result" }];
+    remote.set("canvas", { ...completed, revision: 2 });
+    useCanvasStore.getState().updateProject("canvas", { nodes: [], connections: [] });
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.nodes.map((node) => node.id)).toEqual(["other-result"]);
+    expect(remote.get("canvas")!.connections).toEqual([]);
+    await refreshCanvasAfterAgent("canvas");
+    expect(useCanvasStore.getState().openProject("canvas")!.nodes.map((node) => node.id)).toEqual(["other-result"]);
+});
+
+test("a stale conflict flag is rechecked before generation or deletion saves", async () => {
+    remote.set("canvas", { ...addNode(canvas(), "agent-result"), revision: 2 });
+    useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "target").nodes });
+    useSyncProgressStore.getState().setProjectProgress("canvas", { phase: "conflict" });
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.nodes.map((node) => node.id).sort()).toEqual(["agent-result", "old-image", "target"]);
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+});
+
+test("reopen merges an offline draft using the separately persisted ancestor", async () => {
+    useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "offline").nodes });
+    await flushCanvasStorePersistence();
+    remote.set("canvas", { ...addNode(canvas(), "agent-result"), revision: 2 });
+    await initializeRemoteUserDataSession(scope);
+    const loaded = await loadCanvasProjectForEditing("canvas");
+    expect(loaded.nodes.map((node) => node.id).sort()).toEqual(["agent-result", "offline", "old-image"]);
+    expect(loaded.revision).toBe(2);
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.nodes).toEqual(loaded.nodes);
+    expect(remote.get("canvas")!.revision).toBe(3);
+});
+
+test("an old client draft recovers only its exact hash-verified history revision", async () => {
+    const base = structuredClone(useCanvasStore.getState().openProject("canvas")!);
+    useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "offline").nodes });
+    await flushCanvasStorePersistence();
+    for (const key of indexed.keys()) if (key.includes("sync-baseline:")) indexed.delete(key);
+    remote.set("canvas", { ...addNode(canvas(), "agent-result"), revision: 3 });
+    await initializeRemoteUserDataSession(scope);
+    const adapter = apiClient.defaults.adapter as (config: any) => Promise<any>;
+    apiClient.defaults.adapter = async (config) => {
+        let data: unknown;
+        if (String(config.url).endsWith("/history")) data = { snapshots: [{ id: "ancestor", revision: 1 }] };
+        else if (String(config.url).endsWith("/history/ancestor")) data = { project: base };
+        else return adapter(config);
+        return { config, status: 200, statusText: "", headers: {}, data: { code: 0, data } };
+    };
+    const loaded = await loadCanvasProjectForEditing("canvas");
+    expect(loaded.nodes.map((node) => node.id).sort()).toEqual(["agent-result", "offline", "old-image"]);
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.revision).toBe(4);
+});
+
+test("a history entry with the wrong content hash cannot overwrite an offline draft", async () => {
+    useCanvasStore.getState().renameProject("canvas", "offline title");
+    await flushCanvasStorePersistence();
+    for (const key of indexed.keys()) if (key.includes("sync-baseline:")) indexed.delete(key);
+    remote.set("canvas", { ...addNode(canvas(), "agent-result"), revision: 3 });
+    await initializeRemoteUserDataSession(scope);
+    const adapter = apiClient.defaults.adapter as (config: any) => Promise<any>;
+    apiClient.defaults.adapter = async (config) => {
+        let data: unknown;
+        if (String(config.url).endsWith("/history")) data = { snapshots: [{ id: "ancestor", revision: 1 }] };
+        else if (String(config.url).endsWith("/history/ancestor")) data = { project: { ...canvas(), title: "unrelated content" } };
+        else return adapter(config);
+        return { config, status: 200, statusText: "", headers: {}, data: { code: 0, data } };
+    };
+    expect((await loadCanvasProjectForEditing("canvas")).title).toBe("offline title");
+    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow("云端画布已有更新");
+    expect((await readCanvasSyncDrafts("canvas"))[0].project.title).toBe("offline title");
+    expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
+});
+
+test("server progress on a node merges with a local drag and content edit", async () => {
+    const base = useCanvasStore.getState().openProject("canvas")!;
+    remote.set("canvas", { ...base, revision: 2, nodes: [{ ...base.nodes[0], metadata: { status: "success" } }] });
+    useCanvasStore.getState().updateProject("canvas", { nodes: [{ ...base.nodes[0], position: { x: 222, y: 333 }, title: "local title" }] });
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.nodes[0]).toMatchObject({ position: { x: 222, y: 333 }, title: "local title", metadata: { status: "success" } });
+});
+
+test("edits arriving during a rejected PUT survive rebase and the retry", async () => {
+    let once = false;
+    beforePut = async () => {
+        if (once) return;
+        once = true;
+        remote.set("canvas", { ...addNode(canvas(), "agent-result"), revision: 2 });
+        useCanvasStore.getState().renameProject("canvas", "edited during network wait");
+    };
+    useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "target").nodes });
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.title).toBe("edited during network wait");
+    expect(remote.get("canvas")!.nodes.map((node) => node.id).sort()).toEqual(["agent-result", "old-image", "target"]);
+});
+
+test("continuous remote writes bound CAS retries and retain an unsaved draft", async () => {
+    beforePut = async () => {
+        const current = remote.get("canvas")!;
+        remote.set("canvas", { ...current, revision: current.revision! + 1 });
+    };
+    useCanvasStore.getState().renameProject("canvas", "must survive contention");
+    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow();
+    expect(requests.filter((request) => request.method === "put")).toHaveLength(4);
+    expect((await readCanvasSyncDrafts("canvas"))[0].project.title).toBe("must survive contention");
+    beforePut = undefined;
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.title).toBe("must survive contention");
 });
 
 test("transient cloud failures schedule a bounded automatic retry", async () => {
@@ -367,6 +732,20 @@ test("local storage rebase cannot pair old edits with another tab's newer revisi
     const rebased = rebaseCanvasProjects({ document, baseProjects: [base], localProjects: [local], baseRevision: 0 }).document.state.projects[0];
     expect(rebased.revision).toBe(1);
     expect(rebased.nodes.at(-1)!.id).toBe("unsaved-local");
+});
+
+test("server JSON key ordering does not turn unchanged asset bindings into a cross-tab conflict", () => {
+    const base = canvas();
+    base.nodes[0].metadata = { assetBindings: [{ nodeId: "character", role: "character", priority: 1 }] };
+    const local = structuredClone(base);
+    local.title = "local title";
+    local.nodes[0].metadata!.assetBindings = [{ priority: 1, role: "character", nodeId: "character" }];
+    const durable = structuredClone(base);
+    durable.nodes[0].metadata!.assetBindings![0].priority = 2;
+    const merged = rebaseCanvasProjects({ document: parseCanvasStorageDocument(null, [durable]), baseProjects: [base], localProjects: [local], baseRevision: 0 });
+    expect(merged.conflicts).toEqual([]);
+    expect(merged.document.state.projects[0].title).toBe("local title");
+    expect(merged.document.state.projects[0].nodes[0].metadata!.assetBindings![0].priority).toBe(2);
 });
 
 test("loading aligns live editor content before publishing its server revision", async () => {

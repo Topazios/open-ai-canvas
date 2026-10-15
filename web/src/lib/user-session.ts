@@ -15,6 +15,8 @@ import { PLUGIN_STORE_KEY, usePluginStore } from "@/stores/use-plugin-store";
 import { initializeRemoteUserDataSession, installRemoteUserDataAutoSync, resetRemoteUserDataSync, withRemoteUserDataSyncExclusive } from "@/services/user-data-sync";
 import { clearResourceAccessCache } from "@/services/api/resources";
 import { clearResourceBlobCache } from "@/services/resource-blob-cache";
+import { clearImageObjectUrls } from "@/services/image-storage";
+import { clearMediaObjectUrls } from "@/services/file-storage";
 import { withGenerationConsumersPaused } from "@/services/generation-consumer-lifecycle";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 
@@ -25,6 +27,8 @@ export async function switchUserStorageScope(userId?: string | null) {
             resetRemoteUserDataSync();
             clearResourceAccessCache();
             clearResourceBlobCache();
+            clearImageObjectUrls();
+            clearMediaObjectUrls();
             setActiveUserScope(userId);
         });
     });
@@ -98,6 +102,12 @@ async function hydrateUserSessionData(payload: AuthSessionPayload, generation: n
     if (!hasPersistedValue(plugins)) usePluginStore.setState({ installations: [], runtimeStatuses: {}, pluginStates: {} });
     if (!persistedCreationPreferences) useCreationPreferencesStore.setState({ preferences: {} });
 
+    // Saving a loaded canvas must not wait for the model catalog network request.
+    if (isCurrentSession(generation, userId)) {
+        if (userId) await initializeRemoteUserDataSession(userId, { preserveExisting: true });
+        else resetRemoteUserDataSync();
+    }
+
     try {
         const catalog = await getModelCatalog();
         if (!isCurrentSession(generation, userId)) return;
@@ -119,15 +129,6 @@ async function hydrateUserSessionData(payload: AuthSessionPayload, generation: n
         if (isCurrentSession(generation, userId)) console.warn("模型目录后台刷新失败，保留本地配置", error);
     }
 
-    if (userId) {
-        try {
-            await initializeRemoteUserDataSession(userId);
-        } catch (error) {
-            if (isCurrentSession(generation, userId)) console.warn("远端用户数据后台同步初始化失败", error);
-        }
-    } else {
-        resetRemoteUserDataSync();
-    }
     if (isCurrentSession(generation, userId)) {
         recordDiagnosticEvent({
             category: "navigation",

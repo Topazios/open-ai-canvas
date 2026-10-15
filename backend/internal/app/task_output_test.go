@@ -68,6 +68,28 @@ func TestTaskClientContextPreservesCanvasNodeID(t *testing.T) {
 	}
 }
 
+func TestStoryTaskSummarySupportsRecoveryWithoutGenericNodeAdoption(t *testing.T) {
+	summary := taskSummaryForOutput(model.Task{ID: "story-task", InputJSON: `{"metadata":{"source":"canvas-story-development","storyNodeId":"story-node","clientOperationId":"story-operation","nodeId":"ignored","privateField":"secret"},"config":{"apiKey":"secret"}}`})
+	context := summary.ClientContext
+	if context == nil || context.StoryNodeID != "story-node" || context.ClientOperationID != "story-operation" || context.NodeID != "" {
+		t.Fatalf("unexpected story recovery context: %+v", context)
+	}
+	encoded, err := json.Marshal(context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 2 {
+		t.Fatalf("story recovery leaked fields: %s", encoded)
+	}
+	if unexpected := taskClientContext(`{"metadata":{"source":"other","storyNodeId":"story-node","clientOperationId":"story-operation"}}`); unexpected != nil {
+		t.Fatalf("unrelated source exposed story recovery context: %+v", unexpected)
+	}
+}
+
 func TestTaskSummaryPreservesCanvasNodeWithoutExposingInput(t *testing.T) {
 	summary := taskSummaryForOutput(model.Task{
 		ID: "task-1", ProjectID: "project-1", Type: "canvas_image",

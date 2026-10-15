@@ -17,23 +17,10 @@ function Test-CanvasHttp([string]$Url) {
     }
 }
 
-function Test-ListeningPort([int]$Port) {
-    try {
-        return $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop | Select-Object -First 1)
-    } catch {
-        return $false
-    }
-}
-
 if (Test-CanvasHttp $healthUrl) {
     Write-Host "影策画布已经在运行，正在打开..." -ForegroundColor Green
     Start-Process $canvasUrl
     exit 0
-}
-
-$occupiedPorts = @(3000, 8080) | Where-Object { Test-ListeningPort $_ }
-if ($occupiedPorts.Count -gt 0) {
-    throw "端口 $($occupiedPorts -join ', ') 已被其他程序占用，无法安全启动影策。"
 }
 
 if (-not (Test-Path -LiteralPath $localStarter)) {
@@ -53,4 +40,4 @@ do {
     }
 } while ((Get-Date) -lt $deadline)
 
-throw "影策服务已拉起，但 3 分钟内未通过健康检查。请查看打开的前端、后端窗口。"
+throw "影策服务已拉起，但 3 分钟内未通过健康检查。请查看 .local/logs 中的前后端日志。"

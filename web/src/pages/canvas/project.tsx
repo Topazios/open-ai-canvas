@@ -1,4 +1,7 @@
 import { CanvasWorkspacePanel } from "@/components/canvas/canvas-workspace-panel";
+import { layoutWorkflowImageGroups } from "@/lib/canvas/canvas-workflow-image-layout";
+import { assetReferenceStep } from "@/lib/asset-reference-sheet";
+import { CanvasProjectAssociation } from "./canvas-project-association";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { createCanvasStateWriter } from "@/lib/canvas/canvas-editor-state";
 import { canCancelGenerationTask } from "@/lib/generation-task-display";
@@ -44,6 +47,7 @@ import { WorkspaceState } from "@/components/layout/workspace-state";
 import { resolveProjectCanvasStyle } from "@/components/canvas/canvas-style-picker-modal";
 import { createStyleProfileSnapshot, resolveStyleProfile, serializeStyleProfile } from "@/lib/canvas/style-profile";
 import { CanvasNodeToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-toolbar";
+import { emptyWorkflowAssetManifest } from "@/lib/canvas/canvas-workflow-assets";
 import { CanvasSubtitleDialog } from "@/components/canvas/canvas-subtitle-dialog";
 import { CanvasVideoFrameDialog } from "@/components/canvas/canvas-video-frame-dialog";
 import { CanvasVideoSegmentDialog } from "@/components/canvas/canvas-video-segment-dialog";
@@ -52,6 +56,16 @@ import { syncNodeSubtitlesToTimeline } from "@/lib/timeline/timeline-build";
 import { CanvasNodeAnglePanel } from "@/components/canvas/canvas-node-angle-dialog";
 import { CanvasNodeLightingPanel } from "@/components/canvas/canvas-node-lighting-dialog";
 import { CanvasTextEditorModal } from "@/components/canvas/canvas-text-editor-modal";
+import { CanvasStoryDevelopmentEditor } from "@/components/canvas/canvas-story-development-editor";
+import { CanvasWorkflowGenerator, type WorkflowGeneratorTarget } from "@/components/canvas/canvas-workflow-generator";
+import { CanvasWorkflowAssetReview } from "./canvas-workflow-asset-review";
+import { nodeWorkflow, workflowSignature, workflowGroupingProblem } from "@/lib/canvas/canvas-short-drama-workflow";
+import { nextShortDramaSteps, shortDramaStep, ShortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
+import { useShortDramaWorkflowGeneration } from "./use-short-drama-workflow-generation";
+import { useProductionAgentRuns } from "./use-production-agent-runs";
+import { CanvasProductionAgentDetails } from "./canvas-production-agent-details";
+import { useLegacyStoryRecovery } from "./use-legacy-story-recovery";
+import { createNextStoryEpisode, prepareStoryEpisodeBatch, saveStoryDevelopmentNode } from "@/lib/canvas/canvas-story-development";
 import { CanvasNodeSearchModal } from "@/components/canvas/canvas-node-search-modal";
 import { CanvasStylePickerModal } from "@/components/canvas/canvas-style-picker-modal";
 import { CanvasDirectorTemplateModal } from "@/components/canvas/director/canvas-director-template-modal";
@@ -85,7 +99,6 @@ import {
     canvasResourceMentionToken,
     buildCanvasNodeMentionReferenceMap,
     buildCanvasResourceReferences,
-    getContextResourceNodes,
     normalizeCanvasNodeMentionTokens,
     reorderCanvasResourceConnections,
     replaceCanvasReferenceMentions,
@@ -97,9 +110,9 @@ import { CanvasLeaferGraphicsLayer } from "@/components/canvas/canvas-leafer-gra
 import { CanvasFreeformEmptyState, CanvasLinkedProjectEmptyState, CanvasShortDramaEmptyState, CanvasShortDramaGuide, CanvasStoryInputNodeContent, CanvasStylePlaceholderNodeContent } from "@/components/canvas/canvas-short-drama-entry";
 import { resolveCanvasEmptyStateKind } from "@/lib/canvas/canvas-starter";
 import { failedImageBatchChildren, markImageBatchRetrying, reconcileImageBatchRoot, restoreUnsubmittedImageBatchChild } from "@/lib/canvas/canvas-image-batch-retry";
-import { cinematicStoryboardColumns, createCanvasNode, getInputSummary, isHiddenBatchChild } from "@/lib/canvas/canvas-project-domain";
+import { cinematicStoryboardColumns, createCanvasNode, isHiddenBatchChild } from "@/lib/canvas/canvas-project-domain";
 import { bindStoryboardKeyframes, storyboardKeyframeTime, storyboardRowsFromBatchTable } from "@/lib/canvas/canvas-batch-storyboard";
-import { stampCanvasNodeChanges, updateCanvasNode, updateCanvasNodes } from "@/lib/canvas/canvas-node-timestamps";
+import { stampCanvasNodeChanges } from "@/lib/canvas/canvas-node-timestamps";
 import { canvasAssetHandoffAttempt, finalizeCanvasAssetHandoff, uninsertedCanvasAssetHandoffPayloads } from "@/lib/canvas/canvas-asset-handoff";
 import { batchSourceRestriction } from "@/lib/canvas/canvas-batch-connection";
 import { deriveStoryboardPipelineProgress } from "@/lib/canvas/canvas-storyboard-progress";
@@ -108,6 +121,7 @@ import { backendProviderConfig, getGenerationCount } from "@/lib/canvas/canvas-p
 import { generationSpecMetadata, specFromConfig } from "@/lib/canvas/generation-contract";
 import { applyToolMention } from "@/lib/canvas/canvas-resource-references";
 import { cancelGenerationTask } from "@/services/api/task-center";
+import { cancelRemovedCanvasNodeTasks, reconcileCanvasNodeTasks } from "@/services/canvas-node-task-cleanup";
 import { CanvasSyncStatus } from "./canvas-sync-status";
 import { CanvasVersionHistory, useCanvasVersionHistory } from "./canvas-version-history";
 import { CanvasVersionPreview } from "./canvas-version-preview";
@@ -123,7 +137,6 @@ import { CanvasProjectWorldLayers } from "./canvas-project-world-layers";
 import { CanvasNodeActionContext, type CanvasNodeActionContextValue } from "@/components/canvas/canvas-node-action-context";
 import { bringCanvasNodeToFront, type CanvasNodeStackOrder } from "@/lib/canvas/canvas-node-stack-order";
 import { AiArtCritiqueModal } from "@/components/canvas/art-critique/ai-art-critique-modal";
-import { CanvasNodeGraphContext, type CanvasNodeGraphContextValue } from "@/components/canvas/canvas-node-graph-context";
 import { CanvasRefreshShell } from "./canvas-refresh-shell";
 import { queryGenerationTask } from "@/services/api/task-center";
 import type { CanvasImageEmotionPayload } from "@/components/canvas/canvas-node-emotion-panel";
@@ -147,6 +160,11 @@ import { useCanvasNodeEditor } from "./use-canvas-node-editor";
 import { useCanvasNodeOperations } from "./use-canvas-node-operations";
 import { useCanvasProjectLifecycle } from "./use-canvas-project-lifecycle";
 import { useCanvasRenderModel } from "./use-canvas-render-model";
+import { useCanvasScopedNodeRenderers, type CanvasCustomNodeScope } from "./use-canvas-scoped-node-renderers";
+import { useCanvasEditorFocus } from "./use-canvas-editor-focus";
+import { useCanvasShotProjection } from "./use-canvas-shot-projection";
+import { useCanvasNodeContentUpdates } from "./use-canvas-node-content-updates";
+import { useCanvasPerformanceDiagnostics } from "./use-canvas-performance-diagnostics";
 import { useCanvasSelectionController } from "./use-canvas-selection-controller";
 import { useCanvasShortDrama } from "./use-canvas-short-drama";
 import { useCanvasStoryboard } from "./use-canvas-storyboard";
@@ -163,6 +181,7 @@ import {
     type CanvasFolderStyle,
     type CanvasFolderTheme,
     type CanvasNodeData,
+    type CanvasNodeRetryOptions,
     type CanvasNodeMetadata,
     type CanvasMediaPerformanceMode,
     type StoryboardColumn,
@@ -219,6 +238,7 @@ function InfiniteCanvasPage() {
     const projectId = params.id || "";
     const canvasStorageScope = getActiveUserScope();
     const containerRef = useRef<HTMLDivElement>(null);
+    const editingNodeId = useCanvasEditorFocus(projectId, containerRef);
     const didInitialCenterRef = useRef(false);
     const toolbarHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const assetHandoffRef = useRef("");
@@ -233,6 +253,7 @@ function InfiniteCanvasPage() {
     const theme = canvasThemes[colorTheme];
     const defaultDrawingEngine = useUserStore((state) => state.drawingEngine.defaultEngine);
     const shortDramaEnabled = useUserStore((state) => state.features.shortDramaEnabled);
+    const [projectAssociationOpen, setProjectAssociationOpen] = useState(false);
     const directorOnboardingScope = useUserStore((state) => state.user?.id?.trim() || "");
     const nodesRef = useRef<CanvasNodeData[]>([]);
     const [nodes, setNodesState] = useState<CanvasNodeData[]>([]);
@@ -261,6 +282,7 @@ function InfiniteCanvasPage() {
     const [mediaPerformanceMode, setMediaPerformanceMode] = useState<CanvasMediaPerformanceMode>(readCanvasMediaPerformanceMode);
     const [hideNodeConnections, setHideNodeConnections] = useState(readCanvasHideNodeConnections);
     const [projectLoaded, setProjectLoaded] = useState(false);
+    useCanvasPerformanceDiagnostics(projectLoaded && searchParams.get("canvasDiagnostics") === "1", containerRef, nodesRef, connectionsRef);
     const workspaceMode: CanvasWorkspaceMode = "professional";
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [shareModalOpen, setShareModalOpen] = useState(false);
@@ -272,6 +294,9 @@ function InfiniteCanvasPage() {
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
     const [textBatchSourceNodeId, setTextBatchSourceNodeId] = useState<string | null>(null);
     const [textEditorNodeId, setTextEditorNodeId] = useState<string | null>(null);
+    const [workflowGenerator, setWorkflowGenerator] = useState<WorkflowGeneratorTarget | null>(null);
+    const [assetReviewId, setAssetReviewId] = useState<string | null>(null);
+    const textEditorOriginalRef = useRef<CanvasNodeData | null>(null);
     const [characterReferenceNodeId, setCharacterReferenceNodeId] = useState<string | null>(null);
     const [drawingNodeId, setDrawingNodeId] = useState<string | null>(null);
     const [stylePickerOpen, setStylePickerOpen] = useState(false);
@@ -488,6 +513,8 @@ function InfiniteCanvasPage() {
     const linkedProjectId = shortDramaEnabled ? currentProject?.projectId || "" : "";
     const linkedProjectQuery = useQuery({ queryKey: ["project", linkedProjectId], queryFn: () => getProject(linkedProjectId), enabled: Boolean(linkedProjectId) });
     const refetchLinkedProject = linkedProjectQuery.refetch;
+    const shotProjection = useCanvasShotProjection(linkedProjectId, projectId, linkedProjectQuery.data?.canvasNodeShotLinks);
+    const isShotProjectionActive = useCallback((nodeId: string) => shotProjection.bindings.has(nodeId) && !shotProjection.originalNodeIds.has(nodeId), [shotProjection.bindings, shotProjection.originalNodeIds]);
     const batchProjectStyle = useMemo(() => {
         const project = linkedProjectQuery.data?.project;
         return resolveProjectCanvasStyle(project?.stylePresetId, project?.styleProfileJson) || null;
@@ -522,7 +549,6 @@ function InfiniteCanvasPage() {
     // 扩展节点（对比/图表/调色）要读自己的上游才能渲染，经 Context 下发；
     // 取上游复用 canvas-resource-references 的实现，别在这里另写一份。必须 memo——
     // 每帧新对象会让所有节点跟着重渲染，错题本里多条崩溃都出在画布高频更新。
-    const nodeGraphContext = useMemo<CanvasNodeGraphContextValue>(() => ({ getUpstreamNodes: (nodeId: string) => getContextResourceNodes(nodeId, nodes, connections) }), [connections, nodes]);
 
     const { applyGenerationTaskResult, bindGenerationTask, finishGenerationRequest, openNodeTaskDetails, runningNodeId, setRunningNodeId, setTaskDetail, startGenerationRequest, taskDetail, taskDetailLoading, taskDetailLogs } = useCanvasGeneration({
         projectId,
@@ -674,6 +700,8 @@ function InfiniteCanvasPage() {
         const profile = resolveStyleProfile(project?.stylePresetId, project?.styleProfileJson, preset.profile || createStyleProfileSnapshot(preset));
         if (!profile) return;
         const current = nodesRef.current.find((node) => node.type === CanvasNodeType.Text && node.metadata?.workflowKind === "styleboard");
+        // A free-canvas style is authored content; project association must not replace it.
+        if (current && !current.metadata?.locked) return;
         const nextMetadata = {
             content: profile.prompt,
             prompt: profile.prompt,
@@ -923,10 +951,15 @@ function InfiniteCanvasPage() {
                 void Promise.all(removedDrawingIds.map((drawingId) => removeCanvasDrawing(projectId, drawingId))).catch(() => message.warning("绘图节点已删除，但本地绘图缓存清理失败"));
             }
             cleanupCanvasFiles({ projectId, nodes: nextNodes, chatSessions });
+            void (async () => {
+                if (await saveCanvasProject({ requireRemote: true })) await reconcileCanvasNodeTasks(projectId, [...removedIds]);
+                else await cancelRemovedCanvasNodeTasks(removedNodes, nextNodes);
+            })().catch((error) => message.warning(`节点任务清理尚未完成，将在下次同步时重试：${error instanceof Error ? error.message : "请检查网络"}`));
         },
         [
             chatSessions,
             cleanupCanvasFiles,
+            saveCanvasProject,
             message,
             projectId,
             setAngleNodeId,
@@ -1096,6 +1129,7 @@ function InfiniteCanvasPage() {
 
     const handleSelectedNodeClick = useCallback(
         (node: CanvasNodeData) => {
+            if (isShotProjectionActive(node.id) || node.metadata?.storyDevelopment || node.metadata?.shortDrama) { setDialogNodeId(null); return; }
             // Selection is transient, but the LibTV-style paint order survives
             // deselection so a clicked lower node stays above its neighbours.
             if (node.type !== CanvasNodeType.Frame) bringNodeToFront(node.id);
@@ -1123,7 +1157,7 @@ function InfiniteCanvasPage() {
                 });
             }
         },
-        [bringNodeToFront, nodesRef],
+        [bringNodeToFront, nodesRef, isShotProjectionActive],
     );
 
     const handleNodeBringToFront = useCallback(
@@ -1136,8 +1170,9 @@ function InfiniteCanvasPage() {
 
     const handleNodeDragEnd = useCallback(
         (nodeId: string) => {
+            if (isShotProjectionActive(nodeId)) { setDialogNodeId(null); return; }
             const node = nodesRef.current.find((item) => item.id === nodeId);
-            if (!node || node.type === CanvasNodeType.Script || node.type === CanvasNodeType.Drawing || node.type === CanvasNodeType.Panorama || node.type === ART_CRITIQUE_NODE_TYPE) {
+            if (!node || node.metadata?.storyDevelopment || node.metadata?.shortDrama || node.type === CanvasNodeType.Script || node.type === CanvasNodeType.Drawing || node.type === CanvasNodeType.Panorama || node.type === ART_CRITIQUE_NODE_TYPE) {
                 setDialogNodeId(null);
                 return;
             }
@@ -1146,7 +1181,7 @@ function InfiniteCanvasPage() {
             // panel from the previous node cannot reappear after mouse-up.
             setDialogNodeId(node.id);
         },
-        [nodesRef],
+        [nodesRef, isShotProjectionActive],
     );
 
     const handleCanvasDeselect = useCallback(() => {
@@ -1384,6 +1419,8 @@ function InfiniteCanvasPage() {
         upscaleNode,
         versionCompareNodes,
         visibleNodes,
+        viewportNodeIds,
+        upstreamNodesById,
     } = useCanvasRenderModel({
         nodes,
         connections,
@@ -1392,6 +1429,7 @@ function InfiniteCanvasPage() {
         viewportSize: size,
         mediaPerformanceMode,
         selectedNodeIds,
+        editingNodeId,
         hoveredNodeId,
         dragPreview,
         collapsingBatchIds,
@@ -1469,6 +1507,7 @@ function InfiniteCanvasPage() {
 
     const openTextNodeEditor = useCallback((node: CanvasNodeData) => {
         if (node.type !== CanvasNodeType.Text && node.type !== CanvasNodeType.Markdown) return;
+        textEditorOriginalRef.current = node;
         setSelectedNodeIds(new Set([node.id]));
         setSelectedConnectionId(null);
         setContextMenu(null);
@@ -1502,31 +1541,7 @@ function InfiniteCanvasPage() {
     }, []);
     const duplicateNodeFromContent = useCallback((node: CanvasNodeData) => duplicateNode(node.id), [duplicateNode]);
     const deleteNodeFromContent = useCallback((node: CanvasNodeData) => deleteNodes(new Set([node.id])), [deleteNodes]);
-    const updateNodeFromContent = useCallback((nodeId: string, update: (node: CanvasNodeData) => CanvasNodeData) => {
-        setNodesState((current) => {
-            const next = updateCanvasNode(current, nodeId, update);
-            nodesRef.current = next;
-            return next;
-        });
-    }, []);
-    const pendingMediaUpdatesRef = useRef(new Map<string, (node: CanvasNodeData) => CanvasNodeData>());
-    const mediaUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const updateMediaNodeFromContent = useCallback((nodeId: string, update: (node: CanvasNodeData) => CanvasNodeData) => {
-        const previous = pendingMediaUpdatesRef.current.get(nodeId);
-        pendingMediaUpdatesRef.current.set(nodeId, previous ? (node) => update(previous(node)) : update);
-        if (mediaUpdateTimerRef.current) return;
-        mediaUpdateTimerRef.current = setTimeout(() => {
-            const updates = pendingMediaUpdatesRef.current;
-            pendingMediaUpdatesRef.current = new Map();
-            mediaUpdateTimerRef.current = null;
-            if (!updates.size) return;
-            setNodesState((current) => {
-                const next = updateCanvasNodes(current, updates);
-                nodesRef.current = next;
-                return next;
-            });
-        }, 120);
-    }, []);
+    const { updateNode: updateNodeFromContent, updateMediaNode: updateMediaNodeFromContent } = useCanvasNodeContentUpdates(projectId, nodesRef, setNodesState);
     const updateNodeMetadataFromContent = useCallback(
         (nodeId: string, patch: CanvasNodeMetadata) => {
             updateNodeFromContent(nodeId, (node) => ({ ...node, metadata: { ...node.metadata, ...patch } }));
@@ -1598,8 +1613,21 @@ function InfiniteCanvasPage() {
         updateProject,
     });
 
+    const openWorkflowGenerator = useCallback((step: ShortDramaStepId, anchorId?: string, stepIds?: ShortDramaStepId[]) => {
+        const anchor = nodesRef.current.find((node) => node.id === anchorId);
+        const pipelineId = nodeWorkflow(anchor)?.pipelineId || nodesRef.current.map(nodeWorkflow).find(Boolean)?.pipelineId;
+        if (!pipelineId) { message.info("请先创建短剧流程并采用选题"); return; }
+        setTextEditorNodeId(null); setContextMenu(null); setDialogNodeId(null);
+        setWorkflowGenerator({ step, pipelineId, anchorId, stepIds });
+    }, [message, nodesRef]);
+
+    const workflowGeneration = useShortDramaWorkflowGeneration({ projectId, config: effectiveConfig, nodesRef, connectionsRef, setNodes, setConnections,
+        save: () => saveCanvasProject({ requireRemote: true }), center: getCanvasCenter, focus: focusCanvasNode, bindTask: bindGenerationTask, applyResult: applyGenerationTaskResult });
+    const productionAgentRuns = useProductionAgentRuns(projectId, nodesRef, workflowGeneration.submissionLock);
+    useLegacyStoryRecovery({ canvasId: projectId, loaded: projectLoaded, nodesRef, setNodes, save: () => saveCanvasProject({ requireRemote: true }) });
+
     const {
-        activateStep: activateShortDramaStep,
+        activateTask: activateShortDramaTask,
         createPipeline: createShortDramaPipeline,
         guideCollapsed: shortDramaGuideCollapsed,
         openStoryInput,
@@ -1621,6 +1649,15 @@ function InfiniteCanvasPage() {
         fitCanvasSelection,
         focusCanvasNode,
         openTextEditor: openTextNodeEditor,
+        openGeneration: openWorkflowGenerator,
+        openAssets: () => openCanvasAssetLibrary(),
+        openAudio: (nodeId) => nodeId ? setPreviewNodeId(nodeId) : openCanvasAssetLibrary(),
+        openStoryboard: (nodeId) => {
+            if (nodesRef.current.find((node) => node.id === nodeId)?.type === CanvasNodeType.Script) setScriptEditorNodeId(nodeId);
+            else focusCanvasNode(nodeId);
+        },
+        openTimeline: setTimelineNodeId,
+        openPreview: setPreviewNodeId,
     });
 
     const shortDramaGuide = shortDramaEnabled && !currentProject?.projectId && shortDramaProgress.active ? { progress: shortDramaProgress, collapsed: shortDramaGuideCollapsed, onToggle: () => setShortDramaGuideCollapsed((value) => !value) } : undefined;
@@ -2289,6 +2326,12 @@ function InfiniteCanvasPage() {
             }
             const sourceNode = nodesRef.current.find((item) => item.id === node.id);
             if (!sourceNode) return;
+            const sourceWorkflow = nodeWorkflow(sourceNode);
+            const referenceStep = sourceWorkflow && assetReferenceStep(sourceWorkflow.step);
+            if (referenceStep) {
+                openWorkflowGenerator(referenceStep, sourceNode.id);
+                return;
+            }
             const nodeSize = getNodeSpec(CanvasNodeType.Image);
             const imageNode = createCanvasNode(
                 CanvasNodeType.Image,
@@ -2304,9 +2347,23 @@ function InfiniteCanvasPage() {
                     quality: effectiveConfig.quality,
                     transparentBackground: effectiveConfig.transparentBackground,
                     count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
+                    ...(sourceNode.metadata?.shortDrama ? {
+                        shortDrama: {
+                            stage: sourceNode.metadata.shortDrama.stage,
+                            step: sourceNode.metadata.shortDrama.step,
+                            pipelineId: sourceNode.metadata.shortDrama.pipelineId,
+                            role: "document" as const,
+                            sourceNodeIds: [sourceNode.id],
+                            sourceSignatures: { [sourceNode.id]: workflowSignature(sourceNode) },
+                            sourceSteps: [sourceNode.metadata.shortDrama.step],
+                            mediaKind: "image" as const,
+                            version: sourceNode.metadata.shortDrama.version,
+                        },
+                    } : {}),
                 },
             );
-            imageNode.title = "图片生成";
+            const workflowMediaLabel = sourceNode.metadata?.shortDrama ? shortDramaStep(sourceNode.metadata.shortDrama.step)?.mediaActionLabel : undefined;
+            imageNode.title = workflowMediaLabel || "图片生成";
             const connection = { id: nanoid(), fromNodeId: sourceNode.id, toNodeId: imageNode.id };
             const nextNodes = nodesRef.current.map((item) => (item.id === sourceNode.id ? { ...item, metadata: { ...item.metadata, content: prompt, richText: undefined, prompt, status: NODE_STATUS_SUCCESS } } : item)).concat(imageNode);
             const nextConnections = [...connectionsRef.current, connection];
@@ -2318,7 +2375,7 @@ function InfiniteCanvasPage() {
             setSelectedConnectionId(null);
             setDialogNodeId(imageNode.id);
         },
-        [effectiveConfig, message],
+        [effectiveConfig, message, openWorkflowGenerator],
     );
 
     const renderCanvasNodePanel = useCallback(
@@ -2415,7 +2472,7 @@ function InfiniteCanvasPage() {
     );
 
     const renderCanvasNodeContent = useCallback(
-        (contentNode: CanvasNodeData) => {
+        (contentNode: CanvasNodeData, scope: CanvasCustomNodeScope) => {
             if (contentNode.metadata?.workflowKind === "character" && contentNode.metadata.characterAssetId) {
                 return <CanvasCharacterReferenceNodeContent node={contentNode} />;
             }
@@ -2429,8 +2486,8 @@ function InfiniteCanvasPage() {
                 return (
                     <CanvasBatchTableNodeContent
                         node={contentNode}
-                        nodes={nodesRef.current}
-                        connections={connections}
+                        nodes={scope.nodes}
+                        connections={scope.connections}
                         batch={visibleGenerationBatch(contentNode)}
                         theme={theme}
                         onPatchTable={(patch) => patchBatchTable(contentNode.id, patch)}
@@ -2453,15 +2510,15 @@ function InfiniteCanvasPage() {
                 );
             }
             if (contentNode.type === CanvasNodeType.Script) {
-                const pipeline = deriveStoryboardPipelineProgress(contentNode, nodesRef.current, connectionsRef.current);
+                const pipeline = deriveStoryboardPipelineProgress(contentNode, scope.nodes, scope.connections);
                 return (
                     <CanvasScriptNodeContent
                         node={contentNode}
-                        nodes={nodesRef.current}
+                        nodes={scope.nodes}
                         batch={visibleGenerationBatch(contentNode)}
                         pipeline={pipeline}
                         scale={viewport.k}
-                        mentionReferences={mentionReferencesByNodeId.get(contentNode.id) || EMPTY_RESOURCE_REFERENCES}
+                        mentionReferences={scope.mentionReferences}
                         onOpen={() => setScriptEditorNodeId(contentNode.id)}
                         onCreateImageNodes={() => createScriptImageNodes(contentNode.id)}
                         onCreateVideoNodes={() => createScriptVideoNodes(contentNode.id)}
@@ -2497,8 +2554,8 @@ function InfiniteCanvasPage() {
                 return (
                     <CanvasDirectorNodePanel
                         node={contentNode}
-                        scene={currentProject?.directorScenes?.find((scene) => scene.id === contentNode.metadata?.directorSceneId) || null}
-                        readNodeContent={(nodeId) => (nodeId ? nodesRef.current.find((item) => item.id === nodeId)?.metadata?.content : undefined)}
+                        scene={scope.directorScene}
+                        readNodeContent={(nodeId) => (nodeId ? scope.nodes.find((item) => item.id === nodeId)?.metadata?.content : undefined)}
                         professional={workspaceMode === "professional"}
                         onOpen={() => openDirectorWorkbench(contentNode.id)}
                     />
@@ -2507,8 +2564,8 @@ function InfiniteCanvasPage() {
             return (
                 <CanvasConfigNodePanel
                     node={contentNode}
-                    isRunning={isCanvasNodeGenerating(contentNode, runningNodeId)}
-                    inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
+                    isRunning={scope.isRunning}
+                    inputSummary={scope.inputSummary}
                     onConfigChange={handleConfigNodeChange}
                     onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
                     onGenerate={(nodeId) => {
@@ -2523,14 +2580,11 @@ function InfiniteCanvasPage() {
             addBatchReferenceColumn,
             addBatchRow,
             addScriptRow,
-            configInputsById,
-            connections,
             createAndGenerateScriptVideos,
             createScriptActionBoards,
             createStoryboardFromBatchTable,
             createScriptImageNodes,
             createScriptVideoNodes,
-            currentProject?.directorScenes,
             fillRowsFromConnections,
             focusCanvasImageNode,
             generateBatchRows,
@@ -2544,7 +2598,6 @@ function InfiniteCanvasPage() {
             handleConnectStart,
             handleGenerateNode,
             handleNodeResize,
-            mentionReferencesByNodeId,
             mergeVideosByIds,
             openDirectorWorkbench,
             openStoryInput,
@@ -2552,10 +2605,8 @@ function InfiniteCanvasPage() {
             removeBatchReferenceColumn,
             removeBatchRow,
             reorderBatchReferenceColumns,
-            replaceCanvasNodeMedia,
             removeScriptRow,
             retryFailedBatchItems,
-            runningNodeId,
             stopRemainingBatchItems,
             theme,
             updateBatchRow,
@@ -2564,6 +2615,11 @@ function InfiniteCanvasPage() {
             workspaceMode,
         ],
     );
+
+    const renderCanvasNodeContentById = useCanvasScopedNodeRenderers({
+        visibleNodes, nodes, connections, mentionReferencesByNodeId, configInputsById,
+        directorScenes: currentProject?.directorScenes, runningNodeId,
+    }, renderCanvasNodeContent);
 
     const handleCanvasNodeHoverStart = useCallback(
         (nodeId: string) => {
@@ -2581,7 +2637,8 @@ function InfiniteCanvasPage() {
         [hideNodeToolbar],
     );
     const retryCanvasNode = useCallback(
-        (node: CanvasNodeData) => {
+        (node: CanvasNodeData, options?: CanvasNodeRetryOptions) => {
+            if (node.metadata?.shortDrama?.productionAgent) { setInfoNodeId(node.id); return; }
             if (node.type === CanvasNodeType.Script) {
                 const prompt = (node.metadata?.composerContent || node.metadata?.prompt || "").trim();
                 if (!prompt) {
@@ -2605,12 +2662,13 @@ function InfiniteCanvasPage() {
                 retryImageBatchChildren(node.metadata.batchRootId, [node]);
                 return;
             }
-            void handleRetryNode(node);
+            void handleRetryNode(node, options);
         },
         [generateScriptRows, handleRetryNode, message, nodesRef, retryImageBatchChildren],
     );
     const openCanvasNodeTaskDetails = useCallback(
         (node: CanvasNodeData) => {
+            if (node.metadata?.shortDrama?.productionAgent) { setInfoNodeId(node.id); return; }
             void openNodeTaskDetails(node);
         },
         [openNodeTaskDetails],
@@ -2711,7 +2769,7 @@ function InfiniteCanvasPage() {
                     <CanvasProjectSidebar projectId={currentProject.projectId} detail={linkedProjectQuery.data} onAddChapter={handleProjectChapterInsert} onLocateStyle={locateProjectStyleNode} onOpenAssets={() => openProjectAssets()} />
                 ) : null}
                 <CanvasOverlayLayerProvider>
-                    <div className="canvas-editor-shell relative flex min-w-0 flex-1">
+                    <div className="canvas-editor-shell relative flex min-w-0 flex-1" data-director-open={directorNodeId && activeDirectorScene ? "true" : undefined}>
                     <section data-canvas-editor inert={Boolean(versions.preview)} style={{ visibility: versions.preview ? "hidden" : undefined, opacity: versions.preview ? 0 : undefined }} className="relative min-w-0 flex-1 flex flex-col min-h-0 overflow-hidden">
                         {!focusMode ? (
                             <CanvasTopBar
@@ -2730,6 +2788,7 @@ function InfiniteCanvasPage() {
                                 onCreateProject={createAndOpenProject}
                                 onDeleteProject={deleteCurrentProject}
                                 onSave={() => void saveCanvasProject()}
+                                onOpenProjectAssociation={shortDramaEnabled ? () => setProjectAssociationOpen(true) : undefined}
                                 onForceSave={confirmForceSaveCanvas}
                                 onImportImage={() => handleUploadRequest()}
                                 onImportLibTV={() => setLibTVImportOpen(true)}
@@ -2773,11 +2832,12 @@ function InfiniteCanvasPage() {
                             }}
                         />
 
-                        {!focusMode && shortDramaGuide ? (
-                            <CanvasShortDramaGuide progress={shortDramaGuide.progress} collapsed={shortDramaGuide.collapsed} onToggle={shortDramaGuide.onToggle} onSkip={skipShortDramaGuide} onStepClick={activateShortDramaStep} />
+                        {shortDramaGuide ? (
+                            <CanvasShortDramaGuide key={projectId} progress={shortDramaGuide.progress} collapsed={shortDramaGuide.collapsed} onToggle={shortDramaGuide.onToggle} onSkip={skipShortDramaGuide} onTaskClick={activateShortDramaTask} topInset={focusMode ? "var(--space-24)" : undefined} />
                         ) : null}
 
                         <CanvasShareModal projectId={projectId} open={shareModalOpen} onClose={() => setShareModalOpen(false)} beforeCreate={saveCanvasProject} />
+                        {projectAssociationOpen ? <CanvasProjectAssociation key={JSON.stringify([getActiveUserScope(), projectId])} canvasId={projectId} onClose={() => setProjectAssociationOpen(false)} onSave={saveCanvasProject} onReload={reloadLatestCanvasProject} /> : null}
                         <LibTVImportDialog open={libTVImportOpen} projectId={projectId} viewport={viewport} viewportSize={size} onClose={() => setLibTVImportOpen(false)} onApply={applyLibTVImport} />
                         <TapNowImportDialog open={tapNowImportOpen} projectId={projectId} viewport={viewport} viewportSize={size} onClose={() => setTapNowImportOpen(false)} onApply={applyTapNowImport} />
 
@@ -2826,8 +2886,11 @@ function InfiniteCanvasPage() {
                                     onFileDragOver={handleFileDragOver}
                                 >
                                     <CanvasNodeActionContext.Provider value={canvasNodeActions}>
-                                        <CanvasNodeGraphContext.Provider value={nodeGraphContext}>
                                             <CanvasProjectWorldLayers
+                                                shotBindings={shotProjection.bindings}
+                                                originalNodeIds={shotProjection.originalNodeIds}
+                                                onOriginalNodeView={shotProjection.setOriginalView}
+                                                onRefreshShot={shotProjection.refresh}
                                                 connectionApproach={connectionApproach}
                                                 projectId={projectId}
                                                 viewportScale={viewport.k}
@@ -2841,6 +2904,8 @@ function InfiniteCanvasPage() {
                                                 connectionTargetNodeId={connectionTargetNodeId}
                                                 nodeById={nodeById}
                                                 visibleNodes={visibleNodes}
+                                                viewportNodeIds={viewportNodeIds}
+                                                upstreamNodesById={upstreamNodesById}
                                                 nodeRenderLODById={nodeRenderLODById}
                                                 nodeStackOrder={nodeStackOrder}
                                                 frameChildrenById={frameChildrenById}
@@ -2865,15 +2930,15 @@ function InfiniteCanvasPage() {
                                                 batchConnectionPreview={batchConnectionPreview}
                                                 isNodeDragging={isNodeDragging}
                                                 selectionBoundsElementRef={selectionBoundsElementRef}
-                                                renderCanvasNodeContent={renderCanvasNodeContent}
+                                                renderCanvasNodeContentById={renderCanvasNodeContentById}
                                                 onConnectionSelect={(connectionId) => {
                                                     setSelectedConnectionId(connectionId);
-                                                    setSelectedNodeIds(new Set());
+                                                    const selection = new Set<string>(); selectedNodeIdsRef.current = selection; setSelectedNodeIds(selection);
                                                     setContextMenu(null);
                                                 }}
                                                 onConnectionContextMenu={(event, connectionId) => {
                                                     setSelectedConnectionId(connectionId);
-                                                    setSelectedNodeIds(new Set());
+                                                    const selection = new Set<string>(); selectedNodeIdsRef.current = selection; setSelectedNodeIds(selection);
                                                     closeConnectionCreateMenu();
                                                     setContextMenu({ type: "connection", x: event.clientX, y: event.clientY, connectionId });
                                                 }}
@@ -2901,7 +2966,6 @@ function InfiniteCanvasPage() {
                                                 onOpenDrawing={openDrawingNode}
                                                 onStartBatchConnection={startBatchConnection}
                                             />
-                                        </CanvasNodeGraphContext.Provider>
                                     </CanvasNodeActionContext.Provider>
                                 </InfiniteCanvas>
 
@@ -2909,6 +2973,8 @@ function InfiniteCanvasPage() {
 
                                 {focusMode ? (
                                     <CanvasFocusModeBar
+                                        onOpenProjectAssociation={shortDramaEnabled ? () => setProjectAssociationOpen(true) : undefined}
+                                        shortDramaGuide={shortDramaGuide}
                                         syncStatus={<CanvasSyncStatus projectId={projectId} onLoadLatest={reloadLatestCanvasProject} onOpenVersions={openVersions} />}
                                         versionsOpen={versions.open}
                                         onToggleVersions={() => { closeAgent(); versions.toggle(); }}
@@ -3035,6 +3101,9 @@ function InfiniteCanvasPage() {
                         ) : null}
 
                         {dialogNode &&
+                        !isShotProjectionActive(dialogNode.id) &&
+                        !dialogNode.metadata?.storyDevelopment &&
+                        !dialogNode.metadata?.shortDrama &&
                         !isCanvasImageSourceNode(dialogNode) &&
                         !dialogNode.metadata?.fileUpload &&
                         dialogNode.type !== CanvasNodeType.Script &&
@@ -3116,7 +3185,7 @@ function InfiniteCanvasPage() {
                         ) : null}
 
                         <CanvasNodeToolbar
-                            node={isCanvasNodeMoving || nodeImageSettingsOpen || emotionNodeId || angleNodeId ? null : dialogNode || toolbarNode}
+                            node={isCanvasNodeMoving || nodeImageSettingsOpen || emotionNodeId || angleNodeId || (dialogNode || toolbarNode)?.metadata?.storyDevelopment || (dialogNode || toolbarNode)?.metadata?.shortDrama || isShotProjectionActive((dialogNode || toolbarNode)?.id || "") ? null : dialogNode || toolbarNode}
                             scaleWithNode
                             panelOpen={Boolean(dialogNode)}
                             workspaceMode={workspaceMode}
@@ -3204,6 +3273,47 @@ function InfiniteCanvasPage() {
                         <CanvasProjectContextMenu
                             menu={contextMenu}
                             node={contextMenuNode}
+                            workflowActions={(() => {
+                                if (!contextMenu || contextMenu.type === "connection") return [];
+                                const groupSelection = (ids: string[], targetId?: string) => {
+                                    void workflowGeneration.groupEpisodes(ids, targetId).then((id) => {
+                                        if (!id || !nodesRef.current.some((node) => node.id === id)) return;
+                                        const selected = new Set([id]); selectedNodeIdsRef.current = selected; setSelectedNodeIds(selected);
+                                    });
+                                };
+                                const selection = [...selectedNodeIds];
+                                const selectionActions = (ids: string[]) => [
+                                    { label: "将所选节点归入阶段容器", run: () => groupSelection(ids) },
+                                    ...nodes.filter((node) => node.type === CanvasNodeType.Frame && !workflowGroupingProblem(ids, nodes, node.id)).map((node) => ({ label: `加入容器：${node.title}`, run: () => groupSelection(ids, node.id) })),
+                                ];
+                                if ((contextMenu.type === "canvas" || (selection.length > 1 && contextMenuNode?.type !== CanvasNodeType.Frame)) && selection.some((id) => nodeWorkflow(nodes.find((node) => node.id === id))?.episodeNumber)) return selectionActions(selection);
+                                const data = nodeWorkflow(contextMenuNode || undefined);
+                                if (!data && contextMenuNode?.type === CanvasNodeType.Frame) {
+                                    const members = nodes.filter((node) => node.parentId === contextMenuNode.id).map((node) => node.id);
+                                    if (members.length && !workflowGroupingProblem(members, nodes, contextMenuNode.id)) return [{ label: "识别为阶段容器", run: () => groupSelection(members, contextMenuNode.id) }];
+                                }
+                                if (!data || !contextMenuNode) return [];
+                                const anchorId = contextMenuNode.id;
+                                const stepDefinition = shortDramaStep(data.step);
+                                const emptyManifest = emptyWorkflowAssetManifest(nodes, anchorId);
+                                const bibleParent = nodes.find((node) => node.id === contextMenuNode.parentId && nodeWorkflow(node)?.assetGroup?.kind === "bible");
+                                return [
+                                    ...(emptyManifest?.metadata?.taskId ? [{ label: "重新提取空资产分组", disabled: emptyManifest.metadata.status === "loading", run: () => retryCanvasNode(emptyManifest) }] : []),
+                                    ...(data.assetGroup?.kind === "bible" || bibleParent ? [{ label: "查看制作规范", run: () => setAssetReviewId(bibleParent?.id || anchorId) }] : []),
+                                    ...(data.assetKey && data.assetKey !== "$summary" && !bibleParent ? [{ label: "资产资料与参考", run: () => setAssetReviewId(anchorId) }] : []),
+                                    ...(data.episodeNumber && !data.mediaKind && !contextMenuNode.parentId ? [{ label: "整理同源分集为容器", run: () => void workflowGeneration.groupEpisodes(anchorId) }] : []),
+                                    ...(data.episodeNumber && !contextMenuNode.parentId ? nodes.filter((node) => node.type === CanvasNodeType.Frame && !workflowGroupingProblem([anchorId], nodes, node.id)).map((node) => ({ label: `加入容器：${node.title}`, run: () => groupSelection([anchorId], node.id) })) : []),
+                                    ...(data.role === "collection" && nodes.some((node) => data.sourceNodeIds.includes(node.id) && node.metadata?.shortDrama?.submission === "planned") ? [{ label: "继续提交未开始的任务", disabled: workflowGeneration.submitting, run: () => void workflowGeneration.resume(anchorId) }] : []),
+                                    ...(data.mediaGroup ? [{ label: "追加生成图片", disabled: workflowGeneration.submitting, run: () => openWorkflowGenerator(data.step, data.mediaGroup!.sourceNodeId) }] : []),
+                                    ...(data.mediaGroup ? [{ label: "整理图片排列", run: () => setNodes((current) => layoutWorkflowImageGroups(current, new Set([anchorId]))) }] : []),
+                                    ...(data.role === "collection" && !data.assetGroup && !data.mediaGroup && data.step !== ShortDramaStep.Body && data.step !== ShortDramaStep.Extract ? [{ label: "汇总分集文稿", run: () => setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId, aggregate: true }) }] : []),
+                                    ...(data.assetGroup ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => openWorkflowGenerator(data.step, anchorId) }] : []),
+                                    ...(data.submission === "planned" ? [{ label: "继续提交此节点", disabled: workflowGeneration.submitting, run: () => void workflowGeneration.resume(anchorId) }] : []),
+                                    ...(data.step !== ShortDramaStep.Topic && data.role !== "collection" && !bibleParent ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => data.aggregate ? setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId: data.sourceNodeIds[0], aggregate: true }) : openWorkflowGenerator(data.step, anchorId) }] : []),
+                                    ...(stepDefinition?.mediaOutput === "image" && contextMenuNode.type === CanvasNodeType.Text && data.role !== "collection" && Boolean(contextMenuNode.metadata?.content?.trim()) ? [{ label: stepDefinition.mediaActionLabel || "根据当前资产生成图片", disabled: contextMenuNode.metadata?.status === "loading", run: () => generateImageFromTextNode(contextMenuNode) }] : []),
+                                    ...nextShortDramaSteps(bibleParent ? ShortDramaStep.Bible : data.step).map((step) => ({ label: `下一步：${step.label}`, disabled: data.role !== "collection" && (!contextMenuNode.metadata?.content?.trim() || contextMenuNode.metadata?.status === "loading" || contextMenuNode.metadata?.status === "error"), run: () => openWorkflowGenerator(step.id, bibleParent?.id || anchorId) })),
+                                ];
+                            })()}
                             workspaceMode={workspaceMode}
                             isProjectLinked={Boolean(currentProject?.projectId)}
                             canUndo={historyState.canUndo}
@@ -3254,7 +3364,9 @@ function InfiniteCanvasPage() {
 
                         <input ref={imageInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
 
-                        <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} onMetadataChange={handleConfigNodeChange} />
+                        <CanvasNodeInfoModal key={`${infoNode?.id}:${infoNode?.metadata?.shortDrama?.productionAgent?.runId || "pending"}`} node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} onMetadataChange={handleConfigNodeChange}>
+                            {infoNode?.metadata?.shortDrama?.productionAgent && <CanvasProductionAgentDetails key={infoNode.id} node={infoNode} state={productionAgentRuns} />}
+                        </CanvasNodeInfoModal>
 
                         {subtitleNode ? (
                             <CanvasSubtitleDialog
@@ -3320,14 +3432,63 @@ function InfiniteCanvasPage() {
 
                         <CanvasCharacterReferenceModal node={characterReferenceNode} open={Boolean(characterReferenceNode)} onClose={() => setCharacterReferenceNodeId(null)} />
 
-                        <CanvasTextEditorModal
+                        {workflowGenerator ? <CanvasWorkflowGenerator key={`${projectId}:${workflowGenerator.step}:${workflowGenerator.anchorId || ""}`} target={workflowGenerator} nodes={nodes} submitting={workflowGeneration.submitting} onGenerate={workflowGeneration.run} onClose={() => setWorkflowGenerator(null)} /> : null}
+                        {assetReviewId && nodes.some((node) => node.id === assetReviewId) ? <CanvasWorkflowAssetReview key={`${projectId}:${assetReviewId}`} node={nodes.find((node) => node.id === assetReviewId)!} nodes={nodes} onClose={() => setAssetReviewId(null)} onEdit={openTextNodeEditor}
+                            onSave={(id, assetProfile, expected) => {
+                                const current = nodesRef.current.find((node) => node.id === id);
+                                if (!current || workflowSignature(current) !== expected) throw new Error("资产正文或资料已变化，请关闭后重新核对");
+                                handleConfigNodeChange(id, { shortDrama: { ...nodeWorkflow(current)!, assetProfile } });
+                            }} /> : null}
+                        {textEditorNode?.metadata?.storyDevelopment?.stage === "topic" ? <CanvasStoryDevelopmentEditor
+                            key={`${projectId}:${textEditorNode.id}`}
+                            canvasId={projectId}
+                            node={textEditorNode}
+                            nodes={nodes}
+                            onClose={() => setTextEditorNodeId(null)}
+                            onPrepareBatch={async (start, count, excludedIds) => {
+                                const prepared = prepareStoryEpisodeBatch(textEditorNode.id, nodesRef.current, connectionsRef.current, start, count, excludedIds);
+                                nodesRef.current = prepared.nodes; connectionsRef.current = prepared.connections;
+                                setNodes(prepared.nodes); setConnections(prepared.connections);
+                                if (prepared.targets.length && !await saveCanvasProject({ requireRemote: true })) throw new Error("正文节点尚未保存到云端，未提交生成任务，请恢复保存后重试");
+                                return prepared;
+                            }}
+                            onPersistBatch={() => saveCanvasProject({ requireRemote: true })}
+                            onOpenEpisode={(nodeId) => {
+                                if (!nodesRef.current.some((item) => item.id === nodeId)) { message.info("正文节点已删除"); return; }
+                                focusCanvasNode(nodeId); setTextEditorNodeId(nodeId);
+                            }}
+                            onSave={(original, title, content, data) => {
+                                const updated = saveStoryDevelopmentNode(nodesRef.current, original, title, content, data);
+                                setNodes(updated);
+                                return updated.find((item) => item.id === original.id)!;
+                            }}
+                            onNextEpisode={(nodeId) => {
+                                const source = nodesRef.current.find((item) => item.id === nodeId);
+                                if (!source?.metadata?.storyDevelopment) return;
+                                try {
+                                    const next = createNextStoryEpisode(source, nodesRef.current);
+                                    setNodes([...nodesRef.current, next]);
+                                    const fromNodeId = next.metadata!.storyDevelopment!.sourceNodeIds.at(-1);
+                                    if (fromNodeId) setConnections((current) => [...current, { id: nanoid(), fromNodeId, toNodeId: next.id }]);
+                                    focusCanvasNode(next.id);
+                                    setTextEditorNodeId(next.id);
+                                } catch (error) { message.info(error instanceof Error ? error.message : "无法创建正文节点"); }
+                            }}
+                            onNextStage={(nodeId) => {
+                                openWorkflowGenerator(ShortDramaStep.Plan, nodeId);
+                            }}
+                        /> : <CanvasTextEditorModal
                             node={textEditorNode}
                             open={Boolean(textEditorNode)}
                             onClose={() => setTextEditorNodeId(null)}
                             onSave={(nodeId, title, content, richText) => {
+                                const currentNode = nodesRef.current.find((node) => node.id === nodeId);
+                                const original = textEditorOriginalRef.current;
+                                if (nodeWorkflow(original || undefined) && (!currentNode || workflowSignature(currentNode) !== workflowSignature(original!))) throw new Error("节点已被其他操作修改，请保留当前文本并重新打开后合并");
                                 setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, title, metadata: { ...node.metadata, content, richText } } : node)));
+                                textEditorOriginalRef.current = nodesRef.current.find((node) => node.id === nodeId) || null;
                             }}
-                        />
+                        />}
 
                         {drawingNode ? (
                             <Suspense

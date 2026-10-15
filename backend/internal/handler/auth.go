@@ -344,7 +344,11 @@ func proxySystemRequestPath(c *gin.Context, svc *service.Service, user *model.Us
 				fail(c, http.StatusForbidden, errors.New("当前系统渠道未授权该模型或模型协议尚未配置"))
 				return
 			}
-			protocol = channelModel.Protocol
+			protocol, modelErr = svc.ResolveSystemProxyProtocol(channelModel, path)
+			if modelErr != nil {
+				failService(c, modelErr)
+				return
+			}
 			capability = channelModel.Capability
 		}
 	}
@@ -472,8 +476,17 @@ func proxySystemRequestPath(c *gin.Context, svc *service.Service, user *model.Us
 		fail(c, http.StatusBadGateway, fmt.Errorf("系统渠道响应超过 %dMB 限制", policy.Request.SystemRelayResponseMB))
 		return
 	}
+	var completionErr error
+	if protocol == model.ChannelInterfaceOpenAIResponse && status == model.ApiCallStatusSucceeded {
+		completionErr = service.ValidateResponsesProviderResult(responseBody, streamed)
+		if completionErr != nil {
+			status, errorText = model.ApiCallStatusFailed, completionErr.Error()
+		}
+	}
 	logErr := logSystemProxyCall(svc, apiCallLog(user, channel, billingOrderID, capability, protocol, c.Request.Method, path, target, body, c.GetHeader("Content-Type"), status, statusCode, time.Since(startedAt), errorText, concurrencyLimit), responseBody)
-	if status == model.ApiCallStatusSucceeded {
+	if completionErr != nil {
+		markSystemProxyBillingUncertain(svc, billingOrderID, "Responses 未完成，实际消耗待核对")
+	} else if status == model.ApiCallStatusSucceeded {
 		if logErr != nil {
 			markSystemProxyBillingUncertain(svc, billingOrderID, "上游成功但调用日志写入失败，费用状态待核对")
 		} else if err := svc.SettleBilling(billingOrderID, ""); err != nil {

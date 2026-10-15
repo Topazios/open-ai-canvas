@@ -40,6 +40,8 @@ export type EditorStore = {
     load: (project: TimelineProject) => void;
     /** 应用一条编辑命令（唯一修改入口）。 */
     dispatch: (cmd: EditCommand) => void;
+    /** 原子应用一组现有命令；只生成一条历史，任何失败均不提交部分结果。 */
+    dispatchBatch: (commands: EditCommand[], expectedProject?: TimelineProject) => boolean;
     undo: () => void;
     redo: () => void;
     /** 手势预览：临时应用命令到渲染态，不入历史。 */
@@ -50,6 +52,8 @@ export type EditorStore = {
     cancelGesture: () => void;
     /** 立即保存（离开编辑器/卸载前调用）。 */
     flushSave: () => Promise<void>;
+    /** 重试最近一次失败的保存。 */
+    retrySave: () => Promise<void>;
 };
 
 export type EditorStoreOptions = {
@@ -74,19 +78,33 @@ export function createEditorStore(options: EditorStoreOptions = {}): UseBoundSto
         let saveTimer: ReturnType<typeof setTimeout> | null = null;
         // 保存串行链：避免并行保存导致旧快照后落地覆盖新状态
         let saveChain: Promise<void> = Promise.resolve();
+        let pendingSaves = 0;
+        let loadGeneration = 0;
 
         const setSaveError = (err: unknown) =>
             set({ saveError: err instanceof Error ? err.message : String(err) });
 
         const performSave = (): Promise<void> => {
-            const { project } = get();
+            const { project, history } = get();
             if (!project) return Promise.resolve();
+            const snapshot = history?.current || project;
+            const generation = loadGeneration;
+            pendingSaves += 1;
             set({ saving: true });
             const chain = saveChain
-                .then(() => saveTimeline!(project))
+                .then(() => generation === loadGeneration ? saveTimeline!(snapshot) : undefined)
                 .then(
-                    () => set({ saving: false, isDirty: false, saveError: null, lastSavedAt: Date.now() }),
-                    (err: unknown) => set({ saving: false, saveError: err instanceof Error ? err.message : String(err), isDirty: true }),
+                    () => {
+                        pendingSaves -= 1;
+                        if (generation !== loadGeneration) return;
+                        // 保存完成只确认提交的快照；后续编辑及未提交拖动仍各自保留状态。
+                        set({ saving: pendingSaves > 0, isDirty: (get().history?.current || get().project) !== snapshot, saveError: null, lastSavedAt: Date.now() });
+                    },
+                    (err: unknown) => {
+                        pendingSaves -= 1;
+                        if (generation !== loadGeneration) return;
+                        set({ saving: pendingSaves > 0, saveError: err instanceof Error ? err.message : String(err), isDirty: true });
+                    },
                 );
             saveChain = chain;
             return chain;
@@ -117,6 +135,7 @@ export function createEditorStore(options: EditorStoreOptions = {}): UseBoundSto
             setTransportMs: (ms) => set({ transportMs: Number.isFinite(ms) ? Math.max(0, Math.round(ms)) : 0 }),
 
             load: (project) => {
+                loadGeneration += 1;
                 if (saveTimer) {
                     clearTimeout(saveTimer);
                     saveTimer = null;
@@ -125,21 +144,31 @@ export function createEditorStore(options: EditorStoreOptions = {}): UseBoundSto
             },
 
             dispatch: (cmd) => {
+                get().dispatchBatch([cmd]);
+            },
+
+            dispatchBatch: (commands, expectedProject) => {
                 const { project, history, inPreview } = get();
-                if (!project || !history) return;
+                if (!project || !history) return false;
+                if (expectedProject && project !== expectedProject) {
+                    set({ saveError: "时间线已变化，请重新检查入轨范围" });
+                    return false;
+                }
                 if (inPreview) {
                     set({ saveError: "cannot dispatch while a gesture preview is active; commit or cancel first" });
-                    return;
+                    return false;
                 }
-                let next: TimelineProject;
+                if (commands.length === 0) return true;
+                let next = project;
                 try {
-                    next = registry.apply(project, cmd);
+                    for (const cmd of commands) next = registry.apply(next, cmd);
                 } catch (err) {
                     setSaveError(err);
-                    return;
+                    return false;
                 }
                 set({ project: next, history: pushEditorHistory(history, next), isDirty: true, saveError: null });
                 scheduleSave();
+                return true;
             },
 
             undo: () => {
@@ -194,6 +223,11 @@ export function createEditorStore(options: EditorStoreOptions = {}): UseBoundSto
                     saveTimer = null;
                 }
                 if (get().isDirty && saveTimeline) await performSave();
+            },
+
+            retrySave: async () => {
+                if (!saveTimeline || !get().isDirty) return;
+                await performSave();
             },
         };
     });

@@ -2,14 +2,15 @@
 
 import { type GenerationTask } from "@/services/api/task-center";
 import { generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel, isGenerationTaskSubmissionUncertain } from "@/lib/generation-task-display";
-import { AlertCircle, Clock3, Download, FileText, RefreshCw } from "lucide-react";
+import { AlertCircle, Clock3, Download, FileText, Pencil, RefreshCw, WandSparkles } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { idleTaskTickerSubscribe, subscribeTaskTicker, taskTickerSnapshot } from "@/lib/canvas/task-ticker";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@/lib/generation-error";
 import type { CanvasNodeContentProps } from "./canvas-node-content";
 
 export function LoadingContent({ node, theme, onOpenTaskDetails }: Pick<CanvasNodeContentProps, "node" | "theme" | "onOpenTaskDetails">) {
-    const taskId = node.metadata?.taskId;
+    const production = node.metadata?.shortDrama?.productionAgent;
+    const taskId = production?.runId || node.metadata?.taskId;
     const displayTask = {
         provider: node.metadata?.taskProvider,
         status: (node.metadata?.taskStatus || "running") as GenerationTask["status"],
@@ -21,14 +22,14 @@ export function LoadingContent({ node, theme, onOpenTaskDetails }: Pick<CanvasNo
     const submissionUncertain = Boolean(taskId) && isGenerationTaskSubmissionUncertain(displayTask);
     const showsProgress = Boolean(taskId) && generationTaskShowsProgress(displayTask);
     const progress = showsProgress && typeof node.metadata?.taskProgress === "number" ? Math.max(0, Math.min(100, Math.round(node.metadata.taskProgress))) : null;
-    const statusLabel = taskId ? generationTaskStatusLabel(displayTask) : "等待任务状态";
-    const stageLabel = taskId ? generationTaskStageLabel(displayTask) : "正在创建任务";
+    const statusLabel = production ? taskId ? "后台制作任务" : "提交待确认" : taskId ? generationTaskStatusLabel(displayTask) : "等待任务状态";
+    const stageLabel = production ? taskId ? node.metadata?.taskStage || "制作任务执行中" : "提交待确认" : taskId ? generationTaskStageLabel(displayTask) : "正在创建任务";
     const elapsed = useTaskElapsed(node.metadata?.taskCreatedAt);
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ color: theme.node.activeStroke }}>
             {submissionUncertain ? <AlertCircle className="size-10" /> : <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />}
             <span className="text-[var(--fs-tiny)] font-semibold">{stageLabel}</span>
-            {taskId ? (
+            {taskId || production ? (
                 <div className="flex w-full max-w-[210px] flex-col items-center gap-1.5">
                     <div className="max-w-full truncate text-[var(--fs-label)] font-medium" style={{ color: theme.node.text }}>
                         {statusLabel}
@@ -41,7 +42,7 @@ export function LoadingContent({ node, theme, onOpenTaskDetails }: Pick<CanvasNo
                     ) : null}
                     <div className="max-w-full truncate text-[var(--fs-tiny)] tabular-nums" style={{ color: theme.node.muted }}>
                         <Clock3 className="mr-1 inline size-3" />
-                        {elapsed} · {shortTaskId(taskId)}
+                        {taskId ? `${elapsed} · ${shortTaskId(taskId)}` : "请在详情核对原任务"}
                     </div>
                     <div className="mt-0.5 flex items-center gap-1.5">
                         <button
@@ -101,8 +102,11 @@ export function ErrorContent({ node, theme, onRetry, onReloadResource }: Pick<Ca
                     {generationTaskStageLabel(errorDisplayTask)}
                 </div>
             ) : moderationFailure ? (
-                <div className="rounded-[var(--r-sm)] px-3 py-2 text-[var(--fs-label)] leading-4" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }}>
-                    修改节点提示词后，可重新点击生成。
+                <div className="flex flex-col items-center gap-2 text-[var(--fs-label)] leading-4" style={{ color: theme.node.muted }}>
+                    {node.metadata?.shortDrama?.mediaKind === "image" ? <>
+                        {node.metadata.shortDrama.assetSheet ? <button type="button" className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-[var(--r-sm)] px-3 py-1 text-xs font-medium" style={{ background: theme.accent.primary, color: theme.accent.onPrimary }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onRetry?.(node, { adjustPrompt: true }); }}><WandSparkles className="size-3.5 shrink-0" />自动调整并重试</button> : null}
+                        <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-[var(--r-sm)] px-3 text-xs" style={{ background: theme.toolbar.itemHover }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onRetry?.(node); }}><Pencil className="size-3.5" />修改生成要求</button>
+                    </> : "修改节点提示词后，可重新点击生成。"}
                 </div>
             ) : node.metadata?.resourceReloadAvailable ? (
                 <div className="flex flex-wrap justify-center gap-2">
@@ -145,7 +149,7 @@ export function ErrorContent({ node, theme, onRetry, onReloadResource }: Pick<Ca
                     onMouseDown={(event) => event.stopPropagation()}
                 >
                     <RefreshCw className="size-3.5" />
-                    {node.metadata?.taskCanRecoverMedia ? "重试保存（不重新生成）" : node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"}
+                    {node.metadata?.shortDrama?.productionAgent ? "查看详情并重试" : node.metadata?.taskCanRecoverMedia ? "重试保存（不重新生成）" : node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"}
                 </button>
             )}
         </div>

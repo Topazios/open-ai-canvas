@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Input, Modal } from "antd";
 import { WandSparkles, X } from "lucide-react";
 import { ModelPicker } from "@/components/model-picker";
@@ -24,8 +24,12 @@ export function CanvasNodeImageEditDialog({
 }) {
     const [prompt, setPrompt] = useState(preset === "remove-background" ? "移除图片背景，保留主体完整轮廓、细节和边缘，输出透明背景。" : "");
     const [generationConfig, setGenerationConfig] = useState<AiConfig>(config);
+    const openedSource = useRef<string | null>(null);
 
     useEffect(() => {
+        if (!open) { openedSource.current = null; return; }
+        if (openedSource.current === dataUrl) return;
+        openedSource.current = dataUrl;
         if (open) setPrompt(preset === "remove-background" ? "移除图片背景，保留主体完整轮廓、细节和边缘，输出透明背景。" : "");
         if (open) setGenerationConfig(config);
     }, [config, open, dataUrl]);

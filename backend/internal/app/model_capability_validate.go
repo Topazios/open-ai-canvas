@@ -350,6 +350,9 @@ func validateImageTask(profile *ImageCapabilityConfig, input canvasGenerationInp
 			return BadAuthRequest(fmt.Sprintf("Grok 图片完整提示词为 %d UTF-8 字节，超过上游 %d 字节限制。系统不会自动删改；请精简当前输入、连线文本、角色卡、画风或模板内容后重试", promptBytes, maxPromptBytes))
 		}
 	}
+	if err := validateModelPromptLength("图片", withSystemPrompt(input.Config, input.Prompt), profile.References.PromptMaxChars); err != nil {
+		return err
+	}
 	if len(input.ReferenceImages) > profile.References.MaxImages {
 		return BadAuthRequest(fmt.Sprintf("当前图片模型最多支持 %d 张参考图", profile.References.MaxImages))
 	}
@@ -421,6 +424,9 @@ func imageResolutionTier(quality string) string {
 
 func validateWorkflowProviderPromptLength(input canvasGenerationInput) error {
 	profile := input.Config.CapabilityConfig
+	if input.Mode == "image" && profile != nil && profile.Image != nil {
+		return validateModelPromptLength("图片", input.Prompt, profile.Image.References.PromptMaxChars)
+	}
 	if input.Mode != "video" || profile == nil || profile.Video == nil {
 		return nil
 	}

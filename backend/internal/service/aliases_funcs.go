@@ -3,6 +3,7 @@ package service
 import "infinite-canvas/backend/internal/app"
 
 var (
+	ValidateResponsesProviderResult            = app.ValidateResponsesProviderResult
 	ErrPlaybackNotReady                        = app.ErrPlaybackNotReady
 	ErrNotBuiltinSkill                         = app.ErrNotBuiltinSkill
 	AllowedPrivateUpstreamHost                 = app.AllowedPrivateUpstreamHost

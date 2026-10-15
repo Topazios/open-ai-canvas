@@ -100,6 +100,18 @@ export function responseErrorMessage(value: unknown) {
 export function validateResponsePayload(payload: ResponseApiPayload) {
     if (typeof payload.code === "number" && payload.code !== 0) throw new Error(payload.msg || "请求失败");
     if (payload.error?.message) throw new Error(payload.error.message);
+    if (payload.status && payload.status !== "completed") {
+        throw new Error(payload.incomplete_details?.reason === "max_output_tokens"
+            ? "Responses 输出达到 token 上限，生成未完成；请增加输出上限或拆分任务"
+            : `Responses 返回非完成状态 ${payload.status}，生成未完成`);
+    }
+    for (const item of payload.output || []) {
+        if (!isRecord(item)) continue;
+        if (item.status && item.status !== "completed") throw new Error("Responses 输出条目未完成");
+        if ("content" in item && Array.isArray(item.content) && item.content.some((part) => part.type === "refusal")) {
+            throw new Error("模型拒绝了本次请求，未生成可用内容");
+        }
+    }
 }
 
 export function validateGeminiPayload(payload: GeminiPayload) {
@@ -138,12 +150,17 @@ function parseEventBlock(block: string) {
 }
 
 function consumeResponseStreamBlock(block: string, state: ResponseStreamState, onDelta?: (text: string) => void, onReasoning?: (text: string) => void) {
+    if (state.error) return;
     const data = parseEventBlock(block);
     if (!data) return;
     const event = JSON.parse(data) as Record<string, unknown>;
-    const type = stringValue(event.type);
+    const type = stringValue(event.type) || block.split(/\r?\n/).find((line) => line.startsWith("event:"))?.slice(6).trim() || "";
     const errorMessage = responseErrorMessage(event);
     if (errorMessage) state.error = errorMessage;
+    if (["response.failed", "response.incomplete", "error"].includes(type || "")) {
+        state.error = errorMessage || "Responses 流式生成未完成";
+        return;
+    }
     if (type === "response.output_text.delta" && typeof event.delta === "string") {
         state.text += event.delta;
         onDelta?.(state.text);
@@ -161,7 +178,6 @@ function consumeResponseStreamBlock(block: string, state: ResponseStreamState, o
         onReasoning?.(state.reasoning);
     }
     if (type === "response.completed" && isRecord(event.response)) state.payload = event.response as ResponseApiPayload;
-    else if (Array.isArray(event.output)) state.payload = event as ResponseApiPayload;
 }
 
 export function consumeResponseStreamText(state: ResponseStreamState, text: string, onDelta?: (text: string) => void, onReasoning?: (text: string) => void, flush = false) {

@@ -8,7 +8,10 @@
         "build": "tsc --noEmit && vite build",
         "pretest": "bun test test/tiptap-dependency-versions.test.ts test/admin-ui-regressions.test.ts test/announcement-prompt-regressions.test.ts test/password-reset.test.ts test/oss-settings.test.ts test/channel-model-editor-form.test.ts test/channel-model-price-tier-form.test.ts test/admin-logical-models.test.ts && bun test test/canvas-grid-viewport.test.tsx",
         "typecheck": "tsc --noEmit",
+        "generate:production-rules": "bun scripts/generate-production-rules.ts",
         "test:canvas": "bun test test/canvas-media-performance.test.ts test/canvas-node-title-interaction.test.ts test/canvas-spatial-index.test.ts",
+        "test:canvas:interaction": "bun scripts/canvas-interaction-browser-tests.ts",
+        "benchmark:canvas": "bun scripts/canvas-performance-benchmark.ts",
         "test": "bun test",
         "test:director:e2e": "bun scripts/director-p0-chrome-e2e.mjs",
         "start": "vite preview --host 0.0.0.0 --port 3000",
@@ -139,5 +142,8 @@
         "@tiptap/react": "3.28.0",
         "@tiptap/starter-kit": "3.28.0"
     },
-    "packageManager": "bun@1.3.9"
+    "packageManager": "bun@1.3.9",
+    "patchedDependencies": {
+        "@vidstack/react@1.15.6": "patches/@vidstack%2Freact@1.15.6.patch"
+    }
 }

@@ -1,4 +1,5 @@
 import { mergeAgentCanvasEditor } from "@/lib/canvas/agent-canvas-patch";
+import { layoutWorkflowImageGroups } from "@/lib/canvas/canvas-workflow-image-layout";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { App } from "antd";
 import { useNavigate } from "react-router";
@@ -126,7 +127,7 @@ export function useCanvasProjectLifecycle({
                 updatedAt: targetProject.updatedAt,
             });
             const snapshot: CanvasHistorySnapshot = {
-                nodes: initialNodes,
+                nodes: layoutWorkflowImageGroups(initialNodes),
                 connections: targetProject.connections,
                 chatSessions: targetProject.chatSessions || [],
                 activeChatId: targetProject.activeChatId || null,

@@ -6,6 +6,7 @@ import { captureVideoPoster, detectVideoAudioTrackFromBlob } from "@/lib/video-p
 import { getResourceAccess, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, resourceStorageKeyFromURL, ResourceUploadError, uploadResourceFile } from "@/services/api/resources";
 import { uploadImage, type UploadedImage } from "@/services/image-storage";
 import { getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
+import { LocalMediaUrlCache } from "@/services/local-media-url-cache";
 
 export type UploadedFile = {
     url: string;
@@ -27,11 +28,14 @@ export type UploadedFile = {
 };
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
-const objectUrls = new Map<string, string>();
+const objectUrls = new LocalMediaUrlCache();
+
+export function clearMediaObjectUrls() { objectUrls.clear(); }
 
 export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?: (uploadedBytes: number, totalBytes: number) => void): Promise<UploadedFile> {
     // 直传和失败后的本地同步必须复用同一上传身份，避免响应丢失后创建第二个对象。
     const storageKey = `${prefix}:${getActiveUserScope()}:${nanoid()}`;
+    const generation = objectUrls.generation;
     const blob = input;
     const previewUrl = URL.createObjectURL(blob);
     let retainPreviewUrl = false;
@@ -74,27 +78,34 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
         }
 
         let poster: UploadedImage | undefined;
+        objectUrls.assertCurrent(generation);
         if (captured?.poster) {
             try {
                 poster = await uploadImage(captured.poster);
             } catch (error) {
+                if (error instanceof DOMException && error.name === "AbortError") throw error;
                 // 预览图失败不应把已经可用的视频降级成本地文件；视频本体仍按强校验上传。
                 console.warn("上传视频预览图失败，继续保存视频本体", { mimeType: blob.type, bytes: blob.size, error });
             }
         }
 
         let remoteUploadError = "";
+        objectUrls.assertCurrent(generation);
         try {
             const kind = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
             const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey }, onProgress);
+            objectUrls.assertCurrent(generation);
             try {
                 await primeResourceBlobCache(resourceStorageKey(resource.id), blob);
             } catch (error) {
                 // 缓存只影响后续读取性能，服务端资源已经成功落盘，不得把缓存失败误报为上传失败。
                 console.warn("预热媒体缓存失败，服务端资源已保存", { resourceId: resource.id, error });
             }
+            objectUrls.assertCurrent(generation);
             return { url: resource.publicUrl || resourceFileUrl(resource.id), storageKey: resourceStorageKey(resource.id), bytes: resource.size || blob.size, mimeType: resource.mimeType || blob.type || "application/octet-stream", width: resource.width || meta.width, height: resource.height || meta.height, durationMs: resource.durationMs || meta.durationMs, hasAudio: meta.hasAudio, preview: poster };
         } catch (error) {
+            objectUrls.assertCurrent(generation);
+            if (error instanceof DOMException && error.name === "AbortError") throw error;
             // 与图片上传同一套判定：永久性失败必须当场暴露，不能混进“稍后自动同步”。
             if (error instanceof ResourceUploadError && error.permanent) throw error;
             remoteUploadError = error instanceof Error ? error.message : "媒体直传失败";
@@ -102,8 +113,9 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
 
         // 瞬时失败退回本机：文件仍可用，且云端数据同步会用同一幂等键重传。
         await store.setItem(storageKey, blob);
+        objectUrls.assertCurrent(generation);
         retainPreviewUrl = true;
-        objectUrls.set(storageKey, previewUrl);
+        objectUrls.adopt(storageKey, previewUrl);
         return { url: previewUrl, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta, preview: poster, pendingRemoteUpload: true, remoteUploadError };
     } finally {
         // 只有本地降级结果需要把 objectURL 留给页面；成功上传和所有异常路径都及时释放。
@@ -121,13 +133,7 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
         // 展示直接命中 OSS/CDN；平台资源文件接口只保留给私有源站代理或本地存储兜底。
         return resolveResourceAccessURL((await getResourceAccess(resolvedStorageKey, "display")).url);
     }
-    const cached = objectUrls.get(resolvedStorageKey);
-    if (cached) return cached;
-    const blob = await store.getItem<Blob>(resolvedStorageKey);
-    if (!blob) return fallback;
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(resolvedStorageKey, url);
-    return url;
+    return (await objectUrls.resolve(resolvedStorageKey, () => store.getItem<Blob>(resolvedStorageKey))) || fallback;
 }
 
 export async function getMediaBlob(storageKey: string) {
@@ -137,20 +143,14 @@ export async function getMediaBlob(storageKey: string) {
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
     if (resourceIdFromStorageKey(storageKey)) return primeResourceBlobCache(storageKey, blob);
-    await store.setItem(storageKey, blob);
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
-    return url;
+    return objectUrls.write(storageKey, blob, () => store.setItem(storageKey, blob));
 }
 
 export async function deleteStoredMedia(keys: Iterable<string>) {
     await Promise.all(
         Array.from(new Set(keys)).map(async (key) => {
             if (resourceIdFromStorageKey(key)) return;
-            const url = objectUrls.get(key);
-            if (url) URL.revokeObjectURL(url);
-            objectUrls.delete(key);
-            await store.removeItem(key);
+            await objectUrls.remove(key, () => store.removeItem(key));
         }),
     );
 }
@@ -163,7 +163,7 @@ export async function cleanupUnusedMedia(usedData: unknown, scope = getActiveUse
         const parts = key.split(":");
         if (parts.length >= 3 && parts[1] === currentScope && !usedKeys.has(key)) unused.push(key);
     });
-    await Promise.all(unused.map((key) => store.removeItem(key)));
+    await deleteStoredMedia(unused);
 }
 
 export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()) {

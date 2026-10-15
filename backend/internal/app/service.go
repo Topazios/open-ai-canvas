@@ -312,8 +312,8 @@ func (s *Service) refreshTaskProviderState(task *model.Task) error {
 	return nil
 }
 
-func (s *Service) RetryTask(userID string, id string) (*model.Task, error) {
-	return s.taskLifecycle().retryTask(userID, id)
+func (s *Service) RetryTask(userID string, id string, acknowledgedBillingOrderID ...string) (*model.Task, error) {
+	return s.taskLifecycle().retryTask(userID, id, acknowledgedBillingOrderID...)
 }
 
 func (s *Service) CancelTask(ctx context.Context, userID string, id string) (*model.Task, error) {

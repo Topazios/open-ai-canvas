@@ -11,7 +11,7 @@ import (
 
 const (
 	cloudAgentCompilerVersion  = "cloud-agent-policy-compiler/v4"
-	cloudAgentDefaultReasoning = "off"
+	cloudAgentDefaultReasoning = "auto"
 )
 
 type cloudAgentPolicySnapshot struct {
@@ -176,6 +176,15 @@ func compileCloudAgentPolicies(req CloudAgentRequest, skills []cloudAgentSkill, 
 			"maxGenerationTasks": req.Budget.MaxGenerationTasks, "maxVideoSeconds": req.Budget.MaxVideoSeconds,
 		},
 		"maxToolCalls": cloudAgentMaxToolCalls, "maxOutputBytes": cloudAgentMaxOutputBytes,
+	}
+	if req.Production != nil {
+		// Production work is completion-driven. The ordinary Agent's aggregate
+		// tool-call hint is deliberately omitted: exposing it makes the model
+		// mistake a per-response protocol safeguard for a job-wide quota and stop
+		// after a fixed number of production_query calls. Request size and payload
+		// validation remain enforced by the runtime itself.
+		delete(context, "maxToolCalls")
+		context["budget"] = map[string]any{"completionDriven": true}
 	}
 	if strings.TrimSpace(canvasSummary) != "" {
 		// Callers may provide a catalog for policy-contract tests or other

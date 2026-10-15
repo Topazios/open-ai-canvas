@@ -24,6 +24,12 @@ describe("作品保存阶段", () => {
 });
 
 describe("生成任务取消边界", () => {
+    test("共享解析的输出协调任务可取消，真实模型子调用仍遵守提交边界", () => {
+        expect(canCancelGenerationTask({ status: "running", operation: "short_drama_batch", stage: "共享正文解析 1/12" })).toBe(true);
+        expect(canCancelGenerationTask({ status: "running", operation: "text", stage: "调用生成模型" })).toBe(false);
+        expect(canCancelGenerationTask({ status: "succeeded", operation: "short_drama_batch" })).toBe(false);
+        expect(canCancelGenerationTask({ status: "running", operation: "short_drama_batch", providerRequestId: "unexpected" })).toBe(false);
+    });
     test("排队和本地准备阶段仍允许取消", () => {
         expect(canCancelGenerationTask({ status: "queued", stage: "等待队列调度" })).toBe(true);
         expect(canCancelGenerationTask({ status: "running", stage: "后端接管任务" })).toBe(true);

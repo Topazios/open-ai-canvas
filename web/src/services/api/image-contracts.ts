@@ -52,9 +52,11 @@ export type ResponseApiToolDefinition = {
     parameters: Record<string, unknown>;
     strict?: boolean;
 };
-export type ResponseApiOutputItem = { type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string };
+export type ResponseApiOutputItem = ({ type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string }) & { status?: string };
 export type ResponseApiPayload = {
     id?: string;
+    status?: string;
+    incomplete_details?: { reason?: string };
     output?: ResponseApiOutputItem[];
     output_text?: string;
     error?: { message?: string };

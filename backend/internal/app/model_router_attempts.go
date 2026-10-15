@@ -256,6 +256,9 @@ func (s *Service) switchTaskToNextRoute(task *model.Task, attempts []model.Route
 	}
 	routed := &RoutedModel{LogicalModel: *logicalModel, Revision: *revision, Route: selected.Route, ChannelModel: selected.ChannelModel, PriceTier: priceTier, Defaults: defaults}
 	nextInput := applyRoutedProviderSelection(input, routed)
+	if err := s.pinTaskModelProtocol(nextInput); err != nil {
+		return nil, err
+	}
 	if err := s.ValidateTaskCapability(nextInput); err != nil {
 		return nil, err
 	}
@@ -374,6 +377,9 @@ func (s *Service) prepareLogicalTaskRetry(task *model.Task, input map[string]any
 		return err
 	}
 	input = applyRoutedProviderSelection(input, routed)
+	if err := s.pinTaskModelProtocol(input); err != nil {
+		return err
+	}
 	if err := s.ValidateTaskCapability(input); err != nil {
 		return err
 	}

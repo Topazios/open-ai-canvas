@@ -69,6 +69,18 @@ func TestCloudAgentPolicyContextDoesNotPromoteUserGoal(t *testing.T) {
 	}
 }
 
+func TestProductionPolicyDoesNotExposeOrdinaryAgentToolQuota(t *testing.T) {
+	req := agentTestRequest()
+	req.Production = &ProductionAgentRequest{TargetNodeID: "production-node"}
+	text, _, err := compileCloudAgentPolicies(req, nil, "", cloudAgentProfileSnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, `"maxToolCalls"`) {
+		t.Fatalf("production policy must not expose ordinary Agent tool quota: %s", text)
+	}
+}
+
 func TestCloudAgentAnchorDoesNotInferReferenceRequirement(t *testing.T) {
 	canvas := &model.CanvasProject{PayloadJSON: `{"nodes":[{"id":"image-1","type":"image","title":"候选图"}]}`}
 	for _, prompt := range []string{"不要用参考图，只修正标点", "请解释图生视频是什么意思", "只改台词，不改变风格"} {
