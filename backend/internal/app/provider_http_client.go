@@ -280,7 +280,7 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 				slotID = "custom:" + strings.ToLower(req.URL.Host)
 			}
 			var concurrencyLimit int
-			release, concurrencyLimit, err = metadata.Service.AcquireChannelSlot(req.Context(), channelID, slotID, requestTimeout+time.Minute)
+			release, concurrencyLimit, err = metadata.Service.AcquireChannelSlot(req.Context(), channelID, slotID, requestTimeout+time.Minute, model.TaskConcurrency(metadata.Capability, metadata.Operation))
 			metadata.ConcurrencyLimit = concurrencyLimit
 			req = req.WithContext(context.WithValue(req.Context(), providerAnalyticsKey{}, metadata))
 			if err != nil {

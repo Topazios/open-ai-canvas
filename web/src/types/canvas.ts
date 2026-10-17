@@ -193,7 +193,8 @@ export type CanvasBatchReferenceColumn = {
 };
 export type CanvasBatchTableData = {
     operation: CanvasBatchOperation;
-    concurrency: number;
+    /** Legacy snapshot field; execution always uses the system policy. */
+    concurrency?: number;
     /** AI 输出的业务结构；分镜表会保留标准 StoryboardRow，避免依赖列名猜测。 */
     contentKind?: CanvasBatchTableContentKind;
     storyboardRows?: StoryboardRow[];
@@ -222,6 +223,7 @@ export type CanvasSkillSnapshot = {
 
 export type StoryDevelopmentStage = "topic" | "plan" | "outline" | "episodes" | "body";
 export type StoryDevelopmentBrief = {
+    globalSettings?: import("@/lib/short-drama-settings").ShortDramaGlobalSettings;
     genre: string;
     style: string;
     premise: string;
@@ -476,6 +478,9 @@ export type CanvasNodeMetadata = {
         collapsed: boolean;
         expandedWidth: number;
         expandedHeight: number;
+        layout?: "grid";
+        gridWidth?: number;
+        gridOrder?: string[];
     };
     folder?: {
         style: CanvasFolderStyle;

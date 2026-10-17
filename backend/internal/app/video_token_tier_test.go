@@ -47,11 +47,11 @@ func TestNormalizeVideoAudioPriceSelector(t *testing.T) {
 }
 
 func TestVideoPriceTierMatchesAudioAndActualReferences(t *testing.T) {
-	channelModel := model.ChannelModel{PriceTiers: []model.ChannelModelPriceTier{
-		{ID: "default", SelectorJSON: `{}`, Enabled: true, PriceConfigured: true},
-		{ID: "reference", SelectorJSON: `{"operation":"video_to_video"}`, Enabled: true, PriceConfigured: true},
-		{ID: "reference-audio", SelectorJSON: `{"operation":"video_to_video","videoGenerateAudio":"true"}`, Enabled: true, PriceConfigured: true},
-		{ID: "reference-silent", SelectorJSON: `{"operation":"video_to_video","videoGenerateAudio":"false"}`, Enabled: true, PriceConfigured: true},
+	channelModel := model.ChannelModel{Capability: "video", PriceTiers: []model.ChannelModelPriceTier{
+		{ID: "default", SelectorJSON: `{}`, BillingMode: "fixed_request", Enabled: true, PriceConfigured: true},
+		{ID: "reference", SelectorJSON: `{"operation":"video_to_video"}`, BillingMode: "fixed_request", Enabled: true, PriceConfigured: true},
+		{ID: "reference-audio", SelectorJSON: `{"operation":"video_to_video","videoGenerateAudio":"true"}`, BillingMode: "fixed_request", Enabled: true, PriceConfigured: true},
+		{ID: "reference-silent", SelectorJSON: `{"operation":"video_to_video","videoGenerateAudio":"false"}`, BillingMode: "fixed_request", Enabled: true, PriceConfigured: true},
 	}}
 	for _, test := range []struct {
 		name  string

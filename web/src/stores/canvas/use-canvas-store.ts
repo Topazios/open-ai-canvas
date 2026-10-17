@@ -14,6 +14,7 @@ import type { CanvasStarterMode } from "@/lib/canvas/canvas-starter";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 import type { DirectorScene } from "@/types/director";
 import type { TimelineProject } from "@/types/timeline";
+import type { ShortDramaGlobalSettings } from "@/lib/short-drama-settings";
 
 export type CanvasProject = {
     id: string;
@@ -28,6 +29,7 @@ export type CanvasProject = {
     chatSessions: CanvasAssistantSession[];
     activeChatId: string | null;
     starterMode?: CanvasStarterMode;
+    globalSettings?: ShortDramaGlobalSettings;
     appearance?: CanvasAppearance;
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
@@ -45,7 +47,7 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "starterMode" | "appearance" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "timeline">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "starterMode" | "globalSettings" | "appearance" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "timeline">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
@@ -566,6 +568,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     chatSessions: source.chatSessions || [],
                     activeChatId: source.activeChatId || null,
                     starterMode: source.starterMode,
+                    globalSettings: source.globalSettings,
                     appearance: source.appearance ? normalizeCanvasAppearance(source.appearance, "dark") : undefined,
                     backgroundMode: source.backgroundMode || DEFAULT_CANVAS_BACKGROUND_MODE,
                     showImageInfo: source.showImageInfo || false,

@@ -5,6 +5,24 @@ description: 信封、错误码与 OpenAPI
 
 # HTTP API 合同
 
+## 节点执行详情
+
+`GET /tasks/:id/execution` 只读、登录且按任务所属用户授权，返回 `task`、`parameters`、`steps`、`events`、`unitCount`、`truncated`。分批任务另外返回 `firstStartedAt`，取父任务开始与最早子任务创建时间中的较早值，不受最近 200 条记录截断影响；流程历时包含重试等待，不能当作纯模型用时。普通任务与分批任务统一使用此接口；Agent 制作运行仍使用原运行事件接口，前端共用执行记录组件。
+
+`steps` 展示最近最多 200 次分批子调用的状态、创建/开始/完成时间、错误、最多 1200 字的输出预览及完整输出字数。共享正文调用按原请求的正文、作用域和解析配置推导标识，不能读取其他版本或其他用户的共享结果。`events` 最多 100 条白名单关键事件，排除重复 Worker 唤醒和原始供应商日志；超出显示范围时 `truncated: true`。参数仅返回尺寸、质量、时长、推理强度等允许公开的标量，不返回子任务输入、原始日志负载或凭据。
+
+画布详情在任务活动期间每 3 秒刷新，关闭或切换节点取消查询，读取失败保留最近快照并重试。读取详情不会创建任务、扣费或写入节点内容；结果落盘仍由原生成恢复流程处理。
+
+## 分类任务并发策略
+
+运行时策略 `task` 增加 `imageConcurrency`、`textConcurrency`、`agentConcurrency`、`videoConcurrency`、`audioConcurrency`，均为 1–999 整数，默认 6、3、3、2、3。`workerConcurrency` 仅控制其他后台任务。旧持久策略缺少字段时由服务端补默认值；管理端保存完整策略。
+
+登录信息中的 `activeTaskLimit` 字段保持原类型，但语义改为每个账号跨项目的“每类排队与运行数量”，各类分别计数；0 仍不限制。任务分类来自服务端 `type` 和 `operation`，不增加客户端可任意指定的队列字段。创建和重试继续经过原权限、存储、模型和计费检查。渠道与集群部署边界见[任务缓存与队列稳定性](/docs/backend/task-runtime-stability)。
+
+`GET /auth/session` 的 `runtimeLimits.concurrency` 公开当前全局并发：`image/text/agent/video/audio/other/channel/customRelay/imagePreparation/resourceDownload/upload/mediaRecovery/agentSessions`。匿名响应仍为 `user: null`，同时提供公开数值供分享页加载图片；不返回渠道密钥，也不授予任务或用户数据访问权。管理端 `resource` 新增 `imagePreparationConcurrency/resourceDownloadConcurrency/uploadConcurrency/mediaRecoveryConcurrency`，默认分别为 4/16/4/2，均为 1–999 整数；旧 JSON 缺失新字段时兼容默认值。
+
+渠道 API 兼容接收旧 `concurrencyLimit/useGlobalConcurrency` 字段，但统一使用全局策略，渠道返回 `concurrencyLimit: 0`。Agent 批量表工具不再提供修改并发动作；历史 `set_concurrency` 请求返回明确错误，旧画布保存的并发字段不会阻止表格读取，也不会覆盖策略。
+
 ## 短剧制作规范
 
 新建 `POST /tasks` 请求中，`input.metadata.source` 为 `canvas-short-drama-workflow` 或 `canvas-workflow-batch-child` 时，`workflowStage` 使用 `story | assets | storyboard | voice | video | edit | review | delivery`。`canvas-story-development` 映射为 `story`，沿用其 `stage: topic | plan | outline | episodes | body` 子步骤。明确的非法阶段或任务类型与 `input.mode` 不一致在计费前拒绝；这些字段不代替权限或节点归属校验。
@@ -41,7 +59,15 @@ description: 信封、错误码与 OpenAPI
 
 Responses 普通生成与 Agent 统一处理 `input_text/input_image`、`text.format`、`max_output_tokens` 和思考参数；工具未显式设置 `strict` 时保持非严格语义。默认 `store: false`，会话和恢复继续由本地任务/Agent 管理，不自动启用供应商后台模式或 `previous_response_id`。SSE 必须接收到完成结果；失败、未完成、拒绝、缺少终态、空结果都不能当作完整正文采用。同步中转的 HTTP 200 未完成结果不能按成功结算，费用进入待核对。完整影响范围和验收见 [文本协议影响评估](./text-protocol-impact)。
 
-资产五步骤的新任务调用 `POST /agent/runs`，传入 `production: { targetNodeId }`、`permissionMode: "auto"`、模型和幂等键；不要求设置 `maxCredits` 或 `maxSteps`。制作任务以来源处理、产物保存和覆盖校验作为完成条件，不应用历史请求中的累计调用次数和任务积分上限。正常模型计费、单次报价授权、账户余额、权限与数据配额继续生效；普通 Agent 的预算规则不变。后端核验当前用户画布、目标容器和同流程正文来源，冻结版本；不由浏览器上传拼接后的全文。关闭页面不停止任务。
+资产五步骤及 `direction.shots` 的新任务调用 `POST /agent/runs`，传入 `production: { targetNodeId }`、`permissionMode: "auto"`、模型和幂等键；不要求设置 `maxCredits` 或 `maxSteps`。制作任务以来源处理、产物保存和覆盖校验作为完成条件，不应用历史请求中的累计调用次数和任务积分上限。正常模型计费、单次报价授权、账户余额、权限与数据配额继续生效；普通 Agent 的预算规则不变。后端核验当前用户画布、目标容器和同流程正文来源，冻结版本；不由浏览器上传拼接后的全文。关闭页面不停止任务。
+
+分镜运行的 `run.production.workKind` 为 `storyboard`，此时 `processedPages/totalPages` 表示已完成/计划场次，`artifactCount` 表示已保存镜头数。场次计划、镜头批次和审查哈希使用既有制作清单持久化；每集保持原文本节点，容器不额外生成内部调度节点。`production_model_completed` 可包含 `queueMs/executionMs`，均取自任务真实时间戳，不能把排队时间称为模型执行时间。
+
+前置制作方案的 `workKind=plan`，`phase` 为 `input/story/inventory/standards/assets/generation/validation`；`phaseLabel` 和可选 `currentItem` 用于详情展示。`inventoryComplete` 表示当前版本资产清单及索引已完成，之前不把 `totalPages` 当成最终总数。`processedPages` 仅统计通过模板及依赖版本检查的文稿，`artifactCount` 是原始回执数量。四份共用文稿之外，系统自动生成一份资产总表，各资产分别保存为文本节点。
+
+制作方案的进度还包含 `documentCount/documentTotal`（公共文稿）、`assetCount/assetTotal`（资产档案）、`concurrentItems`（在途及等待重试的项目名称）和 `concurrencyLimit`（实时读取全局 `agentConcurrency`，读取失败时省略）。`production_model_started/completed` 的 `itemName/assetKey` 标识分工，前端按 `taskId` 配对乱序返回。`production_model_completed.status=failed` 也可能表示模型响应成功但文稿校验未通过，不改变原模型任务的计费结果。画布公共容器的 `shortDrama.planGroups` 为类别到容器 ID 的映射，资产容器以 `planGroup.rootFrameId/kind` 反向关联；共享原制作任务锚点，取消会处理所有在途子任务。
+
+v2 方案调用 `production_plan_inventory` 分批登记，参数包含 `storyHash/assets/absent/complete`；资产新增 `purpose/plannedRange/dependsOn`，未确定精确集次时 `episodes=[]`。`complete=true` 校验类别覆盖和无环依赖，固定本版清单。`production_submit.document` 按当前文稿类型提供专用 schema，详见制作规则文档。模型回执按持久检查点隔离，恢复后不复用前一阶段的响应；未知工具及相同无进展响应会停止并保留可恢复状态。制作字段纠正按相同请求、相同错误及相同进度识别重复，不把不同文稿的纠正合计为调用上限。
 
 `GET /agent/runs/:id` 的 `run.production` 包含 `targetNodeId`、`paused`、`waitingForBoundary`、`waitingForSharedFacts`、`processedPages`、`totalPages`、`artifactCount`、`validated`；`maxSteps` 返回 0 表示无累计次数上限。`POST /agent/runs/:id/production-control` 使用 `{action: "pause" | "resume"}`；取消仍用原 `/cancel`，旧 `maxSteps` 参数不再改变制作任务的执行边界。继续任务保留原始请求、累计调用、计费记录、正文事实、产物和节点绑定。暂停只阻止下一次模型派发；已有上游响应允许结束。失败恢复先检查来源、计费和调用状态，未知上游取消结果禁止重发。
 
@@ -57,7 +83,7 @@ Responses 普通生成与 Agent 统一处理 `input_text/input_image`、`text.fo
 
 制作步骤来源签名使用带 `v2:` 标识的规范 JSON 哈希，不受后端对象字段排序影响；已有未带版本签名按原写入字段顺序验证。此修复不忽略正文变化、前置缺失、移出容器或断开连线等真实失效条件。
 
-制作运行只暴露 `production_status/read/facts/query/submit/check` 工具。正文页最多 3000 Unicode 字符，目录最多 12 条；事实查询限制 12 条及约 24KB，单次参数最多 32KB。`production_submit` 使用稳定 key、结构化 document、有效 factIds 和可选 design（variants/sounds/conflicts）；document 包含 facts/design/variants/sound/prompt/negativePrompt/continuity/uncertainties，服务端按类别统一生成 Markdown。人物必须包含角色声音文稿，并同步到 sounds 索引；规范 settings 只需 facts/design/continuity/uncertainties，style 不需要 variants。缺字段返回可修正工具错误，不将残缺文稿写成完整资产。修订需 expectedHash，最多 256 条新增事实引用，旧引用由后端累积保留；未提供的变体和冲突索引沿用旧值。人工修改、删除、移出及来源变化仍拒绝旧写入。
+资产制作运行使用 `production_status/read/facts/query/submit/check` 工具，每份正文按整集保存，不再按固定字符数拆正文页。目录每页最多 24 条；事实查询每页最多 64 条且受约 24KB 响应大小限制。分镜运行使用 `production_storyboard_context/brief/plan/submit/read/review/reset`，按场次增量写入，每批最多 8 镜。`production_submit` 使用稳定 key、结构化 document、有效 factIds 和可选 design（variants/sounds/conflicts）；document 包含 facts/design/variants/sound/prompt/negativePrompt/continuity/uncertainties，服务端按类别统一生成 Markdown。人物必须包含角色声音文稿，并同步到 sounds 索引；规范 settings 只需 facts/design/continuity/uncertainties，style 不需要 variants。缺字段返回可修正工具错误，不将残缺文稿写成完整资产。修订需 expectedHash，最多 256 条新增事实引用，旧引用由后端累积保留；未提供的变体和冲突索引沿用旧值。人工修改、删除、移出及来源变化仍拒绝旧写入。
 
 `production_query` 可用 assetKey 读取单个已保存资产的全文与 expectedHash；增量修订保留已处理批次的内容。查询和覆盖检查的 pendingWork 返回一批遗漏事实、一个待补文稿及缺失字段，旧任务续跑也使用当前工具与制作规则。取消“连续三次模型未调用工具就失败”的旧判断；未完成时继续补齐，持续无进展保护仍保留。机器校验覆盖事实引用及必需文稿章节，不证明语义质量或声线建议已经获用户认可。
 
@@ -73,7 +99,17 @@ version 2 解析请求不包含分类输出要求。服务端按用户、项目�
 
 长正文工作流仍通过 `POST /tasks`，提交 `type: canvas_text`、原步骤要求 `prompt`，以及 `input.workflowBatch: { version: 1, units: [{ label, text }] }`。普通短输入省略该字段。服务端验证文本模式、单元边界与容量后将操作设置为 `short_drama_batch`；前端不能自行创建无计划的同名操作。最多 512 单元，每单元 24000 Unicode 字符，总计 400 万；前端使用更保守的 20000 UTF-16 字符单元。总任务不调用模型、不冻结积分，实际子任务各自走正常模型准入及计费。
 
+分集集纲改用 `input.workflowBatch: { version: 3, episodeCount, units: [{label,text}] }`，必须配合 `metadata.workflowStep: story.episodes`，`episodeCount` 为 1–200。来源只包含故事总纲、叙事节奏和合并的资产编码表；用户明确引用的资产才携带当前相关设定。正文、生图、声音、美术、完整资产档案不默认进入集纲。超过输入预算先整理故事要点，每轮必须缩减至少 25%，无进展即保留结果并停止，禁止反复膨胀。
+
+分集正文待执行节点使用 `shortDrama.bodyContextVersion: 1`，节点保存生成要求、集号和来源版本签名，不复制整套材料。提交前校验来源与连线，再组装本集集纲、相邻集衔接、必要世界规则及本集明确引用的资产；不按计划出场范围兜底携带整库、不携带前集正文及生图技术章节。来源变更拒绝提交。通常直接提交一次正文文本任务；超长输入使用专用 `workflowBatch: {version: 4, units, context}`，`metadata.workflowStep` 必须为 `story.body`，`context` 保存不可截断的本集集纲，`units` 仅为已经筛选的参考资料。仅在超预算时并发精简参考资料，之后一次扩写正文，不进入通用资产提取或跨集归并。实际子调用继续按正常计费、并发与取消规则执行。旧正文分批任务停止继续创建提取子调用；用户从节点重试时按原来源版本重新组装输入并关联 `retryOf/attemptGroupId`，不修改旧账单、结果或已运行请求。
+
+单画布 JSON 保存上限统一为 **100MiB**，HTTP 信封另留 64KiB；浏览器通过后端生成的合同常量使用相同上限。前端计量 UTF-8 字节且不额外分配整份编码缓冲，已序列化请求不重复转码。HTTP 解码前以在途请求字节总量控制保存内存预算，繁忙返回 429 和 `Retry-After`，过大返回 413；媒体仍必须通过资源库引用，不能内嵌媒体数据。同步先批量核实本地尚未验证的素材引用，补齐缺失记录并上传素材后再保存画布；服务端 `reason: canvas_assets_missing` 附 `assetIds/nodeIds`，客户端最多自动修复一轮，失败保留本地草稿，不假报云端成功。来源签名、修订号冲突与存储额度校验保持生效。
+
+超过 5 集先生成并校验完整分集主线，再按每 5 集并发生成；每段读取相邻集主线边界并沿用同一总纲。并发窗口仍读取全局文本策略。少于或等于 5 集直接生成。各集段校验标题、集号覆盖和非空内容后按顺序直接合成单一 Markdown，不再交给模型多轮归并。子任务键分别为 `outline-context-*`、`outline-spine`、`outline-range-起集-止集`，成功部分恢复时复用，实际调用仍正常计费和结算。旧版集纲快照不自动改写或偷偷重跑，重试返回从制作方案重新生成的说明，原草稿、结果和账单保留。未知费用的子调用仍需核实，不能通过该流程清除费用保护。
+
 `GET /tasks/:id` 的 `stage/progress` 表示批次进度，成功 `resultJson` 仍为 `{ mode: "text", text: "最终文稿" }`；不会把中间结果作为最终文稿。子任务的公开输入 metadata 包含 `source: canvas-workflow-batch-child`、`parentTaskId` 和 `batchKey`，不绑定画布结果节点。显式重试总任务只重新执行未成功的批次，费用待核对的子任务先阻断。后端释放父任务 Worker 租约后等待子任务，服务重启可从现有任务记录恢复；无需数据库迁移。父任务 POST 仍遵守原有“未知回执先查任务、不可盲目重发”的合同。
+
+`GET /tasks` 的 `clientContext` 为分批子任务补充 `parentTaskId`、`batchKey`，同用户同项目的父任务存在时提供 `parentNodeId`、`workflowStepId` 及材料提取的 `sourceLabel`（最多 160 字加截断标记）。父任务不在当前页时仍批量查询关联；来源正文和完整模型输入不下发。`parentNodeId` 仅用于展示和打开详情，不能作为子任务产物回填绑定。画布工作流主任务将 metadata 中的 `workflowStep` 投影为 `workflowStepId`；活动详情轮询保留列表提供的关联信息。
 
 文本流中的 `event: error` 表示生成失败，即使 HTTP 状态是 200。嵌套 `error.code` 精确为 `upstream_http2_stream_error` 时，公开提示为上游渠道 HTTP/2 流中断，不归为剧本内容或参数错误，也不回显该事件可能包含凭据的原始消息。仅有角色开始事件不算正文；错误前的部分正文保留为未完成片段，不产生完整成功结果。此分类不启用自动重试或自动更换渠道。
 
@@ -227,11 +263,21 @@ CANVAS_BACKEND_DATA_DIR=/明确的数据目录 ./migrate-schema repair-canvas-re
 }
 ```
 
-弹窗一行一个模型，列为模型展示名、渠道展示名（上游模型 ID）、规格、成本价和销售价输入框；多个规格在模型行内纵向对齐。利润率沿用财务口径：`(销售价 − 成本价) / 销售价 × 100%`，并非成本加价率。目标利润率为 0–99.99%，最多两位小数；售价按 `成本价 / (1 − 目标利润率)` 计算，按所选 0–6 位积分小数四舍五入（默认 2 位）。成本 1 积分、目标 20%、保留 2 位时售价为 1.25 积分。修改比例或精度实时计算，也可点击「重新计算」按当前参数覆盖全部手动售价；随后允许逐规格手动修改，保存以最终输入值为准。舍入和手动修改可能使实际利润率偏离目标；售价为零时利润率显示 `—`。
+弹窗一行一个模型，多个规格纵向对齐。默认使用「统一倍率」，可按当前售价或厂商官方公开参考价计算；倍率为 0.0001–100，最多四位小数。官方 USD 价格按明确填写的「1 USD 折合积分」换算后乘倍率，按 0–6 位积分小数四舍五入（默认 6 位）。每次都从基准快照重新计算，避免重复叠乘；保存前允许逐项修改。此处倍率仅用于本次价格计算，不更新或替代已有全局计费倍率策略。
 
-每个模型必须提交全部已启用规格（模型本身可停用），且每个规格只提交当前计费方式需要的完整 `prices` 字段：按次/秒为 `unitPriceMicrocredits`；文本 Token 为 `inputTokenPriceMicrocredits`、`outputTokenPriceMicrocredits`、`cachedTokenPriceMicrocredits`；视频 Token 仅为 `outputTokenPriceMicrocredits`。缺失、多余、重复、停用规格、null、负数或非整数价格均拒绝。成本和售价配置必须已保存；成本及 Token 售价上限为 1,000,000 积分，按次/秒售价不得超出 JavaScript 安全整数微积分范围。
+「目标利润率」保留财务口径 `(售价 − 成本) / 售价`，目标 0–99.99%，最多两位小数；新售价为 `成本 / (1 − 目标利润率)`，需要已配置有效成本。修改参数或点击「重新计算」覆盖手动售价；最终以输入框为准。舍入与手动修改会影响实际利润率，售价为零时显示 `—`。
 
-服务端校验最终售价和模型/规格版本，不重新计算覆盖手工价格。价格快照过期必须刷新后重试。所有模型与价格档在单事务中更新，增加价格版本、失效目录缓存；无效配置、归属错误、超限或并发版本冲突均不部分提交。不改变成本、规格、计费方式和启停状态；未启用规格保持原值。此接口不新增数据表或迁移，不追溯修改已下单的计费快照。
+`POST /admin/channels/:id/models/default-pricing` 接收 `{ "modelIds": ["MODEL001"], "mappings": { "TIER001": "gpt-6-sol:long" } }`，其中映射可省略。仅管理员可用，1–100 个不重复模型且必须属于当前系统渠道；映射中的规格也必须属于所选模型。读取 `backend/internal/app/model_official_prices.json` 中经核验的厂商官方公开价格快照，不读取渠道价目、不携带渠道密钥、不写入任何模型价格。它不是厂商实时价格接口，目录更新需要重新核对官方来源并更新文件与核验日期。
+
+返回 `currency`、`source`、`verifiedAt`（官方来源核验日期）、`fetchedAt`（本次目录读取时间）、`profiles[]`（可选官方模型/档位）和 `prices[]`。每个价格包含 `modelId`、`tierId`、`upstreamModel`、`profileId`、`sourceUrl`、`note`、`supported`、`reason`、`billingMode` 及 `unitPrice/inputTokenPrice/outputTokenPrice/cachedTokenPrice`。金额为 USD，Token 单位为百万 Token。`note` 标明标准服务、上下文范围或文本输入等条件，不包含未建模的缓存写入、缓存存储、工具或区域附加费，不代表渠道实际成本。
+
+只按完整上游模型 ID 自动匹配，不去掉渠道别名的后缀猜测型号。长/短上下文作为独立档位，由管理员明确选择；长上下文别名可手动映射官方档位，映射只用于当前调价预览。多模态图片 Token 无法可靠换算成按次价格的项保留原价并链接官方来源；未收录模型、规格不符亦保留原价。未修改模型不会提交保存。换算后计费单位不同，会在预览中明确显示，并通过可选的 `priceTiers[].billingMode` 保存；已有已配置非零成本的规格禁止在统一调价中更换单位，需在模型编辑中一起调整。
+
+每个模型必须提交全部未删除规格（模型本身可停用），且每个规格只提交计费方式需要的完整 `prices` 字段：按次/秒为 `unitPriceMicrocredits`；文本 Token 为 `inputTokenPriceMicrocredits`、`outputTokenPriceMicrocredits`、`cachedTokenPriceMicrocredits`；视频 Token 仅为 `outputTokenPriceMicrocredits`。缺失、多余、重复、null、负数或非整数价格均拒绝。规格必须已保存；手动定价和倍率模式不要求配置成本，允许修复原有非法售价。成本及 Token 售价上限为 1,000,000 积分，按次/秒售价不得超出 JavaScript 安全整数微积分范围。
+
+服务端校验最终售价和模型/规格版本，不重新计算覆盖手工价格。价格快照过期必须刷新后重试。所有模型与价格档在单事务中更新，增加价格版本、失效目录缓存；无效配置、归属错误、超限或并发版本冲突均不部分提交。不改变成本、规格选择条件及模型启停状态，计费单位只有显式提交才调整。此接口不新增数据表或迁移，不追溯修改已下单的计费快照。
+
+价格档不再提供独立的“可供用户使用”开关。模型启用后，其有效价格规则均参与目录、报价、路由、执行和重试；历史 `priceTiers[].enabled=false`、`priceConfigured=false` 不再拦截有效价格。保存模型时兼容字段统一为 `true`，实际价格仍须校验通过；模型及所属渠道停用、缺失价格档、无匹配规格或非法价格仍会阻止执行。保留价格金额、成本配置、精确规格优先级及订单结算规则，不批量改写历史订单，也不把未配置价格当作免费。`costPricing.configured` 仍用于区分未知成本与显式零成本。
 
 ### 用户模型目录
 
@@ -275,6 +321,8 @@ Token 报价的 `estimated` 为 `true`，`quantity` 是预留 Token 数。参考
 上传、工作流结构查询、取消查询和取消请求也不参与财务归属，即使日志被标记为可计费；它们不能代替生成请求承载订单金额。订单是否已结算以账单状态为准，保留人工核账后结算订单的统计能力。
 
 ## 画布保存、历史与恢复
+
+单画布 JSON 内容上限为 8 MiB，与制作 Agent 写入使用同一常量；HTTP 请求另留 64 KiB 信封空间。超出请求上限返回 413，内容超限返回 400，均不截断保存。素材同步仍使用原有 4 MiB 上限，内嵌媒体、用户存储额度和归属校验继续生效。前端保存短剧节点时只去除与 `prompt` 完全相同的 `composerContent` 副本，编辑器已有回退读取；不同的编辑草稿、来源签名、批量输入和正文保留。
 
 画布内容使用数据库递增的 `revision` 做乐观并发校验；`updatedAt` 仅用于展示，不作为版本依据。新建 `PUT /canvas-projects/:id` 的 `project.revision` 为 0，已有画布必须带上读取到的版本。数据库在同一次条件更新中匹配 ID、用户与版本，成功后返回 `data.project` 摘要及递增后的版本；缺失版本返回 428，陈旧版本返回 409，非法版本返回 400。客户端不能获取新版号后直接重发旧内容。
 

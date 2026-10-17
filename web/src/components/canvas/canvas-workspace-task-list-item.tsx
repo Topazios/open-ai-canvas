@@ -3,13 +3,16 @@ import { CheckCircle2, ChevronDown, ChevronUp, Clock3, Coins, LoaderCircle, More
 import { Dropdown, type MenuProps } from "antd";
 
 import { formatCredits } from "@/constant/credits";
-import { canCancelGenerationTask, formatTaskKind, generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel } from "@/lib/generation-task-display";
+import { canCancelGenerationTask, generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel } from "@/lib/generation-task-display";
 import type { GenerationTask } from "@/services/api/task-center";
 import { useUserStore } from "@/stores/use-user-store";
+import { canvasTaskPresentation } from "@/lib/canvas/canvas-task-presentation";
+import type { CanvasNodeData } from "@/types/canvas";
 
 // 任务列表项：任务面板与历史面板共用；进度、时长、计费与取消菜单都在这里渲染。
-export const TaskListItem = memo(function TaskListItem({ task, onCancelTask }: { task: GenerationTask; onCancelTask?: (task: GenerationTask) => void }) {
+export const TaskListItem = memo(function TaskListItem({ task, tasks = [], nodes = [], onCancelTask }: { task: GenerationTask; tasks?: GenerationTask[]; nodes?: CanvasNodeData[]; onCancelTask?: (task: GenerationTask) => void }) {
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
+    const presentation = canvasTaskPresentation(task, tasks, nodes);
     const [expanded, setExpanded] = useState(false);
     const [now, setNow] = useState(() => Date.now());
 
@@ -49,13 +52,16 @@ export const TaskListItem = memo(function TaskListItem({ task, onCancelTask }: {
                 </span>
                 <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between gap-2">
-                        <span className="truncate text-xs font-medium leading-4 text-foreground" title={`${formatTaskKind(task)}:${task.prompt}`}>
-                            {task.prompt}
+                        <span className="min-w-0 break-words text-xs font-medium leading-4 text-foreground" title={presentation.title}>
+                            {presentation.title}
                         </span>
                         <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none" style={{ borderColor: `color-mix(in srgb, ${statusColor} 30%, transparent)`, color: statusColor }}>
                             {generationTaskStatusLabel(task)}
                         </span>
                     </span>
+
+                    <span className="mt-1 block break-words text-[11px] leading-4 text-foreground/70">{presentation.work}</span>
+                    {presentation.source ? <span className="mt-0.5 block line-clamp-2 text-[11px] text-foreground/50">{presentation.source}</span> : null}
 
                     {showsProgress && progress !== undefined && isActive ? (
                         <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-foreground/10">

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Input, InputNumber, Select, Switch, Tag } from "antd";
+import { Button, Input, Select, Switch, Tag } from "antd";
 import { Image as ImageIcon, Palette, Plus, RefreshCw, Trash2, WandSparkles, X } from "lucide-react";
 
 import { AppModal } from "@/components/ui/product/app-modal";
@@ -27,7 +27,6 @@ export type TextAssetBatchGenerationSettings = {
     size?: string;
     transparentBackground?: string;
     count: string;
-    concurrency: number;
     cameraControl?: CameraControlOptions;
     skillIds?: string[];
     styleTool?: { id: number; label: string };
@@ -50,14 +49,12 @@ const CATEGORY_OPTIONS = [
     { value: "environment", label: "场景" },
 ] satisfies Array<{ value: TextAssetBatchCategory; label: string }>;
 
-const CONCURRENCY_OPTIONS = [1, 3, 5, 10].map((value) => ({ value, label: `${value} 个并发` }));
 type AnalysisStatus = "idle" | "analyzing" | "success" | "error";
 
 export function CanvasTextBatchGenerationModal({ open, sourceNode, projectId, config, projectStyle, onClose, onConfirm }: Props) {
     const theme = canvasThemes[useActiveTheme()];
     const [items, setItems] = useState<TextAssetBatchItem[]>([]);
     const [generationConfig, setGenerationConfig] = useState<AiConfig>(config);
-    const [concurrency, setConcurrency] = useState(5);
     const [cameraControl, setCameraControl] = useState<CameraControlOptions | undefined>();
     const [skillIds, setSkillIds] = useState<string[]>([]);
     const [styleTool, setStyleTool] = useState<{ id: number; label: string } | null>(null);
@@ -74,7 +71,6 @@ export function CanvasTextBatchGenerationModal({ open, sourceNode, projectId, co
     useEffect(() => {
         if (!open) return;
         setGenerationConfig(config);
-        setConcurrency(5);
         setCameraControl(undefined);
         setSkillIds([]);
         setStyleTool(null);
@@ -136,11 +132,6 @@ export function CanvasTextBatchGenerationModal({ open, sourceNode, projectId, co
 
     const handleAnalysisModelChange = (model: string) => {
         setAnalysisModel(model);
-    };
-
-    const updateConcurrency = (value: number | null) => {
-        if (value === null || !Number.isFinite(value)) return;
-        setConcurrency(Math.max(1, Math.floor(value)));
     };
 
     const addItem = () => {
@@ -233,12 +224,8 @@ export function CanvasTextBatchGenerationModal({ open, sourceNode, projectId, co
                             <ModelPicker config={generationConfig} value={imageModel} capability="image" fullWidth showSelectedPrice={false} onChange={handleModelChange} />
                         </div>
                         <div>
-                            <div className="mb-2 text-sm font-medium opacity-75">并发数量</div>
-                            <div className="flex gap-2">
-                                <Select className="min-w-0 flex-1" value={CONCURRENCY_OPTIONS.some((option) => option.value === concurrency) ? concurrency : undefined} options={CONCURRENCY_OPTIONS} placeholder="预设" onChange={setConcurrency} />
-                                <InputNumber className="w-[92px] shrink-0" min={1} value={concurrency} onChange={updateConcurrency} />
-                            </div>
-                            <div className="mt-1 text-xs leading-5 opacity-60">{activeTaskLimit > 0 ? `本账号当前最多同时处理 ${activeTaskLimit} 个任务，超过后会自动排队。` : "本账号活动任务不设总数上限，实际执行仍受 Worker 和渠道并发配置控制。"}</div>
+                            <div className="mb-2 text-sm font-medium opacity-75">并发遵循系统全局策略</div>
+                            <div className="mt-1 text-xs leading-5 opacity-60">{activeTaskLimit > 0 ? `本账号每类最多保留 ${activeTaskLimit} 个排队或运行任务，超过后会自动等待。` : "本账号排队数量不限，各类任务按独立并发执行。"}</div>
                         </div>
                     </div>
 
@@ -323,7 +310,6 @@ export function CanvasTextBatchGenerationModal({ open, sourceNode, projectId, co
                                     size: generationConfig.size,
                                     transparentBackground: generationConfig.transparentBackground,
                                     count: "1",
-                                    concurrency,
                                     cameraControl,
                                     skillIds,
                                     styleTool: styleTool || undefined,

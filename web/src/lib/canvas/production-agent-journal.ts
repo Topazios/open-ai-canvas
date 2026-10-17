@@ -1,55 +1,100 @@
 import type { AgentEvent } from "@/services/api/agent";
 
 export function mergeProductionEvents(previous: AgentEvent[], incoming: AgentEvent[]) {
-    const events = new Map(previous.map((event) => [event.seq, event]));
-    for (const event of incoming) events.set(event.seq, event);
-    return [...events.values()].sort((a, b) => a.seq - b.seq);
+    const events = new Map<string, AgentEvent>();
+    for (const event of [...previous, ...incoming]) events.set(JSON.stringify([event.runId, event.seq]), event);
+    const seen = new Set<string>();
+    return [...events.values()].sort((a, b) => a.seq - b.seq).filter((event) => {
+        const key = JSON.stringify([event.runId, event.eventId || event.seq]);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 }
 
-const tools: Record<string, string> = { production_status: "读取持久进度", production_read: "阅读来源集", production_facts: "保存本集事实", production_query: "查询共享事实", production_submit: "写入资产", production_check: "检查覆盖" };
+function eventTaskId(event: AgentEvent) {
+    return String(event.payload.taskId || event.payload.requestId || "");
+}
+
+function taskKey(event: AgentEvent) {
+    return JSON.stringify([event.runId, eventTaskId(event) || event.eventId || event.seq]);
+}
+
+function messageKey(event: AgentEvent) {
+    // The Go model bridge publishes messageId = taskId. Never infer identity
+    // from similar prose, step numbers, or adjacency across history pages.
+    return JSON.stringify([event.runId, event.payload.messageId || event.payload.taskId || event.eventId || event.seq]);
+}
+
+const tools: Record<string, string> = { production_status: "读取持久进度", production_read: "阅读来源集", production_facts: "保存本集事实", production_query: "查询共享事实", production_submit: "写入资产", production_check: "检查覆盖", production_storyboard_context: "读取场次检查点", production_storyboard_brief: "整理制作约束", production_storyboard_plan: "规划本集场次", production_storyboard_submit: "保存镜头批次", production_storyboard_review: "校验整集分镜", production_storyboard_read: "核对分镜来源" };
 export type ProductionJournalRow = {
     id: number; kind: "message" | "model" | "tool" | "status"; title: string; detail: string;
     time: string; failed: boolean; pending?: boolean;
 };
 export function productionJournalRows(input: AgentEvent[], runId?: string) {
-    const events = runId ? input.filter((event) => event.runId === runId) : input;
+    const events = mergeProductionEvents([], runId ? input.filter((event) => event.runId === runId) : input);
     const rows: ProductionJournalRow[] = [];
+    const rowEvents = new Map<ProductionJournalRow, AgentEvent>();
+    const addRow = (event: AgentEvent, row: ProductionJournalRow) => {
+        rowEvents.set(row, event);
+        rows.push(row);
+    };
     const starts = new Map<string, { event: AgentEvent; row: ProductionJournalRow }>();
     const messages = new Map<string, ProductionJournalRow>();
-    const dispatched = new Set(events.filter((event) => event.type === "production_model_started").map((event) => String(event.payload.taskId)));
-    const finalized = new Set(events.filter((event) => event.type === "assistant_message" && event.payload.messageId).map((event) => String(event.payload.messageId)));
+    const finalMessages = new Set<string>();
+    const completions = new Set<string>();
+    const dispatched = new Set(events.filter((event) => event.type === "production_model_started").map(taskKey));
+    const finalized = new Set(events.filter((event) => event.type === "assistant_message" && event.payload.replace !== true && typeof event.payload.text === "string" && event.payload.text).map(messageKey));
     for (const event of events) {
         const p = event.payload;
         let title = "";
         let detail = "";
         let kind: ProductionJournalRow["kind"] = "status";
-        const taskId = String(p.taskId || p.requestId || "");
-        if (event.type === "assistant_message" || event.type === "assistant_delta") {
-            const messageId = String(p.messageId || event.eventId);
-            if (event.type === "assistant_delta" && finalized.has(messageId)) continue;
+        const taskId = eventTaskId(event);
+        const modelKey = taskKey(event);
+        if (event.type === "assistant_message" || event.type === "assistant_delta" || event.type === "assistant_snapshot") {
+            const messageId = messageKey(event);
+            const isFinal = event.type === "assistant_message" && p.replace !== true;
+            if (!isFinal && finalized.has(messageId)) continue;
             const text = typeof p.text === "string" ? p.text : "";
-            if (!text) continue;
+            if (isFinal) {
+                if (!text) continue;
+                const receipt = JSON.stringify([messageId, text]);
+                if (finalMessages.has(receipt)) continue;
+                finalMessages.add(receipt);
+                addRow(event, { id: event.seq, kind: "message", title: "进展说明", detail: text, time: event.createdAt, failed: false });
+                continue;
+            }
+            if (!text && event.type !== "assistant_snapshot" && p.replace !== true) continue;
             const existing = messages.get(messageId);
-            if (existing) existing.detail = event.type === "assistant_delta" ? existing.detail + text : text;
+            if (existing) existing.detail = event.type === "assistant_delta" && p.replace !== true ? existing.detail + text : text;
             else {
                 const row: ProductionJournalRow = { id: event.seq, kind: "message", title: "进展说明", detail: text, time: event.createdAt, failed: false };
-                messages.set(messageId, row); rows.push(row);
+                messages.set(messageId, row); addRow(event, row);
             }
             continue;
         } else if (event.type === "production_model_started" || event.type === "context_pressure") {
-            if (event.type === "context_pressure" && (!taskId || dispatched.has(taskId))) continue;
-            title = `调度模型${p.step ? ` · 第 ${p.step} 次` : ""}`;
+            if (event.type === "context_pressure" && (!taskId || dispatched.has(modelKey))) continue;
+            if (starts.has(modelKey)) continue;
+            title = `模型调用${p.step ? ` · 第 ${p.step} 次` : ""}${p.itemName ? ` · ${p.itemName}` : ""} · 等待响应`;
             const row: ProductionJournalRow = { id: event.seq, kind: "model", title, detail: taskId, time: event.createdAt, failed: false, pending: true };
-            starts.set(taskId, { event, row }); rows.push(row);
+            starts.set(modelKey, { event, row }); addRow(event, row);
             continue;
         } else if (event.type === "production_model_completed") {
             kind = "model";
-            title = p.status === "succeeded" ? "模型响应完成" : "模型调用未成功";
-            const start = starts.get(taskId);
+            const receipt = JSON.stringify([modelKey, p.status, p.text, p.error, p.queueMs, p.executionMs]);
+            if (completions.has(receipt)) continue;
+            completions.add(receipt);
+            const start = starts.get(modelKey);
+            const step = p.step || start?.event.payload.step;
+            title = `模型调用${step ? ` · 第 ${step} 次` : ""}${p.itemName ? ` · ${p.itemName}` : ""} · ${p.status === "succeeded" ? "完成" : "未成功"}`;
             const seconds = start ? Math.max(0, (Date.parse(event.createdAt) - Date.parse(start.event.createdAt)) / 1000) : undefined;
-            detail = [String(p.text || ""), seconds !== undefined ? `${seconds.toFixed(1)} 秒` : "", taskId].filter(Boolean).join(" · ");
-            if (start) {
-                start.row.title += ` · ${p.status === "succeeded" ? "完成" : "未成功"}`;
+            const timing = typeof p.executionMs === "number" ? `排队 ${(Number(p.queueMs || 0) / 1000).toFixed(1)} 秒 · 执行 ${(p.executionMs / 1000).toFixed(1)} 秒` : seconds !== undefined ? `总等待 ${seconds.toFixed(1)} 秒` : "";
+            const elapsed = typeof p.executionMs === "number" ? `执行 ${(p.executionMs / 1000).toFixed(1)} 秒` : seconds !== undefined ? `总等待 ${seconds.toFixed(1)} 秒` : "";
+            if (elapsed) title += ` · ${elapsed}`;
+            detail = [String(p.text || p.error || ""), timing, taskId].filter(Boolean).join(" · ");
+            if (start?.row.pending) {
+                start.row.title = title;
                 start.row.detail = detail; start.row.failed = p.status !== "succeeded"; start.row.pending = false;
                 continue;
             }
@@ -68,27 +113,26 @@ export function productionJournalRows(input: AgentEvent[], runId?: string) {
             detail = String(p.text || p.error || "");
             if (event.type === "production_progress" && detail) title = detail;
         } else continue;
-        rows.push({ id: event.seq, kind, title, detail, time: event.createdAt, failed: event.type === "tool_failed" || event.type === "run_failed" || (event.type === "production_model_completed" && p.status !== "succeeded") });
+        addRow(event, { id: event.seq, kind, title, detail, time: event.createdAt, failed: event.type === "tool_failed" || event.type === "run_failed" || (event.type === "production_model_completed" && p.status !== "succeeded") });
     }
-    let lastCheck = "";
-    const savedNodes = new Set(events.filter((event) => event.type === "production_progress").map((event) => event.payload.nodeId));
-    const bySeq = new Map(events.map((event) => [event.seq, event]));
+    const lastChecks = new Map<string, string>();
+    const savedNodes = new Set(events.filter((event) => event.type === "production_progress" && event.payload.nodeId).map((event) => JSON.stringify([event.runId, event.payload.nodeId])));
     return rows.filter((row) => {
-        const event = bySeq.get(row.id)!;
-        if (row.failed || row.kind === "message") return true;
-        if (row.kind === "model") return false;
-        if (event.type === "production_progress") { lastCheck = ""; return !!row.detail; }
+        const event = rowEvents.get(row)!;
+        if (row.failed || row.kind === "model") return true;
+        if (row.kind === "message") return !!row.detail;
+        if (event.type === "production_progress") { lastChecks.delete(event.runId); return !!row.detail; }
         if (row.kind !== "tool") return true;
         if (event.payload.toolName === "production_check") {
             const result = event.payload.result as Record<string, unknown> | undefined;
             if (!result || (result.valid !== true && result.valid !== false)) return false;
             const signature = JSON.stringify([result.valid, result.issues, result.missingCount, result.artifactCount]);
-            if (signature === lastCheck) return false;
-            lastCheck = signature;
+            if (signature === lastChecks.get(event.runId)) return false;
+            lastChecks.set(event.runId, signature);
             row.title = result.valid ? "产物覆盖检查通过" : "检查发现待补内容";
             return true;
         }
         const result = event.payload.result as Record<string, unknown> | undefined;
-        return event.payload.toolName === "production_submit" && !savedNodes.has(result?.nodeId);
+        return event.payload.toolName === "production_submit" && !savedNodes.has(JSON.stringify([event.runId, result?.nodeId]));
     });
 }

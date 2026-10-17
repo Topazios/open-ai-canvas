@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 	"infinite-canvas/backend/internal/database"
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/platform"
 	"infinite-canvas/backend/internal/protocol"
 	"infinite-canvas/backend/internal/repository"
 )
@@ -29,7 +30,7 @@ func newMediaRecoveryTestService(t *testing.T) (*Service, *gorm.DB) {
 	if err := database.MigrateSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	return &Service{repo: repository.New(db), dataDir: t.TempDir(), activeCancels: make(map[string]context.CancelFunc)}, db
+	return &Service{repo: repository.New(db), dataDir: t.TempDir(), activeCancels: make(map[string]context.CancelFunc), coordinator: platform.NewCoordinatorWithRedis(nil, "")}, db
 }
 
 func mediaTestPNG(t *testing.T) []byte {
@@ -100,7 +101,7 @@ func TestMediaRecoveryDownloadFailureResumesSameTaskAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A fresh service has no in-memory state or downloaded bytes from generation.
-	restarted := &Service{repo: s.repo, dataDir: s.dataDir, activeCancels: make(map[string]context.CancelFunc)}
+	restarted := &Service{repo: s.repo, dataDir: s.dataDir, activeCancels: make(map[string]context.CancelFunc), coordinator: platform.NewCoordinatorWithRedis(nil, "")}
 	claimed, err := restarted.repo.ClaimNextTask("worker-b", time.Minute)
 	if err != nil || claimed == nil {
 		t.Fatalf("claim: %v", err)

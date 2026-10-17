@@ -85,7 +85,7 @@ func (s *Service) AppendTaskTextDelta(userID string, taskID string, content stri
 	if capabilityFromTaskType(task.Type) != "text" {
 		return nil, BadAuthRequest("只有文本生成任务支持增量回放")
 	}
-	if strings.TrimSpace(content) == "" {
+	if content == "" {
 		return nil, BadAuthRequest("文本增量不能为空")
 	}
 	if len([]byte(content)) > textReplayMaxEventBytes {

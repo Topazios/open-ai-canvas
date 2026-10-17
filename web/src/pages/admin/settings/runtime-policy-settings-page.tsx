@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useBlocker } from "react-router";
 
 import { cn } from "@/lib/utils";
+import { readRuntimeLimits } from "@/services/runtime-limits";
 import { getAdminRuntimePolicySetting, getAdminSelfUseRuntimePolicy, resetAdminRuntimePolicySetting, updateAdminRuntimePolicySetting, type RuntimePolicySetting } from "@/services/api/auth";
 import { useAdminContext } from "../admin-context";
 import { AdminPageFrame } from "../components/admin-shell";
@@ -44,9 +45,18 @@ const storageFields: PolicyField[] = [
     { group: "storage", name: "errorBodyKB", label: "错误响应保留", extra: "对象存储错误响应中最多保留的诊断内容。", unit: "KB", max: 1_024 },
 ];
 const concurrencyFields: PolicyField[] = [
-    { group: "task", name: "workerConcurrency", label: "Worker 并发", extra: "集群同时执行的后台任务数。", unit: "个", max: 999 },
-    { group: "task", name: "channelConcurrency", label: "全局渠道并发", extra: "渠道选择跟随系统时采用的并发上限。", unit: "个", max: 999 },
-    { group: "task", name: "activeTaskLimit", label: "账号活动任务", extra: "单账号跨项目同时排队或运行的任务总数。填 0 表示不限制，由 Worker 并发和渠道并发负责实际节流。", unit: "个", min: 0, max: 999 },
+    { group: "resource", name: "imagePreparationConcurrency", label: "图片准备并发", extra: "浏览器图片加载与解码共享的全局策略，系统默认 4。", unit: "个", max: 999 },
+    { group: "resource", name: "resourceDownloadConcurrency", label: "资源下载并发", extra: "浏览器网络资源下载共享的全局策略，系统默认 16。", unit: "个", max: 999 },
+    { group: "resource", name: "uploadConcurrency", label: "资源上传并发", extra: "素材、画布导入和资源上传共享的全局策略，系统默认 4。", unit: "个", max: 999 },
+    { group: "resource", name: "mediaRecoveryConcurrency", label: "媒体恢复并发", extra: "媒体恢复与资源修复共享的全局策略，系统默认 2。", unit: "个", max: 999 },
+    { group: "task", name: "imageConcurrency", label: "生图并发", extra: "图片任务独立执行，不占用文本或 Agent 槽位。", unit: "个", max: 999 },
+    { group: "task", name: "textConcurrency", label: "文本并发", extra: "普通文本及分批正文任务的独立并发。", unit: "个", max: 999 },
+    { group: "task", name: "agentConcurrency", label: "Agent 并发", extra: "Agent 模型调用及上下文压缩的独立并发；生成媒体按对应媒体类别计数。", unit: "个", max: 999 },
+    { group: "task", name: "videoConcurrency", label: "视频并发", extra: "视频生成及时间线导出的独立并发。", unit: "个", max: 999 },
+    { group: "task", name: "audioConcurrency", label: "音频并发", extra: "音频生成及字幕转写的独立并发。", unit: "个", max: 999 },
+    { group: "task", name: "workerConcurrency", label: "其他任务并发", extra: "未归入上述类型的后台任务并发。", unit: "个", max: 999 },
+    { group: "task", name: "channelConcurrency", label: "全局渠道分类并发", extra: "所有渠道统一按任务类型独立计数，取此值与该类型并发的较小值。", unit: "个", max: 999 },
+    { group: "task", name: "activeTaskLimit", label: "账号每类活动任务", extra: "单账号跨项目、同一类型排队及运行任务的上限，各类型分别计数。0 表示不限制排队数量。", unit: "个", min: 0, max: 999 },
 ];
 
 const timeoutFields: PolicyField[] = [
@@ -285,7 +295,7 @@ export default function RuntimePolicySettingsPage() {
             title: "填入自用模式上限？",
             content: (
                 <div className="admin-runtime-policy-confirm-copy">
-                    <p>这会把全部 42 项配额、并发、频控和超时填到允许范围的高值，并把熔断等待缩短到 1 秒。</p>
+                    <p>这会把配额、各类型并发、频控和超时填到允许范围的高值，并把熔断等待缩短到 1 秒。</p>
                     <p>{dirty ? `当前 ${dirtyFields.length} 项暂存调整会被覆盖。` : "只会改动本页草稿，点击保存修改后生效。"}</p>
                 </div>
             ),
@@ -321,7 +331,7 @@ export default function RuntimePolicySettingsPage() {
             title: "恢复全部系统默认策略？",
             content: (
                 <div className="admin-runtime-policy-confirm-copy">
-                    <p>确认后会删除管理员保存的自定义策略，全部 42 项立即恢复系统默认值。</p>
+                    <p>确认后会删除管理员保存的自定义策略，全部策略立即恢复系统默认值。</p>
                     {dirty ? <p>当前 {dirtyFields.length} 项未保存调整也会一并丢弃。</p> : null}
                 </div>
             ),
@@ -340,6 +350,7 @@ export default function RuntimePolicySettingsPage() {
                     setDraft(nextDraft);
                     form.setFieldsValue(nextDraft);
                     message.success("已恢复系统默认策略");
+                    void readRuntimeLimits(true).catch((error) => message.error(error.message));
                 } catch (error) {
                     const errorMessage = error instanceof Error ? error.message : "恢复系统默认策略失败";
                     setSaveError(`${errorMessage}。未自动重试，请重新读取当前配置后核对。`);
@@ -373,6 +384,7 @@ export default function RuntimePolicySettingsPage() {
             setDraft(nextDraft);
             form.setFieldsValue(nextDraft);
             message.success("资源与策略已保存并即时生效");
+            void readRuntimeLimits(true).catch((error) => message.error(error.message));
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : "保存资源与策略失败";
             setSaveError(`${errorMessage}。未自动重试，请重新读取当前配置后再决定是否保存。`);
@@ -437,7 +449,7 @@ export default function RuntimePolicySettingsPage() {
 
     const updateActor = savedSetting.updatedBy ? userNameById.get(savedSetting.updatedBy) || savedSetting.updatedBy : "";
     const updateDetail = savedSetting.configured ? `${formatTime(savedSetting.updatedAt)}${updateActor ? ` · ${updateActor}` : ""}` : "尚未由管理员保存，使用系统默认值";
-    const workerConcurrency = readDraftNumber(draft, "task", "workerConcurrency");
+    const workerConcurrency = readDraftNumber(draft, "task", "imageConcurrency");
     const activeTaskLimit = readDraftNumber(draft, "task", "activeTaskLimit");
 
     return (
@@ -502,8 +514,8 @@ export default function RuntimePolicySettingsPage() {
                     <div className="admin-runtime-policy-overview" aria-label="资源与策略配置概览">
                         <AdminStatTile label="配置来源" value={savedSetting.configured ? "管理员配置" : "系统默认"} detail={updateDetail} />
                         <AdminStatTile label="待保存调整" value={dirtyFields.length} detail={dirty ? "仅本页暂存，尚未生效" : "当前草稿与服务端一致"} />
-                        <AdminStatTile label="Worker 并发" value={formatNumber(workerConcurrency)} detail={dirtyFields.some((field) => field.name === "workerConcurrency") ? "暂存状态预览" : "集群后台任务并发"} />
-                        <AdminStatTile label="账号活动任务" value={formatNumber(activeTaskLimit)} detail={dirtyFields.some((field) => field.name === "activeTaskLimit") ? "暂存状态预览" : "单账号排队与运行总数"} />
+                        <AdminStatTile label="生图并发" value={formatNumber(workerConcurrency)} detail={dirtyFields.some((field) => field.name === "imageConcurrency") ? "暂存状态预览" : "图片独立执行槽位"} />
+                        <AdminStatTile label="账号每类活动任务" value={formatNumber(activeTaskLimit)} detail={dirtyFields.some((field) => field.name === "activeTaskLimit") ? "暂存状态预览" : "各类型分别统计排队与运行数"} />
                     </div>
 
                     {policySections.map((section) => (

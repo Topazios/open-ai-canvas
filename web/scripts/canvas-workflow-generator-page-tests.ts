@@ -197,7 +197,7 @@ try {
             check(cloud.connections.some((edge: any) => edge.fromNodeId === topic.id && edge.toNodeId === planId), `${theme}: topic to plan linked automatically`);
             await next(planId, "分集集纲");
             check(await panel().getByRole("combobox", { name: "制作方案来源", exact: true }).count() === 1, `${theme}: next step uses source parameter`);
-            await page.getByRole("button", { name: "生成分集集纲", exact: true }).click();
+            await page.getByRole("button", { name: "生成全剧集纲", exact: true }).click();
             await wait(() => requests.length === 2, "next outline task submitted"); completeTasks();
             const episodesId = requests[1].input.metadata.nodeId;
             await wait(() => cloud.nodes.find((node: any) => node.id === episodesId)?.metadata?.status === "success", "outline result saved");

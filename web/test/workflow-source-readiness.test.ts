@@ -91,7 +91,7 @@ describe("asset task state and usable output are independent", () => {
     test("shot documents, prompts, voice casting and all frame steps use the same corrected source validation", () => {
         const f = fixture();
         for (const node of f.nodes) {
-            if (nodeWorkflow(node)?.assetKey === "$summary" && nodeWorkflow(node)?.step !== "assets.bible") {
+            if (nodeWorkflow(node)?.assetKey === "$summary" && nodeWorkflow(node)?.stage === "assets" && nodeWorkflow(node)?.step !== "assets.bible") {
                 node.metadata!.status = "error";
                 nodeWorkflow(node)!.assetOutput = true;
             }

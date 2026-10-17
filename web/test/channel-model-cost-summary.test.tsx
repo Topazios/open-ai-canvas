@@ -62,7 +62,7 @@ test("text token costs include input, output and cached tokens", () => {
 });
 
 test("video token costs use only output video tokens", () => {
-    const html = render([{ ...tier, billingMode: "token" }], "video");
+    const html = render([{ ...tier, billingMode: "token", inputTokenPriceMicrocredits: 0, cachedTokenPriceMicrocredits: 0 }], "video");
     expect(html).toContain("视频 3 / 77");
     expect(html).toContain("积分 / 百万视频 Token");
     expect(html).not.toContain("输入");
@@ -77,10 +77,10 @@ test("missing and unconfigured costs never fall back to sale prices or zero", ()
     }
 });
 
-test("explicit free costs remain zero even if sale pricing is unconfigured", () => {
+test("legacy availability flags do not hide valid sale prices or free costs", () => {
     const html = renderToStaticMarkup(<ChannelModelCostSummary item={{ ...item, priceConfigured: false, priceTiers: [{ ...tier, priceConfigured: false, costPricing: { ...tier.costPricing!, unitPriceMicrocredits: 0 } }] }} />);
-    expect(html).toContain("0 / 未配置售价");
-    expect(html).toContain("利润率 —");
+    expect(html).toContain("0 / 99");
+    expect(html).toContain("利润率 100%");
     expect(html).not.toContain("未配置成本");
 });
 
@@ -100,9 +100,10 @@ test("specification labels prefer canonical selectors and additional tiers remai
     expect(html).toContain("其余 1 个规格价格");
 });
 
-test("disabled tiers are excluded and empty costs are explicit", () => {
-    expect(render([{ ...tier, enabled: false }])).toContain("无已启用规格");
-    expect(render([])).toContain("无已启用规格");
+test("legacy disabled tiers are displayed and missing tiers are explicit", () => {
+    expect(render([{ ...tier, enabled: false, priceConfigured: false }])).toContain("1.25 / 99");
+    expect(render([])).toContain("无价格规格");
+    expect(render([{ ...tier, unitPriceMicrocredits: -1 }])).toContain("未配置售价");
 });
 
 test("model list uses the cost component without gating it on user prices", async () => {

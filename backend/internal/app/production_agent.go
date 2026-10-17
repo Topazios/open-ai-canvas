@@ -18,20 +18,25 @@ type ProductionAgentRequest struct {
 	InputVersion string `json:"inputVersion,omitempty"`
 }
 type productionSource struct {
-	NodeID  string   `json:"nodeId"`
-	Title   string   `json:"title"`
-	Version string   `json:"version"`
-	Step    string   `json:"step"`
-	Episode int      `json:"episode"`
-	Pages   []string `json:"pages"`
+	AssetIdentity *productionAssetIdentity `json:"assetIdentity,omitempty"`
+	OnDemand      bool                     `json:"onDemand,omitempty"`
+	NodeID        string                   `json:"nodeId"`
+	Title         string                   `json:"title"`
+	Version       string                   `json:"version"`
+	Step          string                   `json:"step"`
+	Episode       int                      `json:"episode"`
+	Pages         []string                 `json:"pages"`
 }
 type productionManifest struct {
-	Category      string             `json:"category"`
-	BibleSections []string           `json:"bibleSections,omitempty"`
-	FrameID       string             `json:"frameId"`
-	TargetHash    string             `json:"targetHash"`
-	Sources       []productionSource `json:"sources"`
-	Read          map[string]bool    `json:"read"`
+	Assets        map[string]*productionAssetIdentity `json:"assets,omitempty"`
+	Plan          *productionPlan                     `json:"plan,omitempty"`
+	Storyboard    *productionStoryboard               `json:"storyboard,omitempty"`
+	Category      string                              `json:"category"`
+	BibleSections []string                            `json:"bibleSections,omitempty"`
+	FrameID       string                              `json:"frameId"`
+	TargetHash    string                              `json:"targetHash"`
+	Sources       []productionSource                  `json:"sources"`
+	Read          map[string]bool                     `json:"read"`
 	// QueryCursors stores the next unread offset for each fact category. New
 	// jobs use a compact sequential cursor instead of persisting one boolean per
 	// fact, which keeps the manifest small and makes version boundaries explicit.
@@ -52,6 +57,10 @@ const productionFactsParserVersion = "facts-v3"
 const productionFactQueryMaxItems = 64
 const productionFactQueryMaxBytes = 24000
 const productionStatusPageSize = 24
+
+// A 12,000-rune document can exceed 32KB, especially with escaped Unicode.
+// Inventory batches and structured indexes still have their own item limits.
+const productionToolArgumentsMaxBytes = 192 * 1024
 
 const productionAgentPolicy = `本轮是制作长任务。只能使用 production_* 工具，不能通过聊天声称产出已完成。
 当前任务已获得自动执行授权。制作规范不需要单独确认；生成后由用户审核调整，不得因缺少确认而停止。制作规范按 production_status 返回的 bibleSections 分成独立节点，每份持续补全，必须处理全部所提供正文；新任务包含8类规范，不再限定两项。历史已开始作业按其持久清单继续，不扩大旧作业的已授权范围。制作任务没有累计工具调用额度或模型步骤额度，不要把普通 Agent 的 maxToolCalls、积分预算或“调用次数已用完”提示当作本任务的停止条件；只有来源已处理、产物已保存并通过 production_check，或出现真实模型/数据错误时才结束。
@@ -88,7 +97,7 @@ func productionAgentTools() []map[string]any {
 	add("production_query", "分页查询共享事实，返回稳定 fact id。kind 为空返回全部；按 nextAction 使用连续 offset，每批最多 64 条且受响应大小限制。传 assetKey 时只读取该已保存资产完整文稿与 expectedHash，用于增量修订。", map[string]any{"kind": str, "offset": integer, "assetKey": str})
 	add("production_submit", "逐资产保存。document 按系统中的统一结构填写，人物 sound 必填完整声线。规范 key 使用 production_status.bibleSections 的枚举值，普通资产用稳定主体名；factIds 是最多256条新增引用，服务端保留旧引用。design 为变体/声音/冲突索引。修订使用 expectedHash，不覆盖人工修改。", map[string]any{"key": str, "name": str, "content": str, "document": document, "factIds": map[string]any{"type": "array", "maxItems": 256, "items": str}, "expectedHash": str, "design": design}, "key", "name", "document", "factIds")
 	add("production_check", "校验读取、事实、分类覆盖与产物存在性。返回待补事实；通过后才可结束。", map[string]any{})
-	return tools
+	return append(append(tools, storyboardTools()...), productionPlanTools()...)
 }
 
 func productionWorkflow(node map[string]any) map[string]any {
@@ -139,18 +148,32 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 		return m, BadAuthRequest("该提取记录已绑定作业，请继续原任务或生成新的版本")
 	}
 	m.Category = strings.TrimPrefix(stringValue(data["step"]), "assets.")
+	if data["step"] == "story.plan" {
+		m.Category = "plan"
+		m.Plan = &productionPlan{Assets: []productionPlanAsset{}, Absent: map[string]string{}}
+		if version, _ := data["planVersion"].(float64); version >= 2 {
+			m.Plan.Version = 2
+			if version >= 3 {
+				m.Plan.Version = 3
+			}
+		}
+	}
+	if data["step"] == "direction.shots" {
+		m.Category = "storyboard"
+		m.Storyboard = &productionStoryboard{Version: "storyboard-scenes-v1", Scenes: []productionScene{}}
+	}
 	if m.Category == "bible" {
 		for _, section := range productionBibleSections {
 			m.BibleSections = append(m.BibleSections, section.Key)
 		}
 	}
-	if !cloudAgentContainsString([]string{"bible", "characters", "environments", "props", "special"}, m.Category) || stringValue(data["pipelineId"]) == "" || data["assetKey"] != "$summary" {
+	if !cloudAgentContainsString([]string{"bible", "characters", "environments", "props", "special", "voices", "reconcile", "storyboard", "plan"}, m.Category) || stringValue(data["pipelineId"]) == "" || (m.Storyboard == nil && data["assetKey"] != "$summary") {
 		return m, BadAuthRequest("请选择资产步骤的提取记录节点")
 	}
 	m.FrameID = stringValue(target["parentId"])
 	frame := productionNode(doc, m.FrameID)
 	group, _ := productionWorkflow(frame)["assetGroup"].(map[string]any)
-	if group["manifestId"] != req.Production.TargetNodeID {
+	if frame == nil || (m.Storyboard == nil && group["manifestId"] != req.Production.TargetNodeID) || (m.Storyboard != nil && !cloudAgentContainsString(productionIDs(productionWorkflow(frame)["sourceNodeIds"]), req.Production.TargetNodeID)) {
 		return m, BadAuthRequest("制作目标容器不存在或已变化")
 	}
 	m.TargetHash = productionTargetHash(target)
@@ -179,10 +202,41 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 					return err
 				}
 			}
+			// Asset design groups are siblings of the public plan, not nested
+			// content. Storyboard inputs remain episode-local.
+			if m.Storyboard == nil && m.Plan == nil {
+				groups, _ := wd["planGroups"].(map[string]any)
+				for _, kind := range productionPlanGroupKinds {
+					groupID := stringValue(groups[kind])
+					if groupID == "" {
+						continue
+					}
+					group := productionWorkflow(productionNode(doc, groupID))
+					link, _ := group["planGroup"].(map[string]any)
+					if link["rootFrameId"] != id || link["kind"] != kind || group["pipelineId"] != wd["pipelineId"] {
+						return BadAuthRequest("资产分组与制作方案关联已变化")
+					}
+					if err := visit(groupID); err != nil {
+						return err
+					}
+				}
+			}
 			return nil
 		}
 		step := stringValue(wd["step"])
-		if step != "story.body" && step != "story.plan" && !strings.HasPrefix(step, "assets.") {
+		if m.Storyboard != nil && step == "story.plan" && (wd["planAsset"] != nil || wd["planSection"] == "story" || wd["planSection"] == "inventory") {
+			return nil
+		}
+		if m.Storyboard != nil && !storyboardSourceAllowed(step) {
+			// Storyboard work is episode-local. Do not walk asset branches that
+			// happen to be nested in the story container; those are generated and
+			// consumed by later asset-binding steps.
+			return nil
+		}
+		if m.Plan != nil && step != "story.topic" {
+			return BadAuthRequest("制作方案只能基于已采用的选题创建")
+		}
+		if step != "story.body" && step != "story.plan" && step != "direction.scenes" && !strings.HasPrefix(step, "assets.") && !(m.Plan != nil && step == "story.topic") {
 			return nil
 		}
 		// The asset-group summary is a task anchor, not source material. It may
@@ -201,7 +255,12 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 			return BadAuthRequest("制作来源超过容量")
 		}
 		episode, _ := wd["episodeNumber"].(float64)
-		m.Sources = append(m.Sources, productionSource{NodeID: id, Title: truncateRunes(stringValue(node["title"]), 120), Version: productionNodeHash(node), Step: step, Episode: int(episode)})
+		source := productionSource{NodeID: id, Title: truncateRunes(stringValue(node["title"]), 120), Version: productionNodeHash(node), Step: step, Episode: int(episode)}
+		if identity, ok := wd["assetIdentity"].(map[string]any); ok {
+			source.AssetIdentity = &productionAssetIdentity{ID: stringValue(identity["id"]), Code: stringValue(identity["code"]), Kind: stringValue(identity["kind"])}
+			source.OnDemand = m.Category == "reconcile" && step == "story.plan"
+		}
+		m.Sources = append(m.Sources, source)
 		return nil
 	}
 	for _, id := range productionIDs(data["sourceNodeIds"]) {
@@ -209,12 +268,68 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 			return m, err
 		}
 	}
+	// Only inherit planned designs from the declared provenance of this branch.
+	// Storyboard remains strictly episode-local; asset jobs read their own kind.
+	if m.Plan == nil && m.Storyboard == nil {
+		signatures, _ := data["sourceSignatures"].(map[string]any)
+		ids := []string{}
+		kind := productionCategoryKind(m.Category)
+		for id := range signatures {
+			wd := productionWorkflow(productionNode(doc, id))
+			if wd["step"] != "story.plan" || wd["role"] == "collection" {
+				continue
+			}
+			asset, _ := wd["planAsset"].(map[string]any)
+			if asset != nil && m.Category != "reconcile" && (kind == "" || asset["kind"] != kind) {
+				continue
+			}
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if err := visit(id); err != nil {
+				return m, err
+			}
+		}
+	}
+	if m.Storyboard != nil {
+		// The canvas records transitive provenance separately from direct edges.
+		// Bring only declared directing constraints into the brief, not the other
+		// episodes or unrelated project documents.
+		signatures, _ := data["sourceSignatures"].(map[string]any)
+		ids := make([]string, 0, len(signatures))
+		for id := range signatures {
+			if storyboardRuleSource(stringValue(productionWorkflow(productionNode(doc, id))["step"])) {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if err := visit(id); err != nil {
+				return m, err
+			}
+		}
+	}
 	body := false
 	for _, source := range m.Sources {
 		body = body || source.Step == "story.body"
 	}
-	if !body {
+	if m.Plan != nil && len(m.Sources) == 0 {
+		return m, BadAuthRequest("制作方案需要已采用的选题")
+	}
+	if !body && m.Plan == nil {
 		return m, BadAuthRequest("制作 Agent 需要已生成的正文或正文容器")
+	}
+	if m.Storyboard != nil {
+		bodies := 0
+		for _, source := range m.Sources {
+			if source.Step == "story.body" {
+				bodies++
+			}
+		}
+		if bodies != 1 {
+			return m, BadAuthRequest("分镜任务每次必须关联一集正文，请按集创建")
+		}
 	}
 	return m, nil
 }
@@ -259,11 +374,20 @@ func productionLoad(repo *repository.Repository, run *model.CloudAgentExecution,
 			// identity so a changed extraction schema/prompt never reuses an older
 			// facts page. Existing jobs keep their persisted page manifest and are
 			// intentionally not rewritten on resume.
-			id := productionHash([]any{productionFactsParserVersion, run.UserID, canvas.ID, productionWorkflow(productionNode(doc, source.NodeID))["pipelineId"], source.NodeID, source.Version, source.Episode, task.LogicalModelRevisionID, task.ChannelModelID, modelVersion, state.Request.Model, state.Request.ChannelID, state.Request.ChannelModelKey})
+			parserVersion := productionFactsParserVersion
+			if m.Category == "reconcile" {
+				parserVersion += "-integrated-kinds-v1"
+			}
+			id := productionHash([]any{parserVersion, run.UserID, canvas.ID, productionWorkflow(productionNode(doc, source.NodeID))["pipelineId"], source.NodeID, source.Version, source.Episode, task.LogicalModelRevisionID, task.ChannelModelID, modelVersion, state.Request.Model, state.Request.ChannelID, state.Request.ChannelModelKey, state.Request.ReasoningEffort.effective()})
 			if err := repo.EnsureProductionAgentPage(&model.ProductionAgentPage{ID: id, UserID: run.UserID, CanvasID: canvas.ID, Text: content, FactsJSON: "[]"}); err != nil {
 				return nil, m, nil, err
 			}
 			source.Pages = append(source.Pages, id)
+		}
+		if m.Storyboard != nil {
+			if err := initializeStoryboardBrief(repo, run, state, &m, doc); err != nil {
+				return nil, m, nil, err
+			}
 		}
 		encoded, _ := json.Marshal(m)
 		job = &model.ProductionAgentJob{RunID: run.ID, UserID: run.UserID, CanvasID: canvas.ID, ManifestJSON: string(encoded)}
@@ -277,6 +401,18 @@ func productionLoad(repo *repository.Repository, run *model.CloudAgentExecution,
 	}
 	if productionNode(doc, m.FrameID) == nil || productionNode(doc, state.Request.Production.TargetNodeID) == nil {
 		return nil, m, nil, BadAuthRequest("目标容器或提取记录已删除，已保存资产保留，禁止复活节点")
+	}
+	if m.Plan != nil {
+		for kind, id := range m.Plan.Groups {
+			group := productionNode(doc, id)
+			groupData := productionWorkflow(group)
+			rootData := productionWorkflow(productionNode(doc, m.FrameID))
+			marker, _ := groupData["planGroup"].(map[string]any)
+			groups, _ := rootData["planGroups"].(map[string]any)
+			if group == nil || group["type"] != "frame" || groups[kind] != id || marker["rootFrameId"] != m.FrameID || marker["kind"] != kind || groupData["pipelineId"] != rootData["pipelineId"] {
+				return nil, m, nil, BadAuthRequest("方案资产分组已删除或改变，未自动复活")
+			}
+		}
 	}
 	if productionTargetHash(productionNode(doc, state.Request.Production.TargetNodeID)) != m.TargetHash {
 		return nil, m, nil, BadAuthRequest("目标提取记录或来源关联已人工修改，未覆盖")
@@ -327,12 +463,26 @@ func productionFacts(repo *repository.Repository, userID string, m productionMan
 }
 
 func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecution, state *cloudAgentRuntime, call cloudAgentCall, policy RuntimePolicySetting) (any, error) {
-	if len(call.Function.Arguments) > 32000 {
+	if len(call.Function.Arguments) > productionToolArgumentsMaxBytes {
 		return nil, BadAuthRequest("单次工具参数超过预算，请分批提交")
 	}
 	job, m, doc, err := productionLoad(repo, run, state)
 	if err != nil {
 		return nil, err
+	}
+	if m.Storyboard != nil {
+		return productionStoryboardTool(repo, run, state, job, m, doc, call, policy)
+	}
+	if call.Function.Name == "production_plan_inventory" {
+		result, err := productionPlanInventory(repo, run, state, m, doc, call, policy)
+		if err == nil {
+			state.ProductionProgressStep = state.Step
+			state.ProductionRepairs = 0
+		}
+		return result, err
+	}
+	if m.Plan != nil && call.Function.Name == "production_facts" {
+		return nil, BadAuthRequest("制作方案为创作阶段，请登记资产清单，不提取不存在的正文事实")
 	}
 	var args struct {
 		Offset       int                     `json:"offset"`
@@ -379,17 +529,33 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 			if err := repo.UpdateProductionAgentManifest(run.UserID, run.ID, string(encoded)); err != nil {
 				return nil, err
 			}
-			return map[string]any{"pageId": page.ID, "sourceId": source.NodeID, "episode": source.Episode, "step": source.Step, "text": page.Text, "factsReady": page.Processed, "instruction": "若为未处理正文集，下一步立即调用 production_facts 保存本集全部事实；证据必须取自本集，不得拼接其他集。已处理集不重复提取。"}, nil
+			result := map[string]any{"pageId": page.ID, "sourceId": source.NodeID, "episode": source.Episode, "step": source.Step, "assetIdentity": source.AssetIdentity, "planAsset": productionWorkflow(productionNode(doc, source.NodeID))["planAsset"], "text": page.Text, "factsReady": page.Processed, "instruction": "若为未处理正文集，下一步立即调用 production_facts 保存本集全部事实；证据必须取自本集，不得拼接其他集。已处理集不重复提取。"}
+			if m.Plan != nil {
+				next, err := productionNextAction(repo, run.UserID, m, run.ID)
+				if err != nil {
+					return nil, err
+				}
+				result["nextAction"] = next
+				result["instruction"] = "这是制作方案来源，读取已保存。按 nextAction 直接完成当前文稿；不提取正文事实，不重复读取同一材料或查询相同进度。"
+			}
+			return result, nil
 		}
 		if source.Step != "story.body" || !m.Read[page.ID] {
 			return nil, BadAuthRequest("必须先读取正文集，不能将制作约束当正文提取")
 		}
 		if page.Processed {
-			next, err := productionNextAction(repo, run.UserID, m)
+			next, err := productionNextAction(repo, run.UserID, m, run.ID)
 			return map[string]any{"pageId": page.ID, "saved": true, "reused": true, "nextAction": next}, err
 		}
 		if args.Facts == nil || len(*args.Facts) > 100 {
 			return nil, cloudAgentFieldError("facts", "item_count", "facts 必须为 0–100 项数组")
+		}
+		if m.Category == "reconcile" {
+			for _, fact := range *args.Facts {
+				if fact.Kind == "special" {
+					return nil, cloudAgentFieldError("facts.kind", "integrated_asset_kind", "不再新增特殊资产事实；请按所属人物、场景、道具或世界设定归类，并保留原文证据及触发规则。")
+				}
+			}
 		}
 		valid, err := productionValidateFacts(*args.Facts, page.Text)
 		if err != nil {
@@ -425,11 +591,18 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 		state.event(run.ID, "production_progress", map[string]any{"text": "已保存正文事实 · " + source.Title, "sourceId": source.NodeID})
 		state.ProductionRepairs = 0
 		state.ProductionProgressStep = state.Step
-		next, err := productionNextAction(repo, run.UserID, m)
+		next, err := productionNextAction(repo, run.UserID, m, run.ID)
 		return map[string]any{"pageId": page.ID, "saved": true, "reused": page.Processed, "nextAction": next}, err
 	case "production_submit":
+		if m.Plan != nil && m.Plan.Version >= 2 && args.Key == "inventory" {
+			return nil, BadAuthRequest("资产总表由 production_plan_inventory 自动维护，请勿手工提交")
+		}
 		if args.Document != nil {
-			args.Content, err = productionRenderDocument(m.Category, args.Key, args.Document)
+			if m.Plan != nil && m.Plan.Version >= 2 {
+				args.Content, err = productionRenderPlanDocument(args.Key, productionPlanKind(m, args.Key), args.Document)
+			} else {
+				args.Content, err = productionRenderDocument(m.Category, args.Key, args.Document)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -438,6 +611,9 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 					args.Design = &productionDesignFields{}
 				}
 				args.Design.Sounds = []string{strings.TrimSpace(args.Document["sound"])}
+				if m.Plan != nil && m.Plan.Version >= 2 {
+					args.Design.Sounds = []string{productionPlanSound(args.Document)}
+				}
 			}
 		}
 		return productionSubmit(repo, run, state, m, doc, args.Key, args.Name, args.Content, args.FactIDs, args.ExpectedHash, args.Design, policy)
@@ -505,7 +681,7 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 			for _, a := range artifacts {
 				receipts = append(receipts, map[string]any{"key": a.Key, "nodeId": a.NodeID, "hash": a.ContentHash})
 			}
-			next, err := productionNextAction(repo, run.UserID, m)
+			next, err := productionNextAction(repo, run.UserID, m, run.ID)
 			if err != nil {
 				return nil, err
 			}
@@ -519,7 +695,7 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 					if err != nil {
 						return nil, err
 					}
-					pages = append(pages, map[string]any{"pageId": id, "sourceId": source.NodeID, "title": source.Title, "step": source.Step, "episode": source.Episode, "factsReady": page.Processed, "read": m.Read[id]})
+					pages = append(pages, map[string]any{"pageId": id, "sourceId": source.NodeID, "title": source.Title, "step": source.Step, "episode": source.Episode, "assetIdentity": source.AssetIdentity, "onDemand": source.OnDemand, "factsReady": page.Processed, "read": m.Read[id]})
 				}
 			}
 			start := min(args.Offset, max(len(pages), len(artifacts)))
@@ -531,15 +707,15 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 			for _, a := range artifacts[artifactStart:artifactEnd] {
 				receipts = append(receipts, map[string]any{"key": a.Key, "nodeId": a.NodeID, "hash": a.ContentHash})
 			}
-			next, err := productionNextAction(repo, run.UserID, m)
+			next, err := productionNextAction(repo, run.UserID, m, run.ID)
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"category": m.Category, "bibleSections": productionBibleRequirements(m), "pages": pages[start:pageEnd], "totalSources": len(m.Sources), "nextOffset": end, "hasMore": end < max(len(pages), len(artifacts)), "processedPages": done, "totalPages": total, "artifacts": receipts, "artifactCount": len(artifacts), "nextAction": next}, nil
+			return map[string]any{"category": m.Category, "bibleSections": productionBibleRequirements(m), "pages": pages[min(start, pageEnd):pageEnd], "totalSources": len(m.Sources), "nextOffset": end, "hasMore": end < max(len(pages), len(artifacts)), "processedPages": done, "totalPages": total, "artifacts": receipts, "artifactCount": len(artifacts), "nextAction": next}, nil
 		}
 		report := productionCoverage(m, doc, facts, artifacts, done, total)
 		report["pendingWork"] = productionPendingWork(m, doc, facts, artifacts)
-		next, err := productionNextAction(repo, run.UserID, m)
+		next, err := productionNextAction(repo, run.UserID, m, run.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -555,6 +731,12 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 }
 
 func productionCoverage(m productionManifest, doc map[string]any, facts []productionFact, artifacts []model.ProductionAgentArtifact, done, total int) map[string]any {
+	if m.Plan != nil {
+		return productionPlanCoverage(m, doc, artifacts)
+	}
+	if m.Storyboard != nil {
+		return storyboardCoverage(m)
+	}
 	issues := []string{}
 	covered := map[string]bool{}
 	keys := map[string]bool{}
@@ -562,7 +744,7 @@ func productionCoverage(m productionManifest, doc map[string]any, facts []produc
 		issues = append(issues, fmt.Sprintf("正文解析未完成 %d/%d 集", done, total))
 	}
 	for _, source := range m.Sources {
-		if source.Step != "story.body" {
+		if source.Step != "story.body" && !source.OnDemand {
 			for _, id := range source.Pages {
 				if !m.Read[id] {
 					issues = append(issues, "未读制作约束："+source.Title)
@@ -590,10 +772,9 @@ func productionCoverage(m productionManifest, doc map[string]any, facts []produc
 			covered[id] = true
 		}
 	}
-	kind := map[string]string{"characters": "character", "environments": "environment", "props": "prop", "special": "special"}[m.Category]
 	missing := []string{}
 	for _, fact := range facts {
-		if (m.Category == "bible" || fact.Kind == kind) && !covered[fact.ID] {
+		if productionAssetFact(m, fact.Kind) && !covered[fact.ID] {
 			missing = append(missing, fact.ID)
 		}
 	}

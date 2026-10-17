@@ -1,12 +1,22 @@
 import type { CanvasNodeData } from "@/types/canvas";
 import { ShortDramaStep } from "../short-drama-steps";
 import { ProductionBibleSection } from "../production-bible";
-import { assetSheetRatio } from "../asset-reference-sheet";
+import { assetSheetRatio, AssetSheetKind } from "../asset-reference-sheet";
+import { assetSheetStyleMaterial, assetSheetSubjectMaterial } from "../asset-sheet-material";
 import { nodeWorkflow, workflowSignature } from "./canvas-short-drama-workflow";
 
 const styleSections = [ProductionBibleSection.Style, ProductionBibleSection.ArtDirection, ProductionBibleSection.Generation];
 
-export function workflowAssetSheetContext(ancestors: CanvasNodeData[], nodes: CanvasNodeData[], pipelineId: string) {
+export function assetSheetReferenceContent(node: CanvasNodeData, subjectId: string) {
+    if (node.id === subjectId) return "";
+    const data = nodeWorkflow(node);
+    const identityKind = data?.assetIdentity?.kind || data?.planAsset?.kind;
+    const kind = Object.values(AssetSheetKind).find((value) => value === identityKind);
+    if (!kind) throw new Error("设定板只能引用有明确类别的视觉资产");
+    return assetSheetSubjectMaterial(node.metadata?.content || "", kind);
+}
+
+export function workflowAssetSheetContext(ancestors: CanvasNodeData[], nodes: CanvasNodeData[], pipelineId: string, kind?: AssetSheetKind) {
     const guidelines = ancestors.filter((node) => {
         const data = nodeWorkflow(node);
         return data?.pipelineId === pipelineId && data.role !== "collection" &&
@@ -28,5 +38,8 @@ export function workflowAssetSheetContext(ancestors: CanvasNodeData[], nodes: Ca
     if (size && existing.some((node) => Math.abs(assetSheetRatio(node.metadata!.shortDrama!.assetSheet!.size) / assetSheetRatio(size) - 1) >= 0.025)) {
         throw new Error("同一制作规范下存在不一致的设定板画幅，请先统一图片规格");
     }
-    return { styleSignatures, size, style: guidelines.map((node) => `${node.title}：\n${node.metadata!.content}`).join("\n\n") };
+    const style = guidelines.filter((node) => nodeWorkflow(node)?.bibleSection !== ProductionBibleSection.Generation)
+        .map((node) => assetSheetStyleMaterial(node.metadata!.content!, kind)).filter(Boolean).join("\n\n");
+    if (!style.trim()) throw new Error("当前规范缺少可用于生图的视觉风格，请补充画风、配色或光照信息");
+    return { styleSignatures, size, style };
 }

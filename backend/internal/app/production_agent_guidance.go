@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"infinite-canvas/backend/internal/model"
@@ -19,7 +20,34 @@ func productionCurrentPolicy(system string) string {
 }
 
 func productionScopedPolicy(system string, m productionManifest) string {
+	if m.Plan != nil {
+		if index := strings.Index(system, "本轮是制作长任务。只能使用 production_* 工具"); index >= 0 {
+			system = system[:index]
+		}
+		policy := productionPlanPolicy
+		if m.Plan.Version >= 2 {
+			policy = unifiedPlanPolicy
+		}
+		if m.Plan.Version >= 3 {
+			policy = strings.NewReplacer("人物（含配角和画外音）、场景、道具、特殊资产、独立声音五类", "人物（含配角和画外音）、场景、道具、独立声音四类", "覆盖全部篇章和五类", "覆盖全部篇章和四类", "CHR/SCN/PRP/SPC/AUD", "CHR/SCN/PRP/AUD").Replace(policy)
+			policy += "\n" + productionPlanIntegratedEffectsPolicy
+		}
+		return strings.TrimSpace(system) + "\n\n" + policy + "\n\n" + productionrules.Block("story", "text")
+	}
+	if m.Storyboard != nil {
+		if index := strings.Index(system, "本轮是制作长任务。只能使用 production_* 工具"); index >= 0 {
+			system = system[:index]
+		}
+		return strings.TrimSpace(system) + "\n\n" + storyboardPolicy + "\n\n" + productionrules.Block("storyboard", "text")
+	}
 	policy := productionCurrentPolicy(system)
+	if m.Category == "reconcile" {
+		policy = strings.ReplaceAll(policy, "只生成本轮指定分类，逐项调用 production_submit 写入。", "统一处理人物、场景、道具、独立声音四类资产，逐项调用 production_submit 写入。")
+		policy = strings.ReplaceAll(policy, "character/environment/prop/special/setting/style/sound", "character/environment/prop/setting/style/sound")
+		policy = strings.ReplaceAll(policy, "特殊资产只记录正文确有的重复元素。", productionPlanIntegratedEffectsPolicy)
+		policy += "\n当前任务为统一资产校核与补充：同一集正文只解析一次，统一处理 character/environment/prop/sound 四类，跨集归并。先读前置方案共用规范和资产索引，复用对应资产编码，按需读取相关档案，不重新设计全局规范。不重复提交已关联事实。setting/style 用于识别规范冲突，冲突写入相关资产 uncertainties。已有资产提交 key 使用前置编码，新资产使用稳定主体标识并沿用返回的 identity 编码。人物声线与声音资产保持关联一致。旧版 special 仅可按原编号修订已有档案，不新增此类身份。"
+	}
+	policy += "\n若来源含 story.plan，先沿用其中已规划的资产编号、人物性格声线、外观、空间和状态规则。只对照正文核对实际出场、变化、新增项和冲突，补齐可执行提示词，不重新创造一套设定。计划出场不等于正文证据，factIds 仍须来自本轮正文；没有实际出场的计划资产不伪称已出现。"
 	if m.Category == "bible" {
 		sections, _ := json.Marshal(productionBibleRequirements(m))
 		policy += "\n\n当前作业的持久分类清单：" + string(sections) + "。每类必须独立保存为节点；历史对话中的分类数量不能替代此清单。复用已有产物，补齐缺项，不重新提取已处理正文。"
@@ -30,6 +58,9 @@ func productionScopedPolicy(system string, m productionManifest) string {
 // Keep repair input bounded and include the actual prior document/hash. The
 // model can amend a single asset without re-reading the entire transcript.
 func productionPendingWork(m productionManifest, doc map[string]any, facts []productionFact, artifacts []model.ProductionAgentArtifact) map[string]any {
+	if m.Plan != nil {
+		return productionPlanCoverage(m, doc, artifacts)
+	}
 	covered := map[string]bool{}
 	repairs := []map[string]any{}
 	for _, a := range artifacts {
@@ -43,10 +74,9 @@ func productionPendingWork(m productionManifest, doc map[string]any, facts []pro
 			repairs = append(repairs, map[string]any{"key": a.Key, "name": node["title"], "expectedHash": a.ContentHash, "content": meta["content"], "missingSections": missing})
 		}
 	}
-	kind := map[string]string{"characters": "character", "environments": "environment", "props": "prop", "special": "special"}[m.Category]
 	missingFacts := []productionFact{}
 	for _, f := range facts {
-		if (m.Category == "bible" || f.Kind == kind) && !covered[f.ID] && len(missingFacts) < 12 {
+		if productionAssetFact(m, f.Kind) && !covered[f.ID] && len(missingFacts) < 12 {
 			missingFacts = append(missingFacts, f)
 		}
 	}
@@ -80,8 +110,21 @@ func productionValidateFacts(facts []workflowFact, source string) (string, error
 	return selectWorkflowFacts(string(body), source, "bible")
 }
 
-func productionNextAction(repo *repository.Repository, userID string, m productionManifest) (map[string]any, error) {
-	for _, source := range m.Sources {
+func productionNextAction(repo *repository.Repository, userID string, m productionManifest, runIDs ...string) (map[string]any, error) {
+	if m.Plan != nil && m.Plan.Version >= 2 && len(runIDs) > 0 {
+		return productionPlanRunNextAction(repo, userID, runIDs[0], m)
+	}
+	if m.Storyboard != nil {
+		return map[string]any{"tool": "production_storyboard_context", "arguments": map[string]any{}}, nil
+	}
+	sources := append([]productionSource{}, m.Sources...)
+	if m.Category == "reconcile" {
+		sort.SliceStable(sources, func(i, j int) bool { return sources[i].Step != "story.body" && sources[j].Step == "story.body" })
+	}
+	for _, source := range sources {
+		if source.OnDemand {
+			continue
+		}
 		for _, id := range source.Pages {
 			page, err := repo.ProductionAgentPage(userID, id)
 			if err != nil {
@@ -92,7 +135,10 @@ func productionNextAction(repo *repository.Repository, userID string, m producti
 			}
 		}
 	}
-	kind := map[string]string{"characters": "character", "environments": "environment", "props": "prop", "special": "special"}[m.Category]
+	if m.Plan != nil {
+		return map[string]any{"tool": "production_check", "arguments": map[string]any{}, "instruction": "根据缺项创作：先 production_submit 保存 story，再 production_plan_inventory 登记全剧资产清单，然后逐项 production_submit。已保存的用 production_query(assetKey) 读取后增补，不能只重复检查。"}, nil
+	}
+	kind := productionCategoryKind(m.Category)
 	facts, _, _, err := productionFacts(repo, userID, m)
 	if err != nil {
 		return nil, err
@@ -149,12 +195,18 @@ func (s *Service) productionRepairCall(userID, runID, taskID string) (cloudAgent
 	if err := json.Unmarshal([]byte(job.ManifestJSON), &manifest); err != nil {
 		return cloudAgentCall{}, err
 	}
-	next, err := productionNextAction(s.repo, userID, manifest)
+	next, err := productionNextAction(s.repo, userID, manifest, runID)
 	if err != nil {
 		return cloudAgentCall{}, err
 	}
 	call := cloudAgentCall{ID: "production-next-" + taskID}
 	call.Function.Name = next["tool"].(string)
+	// A repair probe may read/check, but cannot invent document bodies or submit
+	// an empty inventory on behalf of the model.
+	if call.Function.Name == "production_submit" || call.Function.Name == "production_plan_inventory" {
+		call.Function.Name = "production_status"
+		next["arguments"] = map[string]any{}
+	}
 	arguments, _ := json.Marshal(next["arguments"])
 	call.Function.Arguments = string(arguments)
 	return call, nil

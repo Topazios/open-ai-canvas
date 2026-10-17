@@ -17,13 +17,12 @@ type Options = {
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
     setConnections: Dispatch<SetStateAction<CanvasConnection[]>>;
     setSelectedNodeIds: Dispatch<SetStateAction<Set<string>>>;
-    enqueueGenerationBatch: (sourceNodeId: string, mode: CanvasGenerationBatchMode, targets: Array<{ rowId: string; nodeId: string }>, options?: { concurrency?: number }) => string | undefined;
+    enqueueGenerationBatch: (sourceNodeId: string, mode: CanvasGenerationBatchMode, targets: Array<{ rowId: string; nodeId: string }>) => string | undefined;
 };
 
 type PendingBatchGen = {
     nodeId: string;
     rows: CanvasBatchRow[];
-    concurrency: number;
     tableSnapshot: string;
     requestedRowIds?: string[];
 };
@@ -36,7 +35,7 @@ export function useCanvasBatchTable({ nodesRef, connectionsRef, setNodes, setCon
     const [batchGenDialog, setBatchGenDialog] = useState<{ open: boolean; pending: PendingBatchGen | null }>({ open: false, pending: null });
 
     const patchTable = useCallback((nodeId: string, patch: Partial<CanvasBatchTableData>) => {
-        setNodes((current) => current.map((node) => node.id !== nodeId ? node : { ...node, metadata: { ...node.metadata, batchTable: { operation: "try_on", concurrency: 10, rows: [], ...node.metadata?.batchTable, ...patch } } }));
+        setNodes((current) => current.map((node) => node.id !== nodeId ? node : { ...node, metadata: { ...node.metadata, batchTable: { operation: "try_on", rows: [], ...node.metadata?.batchTable, ...patch } } }));
     }, [setNodes]);
 
     const updateRow = useCallback((nodeId: string, rowId: string, patch: Partial<CanvasBatchRow>) => {
@@ -146,7 +145,7 @@ export function useCanvasBatchTable({ nodesRef, connectionsRef, setNodes, setCon
     }, [nodesRef, patchTable]);
 
     const executeBatchGeneration = useCallback((pending: PendingBatchGen, settings: BatchGenerationSettings) => {
-        const { nodeId, rows, concurrency } = pending;
+        const { nodeId, rows } = pending;
         const sourceNode = nodesRef.current.find((item) => item.id === nodeId);
         const table = sourceNode?.metadata?.batchTable;
         if (!sourceNode || !table) return;
@@ -213,7 +212,7 @@ export function useCanvasBatchTable({ nodesRef, connectionsRef, setNodes, setCon
         setNodes(nextNodes);
         setConnections(nextConnections);
         setSelectedNodeIds(new Set(targets.map((target) => target.nodeId)));
-        if (enqueueGenerationBatch(nodeId, "batch_image", targets, { concurrency })) message.success(`${targets.length} 个任务已加入并发队列`);
+        if (enqueueGenerationBatch(nodeId, "batch_image", targets)) message.success(`${targets.length} 个任务已加入并发队列`);
     }, [connectionsRef, effectiveConfig, enqueueGenerationBatch, isAiConfigReady, message, nodesRef, setConnections, setNodes, setSelectedNodeIds]);
 
     const generateRows = useCallback((nodeId: string, requestedRowIds?: string[]) => {
@@ -228,7 +227,7 @@ export function useCanvasBatchTable({ nodesRef, connectionsRef, setNodes, setCon
         const rows = batchGenerationRows(sourceNode, nodesRef.current, requestedRowIds);
         if (!rows.length) return message.info("没有可提交的未完成任务，请检查参考图和提示词");
 
-        setBatchGenDialog({ open: true, pending: { nodeId, rows, concurrency: table.concurrency, tableSnapshot: JSON.stringify(table), requestedRowIds } });
+        setBatchGenDialog({ open: true, pending: { nodeId, rows, tableSnapshot: JSON.stringify(table), requestedRowIds } });
     }, [effectiveConfig, isAiConfigReady, message, nodesRef]);
 
     const closeBatchGenDialog = useCallback(() => {
@@ -259,7 +258,6 @@ export function useCanvasBatchTable({ nodesRef, connectionsRef, setNodes, setCon
         updateRow,
         batchGenDialogOpen: batchGenDialog.open,
         batchGenDialogRowCount: batchGenDialog.pending?.rows.length ?? 0,
-        batchGenDialogConcurrency: batchGenDialog.pending?.concurrency ?? 1,
         batchGenDialogConfig: dialogConfig,
         closeBatchGenDialog,
         confirmBatchGenDialog,

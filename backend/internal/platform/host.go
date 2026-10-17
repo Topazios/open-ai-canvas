@@ -8,13 +8,12 @@ import (
 	"infinite-canvas/backend/internal/repository"
 )
 
-const TaskWorkerConcurrency = 8
+const TaskWorkerConcurrency = defaultWorkerConcurrency
 
 // Host 由组合根注入，避免 platform → app 回环。
 type Host interface {
 	RequireAdmin(user *model.User) error
 	AppendAudit(actor *model.User, action, targetType, targetID, summary string, metadata any) error
-	ChannelConcurrencyLimit(channelID string) (int, error)
 }
 
 type nopHost struct{}
@@ -22,9 +21,6 @@ type nopHost struct{}
 func (nopHost) RequireAdmin(*model.User) error { return nil }
 func (nopHost) AppendAudit(*model.User, string, string, string, string, any) error {
 	return nil
-}
-func (nopHost) ChannelConcurrencyLimit(string) (int, error) {
-	return 0, nil
 }
 
 type Service struct {

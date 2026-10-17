@@ -1,6 +1,7 @@
 import { getActiveUserScope } from "@/lib/user-scope";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { http, apiBaseURL, ApiError } from "@/services/api/request";
+import { withRuntimeConcurrency } from "@/services/runtime-limits";
 import type { OSSConnectionTestInput, OSSConnectionTestResult, OSSProvider, S3Preset } from "@/lib/oss-settings";
 
 export type RemoteResource = {
@@ -179,6 +180,8 @@ let accessGeneration = 0;
  */
 export function clearResourceAccessCache() {
     accessGeneration += 1;
+    for (const download of blobDownloads.values()) download.controller.abort();
+    blobDownloads.clear();
     accessCache.clear();
     accessRequests.clear();
     resourceCache.clear();
@@ -243,7 +246,11 @@ export function isResourceUrl(url?: string) {
 const CHUNK_UPLOAD_THRESHOLD = 50 << 20;
 const CHUNK_UPLOAD_RETRIES = 2;
 
-export async function uploadResourceFile(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: ResourceUploadMeta, onProgress?: (uploadedBytes: number, totalBytes: number) => void): Promise<RemoteResource> {
+export function uploadResourceFile(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: ResourceUploadMeta, onProgress?: (uploadedBytes: number, totalBytes: number) => void): Promise<RemoteResource> {
+    return withRuntimeConcurrency("upload", () => uploadResourceFileInSlot(file, kind, meta, onProgress));
+}
+
+async function uploadResourceFileInSlot(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: ResourceUploadMeta, onProgress?: (uploadedBytes: number, totalBytes: number) => void): Promise<RemoteResource> {
     const name = meta?.fileName || (file instanceof File ? file.name : `${kind}.${extensionFromMime(file.type, kind)}`);
     // 分片与 multipart 两条路径的失败都要归一成 ResourceUploadError，
     // 否则调用方只能靠文案猜测该重试还是该报错。
@@ -497,18 +504,61 @@ export function playbackVariantUrl(id: string) {
     return `${base}/resources/${encodeURIComponent(id)}/file?variant=playback`;
 }
 
-export async function getResourceBlob(storageKey: string) {
+export async function getResourceBlob(storageKey: string, signal?: AbortSignal) {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) return null;
-    const access = await getResourceAccess(storageKey, "browser-process");
+    if (signal?.aborted) throw new DOMException("已取消", "AbortError");
+    const key = `${getActiveUserScope()}:${id}`;
+    let shared = blobDownloads.get(key);
+    if (!shared) {
+        const controller = new AbortController();
+        shared = { controller, consumers: 0, promise: withRuntimeConcurrency("resourceDownload", () => downloadResourceBlob(storageKey, controller.signal), controller.signal) };
+        blobDownloads.set(key, shared);
+        const current = shared;
+        void shared.promise.finally(() => { if (blobDownloads.get(key) === current) blobDownloads.delete(key); }).catch(() => {});
+    }
+    const current = shared;
+    current.consumers++;
+    return new Promise<Blob>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: unknown, blob?: Blob) => {
+            if (settled) return;
+            settled = true;
+            signal?.removeEventListener("abort", abort);
+            current.consumers--;
+            if (!current.consumers) {
+                if (blobDownloads.get(key) === current) blobDownloads.delete(key);
+                current.controller.abort();
+            }
+            if (blob) resolve(blob); else reject(error);
+        };
+        const abort = () => finish(new DOMException("已取消", "AbortError"));
+        signal?.addEventListener("abort", abort, { once: true });
+        current.promise.then((blob) => finish(undefined, blob), (error) => finish(error));
+    });
+}
+
+const blobDownloads = new Map<string, { controller: AbortController; consumers: number; promise: Promise<Blob> }>();
+
+async function downloadResourceBlob(storageKey: string, signal?: AbortSignal) {
+    const access = await abortableResourceRead(getResourceAccess(storageKey, "browser-process"), signal);
     // CDN/origin URLs carry their own authorization and must not receive the
     // application session cookie. Local/proxy delivery is intentionally
     // session-bound, so a Blob read must include it even when the URL is
     // relative to the platform origin.
     const credentials = access.delivery === "platform-local" || access.delivery === "platform-proxy" ? "include" : "omit";
-    const response = await fetch(resolveResourceAccessURL(access.url), { credentials, mode: "cors" });
+    const response = await fetch(resolveResourceAccessURL(access.url), { credentials, mode: "cors", signal });
     if (!response.ok) throw new Error(`资源读取失败（${response.status}）`);
     return response.blob();
+}
+
+function abortableResourceRead<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const abort = () => reject(new DOMException("已取消", "AbortError"));
+        signal?.addEventListener("abort", abort, { once: true });
+        request.then(resolve, reject).finally(() => signal?.removeEventListener("abort", abort));
+        if (signal?.aborted) { signal.removeEventListener("abort", abort); abort(); }
+    });
 }
 
 function extensionFromMime(mimeType: string, kind: string) {

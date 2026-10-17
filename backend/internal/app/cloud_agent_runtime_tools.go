@@ -136,6 +136,9 @@ func cloudAgentToolResult(runID string, state *cloudAgentRuntime, call cloudAgen
 			payload["result"] = receipt
 		}
 	}
+	if state.Request.Production != nil && strings.HasPrefix(call.Function.Name, "production_") {
+		productionCompactToolJournal(call, result, payload)
+	}
 	state.event(runID, kind, payload)
 	state.Canonical.Messages = append(state.Canonical.Messages, map[string]any{"role": "tool", "tool_call_id": call.ID, "content": string(raw)})
 	state.CallIndex++

@@ -661,7 +661,7 @@ func channelModelPriceTierForBilling(channelModel model.ChannelModel, priceTierI
 	if priceTierID != "" {
 		for index := range channelModel.PriceTiers {
 			tier := &channelModel.PriceTiers[index]
-			if tier.ID == priceTierID && tier.Enabled && tier.PriceConfigured {
+			if tier.ID == priceTierID && ValidatePriceTierPrice(tier, channelModel.Capability, channelModel.Protocol) {
 				return tier
 			}
 		}

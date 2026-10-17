@@ -84,10 +84,6 @@ func batchTableNodeFromDocument(doc map[string]any, nodeID string) (map[string]a
 		if operation != "try_on" && operation != "creative" {
 			return nil, nil, nil, nil, BadAuthRequest("批量创作表包含无效的任务类型")
 		}
-		concurrency, ok := cloudAgentInteger(table["concurrency"])
-		if !ok || !cloudAgentBatchConcurrencyAllowed(concurrency) {
-			return nil, nil, nil, nil, BadAuthRequest("批量创作表包含无效的并发数")
-		}
 		if rawPrompt, exists := table["globalPrompt"]; exists {
 			globalPrompt, ok := rawPrompt.(string)
 			if !ok || utf8.RuneCountInString(globalPrompt) > maxCloudAgentBatchPromptRunes {
@@ -189,7 +185,10 @@ func prepareCloudAgentBatchTableEdit(repo *repository.Repository, userID, canvas
 	if err := validateCloudAgentID(args.NodeID, "批量创作表节点ID", 80); err != nil {
 		return nil, err
 	}
-	allowedActions := map[string]bool{"append": true, "update": true, "remove": true, "set_operation": true, "set_concurrency": true, "add_reference_column": true, "remove_reference_column": true, "set_global_prompt": true}
+	if args.Action == "set_concurrency" || args.Concurrency != 0 {
+		return nil, BadAuthRequest("并发数统一由系统全局策略管理，不能在批量创作表中单独设置")
+	}
+	allowedActions := map[string]bool{"append": true, "update": true, "remove": true, "set_operation": true, "add_reference_column": true, "remove_reference_column": true, "set_global_prompt": true}
 	if !allowedActions[args.Action] {
 		return nil, BadAuthRequest("批量创作表操作无效")
 	}
@@ -288,15 +287,6 @@ func prepareCloudAgentBatchTableEdit(repo *repository.Repository, userID, canvas
 		}
 		table["operation"] = args.Operation
 		fields = []string{"任务类型"}
-	case "set_concurrency":
-		if !cloudAgentBatchConcurrencyAllowed(args.Concurrency) {
-			return nil, BadAuthRequest("并发数必须是 1、5 或 10")
-		}
-		if args.RowID != "" || len(args.Patch) != 0 || args.Operation != "" {
-			return nil, BadAuthRequest("设置并发数不接受行级修改参数")
-		}
-		table["concurrency"] = float64(args.Concurrency)
-		fields = []string{"并发数"}
 	case "add_reference_column":
 		if len(columns) >= maxCloudAgentBatchReferences {
 			return nil, BadAuthRequest("批量创作表最多支持10组参考图")
@@ -386,10 +376,6 @@ func validateCloudAgentBatchRowPatch(doc map[string]any, input map[string]any, m
 	}
 	sort.Strings(labels)
 	return patch, labels, nil
-}
-
-func cloudAgentBatchConcurrencyAllowed(value int) bool {
-	return value == 1 || value == 5 || value == 10
 }
 
 func applyCloudAgentBatchTableMutation(repo *repository.Repository, userID, canvasID string, call cloudAgentCall, policy RuntimePolicySetting, recorder ...cloudAgentMutationRecorder) (any, error) {

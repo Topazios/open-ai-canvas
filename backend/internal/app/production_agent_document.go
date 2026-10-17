@@ -7,6 +7,15 @@ import (
 type productionDocumentSection struct{ Key, Title string }
 
 func productionDocumentSections(category, key string) []productionDocumentSection {
+	if category == "plan" {
+		if key == "story" {
+			return []productionDocumentSection{{"facts", "选题依据与制作体量"}, {"design", "故事总纲与篇章规划"}, {"continuity", "伏笔回收与制作基准"}, {"uncertainties", "创作设计与未定事项"}}
+		}
+		if section, ok := planSection(key); ok {
+			return []productionDocumentSection{{"facts", "选题与项目约束"}, {"design", section.Title}, {"sound", "声音与表演约束"}, {"prompt", "共用制作描述"}, {"negativePrompt", "禁止变化"}, {"continuity", "连续性规则"}, {"uncertainties", "创作设计与未定事项"}}
+		}
+		return []productionDocumentSection{{"facts", "资产身份与预计出场"}, {"design", "性格功能与固定设定"}, {"variants", "计划状态变体"}, {"sound", "声音设计"}, {"prompt", "制作描述与提示词"}, {"negativePrompt", "禁止变化"}, {"continuity", "跨集应用规则"}, {"uncertainties", "创作设计与未定事项"}}
+	}
 	if category == "bible" && key == "settings" {
 		return []productionDocumentSection{{"facts", "正文设定依据"}, {"design", "统一故事设定"}, {"continuity", "连续性规则"}, {"uncertainties", "冲突与设计说明"}}
 	}
@@ -24,7 +33,7 @@ func productionDocumentSections(category, key string) []productionDocumentSectio
 		}
 		return append(fields, productionDocumentSection{"continuity", "连续性规则"}, productionDocumentSection{"uncertainties", "冲突与设计说明"})
 	}
-	sound := map[string]string{"characters": "角色声音", "environments": "环境声音", "props": "道具声音", "special": "标志声音"}[category]
+	sound := map[string]string{"characters": "角色声音", "environments": "环境声音", "props": "道具声音", "special": "标志声音", "reconcile": "声音设计与应用", "voices": "声音设计"}[category]
 	return []productionDocumentSection{{"facts", "身份与正文依据"}, {"design", "固定特征与制作设计"}, {"variants", "状态变体"}, {"sound", sound}, {"prompt", "生成提示词"}, {"negativePrompt", "负面约束"}, {"continuity", "跨集连续性"}, {"uncertainties", "冲突与设计说明"}}
 }
 

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Segmented, Tooltip } from "antd";
-import { Pause, Play, Square, RefreshCw, ChevronRight, Check, CircleAlert, Wrench, SlidersHorizontal } from "lucide-react";
-import { AIMessageMarkdown } from "@/components/ai/ai-message-markdown";
+import { Button, Tooltip } from "antd";
+import { Pause, Play, Square, RefreshCw, ChevronRight, SlidersHorizontal } from "lucide-react";
+import { CanvasExecutionJournal } from "./canvas-execution-journal";
 import { getAgentRun, type AgentEvent } from "@/services/api/agent";
 import { mergeProductionEvents, productionJournalRows } from "@/lib/canvas/production-agent-journal";
+import { productionPlanPhaseLabels } from "@/lib/production-plan";
 import type { CanvasNodeData } from "@/types/canvas";
 import type { useProductionAgentRuns } from "./use-production-agent-runs";
 
@@ -30,12 +31,17 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
     }, [runId]);
     useEffect(() => { if (run?.events) setEvents((current) => mergeProductionEvents(current, run.events!.filter((event) => event.runId === runId))); }, [run?.events, runId]);
     const progress = run?.production;
+    const planPhaseLabel = progress?.phaseLabel?.trim() || (progress?.phase && productionPlanPhaseLabels[progress.phase]) || "制作方案";
+    const planCurrentItem = progress?.currentItem?.trim();
+    const planCount = progress?.documentTotal
+        ? `方案文档 ${progress.documentCount || 0}/${progress.documentTotal} · 资产 ${progress.assetCount || 0}${progress.inventoryComplete ? `/${progress.assetTotal || 0}` : " · 清单登记中"}`
+        : `已保存 ${progress?.processedPages || 0}${progress?.inventoryComplete && progress.totalPages > 0 ? `/${progress.totalPages}` : ""} 份`;
     const active = run?.status === "running" || run?.status === "queued";
     const label = !run ? runId ? "正在核对后台状态" : "提交待确认"
         : progress?.paused ? progress.waitingForBoundary ? "等待当前模型响应后暂停" : "已暂停"
         : run.status === "failed" ? "待恢复"
         : run.status === "completed" ? "已完成 · 待人工验收"
-        : active && progress?.waitingForSharedFacts ? "等待共享正文提取"
+        : active && progress?.waitingForSharedFacts ? progress.workKind === "storyboard" ? "等待共享制作约束" : "等待共享正文提取"
         : active ? "后台执行中" : "已停止";
     const error = state.nodeErrors[node.id] || run?.failureMessage || (!run ? node.metadata?.errorDetails : "");
     const rows = useMemo(() => {
@@ -61,7 +67,8 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
     return <section className="canvas-node-inspector-section production-agent-details" aria-label="制作任务执行记录" data-canvas-no-zoom data-canvas-wheel-scroll>
         <div className="production-agent-overview">
             <div className="production-agent-heading"><strong>{node.title || "制作任务"}</strong><span className="production-agent-status" role="status">{label}</span></div>
-            {run ? <div className="production-agent-note">已解析 {progress?.processedPages || 0}/{progress?.totalPages || 0} 集正文 · 已产出 {progress?.artifactCount || 0} 项</div> : <div>{runId ? "正在读取该节点的任务记录" : "尚未取得后台任务回执，可继续提交并核对原任务。"}</div>}
+            {run ? <div className="production-agent-note">{progress?.workKind === "plan" ? `${planCount} · ${planPhaseLabel}${!progress.concurrentItems?.length && planCurrentItem && planCurrentItem !== planPhaseLabel ? ` · ${planCurrentItem}` : ""}` : progress?.workKind === "storyboard" ? `已完成 ${progress.processedPages}/${progress.totalPages} 场 · 已保存 ${progress.artifactCount} 镜头` : `已解析 ${progress?.processedPages || 0}/${progress?.totalPages || 0} 集正文 · 已产出 ${progress?.artifactCount || 0} 项`}</div> : <div>{runId ? "正在读取该节点的任务记录" : "尚未取得后台任务回执，可继续提交并核对原任务。"}</div>}
+            {!!progress?.concurrentItems?.length && <div className="production-agent-note" role="status">{progress.paused ? "收尾中" : "并行制作"} {progress.concurrentItems.length}/{progress.concurrencyLimit ?? "--"} · {progress.concurrentItems.join("、")}</div>}
         </div>
         {error && <div className="production-agent-error" role="alert">{error}</div>}
         {state.readErrors[node.id] && <div role="alert">状态核对失败：{state.readErrors[node.id]}</div>}
@@ -79,18 +86,9 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
                 <div className="production-agent-prompt"><dt>提示词</dt><dd>{agent?.request?.prompt || node.metadata?.prompt || "未记录"}</dd></div>
             </dl>
         </details>
-        <div className="production-agent-journal-heading"><strong>执行记录</strong><Segmented aria-label="执行记录排序" size="small" value={order} onChange={(value) => setOrder(value as "desc" | "asc")} options={[{ label: "最新在前", value: "desc" }, { label: "最早在前", value: "asc" }]} /></div>
+        <CanvasExecutionJournal rows={rows} order={order} onOrder={setOrder} empty={runId ? "暂无关键进展记录" : "尚未调度模型"}>
         {runId && !earliest && (events[0]?.seq || 0) > 1 && <Button className="production-agent-history" size="small" type="text" loading={loading} onClick={() => void loadEarlier()}>加载更早记录</Button>}
         {historyError && <div role="alert">{historyError}<Button loading={loading} onClick={() => void loadEarlier()}>重试读取记录</Button></div>}
-        <div className="production-agent-journal" aria-label="逐次执行记录">
-            {rows.length === 0 ? <p className="production-agent-note">{runId ? "暂无关键进展记录" : "尚未调度模型"}</p> : rows.map((row) => row.kind === "message" ? <div className="production-agent-commentary" key={`${runId}:${row.id}`} data-event-seq={row.id}>
-                <AIMessageMarkdown components={{ pre: ({ children }) => <pre>{children}</pre>, table: ({ children }) => <table>{children}</table>, img: ({ alt }) => <span>{alt}</span> }}>{row.detail}</AIMessageMarkdown>
-            </div> : row.detail === row.title || !row.detail ? <div className="production-agent-event" key={`${runId}:${row.id}`} data-event-seq={row.id}>
-                <div className="production-agent-event-line"><Check size={14} /><span>{row.title}</span><time dateTime={row.time}>{new Date(row.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>
-            </div> : <details className={`production-agent-event${row.failed ? " production-agent-error" : ""}`} key={`${runId}:${row.id}`} data-event-seq={row.id}>
-                <summary>{row.failed ? <CircleAlert size={14} /> : row.kind === "tool" ? <Wrench size={14} /> : <Check size={14} />}<span>{row.title}</span><time dateTime={row.time} title={new Date(row.time).toLocaleString()}>{new Date(row.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><ChevronRight size={14} className="production-agent-chevron" /></summary>
-                <div className="production-agent-event-detail">{row.detail || "本条记录没有附加说明"}</div>
-            </details>)}
-        </div>
+        </CanvasExecutionJournal>
     </section>;
 }

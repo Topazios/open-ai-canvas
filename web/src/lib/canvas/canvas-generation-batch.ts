@@ -1,4 +1,30 @@
-import type { CanvasGenerationBatch, CanvasGenerationBatchStatus } from "@/types/canvas";
+import type { CanvasGenerationBatch, CanvasGenerationBatchStatus, CanvasGenerationBatchItem, CanvasNodeData } from "@/types/canvas";
+import { availableTaskSlots } from "@/lib/task-concurrency";
+import type { RuntimeLimits, RuntimeConcurrency } from "@/stores/use-user-store";
+
+export function generationBatchCandidates(nodes: CanvasNodeData[], projectId: string, limits: RuntimeLimits & { concurrency: RuntimeConcurrency }, tasks: Array<{ type: string; operation?: string; status: string }>, pending: { image: number; video: number }) {
+    const capacity = (kind: "image" | "video") => availableTaskSlots(limits.activeTaskLimit > 0 ? Math.min(limits.activeTaskLimit, limits.concurrency[kind]) : limits.concurrency[kind], kind, tasks, pending[kind]);
+    const slots = { image: capacity("image"), video: capacity("video") };
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const candidates: Array<{ batch: CanvasGenerationBatch; item: CanvasGenerationBatchItem; node: CanvasNodeData }> = [];
+    const selected = new Set<string>();
+    for (const source of nodes) {
+        for (const batch of source.metadata?.generationBatches || []) {
+            if (batch.projectId !== projectId || batch.status === "completed" || batch.status === "cancelled") continue;
+            const kind = batch.mode === "storyboard_video" ? "video" : "image";
+            for (const item of batch.items) {
+                if (item.status !== "waiting" || slots[kind] <= 0 || selected.has(item.nodeId)) continue;
+                const node = nodeById.get(item.nodeId);
+                // A persisted task/result must be reconciled, never submitted again.
+                if (!node || node.metadata?.taskId || (node.metadata?.status === "success" && node.metadata.content)) continue;
+                candidates.push({ batch, item, node });
+                selected.add(item.nodeId);
+                slots[kind]--;
+            }
+        }
+    }
+    return candidates;
+}
 
 const TASK_CAPACITY_MESSAGE = /同时排队或运行的任务最多 \d+ 个/;
 

@@ -1,15 +1,18 @@
 import { CanvasWorkspacePanel } from "@/components/canvas/canvas-workspace-panel";
+import { CanvasGlobalSettingsDialog } from "@/components/canvas/canvas-global-settings-dialog";
+import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { layoutWorkflowImageGroups } from "@/lib/canvas/canvas-workflow-image-layout";
 import { assetReferenceStep } from "@/lib/asset-reference-sheet";
 import { CanvasProjectAssociation } from "./canvas-project-association";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { createCanvasStateWriter } from "@/lib/canvas/canvas-editor-state";
+import { layoutCanvasGridGroups } from "@/lib/canvas/canvas-group-grid";
 import { canCancelGenerationTask } from "@/lib/generation-task-display";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router";
-import { loadAssetsForUse } from "@/services/user-data-sync";
+import { loadAssetsForUse, saveCanvasGlobalSettingsWithRemoteSync } from "@/services/user-data-sync";
 import { canvasAssetHandoffIds } from "@/lib/canvas/canvas-asset-handoff";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { createCanvasGenerationLiveProjectAdapter, registerCanvasGenerationLiveProject } from "@/services/canvas-generation-consumer";
@@ -47,6 +50,10 @@ import { WorkspaceState } from "@/components/layout/workspace-state";
 import { resolveProjectCanvasStyle } from "@/components/canvas/canvas-style-picker-modal";
 import { createStyleProfileSnapshot, resolveStyleProfile, serializeStyleProfile } from "@/lib/canvas/style-profile";
 import { CanvasNodeToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-toolbar";
+import { CanvasWorkflowTaskDetails } from "./canvas-workflow-task-details";
+import { CanvasGroupTaskDetails } from "./canvas-group-task-details";
+import { groupSessionOwner } from "@/lib/canvas/canvas-group-session";
+import { CanvasGenerationTaskDetails } from "./canvas-generation-task-details";
 import { emptyWorkflowAssetManifest } from "@/lib/canvas/canvas-workflow-assets";
 import { CanvasSubtitleDialog } from "@/components/canvas/canvas-subtitle-dialog";
 import { CanvasVideoFrameDialog } from "@/components/canvas/canvas-video-frame-dialog";
@@ -58,6 +65,7 @@ import { CanvasNodeLightingPanel } from "@/components/canvas/canvas-node-lightin
 import { CanvasTextEditorModal } from "@/components/canvas/canvas-text-editor-modal";
 import { CanvasStoryDevelopmentEditor } from "@/components/canvas/canvas-story-development-editor";
 import { CanvasWorkflowGenerator, type WorkflowGeneratorTarget } from "@/components/canvas/canvas-workflow-generator";
+import { workflowAssetActions, workflowAssetRevisionMembers } from "@/lib/canvas/canvas-workflow-asset-actions";
 import { CanvasWorkflowAssetReview } from "./canvas-workflow-asset-review";
 import { nodeWorkflow, workflowSignature, workflowGroupingProblem } from "@/lib/canvas/canvas-short-drama-workflow";
 import { nextShortDramaSteps, shortDramaStep, ShortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
@@ -236,6 +244,7 @@ function InfiniteCanvasPage() {
     const params = useParams<{ id: string }>();
     const [searchParams, setSearchParams] = useSearchParams();
     const projectId = params.id || "";
+    const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false);
     const canvasStorageScope = getActiveUserScope();
     const containerRef = useRef<HTMLDivElement>(null);
     const editingNodeId = useCanvasEditorFocus(projectId, containerRef);
@@ -257,7 +266,7 @@ function InfiniteCanvasPage() {
     const directorOnboardingScope = useUserStore((state) => state.user?.id?.trim() || "");
     const nodesRef = useRef<CanvasNodeData[]>([]);
     const [nodes, setNodesState] = useState<CanvasNodeData[]>([]);
-    const setNodes = useMemo(() => createCanvasStateWriter(nodesRef, setNodesState, stampCanvasNodeChanges), []);
+    const setNodes = useMemo(() => createCanvasStateWriter(nodesRef, setNodesState, (before, after) => stampCanvasNodeChanges(before, layoutCanvasGridGroups(after))), []);
     const [nodeStackOrder, setNodeStackOrder] = useState<CanvasNodeStackOrder>([]);
     const bringNodeToFront = useCallback((nodeId: string) => {
         setNodeStackOrder((current) => bringCanvasNodeToFront(current, nodeId));
@@ -550,7 +559,7 @@ function InfiniteCanvasPage() {
     // 取上游复用 canvas-resource-references 的实现，别在这里另写一份。必须 memo——
     // 每帧新对象会让所有节点跟着重渲染，错题本里多条崩溃都出在画布高频更新。
 
-    const { applyGenerationTaskResult, bindGenerationTask, finishGenerationRequest, openNodeTaskDetails, runningNodeId, setRunningNodeId, setTaskDetail, startGenerationRequest, taskDetail, taskDetailLoading, taskDetailLogs } = useCanvasGeneration({
+    const { applyGenerationTaskResult, bindGenerationTask, finishGenerationRequest, runningNodeId, setRunningNodeId, setTaskDetail, startGenerationRequest, taskDetail, taskDetailLoading, taskDetailLogs } = useCanvasGeneration({
         projectId,
         domainProjectId: linkedProjectId,
         projectLoaded,
@@ -1242,6 +1251,7 @@ function InfiniteCanvasPage() {
         handleNodeContentChange,
         handleNodePromptChange,
         handleNodeResize,
+        handleFrameResizeGesture,
         handleNodeTitleChange,
         openingBatchIds,
         saveNodeAsset,
@@ -1254,6 +1264,7 @@ function InfiniteCanvasPage() {
         canvasTitle: currentProject?.title || "未命名画布",
         domainProjectId: linkedProjectId,
         nodesRef,
+        historyPausedRef,
         setNodes,
         setSelectedNodeIds,
         setSelectedConnectionId,
@@ -1401,7 +1412,7 @@ function InfiniteCanvasPage() {
         cropNode,
         displayConnections,
         frameChildrenById,
-        infoNode,
+        infoNode: rawInfoNode,
         maskEditNode,
         imageEditNode,
         mentionReferencesByNodeId,
@@ -1944,7 +1955,6 @@ function InfiniteCanvasPage() {
         addReferenceColumn: addBatchReferenceColumn,
         addRow: addBatchRow,
         batchGenDialogConfig,
-        batchGenDialogConcurrency,
         batchGenDialogOpen,
         batchGenDialogRowCount,
         closeBatchGenDialog,
@@ -2089,75 +2099,11 @@ function InfiniteCanvasPage() {
         setNodes(nextNodes);
         setConnections(nextConnections);
         setSelectedNodeIds(new Set(targets.map(({ node }) => node.id)));
-        enqueueGenerationBatch(sourceNode.id, "batch_image", targets.map(({ item, node }) => ({ rowId: item.id, nodeId: node.id })), { concurrency: settings.concurrency });
+        enqueueGenerationBatch(sourceNode.id, "batch_image", targets.map(({ item, node }) => ({ rowId: item.id, nodeId: node.id })));
         setTextBatchSourceNodeId(null);
         message.success(`已创建 ${targets.length} 个角色/场景图片任务`);
     }, [effectiveConfig, enqueueGenerationBatch, isAiConfigReady, message, nodesRef, setConnections, setNodes, setSelectedNodeIds, textBatchSourceNodeId]);
 
-    // 资产组内的节点不可按各自原图比例变化，统一使用同一网格单元，避免组内卡片大小不一致。
-    useEffect(() => {
-        if (!projectLoaded) return;
-        setNodes((current) => {
-            const childUpdates = new Map<string, CanvasNodeData>();
-            const frameUpdates = new Map<string, CanvasNodeData>();
-            current.forEach((frame) => {
-                if (frame.type !== CanvasNodeType.Frame || frame.metadata?.workflowKind !== "reference_set" || frame.metadata?.frame?.collapsed) return;
-                const children = (frame.metadata.referenceAssetNodeIds || [])
-                    .map((id) => current.find((node) => node.id === id && node.parentId === frame.id))
-                    .filter((node): node is CanvasNodeData => Boolean(node));
-                const remainingChildren = current.filter((node) => node.parentId === frame.id && !children.some((child) => child.id === node.id));
-                children.push(...remainingChildren);
-                if (!children.length) return;
-
-                const columns = Math.min(REFERENCE_ASSET_GRID_COLUMNS, children.length);
-                const requestedCellSize = children
-                    .map((node) => node.metadata?.size ? nodeSizeFromRatio(node.metadata.size, NODE_DEFAULT_SIZE[CanvasNodeType.Image].width, NODE_DEFAULT_SIZE[CanvasNodeType.Image].height) : null)
-                    .find((size): size is { width: number; height: number } => Boolean(size));
-                const cellWidth = requestedCellSize?.width || Math.max(...children.map((node) => node.width));
-                const cellHeight = requestedCellSize?.height || Math.max(...children.map((node) => node.height));
-                const rows = Math.ceil(children.length / columns);
-                const width = REFERENCE_ASSET_GRID_PADDING * 2 + columns * cellWidth + Math.max(0, columns - 1) * REFERENCE_ASSET_GRID_GAP;
-                const height = FRAME_HEADER_HEIGHT + REFERENCE_ASSET_GRID_PADDING * 2 + rows * cellHeight + Math.max(0, rows - 1) * REFERENCE_ASSET_GRID_GAP;
-                children.forEach((node, index) => {
-                    const nextNode = {
-                        ...node,
-                        width: cellWidth,
-                        height: cellHeight,
-                        position: {
-                            x: frame.position.x + REFERENCE_ASSET_GRID_PADDING + (index % columns) * (cellWidth + REFERENCE_ASSET_GRID_GAP),
-                            y: frame.position.y + FRAME_HEADER_HEIGHT + REFERENCE_ASSET_GRID_PADDING + Math.floor(index / columns) * (cellHeight + REFERENCE_ASSET_GRID_GAP),
-                        },
-                        metadata: { ...node.metadata, manualSize: true },
-                    };
-                    if (
-                        node.width !== nextNode.width
-                        || node.height !== nextNode.height
-                        || node.position.x !== nextNode.position.x
-                        || node.position.y !== nextNode.position.y
-                        || node.metadata?.manualSize !== true
-                    ) {
-                        childUpdates.set(node.id, nextNode);
-                    }
-                });
-                if (frame.width === width && frame.height === height) return;
-                frameUpdates.set(frame.id, {
-                    ...frame,
-                    width,
-                    height,
-                    metadata: {
-                        ...frame.metadata,
-                        frame: { collapsed: false, expandedWidth: width, expandedHeight: height },
-                    },
-                });
-            });
-            if (!childUpdates.size && !frameUpdates.size) return current;
-            return current.map((node) => {
-                const frame = frameUpdates.get(node.id);
-                if (frame) return frame;
-                return childUpdates.get(node.id) || node;
-            });
-        });
-    }, [nodes, projectLoaded, setNodes]);
 
     useEffect(() => {
         if (!projectLoaded) return;
@@ -2638,6 +2584,7 @@ function InfiniteCanvasPage() {
     );
     const retryCanvasNode = useCallback(
         (node: CanvasNodeData, options?: CanvasNodeRetryOptions) => {
+            if (node.metadata?.shortDrama?.submission === "planned") { setInfoNodeId(node.id); return; }
             if (node.metadata?.shortDrama?.productionAgent) { setInfoNodeId(node.id); return; }
             if (node.type === CanvasNodeType.Script) {
                 const prompt = (node.metadata?.composerContent || node.metadata?.prompt || "").trim();
@@ -2666,12 +2613,10 @@ function InfiniteCanvasPage() {
         },
         [generateScriptRows, handleRetryNode, message, nodesRef, retryImageBatchChildren],
     );
+    const infoNode = groupSessionOwner(rawInfoNode, nodes);
     const openCanvasNodeTaskDetails = useCallback(
-        (node: CanvasNodeData) => {
-            if (node.metadata?.shortDrama?.productionAgent) { setInfoNodeId(node.id); return; }
-            void openNodeTaskDetails(node);
-        },
-        [openNodeTaskDetails],
+        (node: CanvasNodeData) => setInfoNodeId(node.id),
+        [],
     );
     const openCanvasNodeVersions = useCallback((node: CanvasNodeData) => setVersionCompareRootId(node.metadata?.versionOfNodeId || node.id), []);
     const viewCanvasNodeImage = useCallback((node: CanvasNodeData) => setPreviewNodeId(node.id), []);
@@ -2786,6 +2731,7 @@ function InfiniteCanvasPage() {
                                 canUndo={historyState.canUndo}
                                 canRedo={historyState.canRedo}
                                 onCreateProject={createAndOpenProject}
+                                onOpenGlobalSettings={() => setGlobalSettingsOpen(true)}
                                 onDeleteProject={deleteCurrentProject}
                                 onSave={() => void saveCanvasProject()}
                                 onOpenProjectAssociation={shortDramaEnabled ? () => setProjectAssociationOpen(true) : undefined}
@@ -2833,7 +2779,7 @@ function InfiniteCanvasPage() {
                         />
 
                         {shortDramaGuide ? (
-                            <CanvasShortDramaGuide key={projectId} progress={shortDramaGuide.progress} collapsed={shortDramaGuide.collapsed} onToggle={shortDramaGuide.onToggle} onSkip={skipShortDramaGuide} onTaskClick={activateShortDramaTask} topInset={focusMode ? "var(--space-24)" : undefined} />
+                            <CanvasShortDramaGuide key={projectId} progress={shortDramaGuide.progress} collapsed={shortDramaGuide.collapsed} onToggle={shortDramaGuide.onToggle} onSkip={skipShortDramaGuide} onTaskClick={activateShortDramaTask} onOpenGlobalSettings={() => setGlobalSettingsOpen(true)} topInset={focusMode ? "var(--space-24)" : undefined} />
                         ) : null}
 
                         <CanvasShareModal projectId={projectId} open={shareModalOpen} onClose={() => setShareModalOpen(false)} beforeCreate={saveCanvasProject} />
@@ -2947,6 +2893,7 @@ function InfiniteCanvasPage() {
                                                 onNodeHoverEnd={handleCanvasNodeHoverEnd}
                                                 onConnectStart={handleConnectStart}
                                                 onNodeResize={handleNodeResize}
+                                                onFrameResizeGesture={handleFrameResizeGesture}
                                                 onToggleFrame={handleFrameToggle}
                                                 onFolderStyleChange={handleFolderStyleChange}
                                                 onFolderThemeChange={handleFolderThemeChange}
@@ -2969,10 +2916,11 @@ function InfiniteCanvasPage() {
                                     </CanvasNodeActionContext.Provider>
                                 </InfiniteCanvas>
 
-                                <CanvasActiveTaskPanel tasks={activeTasks} onCancelTask={cancelCanvasTask} topInset={focusMode ? "var(--space-3)" : "var(--canvas-topbar-offset)"} />
+                                <CanvasActiveTaskPanel tasks={activeTasks} nodes={nodes} onOpenNode={setInfoNodeId} onCancelTask={cancelCanvasTask} topInset={focusMode ? "var(--space-3)" : "var(--canvas-topbar-offset)"} />
 
                                 {focusMode ? (
                                     <CanvasFocusModeBar
+                                        onOpenGlobalSettings={() => setGlobalSettingsOpen(true)}
                                         onOpenProjectAssociation={shortDramaEnabled ? () => setProjectAssociationOpen(true) : undefined}
                                         shortDramaGuide={shortDramaGuide}
                                         syncStatus={<CanvasSyncStatus projectId={projectId} onLoadLatest={reloadLatestCanvasProject} onOpenVersions={openVersions} />}
@@ -3294,13 +3242,23 @@ function InfiniteCanvasPage() {
                                 }
                                 if (!data || !contextMenuNode) return [];
                                 const anchorId = contextMenuNode.id;
+                                const assetActions = workflowAssetActions(contextMenuNode);
+                                if (assetActions) {
+                                    let ready = true;
+                                    try { workflowAssetRevisionMembers(contextMenuNode, nodes); } catch { ready = false; }
+                                    return [
+                                        { label: "重做另一版", disabled: !ready || workflowGeneration.submitting, run: () => { setContextMenu(null); setWorkflowGenerator({ step: assetActions.step, pipelineId: data.pipelineId, anchorId, assetRevisionSourceId: anchorId }); } },
+                                        ...(assetActions.imageStep ? [{ label: "生图", disabled: workflowGeneration.submitting || (data.role !== "collection" && !ready), run: () => openWorkflowGenerator(assetActions.imageStep!, anchorId) }] : []),
+                                    ];
+                                }
                                 const stepDefinition = shortDramaStep(data.step);
                                 const emptyManifest = emptyWorkflowAssetManifest(nodes, anchorId);
                                 const bibleParent = nodes.find((node) => node.id === contextMenuNode.parentId && nodeWorkflow(node)?.assetGroup?.kind === "bible");
+                                const supportingDocument = data.role !== "collection" && Boolean(data.planSection || data.bibleSection || bibleParent || (data.step === ShortDramaStep.Plan && data.assetKey));
                                 return [
                                     ...(emptyManifest?.metadata?.taskId ? [{ label: "重新提取空资产分组", disabled: emptyManifest.metadata.status === "loading", run: () => retryCanvasNode(emptyManifest) }] : []),
                                     ...(data.assetGroup?.kind === "bible" || bibleParent ? [{ label: "查看制作规范", run: () => setAssetReviewId(bibleParent?.id || anchorId) }] : []),
-                                    ...(data.assetKey && data.assetKey !== "$summary" && !bibleParent ? [{ label: "资产资料与参考", run: () => setAssetReviewId(anchorId) }] : []),
+                                    ...(data.assetKey && data.assetKey !== "$summary" && !supportingDocument ? [{ label: "资产资料与参考", run: () => setAssetReviewId(anchorId) }] : []),
                                     ...(data.episodeNumber && !data.mediaKind && !contextMenuNode.parentId ? [{ label: "整理同源分集为容器", run: () => void workflowGeneration.groupEpisodes(anchorId) }] : []),
                                     ...(data.episodeNumber && !contextMenuNode.parentId ? nodes.filter((node) => node.type === CanvasNodeType.Frame && !workflowGroupingProblem([anchorId], nodes, node.id)).map((node) => ({ label: `加入容器：${node.title}`, run: () => groupSelection([anchorId], node.id) })) : []),
                                     ...(data.role === "collection" && nodes.some((node) => data.sourceNodeIds.includes(node.id) && node.metadata?.shortDrama?.submission === "planned") ? [{ label: "继续提交未开始的任务", disabled: workflowGeneration.submitting, run: () => void workflowGeneration.resume(anchorId) }] : []),
@@ -3309,9 +3267,9 @@ function InfiniteCanvasPage() {
                                     ...(data.role === "collection" && !data.assetGroup && !data.mediaGroup && data.step !== ShortDramaStep.Body && data.step !== ShortDramaStep.Extract ? [{ label: "汇总分集文稿", run: () => setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId, aggregate: true }) }] : []),
                                     ...(data.assetGroup ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => openWorkflowGenerator(data.step, anchorId) }] : []),
                                     ...(data.submission === "planned" ? [{ label: "继续提交此节点", disabled: workflowGeneration.submitting, run: () => void workflowGeneration.resume(anchorId) }] : []),
-                                    ...(data.step !== ShortDramaStep.Topic && data.role !== "collection" && !bibleParent ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => data.aggregate ? setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId: data.sourceNodeIds[0], aggregate: true }) : openWorkflowGenerator(data.step, anchorId) }] : []),
+                                    ...(data.step !== ShortDramaStep.Topic && data.role !== "collection" && !supportingDocument ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => data.aggregate ? setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId: data.sourceNodeIds[0], aggregate: true }) : openWorkflowGenerator(data.step, anchorId) }] : []),
                                     ...(stepDefinition?.mediaOutput === "image" && contextMenuNode.type === CanvasNodeType.Text && data.role !== "collection" && Boolean(contextMenuNode.metadata?.content?.trim()) ? [{ label: stepDefinition.mediaActionLabel || "根据当前资产生成图片", disabled: contextMenuNode.metadata?.status === "loading", run: () => generateImageFromTextNode(contextMenuNode) }] : []),
-                                    ...nextShortDramaSteps(bibleParent ? ShortDramaStep.Bible : data.step).map((step) => ({ label: `下一步：${step.label}`, disabled: data.role !== "collection" && (!contextMenuNode.metadata?.content?.trim() || contextMenuNode.metadata?.status === "loading" || contextMenuNode.metadata?.status === "error"), run: () => openWorkflowGenerator(step.id, bibleParent?.id || anchorId) })),
+                                    ...(supportingDocument ? [] : nextShortDramaSteps(data.step)).map((step) => ({ label: `下一步：${step.label}`, disabled: data.role !== "collection" && (!contextMenuNode.metadata?.content?.trim() || contextMenuNode.metadata?.status === "loading" || contextMenuNode.metadata?.status === "error"), run: () => openWorkflowGenerator(step.id, anchorId) })),
                                 ];
                             })()}
                             workspaceMode={workspaceMode}
@@ -3365,7 +3323,10 @@ function InfiniteCanvasPage() {
                         <input ref={imageInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
 
                         <CanvasNodeInfoModal key={`${infoNode?.id}:${infoNode?.metadata?.shortDrama?.productionAgent?.runId || "pending"}`} node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} onMetadataChange={handleConfigNodeChange}>
-                            {infoNode?.metadata?.shortDrama?.productionAgent && <CanvasProductionAgentDetails key={infoNode.id} node={infoNode} state={productionAgentRuns} />}
+                            {infoNode?.type === CanvasNodeType.Frame ? <CanvasGroupTaskDetails key={infoNode.id} node={infoNode} nodes={nodes} submitting={workflowGeneration.submitting} onResume={(id) => void workflowGeneration.resume(id)} onRetry={retryCanvasNode} onCancel={cancelCanvasTask} agentState={productionAgentRuns} />
+                                : infoNode?.metadata?.shortDrama?.productionAgent && infoNode.metadata.shortDrama.submission !== "planned" ? <CanvasProductionAgentDetails key={infoNode.id} node={infoNode} state={productionAgentRuns} />
+                                : infoNode?.metadata?.taskId ? <CanvasGenerationTaskDetails key={infoNode.id} node={infoNode} onRetry={retryCanvasNode} onCancel={cancelCanvasTask} />
+                                : infoNode?.metadata?.shortDrama ? <CanvasWorkflowTaskDetails node={infoNode} nodes={nodes} submitting={workflowGeneration.submitting} onResume={(id) => void workflowGeneration.resume(id)} onOpenTask={openCanvasNodeTaskDetails} /> : null}
                         </CanvasNodeInfoModal>
 
                         {subtitleNode ? (
@@ -3432,7 +3393,14 @@ function InfiniteCanvasPage() {
 
                         <CanvasCharacterReferenceModal node={characterReferenceNode} open={Boolean(characterReferenceNode)} onClose={() => setCharacterReferenceNodeId(null)} />
 
-                        {workflowGenerator ? <CanvasWorkflowGenerator key={`${projectId}:${workflowGenerator.step}:${workflowGenerator.anchorId || ""}`} target={workflowGenerator} nodes={nodes} submitting={workflowGeneration.submitting} onGenerate={workflowGeneration.run} onClose={() => setWorkflowGenerator(null)} /> : null}
+                        {globalSettingsOpen && currentProject ? <CanvasGlobalSettingsDialog key={`global-settings:${projectId}`} editing title={currentProject.title} settings={currentProject.globalSettings} onClose={() => setGlobalSettingsOpen(false)} onSave={async (title, globalSettings) => {
+                            if (getActiveUserScope() !== canvasStorageScope) throw new Error("账号已切换，请重新打开设定");
+                            const { syncError } = await saveCanvasGlobalSettingsWithRemoteSync(projectId, title, globalSettings);
+                            setGlobalSettingsOpen(false);
+                            if (!syncError) message.success("全局设定已保存，将用于后续生成");
+                            else message.warning("设定已更新到本地，云端保存待重试");
+                        }} /> : null}
+                        {workflowGenerator ? <CanvasWorkflowGenerator key={`${projectId}:${workflowGenerator.step}:${workflowGenerator.anchorId || ""}:${currentProject?.globalSettings?.revision || 0}`} globalSettings={currentProject?.globalSettings} target={workflowGenerator} nodes={nodes} submitting={workflowGeneration.submitting} onGenerate={workflowGeneration.run} onClose={() => setWorkflowGenerator(null)} /> : null}
                         {assetReviewId && nodes.some((node) => node.id === assetReviewId) ? <CanvasWorkflowAssetReview key={`${projectId}:${assetReviewId}`} node={nodes.find((node) => node.id === assetReviewId)!} nodes={nodes} onClose={() => setAssetReviewId(null)} onEdit={openTextNodeEditor}
                             onSave={(id, assetProfile, expected) => {
                                 const current = nodesRef.current.find((node) => node.id === id);
@@ -3442,6 +3410,17 @@ function InfiniteCanvasPage() {
                         {textEditorNode?.metadata?.storyDevelopment?.stage === "topic" ? <CanvasStoryDevelopmentEditor
                             key={`${projectId}:${textEditorNode.id}`}
                             canvasId={projectId}
+                            globalSettings={currentProject?.globalSettings}
+                            onSaveTopicSettings={async (patch) => {
+                                if (getActiveUserScope() !== canvasStorageScope) throw new Error("账号已切换，请重新打开设定");
+                                const latest = useCanvasStore.getState().openProject(projectId);
+                                if (!latest?.globalSettings) throw new Error("画布或全局设定不存在，请重新打开画布");
+                                if (!Object.keys(patch).length) return latest.globalSettings;
+                                const settings = { ...latest.globalSettings, ...patch, revision: latest.globalSettings.revision + 1 };
+                                const { syncError } = await saveCanvasGlobalSettingsWithRemoteSync(projectId, latest.title, settings);
+                                if (syncError) throw new Error("选题设定已存本机，云端同步失败，请恢复网络后重试");
+                                return settings;
+                            }}
                             node={textEditorNode}
                             nodes={nodes}
                             onClose={() => setTextEditorNodeId(null)}
@@ -3667,7 +3646,6 @@ function InfiniteCanvasPage() {
                             open={batchGenDialogOpen}
                             config={batchGenDialogConfig}
                             rowCount={batchGenDialogRowCount}
-                            concurrency={batchGenDialogConcurrency}
                             onClose={closeBatchGenDialog}
                             onConfirm={confirmBatchGenDialog}
                         />

@@ -8,11 +8,11 @@ import (
 )
 
 func TestImagePriceTiersMatchResolutionAndActualReferences(t *testing.T) {
-	channelModel := model.ChannelModel{}
+	channelModel := model.ChannelModel{Capability: "image"}
 	for _, operation := range []string{"text_to_image", "image_to_image"} {
 		for _, quality := range []string{"1k", "2k", "4k"} {
 			channelModel.PriceTiers = append(channelModel.PriceTiers, model.ChannelModelPriceTier{
-				ID: operation + "-" + quality, SelectorJSON: fmt.Sprintf(`{"operation":%q,"quality":%q}`, operation, quality), Enabled: true, PriceConfigured: true,
+				ID: operation + "-" + quality, SelectorJSON: fmt.Sprintf(`{"operation":%q,"quality":%q}`, operation, quality), BillingMode: "fixed_request", Enabled: true, PriceConfigured: true,
 			})
 		}
 	}

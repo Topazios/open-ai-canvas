@@ -89,7 +89,7 @@ func publicLogicalModelPriceTiers(cached cachedLogicalModel) []PublicLogicalMode
 			continue
 		}
 		for _, tier := range route.ChannelModel.PriceTiers {
-			if !tier.Enabled || !tier.PriceConfigured {
+			if !ValidatePriceTierPrice(&tier, route.ChannelModel.Capability, route.ChannelModel.Protocol) {
 				continue
 			}
 			selector := skuSelectorForTier(tier)

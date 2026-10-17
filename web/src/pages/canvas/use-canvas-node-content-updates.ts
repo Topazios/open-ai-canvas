@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, type MutableRefObject } from "react";
 
 import { createCanvasStateWriter } from "@/lib/canvas/canvas-editor-state";
+import { layoutCanvasGridGroups } from "@/lib/canvas/canvas-group-grid";
 import { updateCanvasNode, updateCanvasNodes } from "@/lib/canvas/canvas-node-timestamps";
 import type { CanvasNodeData } from "@/types/canvas";
 
@@ -8,7 +9,7 @@ type NodeUpdate = (node: CanvasNodeData) => CanvasNodeData;
 
 /** Content callbacks share the editor's synchronous state, with a canvas-owned measurement queue. */
 export function useCanvasNodeContentUpdates(projectId: string, nodesRef: MutableRefObject<CanvasNodeData[]>, publish: (nodes: CanvasNodeData[]) => void) {
-    const write = useMemo(() => createCanvasStateWriter(nodesRef, publish), [nodesRef, publish]);
+    const write = useMemo(() => createCanvasStateWriter(nodesRef, publish, (_, after) => layoutCanvasGridGroups(after)), [nodesRef, publish]);
     const queue = useMemo(() => ({ active: false, updates: new Map<string, NodeUpdate>(), timer: null as ReturnType<typeof setTimeout> | null }), [projectId]);
     useLayoutEffect(() => {
         queue.active = true;

@@ -1,4 +1,5 @@
 import { generationErrorMessage } from "@/lib/generation-error";
+import { withRuntimeConcurrency } from "@/services/runtime-limits";
 import { http, apiBaseURL, type BackendEnvelope } from "@/services/api/request";
 import { consumeTaskTextStream, createTaskTextStreamParser, type TaskTextStreamEvent } from "@/services/api/task-text-stream";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
@@ -61,6 +62,10 @@ export type GenerationTask = {
         status: TaskBillingStatus;
     };
     clientContext?: {
+		parentTaskId?: string;
+		parentNodeId?: string;
+		batchKey?: string;
+		sourceLabel?: string;
         storyNodeId?: string;
         clientOperationId?: string;
         conversationId?: string;
@@ -211,6 +216,12 @@ export function queryGenerationTask(id: string, options?: { signal?: AbortSignal
     return http.get<GenerationTask>(`/tasks/${encodeURIComponent(id)}`, { signal: options?.signal });
 }
 
+export type TaskExecutionStep = Pick<GenerationTask, "id" | "status" | "stage" | "error" | "createdAt" | "startedAt" | "completedAt"> & { label: string; outputPreview?: string; outputChars: number };
+export type TaskExecutionDetails = { task: GenerationTask; firstStartedAt?: string; steps: TaskExecutionStep[]; unitCount: number; truncated: boolean; parameters: Record<string, string>; events: { id: string; title: string; failed: boolean; createdAt: string }[] };
+export function queryTaskExecutionDetails(id: string, signal?: AbortSignal) {
+    return http.get<TaskExecutionDetails>(`/tasks/${encodeURIComponent(id)}/execution`, { signal });
+}
+
 type GenerationTaskSubscriptionDependencies = {
     queryTask(id: string): Promise<GenerationTask>;
     waitTask(id: string, options?: { initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }): Promise<GenerationTask>;
@@ -287,7 +298,7 @@ export function retryGenerationTask(id: string, acknowledgedBillingOrderId?: str
 }
 
 export function recoverGenerationTaskMedia(id: string) {
-    return http.post<GenerationTask>(`/tasks/${encodeURIComponent(id)}/recover-media`);
+    return withRuntimeConcurrency("mediaRecovery", () => http.post<GenerationTask>(`/tasks/${encodeURIComponent(id)}/recover-media`));
 }
 
 export function cancelGenerationTask(id: string) {

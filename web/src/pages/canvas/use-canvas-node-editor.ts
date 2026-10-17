@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
+import { restoreGroupResize } from "@/lib/canvas/canvas-group-grid";
 import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_COLLAPSED_HEIGHT, FRAME_COLLAPSED_WIDTH, getFrameChildIds, isCanvasFolderNode, isFrameNode } from "@/lib/canvas/canvas-frame";
 import { buildCanvasMediaDownloadFileName } from "@/lib/canvas/canvas-media-download";
 import { writeCanvasNodePrompt } from "@/lib/canvas/canvas-node-prompt";
@@ -18,6 +19,7 @@ type UseCanvasNodeEditorOptions = {
     canvasTitle: string;
     domainProjectId?: string;
     nodesRef: { current: CanvasNodeData[] };
+    historyPausedRef: { current: boolean };
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
     setSelectedNodeIds: Dispatch<SetStateAction<Set<string>>>;
     setSelectedConnectionId: Dispatch<SetStateAction<string | null>>;
@@ -31,6 +33,7 @@ export function useCanvasNodeEditor({
     canvasTitle,
     domainProjectId,
     nodesRef,
+    historyPausedRef,
     setNodes,
     setSelectedNodeIds,
     setSelectedConnectionId,
@@ -43,6 +46,18 @@ export function useCanvasNodeEditor({
     const [collapsingBatchIds, setCollapsingBatchIds] = useState<Set<string>>(new Set());
     const [openingBatchIds, setOpeningBatchIds] = useState<Set<string>>(new Set());
     const batchMotionTimers = useRef(new Map<string, number>());
+    const groupResize = useRef<{ id: string; nodes: CanvasNodeData[] } | null>(null);
+    const handleFrameResizeGesture = useCallback((id: string, phase: "start" | "end" | "cancel") => {
+        if (phase === "start") {
+            groupResize.current = { id, nodes: nodesRef.current };
+            historyPausedRef.current = true;
+            return;
+        }
+        const snapshot = groupResize.current;
+        groupResize.current = null;
+        historyPausedRef.current = false;
+        if (snapshot?.id === id) setNodes(current => phase === "cancel" ? restoreGroupResize(current, snapshot.nodes, id) : [...current]);
+    }, [historyPausedRef, nodesRef, setNodes]);
     useEffect(() => () => {
         batchMotionTimers.current.forEach((timer) => window.clearTimeout(timer));
     }, []);
@@ -59,7 +74,9 @@ export function useCanvasNodeEditor({
                 // 否则每次图片重新加载都会把用户拉过的尺寸改回去。
                 const resized = { ...node, width, height, position: nextPosition, metadata: { ...node.metadata, manualSize: true } };
                 if (!isFrameNode(node) || node.metadata?.frame?.collapsed) return resized;
-                return { ...resized, metadata: { ...resized.metadata, frame: { collapsed: false, expandedWidth: width, expandedHeight: height } } };
+                return { ...resized, metadata: { ...resized.metadata, frame: { ...node.metadata?.frame, collapsed: false, expandedWidth: width, expandedHeight: height,
+                    ...(!isCanvasFolderNode(node) ? { layout: "grid" as const, gridWidth: width } : {}),
+                } } };
             });
             return changed ? next : current;
         });
@@ -76,8 +93,8 @@ export function useCanvasNodeEditor({
                 const frameState = node.metadata?.frame;
                 const folder = isCanvasFolderNode(node);
                 return collapsed
-                    ? { ...node, width: frameState?.expandedWidth || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].width, height: frameState?.expandedHeight || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].height, metadata: { ...node.metadata, frame: { collapsed: false, expandedWidth: frameState?.expandedWidth || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].width, expandedHeight: frameState?.expandedHeight || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].height } } }
-                    : { ...node, width: folder ? FOLDER_COLLAPSED_WIDTH : FRAME_COLLAPSED_WIDTH, height: folder ? FOLDER_COLLAPSED_HEIGHT : FRAME_COLLAPSED_HEIGHT, metadata: { ...node.metadata, frame: { collapsed: true, expandedWidth: node.width, expandedHeight: node.height } } };
+                    ? { ...node, width: frameState?.expandedWidth || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].width, height: frameState?.expandedHeight || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].height, metadata: { ...node.metadata, frame: { ...frameState, collapsed: false, expandedWidth: frameState?.expandedWidth || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].width, expandedHeight: frameState?.expandedHeight || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].height } } }
+                    : { ...node, width: folder ? FOLDER_COLLAPSED_WIDTH : FRAME_COLLAPSED_WIDTH, height: folder ? FOLDER_COLLAPSED_HEIGHT : FRAME_COLLAPSED_HEIGHT, metadata: { ...node.metadata, frame: { ...frameState, collapsed: true, expandedWidth: node.width, expandedHeight: node.height } } };
             }),
         );
         setSelectedNodeIds(new Set([nodeId]));
@@ -236,6 +253,7 @@ export function useCanvasNodeEditor({
         handleNodeContentChange,
         handleNodePromptChange,
         handleNodeResize,
+        handleFrameResizeGesture,
         handleNodeTitleChange,
         openingBatchIds,
         saveNodeAsset,

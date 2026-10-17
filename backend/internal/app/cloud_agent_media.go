@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"gorm.io/gorm"
+	"infinite-canvas/backend/internal/canvas/contract"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/repository"
 )
@@ -746,7 +747,7 @@ func saveCloudAgentDocument(repo *repository.Repository, canvas *model.CanvasPro
 	if err != nil {
 		return err
 	}
-	if len(raw) > 8<<20 {
+	if len(raw) > contract.MaxCanvasPayloadBytes {
 		return BadAuthRequest("画布大小超限")
 	}
 	usage, err := repo.UserStorageUsage(canvas.UserID)

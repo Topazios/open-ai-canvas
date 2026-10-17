@@ -5,9 +5,21 @@ description: 从产品功能快速定位主要代码入口
 
 # 代码功能地图
 
+## 全局创作设定
+
+- `web/src/lib/short-drama-settings.ts`：分类枚举、中文选项、默认值、校验、时长映射与阶段提示词。
+- `web/src/components/canvas/canvas-global-settings-dialog.tsx`：新建/修改表单、来源材料导入及提交状态；`lib/canvas/canvas-global-settings.ts` 构造选题来源节点。
+- `web/src/pages/canvas/index.tsx`、`project.tsx`：新建入口、更多菜单与画布内编辑；`services/user-data-sync.ts` 处理设定版本及保存失败恢复。
+- `CanvasProject.globalSettings` 随现有画布 JSON 保存；故事简报和工作流参数携带任务快照。文稿、制作 Agent、图片生成通过既有入口继承当前版本，不新增数据库表。
+
 ## 制作 Agent
 
 - `backend/internal/app/production_agent*.go`：来源分页、事实证据、共享缓存、资产写入回执、覆盖、暂停与恢复；复用 `cloud_agent_pi_*` 的服务端执行与任务账务。
+- `backend/internal/app/production_plan.go`、`production_plan_workflow.go`、`production_plan_document.go`：前置方案清单及编码、有序阶段与版本依赖、按文稿/资产类型的固定模板和结构检查。
+- `backend/internal/app/production_plan_requirements.go`：旧八项制作规范整合到四份共用文稿的字段要求；串行与并发工具共用，保留历史字段和回执，不以结构检查冒充语义验收。
+- `backend/internal/app/production_parallel.go`：制作方案的依赖就绪队列，最多三份独立文稿并发；持久任务身份、分项纠错、暂停恢复及串行结果提交。模型调用复用原任务队列和账务。
+- `backend/internal/app/production_plan_groups.go`：公共方案与五类资产的独立容器、已有产物的分组与依赖回执重算、无空首格的固定排列。
+- `backend/internal/app/cloud_agent_production_runtime.go`：根据持久任务类型选择工具、检查点级模型回执、错误工具拦截和相同无进展响应保护；正常计费仍走模型任务链路。
 - `backend/internal/model/production_agent.go`、`repository/production_agent.go`：schema 45 作业/事实页/产物回执及用户隔离。
 - `web/src/services/production-agent.ts`、`pages/canvas/use-production-agent-runs.ts`：任务提交及重开恢复；`canvas-production-agent-status.tsx` 展示进度和运行控制。
 - `web/scripts/canvas-production-agent-page-tests.ts`：真实生产页面的隔离 API 验收，无计费模型调用。

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ChannelModelRepriceTable } from "../src/pages/admin/components/channel-model-reprice-dialog";
 import { modelRepricePayload, modelRepriceRows, previewModelRepricing } from "../src/pages/admin/components/channel-model-pricing";
-import type { ChannelModel } from "../src/services/api/wallet";
+import type { ChannelModel, ModelDefaultPricing } from "../src/services/api/wallet";
 
 const model = {
     id: "image",
@@ -73,9 +73,26 @@ test("token fields stay inside a single model row and tier upstream overrides st
     for (const label of ["输入", "输出", "缓存"]) expect(html).toContain(`>${label}<`);
 });
 
-test("recalculate button reruns the current margin and precision even when they are unchanged", async () => {
+test("official model mapping, source, applicability and unsupported reasons are visible", () => {
+    const defaults: ModelDefaultPricing = {
+        currency: "USD", source: "厂商官方公开价快照", fetchedAt: "2026-10-17T00:00:00Z", verifiedAt: "2026-10-17",
+        profiles: [{ id: "official-image", modelKey: "official-image", capability: "image", label: "官方图片模型", billingMode: "", sourceUrl: "https://developers.openai.com/api/docs/pricing", note: "多模态 Token", autoMatch: true }],
+        prices: [{ modelId: "image", tierId: "tier-0", upstreamModel: "gpt-image-2.5", profileId: "official-image", supported: false, reason: "无法可靠换算按次价格", sourceUrl: "https://developers.openai.com/api/docs/pricing", note: "不含工具费用", unitPrice: 0, inputTokenPrice: 0, outputTokenPrice: 0, cachedTokenPrice: 0 }],
+    };
+    const html = renderToStaticMarkup(<ChannelModelRepriceTable items={[model]} rows={modelRepriceRows([model])} channelName="渠道" decimalPlaces={6} disabled={false} onSaleChange={() => {}} defaults={defaults} onProfileChange={() => {}} />);
+    expect(html).toContain("官方模型 / 档位");
+    expect(html).toContain("官方图片模型");
+    expect(html).toContain("官方来源");
+    expect(html).toContain("不含工具费用");
+    expect(html).toContain("保留原价：无法可靠换算按次价格");
+    expect(html).toContain('aria-valuenow="0.004"');
+});
+
+test("recalculate supports both modes and default-price fetch is abortable", async () => {
     const source = await Bun.file(new URL("../src/pages/admin/components/channel-model-reprice-dialog.tsx", import.meta.url)).text();
-    expect(source).toContain("onClick={() => recalculate(margin, decimalPlaces)}");
+    expect(source).toContain("onClick={() => recalculate()}");
     expect(source).toContain("重新计算");
-    expect(source).toContain("previewModelRepricing(items, nextMargin, places)");
+    expect(source).toContain("previewModelRepricing(items, next.margin, next.decimalPlaces)");
+    expect(source).toContain("controller.signal");
+    expect(source).toContain("modelRepricePayloadWithModes(items, preview, rows)");
 });

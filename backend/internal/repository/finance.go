@@ -14,7 +14,7 @@ import (
 var (
 	ErrInsufficientCredits     = errors.New("积分不足，请先充值")
 	ErrRedeemCodeInvalid       = errors.New("兑换码无效或已使用")
-	ErrActiveTaskLimit         = errors.New("同时进行的任务数已达上限，请等待已有任务完成")
+	ErrActiveTaskLimit         = errors.New("同类型同时进行的任务数已达上限，请等待该类型已有任务完成")
 	ErrTaskNotRetryable        = errors.New("该任务当前状态不支持重试")
 	ErrBillingStateConflict    = errors.New("计费状态已变化，请刷新后重试")
 	ErrBillingUsageUnavailable = errors.New("暂时无法获取用量，计费未完成")
@@ -115,7 +115,7 @@ func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *mo
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
 			return err
 		}
-		if err := enforceActiveTaskLimit(tx, task.UserID, activeTaskLimit); err != nil {
+		if err := enforceActiveTaskLimit(tx, task, activeTaskLimit); err != nil {
 			return err
 		}
 		if err := reserveBillingOrder(tx, order); err != nil {
@@ -130,7 +130,7 @@ func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
 			return err
 		}
-		if err := enforceActiveTaskLimit(tx, task.UserID, activeTaskLimit); err != nil {
+		if err := enforceActiveTaskLimit(tx, task, activeTaskLimit); err != nil {
 			return err
 		}
 		return tx.Create(task).Error
@@ -141,7 +141,7 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 	var task model.Task
 	taskID := prepared.ID
 	err := r.db.Transaction(func(tx *gorm.DB) error {
-		if err := enforceActiveTaskLimit(tx, userID, activeTaskLimit); err != nil {
+		if err := enforceActiveTaskLimit(tx, prepared, activeTaskLimit); err != nil {
 			return err
 		}
 		if order != nil {
@@ -161,6 +161,10 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 			"channel_model_id": prepared.ChannelModelID, "input_json": prepared.InputJSON,
 			"model": prepared.Model, "provider": prepared.Provider,
 			"lease_owner": "", "lease_expires_at": nil, "updated_at": time.Now(),
+		}
+		if prepared.Operation == "short_drama_batch" {
+			// This resumes one durable workflow; its children keep prior work.
+			delete(updates, "started_at")
 		}
 		if order != nil {
 			updates["billing_order_id"] = order.ID
@@ -197,12 +201,24 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 	return &task, err
 }
 
-func enforceActiveTaskLimit(tx *gorm.DB, userID string, activeTaskLimit int) error {
+func enforceActiveTaskLimit(tx *gorm.DB, task *model.Task, activeTaskLimit int, excludedIDs ...string) error {
 	if activeTaskLimit <= 0 {
 		return nil
 	}
 	var count int64
-	if err := tx.Model(&model.Task{}).Where("user_id = ? AND status IN ?", userID, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Count(&count).Error; err != nil {
+	// Serialize admission with billing on the account row in PostgreSQL. SQLite
+	// serializes writes; its transaction retry path handles competing snapshots.
+	if tx.Dialector.Name() == "postgres" {
+		var user model.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, "id = ?", task.UserID).Error; err != nil {
+			return err
+		}
+	}
+	query := tx.Model(&model.Task{}).Where("user_id = ? AND status IN ?", task.UserID, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning})
+	if len(excludedIDs) > 0 {
+		query = query.Where("id NOT IN ?", excludedIDs)
+	}
+	if err := taskConcurrencyQuery(query, model.TaskConcurrency(task.Type, task.Operation)).Count(&count).Error; err != nil {
 		return err
 	}
 	if count >= int64(activeTaskLimit) {

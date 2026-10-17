@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"infinite-canvas/backend/internal/model"
@@ -59,7 +60,7 @@ func TestUserStorageUsageCountsPersistedPayloads(t *testing.T) {
 		&model.Task{ID: "task-1", UserID: "user-1", Prompt: "p", InputJSON: "{}", ResultJSON: "{}"},
 		&model.TaskLog{ID: "log-1", UserID: "user-1", TaskID: "task-1", Message: "m", Payload: "p"},
 		&model.Result{ID: "result-1", UserID: "user-1", TaskID: "task-1", URL: "u", Payload: "r"},
-		&model.ApiCallLog{ID: "api-log-1", UserID: "user-1", Path: "p", Model: "m", ProviderRequestID: "i", Error: "e", UpstreamURL: "u"},
+		&model.ApiCallLog{ID: "api-log-1", UserID: "user-1", Path: "p", Model: "m", ProviderRequestID: "i", Error: "e", UpstreamURL: "u", RequestBody: strings.Repeat("request-body", 10), ResponseBody: strings.Repeat("response-body", 10)},
 	}
 	for _, item := range items {
 		if err := db.Create(item).Error; err != nil {
@@ -72,6 +73,30 @@ func TestUserStorageUsageCountsPersistedPayloads(t *testing.T) {
 	}
 	if usage.AssetCount != 1 || usage.AssetBytes != 4 || usage.CanvasCount != 1 || usage.CanvasBytes != 2 || usage.TaskCount != 1 || usage.TaskBytes != 14 || usage.APICallCount != 1 {
 		t.Fatalf("UserStorageUsage() = %#v", usage)
+	}
+}
+
+func TestUserStorageUsageDoesNotChargeDiagnosticAPICallBodies(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:api-log-body-quota?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Asset{}, &model.CanvasProject{}, &model.Task{}, &model.TaskLog{}, &model.Result{}, &model.ApiCallLog{}, &model.TaskTextDelta{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.ApiCallLog{
+		ID: "api-log-1", UserID: "user-1", Path: "/v1/responses", Model: "model",
+		RequestContentType: "application/json", RequestBody: strings.Repeat("x", 1<<20), ResponseBody: strings.Repeat("y", 1<<20),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	usage, err := repository.New(db).UserStorageUsage("user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int64(len("/v1/responses") + len("model") + len("application/json"))
+	if usage.TaskBytes != want {
+		t.Fatalf("UserStorageUsage() task bytes = %d, want metadata bytes %d", usage.TaskBytes, want)
 	}
 }
 

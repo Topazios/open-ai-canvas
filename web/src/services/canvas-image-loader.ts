@@ -1,6 +1,7 @@
 import { getActiveUserScope } from "@/lib/user-scope";
+import { freshRuntimeLimits, readRuntimeLimits, setRuntimeLimitsQueueWaiting } from "@/services/runtime-limits";
+import { useUserStore } from "@/stores/use-user-store";
 
-const MAX_ACTIVE_IMAGE_PREPARATIONS = 4;
 const IMAGE_PREPARATION_TIMEOUT_MS = 60_000;
 
 type ImageConsumer = {
@@ -25,6 +26,14 @@ const inFlight = new Map<string, ImagePreparationJob>();
 const queue: ImagePreparationJob[] = [];
 let activePreparations = 0;
 let pumping = false;
+let refreshing = false;
+
+useUserStore.subscribe((state, previous) => {
+    if (state.user?.id !== previous.user?.id) {
+        for (const job of [...inFlight.values()]) settle(job, undefined, abortError());
+    }
+    if (state.runtimeLimits !== previous.runtimeLimits || state.runtimeLimitsUpdatedAt !== previous.runtimeLimitsUpdatedAt || state.runtimeLimitsError !== previous.runtimeLimitsError) pump();
+});
 
 /** Share only in-flight decode work in the same account. Each caller owns its cancellation/deadline. */
 export function prepareCanvasImage(src: string, signal: AbortSignal, timeoutMs = IMAGE_PREPARATION_TIMEOUT_MS): Promise<HTMLImageElement> {
@@ -35,6 +44,7 @@ export function prepareCanvasImage(src: string, signal: AbortSignal, timeoutMs =
         job = { key, src, consumers: new Set(), started: false, settled: false, decoding: false };
         inFlight.set(key, job);
         queue.push(job);
+        setRuntimeLimitsQueueWaiting(queue, true);
     }
     const target = job;
     return new Promise((resolve, reject) => {
@@ -48,7 +58,7 @@ export function prepareCanvasImage(src: string, signal: AbortSignal, timeoutMs =
 }
 
 export function canvasImagePreparationStats() {
-    return { active: activePreparations, queued: queue.length, limit: MAX_ACTIVE_IMAGE_PREPARATIONS, consumers: [...inFlight.values()].reduce((sum, job) => sum + job.consumers.size, 0) };
+    return { active: activePreparations, queued: queue.length, limit: freshRuntimeLimits()?.concurrency.imagePreparation, consumers: [...inFlight.values()].reduce((sum, job) => sum + job.consumers.size, 0) };
 }
 
 function startDeadline(job: ImagePreparationJob, consumer: ImageConsumer) {
@@ -68,12 +78,21 @@ function releaseConsumer(job: ImagePreparationJob, consumer: ImageConsumer, erro
 }
 
 function pump() {
-    if (pumping) return;
+    if (pumping || refreshing || !queue.length) return;
+    const limits = freshRuntimeLimits();
+    if (!limits) {
+        refreshing = true;
+        void readRuntimeLimits().catch((error) => {
+            for (const job of [...queue]) settle(job, undefined, error);
+        }).finally(() => { refreshing = false; pump(); });
+        return;
+    }
     pumping = true;
     try {
-        while (activePreparations < MAX_ACTIVE_IMAGE_PREPARATIONS && queue.length) {
+        while (activePreparations < limits.concurrency.imagePreparation && queue.length) {
             const job = queue.shift()!;
             if (job.settled) continue;
+            if (!job.key.startsWith(`${getActiveUserScope()}\0`)) { settle(job, undefined, abortError()); continue; }
             job.started = true;
             activePreparations += 1;
             job.consumers.forEach((consumer) => startDeadline(job, consumer));
@@ -93,7 +112,7 @@ function pump() {
                 if (image.complete && image.naturalWidth > 0) image.onload?.call(image, new Event("load"));
             } catch (error) { settle(job, undefined, error); }
         }
-    } finally { pumping = false; }
+    } finally { pumping = false; setRuntimeLimitsQueueWaiting(queue, queue.length > 0); }
 }
 
 function settle(job: ImagePreparationJob, image?: HTMLImageElement, error?: unknown) {
@@ -102,6 +121,7 @@ function settle(job: ImagePreparationJob, image?: HTMLImageElement, error?: unkn
     if (inFlight.get(job.key) === job) inFlight.delete(job.key);
     const index = queue.indexOf(job);
     if (index >= 0) queue.splice(index, 1);
+    setRuntimeLimitsQueueWaiting(queue, queue.length > 0);
     if (job.image) {
         job.image.onload = null;
         job.image.onerror = null;

@@ -1,6 +1,6 @@
 import { useId, useState, type CSSProperties } from "react";
 import { Popover } from "antd";
-import { AlignLeft, ArrowLeft, ArrowUpRight, Check, ChevronUp, Clapperboard, FolderKanban, GripHorizontal, Images, LayoutGrid, Palette, Pencil, Plus, Sparkles, Type, Upload, X } from "lucide-react";
+import { AlignLeft, ArrowLeft, ArrowUpRight, Check, ChevronUp, Clapperboard, FolderKanban, GripHorizontal, Images, LayoutGrid, Palette, Pencil, Plus, Settings2, Sparkles, Type, Upload, X } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { CanvasCreateMenu, type CanvasCreateCommand } from "@/components/canvas/canvas-create-menu";
@@ -205,7 +205,7 @@ export function CanvasFreeformEmptyState({ commands }: { commands: CanvasCreateC
     );
 }
 
-export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, onTaskClick, topInset }: { progress: CanvasShortDramaProgress; collapsed: boolean; onToggle: () => void; onSkip: () => void; onTaskClick: (task: CanvasShortDramaTask) => void; topInset?: string }) {
+export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, onTaskClick, onOpenGlobalSettings, topInset }: { progress: CanvasShortDramaProgress; collapsed: boolean; onToggle: () => void; onSkip: () => void; onTaskClick: (task: CanvasShortDramaTask) => void; onOpenGlobalSettings?: () => void; topInset?: string }) {
     const theme = canvasThemes[useActiveTheme()];
     const panelId = useId();
     const floating = useDramaGuidePosition(progress.active && !collapsed);
@@ -255,6 +255,7 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
                     </span>
                 </div>
                 <div className="canvas-drama-guide-controls">
+                    {onOpenGlobalSettings ? <button type="button" onClick={onOpenGlobalSettings} aria-label="全局创作设定" title="全局创作设定"><Settings2 className="size-3.5" /></button> : null}
                     <button type="button" onClick={() => setSelectedStepId((value) => value === "overview" ? null : "overview")} aria-label="全部阶段与子任务" title="全部阶段与子任务" aria-pressed={!selectedStep}>
                         <LayoutGrid className="size-3.5" />
                     </button>
@@ -293,6 +294,7 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
                                 <div className="canvas-drama-task-copy">
                                     <span>{task.label}</span>
                                     {task.progressLabel ? <small>{task.progressLabel}</small> : null}
+                                    {task.statusDetail ? <small>{task.statusDetail}</small> : null}
                                     {task.unavailableReason ? <small>{task.unavailableReason}</small> : null}
                                 </div>
                                 {task.action ? (
@@ -408,8 +410,8 @@ export function CanvasStoryInputNodeContent({ node, onEdit }: { node: CanvasNode
                     onEdit();
                 }}
             >
-                <Pencil className="size-3.5" />
-                {development ? `编辑${label}` : "编辑故事"}
+                <AlignLeft className="size-3.5" />
+                详情
             </button>
         </div>
     );

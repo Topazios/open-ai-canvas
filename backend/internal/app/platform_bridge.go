@@ -51,17 +51,6 @@ func (h platformHost) AppendAudit(actor *model.User, action, targetType, targetI
 	return h.svc.appendAdminAudit(actor, action, targetType, targetID, summary, metadata)
 }
 
-func (h platformHost) ChannelConcurrencyLimit(channelID string) (int, error) {
-	if h.svc == nil {
-		return 0, nil
-	}
-	channel, err := h.svc.repo.SystemChannel(channelID)
-	if err != nil {
-		return 0, err
-	}
-	return channel.ConcurrencyLimit, nil
-}
-
 func (s *Service) platformDomain() *platform.Service {
 	if s == nil {
 		return platform.New(nil, nil, nil)
@@ -128,8 +117,8 @@ func (s *Service) RequireFeature(feature string) error {
 	return s.platformDomain().RequireFeature(feature)
 }
 
-func (s *Service) AcquireChannelSlot(ctx context.Context, channelID string, fallbackScope string, ttl time.Duration) (func(), int, error) {
-	return s.platformDomain().AcquireChannelSlot(ctx, channelID, fallbackScope, ttl)
+func (s *Service) AcquireChannelSlot(ctx context.Context, channelID string, fallbackScope string, ttl time.Duration, kinds ...model.TaskConcurrencyKind) (func(), int, error) {
+	return s.platformDomain().AcquireChannelSlot(ctx, channelID, fallbackScope, ttl, kinds...)
 }
 
 func (s *Service) AllowRequest(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {

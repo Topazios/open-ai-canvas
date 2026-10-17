@@ -245,7 +245,7 @@ func (s *Service) eligibleLogicalRoutes(routes []cachedLogicalRoute, intent Mode
 
 func channelModelHasActivePriceTier(channelModel model.ChannelModel) bool {
 	for _, tier := range channelModel.PriceTiers {
-		if tier.Enabled && tier.PriceConfigured {
+		if ValidatePriceTierPrice(&tier, channelModel.Capability, channelModel.Protocol) {
 			return true
 		}
 	}
@@ -260,7 +260,7 @@ func channelModelPriceTierForIntent(channelModel model.ChannelModel, intent Mode
 	var best *model.ChannelModelPriceTier
 	for index := range channelModel.PriceTiers {
 		tier := &channelModel.PriceTiers[index]
-		if !tier.Enabled || !tier.PriceConfigured {
+		if !ValidatePriceTierPrice(tier, channelModel.Capability, channelModel.Protocol) {
 			continue
 		}
 		matched, score := matchSKUSelector(skuSelectorForTier(*tier), selector)

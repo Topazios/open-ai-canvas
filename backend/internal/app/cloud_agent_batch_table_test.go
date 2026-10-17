@@ -76,11 +76,26 @@ func TestCloudAgentBatchTableCapabilityMatchesCanvasComponent(t *testing.T) {
 	}
 	metadata := descriptor.Metadata("")
 	table := metadata["batchTable"].(map[string]any)
-	if table["operation"] != "try_on" || table["concurrency"] != float64(10) || len(creationMaps(table["referenceColumns"])) != 3 || len(creationMaps(table["rows"])) != 0 {
+	if table["operation"] != "try_on" || table["concurrency"] != nil || len(creationMaps(table["referenceColumns"])) != 3 || len(creationMaps(table["rows"])) != 0 {
 		t.Fatalf("unexpected batch-table defaults: %+v", table)
 	}
 	if _, allowsOpaqueRewrite := descriptor.PatchFields["batchTable"]; allowsOpaqueRewrite {
 		t.Fatal("generic canvas patch may not replace the whole batch table")
+	}
+}
+
+func TestCloudAgentBatchTableIgnoresLegacyConcurrency(t *testing.T) {
+	descriptor, _ := cloudAgentNodeCapabilityForType("batch-table")
+	for _, old := range []any{nil, float64(1), float64(10), float64(999), "obsolete"} {
+		metadata := descriptor.Metadata("")
+		table := metadata["batchTable"].(map[string]any)
+		if old != nil {
+			table["concurrency"] = old
+		}
+		doc := map[string]any{"nodes": []any{map[string]any{"id": "batch", "type": "batch-table", "metadata": metadata}}}
+		if _, _, _, _, err := batchTableNodeFromDocument(doc, "batch"); err != nil {
+			t.Fatalf("obsolete concurrency blocked valid table: %v: %v", old, err)
+		}
 	}
 }
 
@@ -319,9 +334,15 @@ func TestCloudAgentBatchTableRejectsUnsafeAndStaleEdits(t *testing.T) {
 		t.Fatalf("non-image reference was not rejected: %v", err)
 	}
 	stale := cloudAgentBatchTableCall(t, "canvas_edit_batch_table", "stale-row", map[string]any{
-		"snapshotHash": "stale", "nodeId": "batch-1", "action": "set_concurrency", "concurrency": 5,
+		"snapshotHash": "stale", "nodeId": "batch-1", "action": "set_operation", "operation": "creative",
 	})
 	if _, err := prepareCloudAgentBatchTableEdit(s.repo, "user", canvas.ID, stale); err == nil || !strings.Contains(err.Error(), "被修改过") {
 		t.Fatalf("stale snapshot was not rejected: %v", err)
+	}
+	legacyConcurrency := cloudAgentBatchTableCall(t, "canvas_edit_batch_table", "old-concurrency", map[string]any{
+		"snapshotHash": hash, "nodeId": "batch-1", "action": "set_concurrency", "concurrency": 5,
+	})
+	if _, err := prepareCloudAgentBatchTableEdit(s.repo, "user", canvas.ID, legacyConcurrency); err == nil || !strings.Contains(err.Error(), "系统全局策略") {
+		t.Fatalf("legacy tool changed concurrency: %v", err)
 	}
 }

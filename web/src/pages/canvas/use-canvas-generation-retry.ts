@@ -154,7 +154,14 @@ export function useCanvasGenerationRetry({
                     const initialTask = await retryWorkflowGeneration(node, sourceTask, projectId, effectiveConfig, undefined, nodesRef.current, retryTask);
                     if (controller.signal.aborted) return;
                     bindGenerationTask(node.id, initialTask);
-                    setNodes((current) => restoreEmptyWorkflowAssetGroup(current, node.id));
+                    setNodes((current) => restoreEmptyWorkflowAssetGroup(current.map((item) => {
+                        if (item.id !== node.id || !item.metadata?.shortDrama?.assetSheet || !initialTask.prompt ||
+                            item.metadata.taskId !== initialTask.id || item.metadata.prompt !== node.metadata?.prompt) return item;
+                        const sheet = item.metadata.shortDrama.assetSheet;
+                        const generated = sheet.promptFingerprint === generationPromptFingerprint(node.metadata?.prompt || "");
+                        return { ...item, metadata: { ...item.metadata, prompt: initialTask.prompt, composerContent: initialTask.prompt,
+                            ...(generated ? { shortDrama: { ...item.metadata.shortDrama, assetSheet: { ...sheet, promptFingerprint: generationPromptFingerprint(initialTask.prompt) } } } : {}) } };
+                    }), node.id));
                     const completed = await waitForGenerationTask(initialTask.id, {
                         initialTask, signal: controller.signal, timeoutMs: 25 * 60_000,
                         onTaskUpdate: (task) => bindGenerationTask(node.id, task),

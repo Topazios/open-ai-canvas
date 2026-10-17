@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestRuntimeConcurrencySettingPersistsAndChannelOverrideWins(t *testing.T) {
+func TestRuntimeConcurrencySettingPersistsAndIgnoresChannelOverride(t *testing.T) {
 	t.Setenv("REDIS_URL", "")
 	t.Setenv("CANVAS_WORKER_CONCURRENCY", "3")
 	t.Setenv("CANVAS_CHANNEL_CONCURRENCY", "3")
@@ -60,7 +60,7 @@ func TestRuntimeConcurrencySettingPersistsAndChannelOverrideWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	if limit != 9 {
-		t.Fatalf("overridden channel limit = %d, want 9", limit)
+	if limit != 6 {
+		t.Fatalf("global channel limit after legacy override = %d, want 6", limit)
 	}
 }

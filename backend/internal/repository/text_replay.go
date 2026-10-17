@@ -25,33 +25,42 @@ type TextReplayStats struct {
 
 func (r *Repository) AppendTaskTextDelta(userID string, taskID string, content string, expiresAt time.Time, limits TextReplayLimits) (*model.TaskTextDelta, error) {
 	var created model.TaskTextDelta
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		var task model.Task
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "user_id", "status").First(&task, "id = ? AND user_id = ?", taskID, userID).Error; err != nil {
-			return err
+	var err error
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt*25) * time.Millisecond)
 		}
-		if task.Status == model.TaskStatusSucceeded || task.Status == model.TaskStatusFailed || task.Status == model.TaskStatusCancelled {
-			return ErrTextReplayClosed
+		err = r.db.Transaction(func(tx *gorm.DB) error {
+			var task model.Task
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "user_id", "status").First(&task, "id = ? AND user_id = ?", taskID, userID).Error; err != nil {
+				return err
+			}
+			if task.Status == model.TaskStatusSucceeded || task.Status == model.TaskStatusFailed || task.Status == model.TaskStatusCancelled {
+				return ErrTextReplayClosed
+			}
+			var taskUsage struct {
+				Count int64
+				Bytes int64
+				Max   int64
+			}
+			if err := tx.Model(&model.TaskTextDelta{}).Select("count(*) AS count, COALESCE(sum(byte_count), 0) AS bytes, COALESCE(max(sequence), 0) AS max").Where("task_id = ?", taskID).Scan(&taskUsage).Error; err != nil {
+				return err
+			}
+			var userBytes int64
+			if err := tx.Model(&model.TaskTextDelta{}).Select("COALESCE(sum(byte_count), 0)").Where("user_id = ?", userID).Scan(&userBytes).Error; err != nil {
+				return err
+			}
+			incoming := int64(len([]byte(content)))
+			if taskUsage.Count+1 > limits.MaxTaskEvents || taskUsage.Bytes+incoming > limits.MaxTaskBytes || userBytes+incoming > limits.MaxUserBytes {
+				return ErrTextReplayQuotaExceeded
+			}
+			created = model.TaskTextDelta{ID: newRepositoryID(), UserID: userID, TaskID: taskID, Sequence: taskUsage.Max + 1, Content: content, ByteCount: incoming, CreatedAt: time.Now(), ExpiresAt: expiresAt}
+			return tx.Create(&created).Error
+		})
+		if !IsTransientSQLiteWrite(err) {
+			break
 		}
-		var taskUsage struct {
-			Count int64
-			Bytes int64
-			Max   int64
-		}
-		if err := tx.Model(&model.TaskTextDelta{}).Select("count(*) AS count, COALESCE(sum(byte_count), 0) AS bytes, COALESCE(max(sequence), 0) AS max").Where("task_id = ?", taskID).Scan(&taskUsage).Error; err != nil {
-			return err
-		}
-		var userBytes int64
-		if err := tx.Model(&model.TaskTextDelta{}).Select("COALESCE(sum(byte_count), 0)").Where("user_id = ?", userID).Scan(&userBytes).Error; err != nil {
-			return err
-		}
-		incoming := int64(len([]byte(content)))
-		if taskUsage.Count+1 > limits.MaxTaskEvents || taskUsage.Bytes+incoming > limits.MaxTaskBytes || userBytes+incoming > limits.MaxUserBytes {
-			return ErrTextReplayQuotaExceeded
-		}
-		created = model.TaskTextDelta{ID: newRepositoryID(), UserID: userID, TaskID: taskID, Sequence: taskUsage.Max + 1, Content: content, ByteCount: incoming, CreatedAt: time.Now(), ExpiresAt: expiresAt}
-		return tx.Create(&created).Error
-	})
+	}
 	return &created, err
 }
 

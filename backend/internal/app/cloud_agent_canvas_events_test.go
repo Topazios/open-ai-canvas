@@ -143,6 +143,48 @@ func TestCloudAgentMediaImageSourceHasActionableCorrection(t *testing.T) {
 	}
 }
 
+func TestCloudAgentLargeRegroupInvalidatesWithoutTruncatingDocuments(t *testing.T) {
+	s, _, _ := agentMediaFixture(t)
+	canvas, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := canvas.PayloadJSON
+	doc, err := creationDocument(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := creationMaps(doc["nodes"])
+	meta := nodes[0]["metadata"].(map[string]any)
+	content := strings.Repeat("完整内容不能截断。", 16000)
+	meta["content"] = content
+	nodes[0]["parentId"] = "new-group"
+	raw, _ := json.Marshal(doc)
+	canvas.PayloadJSON = string(raw)
+	if err := saveCreationCanvasWithHistory(s.repo, canvas, previous); err != nil {
+		t.Fatal(err)
+	}
+	state := cloudAgentRuntime{}
+	if err := emitCloudAgentCanvasChange(s.repo, "run", &state, cloudAgentMutationInput{UserID: "user", CanvasID: canvas.ID, Operation: "production_groups", BeforeJSON: previous}); err != nil {
+		t.Fatal(err)
+	}
+	payload := state.Events[0].Payload
+	if payload["requiresRefresh"] != true || payload["canvasPatch"] != nil {
+		t.Fatal("oversized delta was not replaced with refresh")
+	}
+	stored, err := s.repo.CanvasProjectForUser("user", canvas.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := creationDocument(stored.PayloadJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creationMaps(saved["nodes"])[0]["metadata"].(map[string]any)["content"] != content {
+		t.Fatal("document content truncated")
+	}
+}
+
 func TestCloudAgentDeletionInvalidatesTheWholeCanvasRevision(t *testing.T) {
 	s, _, _ := agentMediaFixture(t)
 	canvas, err := s.repo.CanvasProjectForUser("user", "agent-canvas")

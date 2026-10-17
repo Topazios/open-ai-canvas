@@ -25,7 +25,7 @@ func (r *Repository) ResumeUnsubmittedTaskRetry(userID string, observed *model.T
 			attempt == nil || attempt.TaskID != task.ID || attempt.RouteRun != task.RouteRun || attempt.DispatchState != "not_sent" {
 			return ErrTaskNotRetryable
 		}
-		if err := enforceActiveTaskLimit(tx, userID, activeTaskLimit); err != nil {
+		if err := enforceActiveTaskLimit(tx, &task, activeTaskLimit); err != nil {
 			return err
 		}
 		var count int64

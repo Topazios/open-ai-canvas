@@ -52,10 +52,9 @@ const OPERATION_OPTIONS = [
     { value: "creative", label: "创意生图" },
 ] satisfies Array<{ value: CanvasBatchOperation; label: string }>;
 
-const CONCURRENCY_OPTIONS = [1, 5, 10] as const;
 
 export function CanvasBatchTableNodeContent({ node, nodes, connections, batch, theme, onPatchTable, onAddRow, onRemoveRow, onUpdateRow, onFillRows, onGenerate, onCreateStoryboard, onRetryItem, onAddReferenceColumn, onRemoveReferenceColumn, onReorderReferenceColumns, onMoveReferenceCell, onUploadReference, onFocusOutput, onConnectStart, onConnectDrop, readOnly = false }: Props) {
-    const table = node.metadata?.batchTable || { operation: "try_on" as const, concurrency: 10, rows: [] };
+    const table = node.metadata?.batchTable || { operation: "try_on" as const, rows: [] };
     const referenceColumns = batchReferenceColumns(table);
     const textColumns = batchTextColumns(table);
     const globalPrompt = table.globalPrompt || "";
@@ -156,10 +155,6 @@ export function CanvasBatchTableNodeContent({ node, nodes, connections, batch, t
                 <div data-canvas-batch-drag className="flex h-11 cursor-grab items-center gap-2 px-3 active:cursor-grabbing">
                     <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden" onPointerDown={(event) => event.stopPropagation()}>
                         <BatchChoiceGroup ariaLabel="批量任务类型" theme={theme} disabled={readOnly} options={OPERATION_OPTIONS} value={table.operation} onChange={(operation) => onPatchTable({ operation: operation as CanvasBatchOperation })} />
-                        <div className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2" style={{ background: theme.node.panel }}>
-                            <span className="font-medium" style={{ color: theme.node.muted }}>并发</span>
-                            <BatchChoiceGroup ariaLabel="并发数" theme={theme} disabled={readOnly} compact options={CONCURRENCY_OPTIONS.map((value) => ({ value, label: String(value) }))} value={table.concurrency} onChange={(concurrency) => onPatchTable({ concurrency: Number(concurrency) })} />
-                        </div>
                         <div className="flex h-8 shrink-0 items-center gap-0.5 rounded-lg px-2" style={{ background: theme.node.panel, color: theme.node.muted }}>
                             <span className="pr-1">{referenceColumns.length}/{MAX_BATCH_REFERENCE_COLUMNS} 组参考</span>
                             {!readOnly ? (

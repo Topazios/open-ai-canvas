@@ -73,7 +73,7 @@ export const NODE_SPECS = {
     },
     [CanvasNodeType.Frame]: {
         ...NODE_DEFAULT_SIZE[CanvasNodeType.Frame],
-        metadata: { frame: { collapsed: false, expandedWidth: NODE_DEFAULT_SIZE[CanvasNodeType.Frame].width, expandedHeight: NODE_DEFAULT_SIZE[CanvasNodeType.Frame].height } },
+        metadata: { frame: { layout: "grid", collapsed: false, expandedWidth: NODE_DEFAULT_SIZE[CanvasNodeType.Frame].width, expandedHeight: NODE_DEFAULT_SIZE[CanvasNodeType.Frame].height } },
     },
     [CanvasNodeType.Markdown]: {
         ...NODE_DEFAULT_SIZE[CanvasNodeType.Markdown],
@@ -110,7 +110,6 @@ export const NODE_SPECS = {
             status: "idle",
             batchTable: {
                 operation: "try_on",
-                concurrency: 10,
                 referenceColumns: [
                     { id: "reference-1", label: "参考图 1" },
                     { id: "reference-2", label: "参考图 2" },

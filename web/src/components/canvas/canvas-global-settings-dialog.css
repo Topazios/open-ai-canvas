@@ -1,0 +1,22 @@
+.canvas-global-settings { display: flex; flex-direction: column; max-height: min(860px, 88dvh); color: var(--fg); }
+.canvas-global-settings > header, .canvas-global-settings > footer { display: flex; align-items: center; gap: 12px; padding: 16px 22px; flex-shrink: 0; }
+.canvas-global-settings > header { justify-content: space-between; border-bottom: 1px solid var(--border); }
+.canvas-global-settings h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0; }
+.canvas-global-settings > footer { justify-content: flex-end; border-top: 1px solid var(--border); }
+.canvas-global-settings-body { min-height: 0; overflow-y: auto; padding: 20px 22px; overscroll-behavior: contain; }
+.canvas-global-settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 16px; }
+.canvas-global-settings-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.canvas-global-settings-section h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 13px; font-weight: 600; letter-spacing: 0; }
+.canvas-global-settings-section h3 span { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
+.canvas-global-setting-field { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.canvas-global-setting-field > label { font-size: 13px; }
+.canvas-global-setting-field .ant-input-number, .canvas-global-setting-field .ant-select { width: 100%; min-width: 0; }
+.canvas-global-setting-wide { grid-column: 1 / -1; }
+.canvas-global-settings-extra { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 14px; }
+.canvas-global-settings-extra > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; }
+.canvas-global-settings-extra[open] > summary { margin-bottom: 16px; }
+.canvas-global-settings-extra:not([open]) > summary svg { transform: rotate(-90deg); }
+.canvas-global-settings .ant-alert { margin-bottom: 16px; }
+.canvas-global-settings-select-popup { transition: none !important; }
+@media (max-width: 640px) { .canvas-global-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } }
+@media (max-width: 380px) { .canvas-global-settings-grid { grid-template-columns: minmax(0, 1fr); } }

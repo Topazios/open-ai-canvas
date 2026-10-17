@@ -67,7 +67,7 @@ func ComputeTierPriceConfigured(tier *model.ChannelModelPriceTier, capability st
 }
 
 // HasValidPrice 检查渠道模型是否有有效价格
-// 对于有价格档的模型，检查是否至少有一个启用且价格有效的价格档
+// 价格档的历史开关不参与可用性判断，只校验实际价格。
 func HasValidPrice(channelModel *model.ChannelModel) bool {
 	if channelModel == nil {
 		return false
@@ -76,7 +76,7 @@ func HasValidPrice(channelModel *model.ChannelModel) bool {
 	// 如果有价格档，检查价格档
 	if len(channelModel.PriceTiers) > 0 {
 		for _, tier := range channelModel.PriceTiers {
-			if tier.Enabled && tier.PriceConfigured && ValidatePriceTierPrice(&tier, channelModel.Capability, channelModel.Protocol) {
+			if ValidatePriceTierPrice(&tier, channelModel.Capability, channelModel.Protocol) {
 				return true
 			}
 		}

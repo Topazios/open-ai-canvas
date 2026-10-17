@@ -1,4 +1,6 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
+import { installRuntimeLimits } from "./fixtures/runtime-limits";
+beforeEach(() => installRuntimeLimits());
 import type { AxiosProgressEvent } from "axios";
 import { apiClient } from "../src/services/api/request";
 import { uploadResourceFile } from "../src/services/api/resources";

@@ -269,7 +269,7 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 			if violation := cloudAgentOutputViolation(result.Text, len(calls)); violation != "" {
 				return s.correctCloudAgentOutput(run, &state, violation)
 			}
-			if err := validateCloudAgentCalls(calls); err != nil {
+			if err := validateCloudAgentCalls(calls, state.Request.Production != nil); err != nil {
 				return s.correctCloudAgentOutput(run, &state, "工具调用无效或重复（callId 不能重复、参数必须是 JSON 对象）")
 			}
 			result.ToolCalls = calls
@@ -500,13 +500,14 @@ func compactCloudAgentContext(request *canonicalAgentRequest, budget cloudAgentC
 	return changed
 }
 
-func validateCloudAgentCalls(calls []cloudAgentCall) error {
+func validateCloudAgentCalls(calls []cloudAgentCall, production ...bool) error {
 	seen := make(map[string]bool, len(calls))
 	for _, call := range calls {
 		if err := validateCloudAgentID(call.ID, "工具调用 ID", 160); err != nil || seen[call.ID] || call.Function.Name == "" || len(call.Function.Name) > 80 || !utf8.ValidString(call.Function.Name) {
 			return errors.New("invalid Agent tool call")
 		}
-		if err := decodeCloudAgentJSONObject(call.Function.Arguments, &map[string]any{}); err != nil || len(call.Function.Arguments) > 32000 {
+		isProduction := len(production) > 0 && production[0]
+		if err := decodeCloudAgentJSONObject(call.Function.Arguments, &map[string]any{}); err != nil || len(call.Function.Arguments) > cloudAgentToolArgumentLimit(isProduction, call.Function.Name) {
 			return errors.New("invalid Agent tool arguments")
 		}
 		seen[call.ID] = true

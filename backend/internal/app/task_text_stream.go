@@ -1,6 +1,7 @@
 package app
 
 import (
+	"infinite-canvas/backend/internal/repository"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ type taskTextStreamPublisher struct {
 	timer    *time.Timer
 	disabled bool
 	closed   bool
+	retrying bool
 	sink     func(string) error
 }
 
@@ -40,6 +42,9 @@ func (p *taskTextStreamPublisher) Publish(delta string) {
 		return
 	}
 	p.buffer.WriteString(delta)
+	if p.retrying && p.timer != nil {
+		return
+	}
 	if p.buffer.Len() >= taskTextStreamFlushBytes {
 		p.flushLocked()
 		return
@@ -77,7 +82,6 @@ func (p *taskTextStreamPublisher) flushLocked() {
 		return
 	}
 	content := p.buffer.String()
-	p.buffer.Reset()
 	var err error
 	if p.sink != nil {
 		err = p.sink(content)
@@ -85,7 +89,22 @@ func (p *taskTextStreamPublisher) flushLocked() {
 		_, err = p.service.AppendTaskTextDelta(p.userID, p.taskID, content)
 	}
 	if err != nil {
+		if repository.IsTransientSQLiteWrite(err) && !p.closed && p.buffer.Len() < 60<<10 {
+			// Preserve the exact delta until a local transaction succeeds. A retry
+			// never invokes the model again and never changes billing.
+			if !p.retrying && p.service != nil {
+				_ = p.service.log(p.userID, p.taskID, "warn", "文本进度写入暂忙，正在恢复", "")
+			}
+			p.retrying = true
+			p.timer = time.AfterFunc(time.Second, p.flush)
+			return
+		}
 		p.disabled = true
-		_ = p.service.log(p.userID, p.taskID, "warn", "文本流持久化已降级", err.Error())
+		if p.service != nil {
+			_ = p.service.log(p.userID, p.taskID, "warn", "文本流持久化已降级", err.Error())
+		}
+		return
 	}
+	p.buffer.Reset()
+	p.retrying = false
 }

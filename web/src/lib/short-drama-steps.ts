@@ -2,6 +2,7 @@ import type { ShortDramaStageId } from "./short-drama-stages";
 import { productionBibleInstruction, type ProductionBibleSection } from "./production-bible";
 
 export enum ShortDramaStep {
+    Reconcile = "assets.reconcile",
     Bible = "assets.bible", Special = "assets.special",
     Topic = "story.topic", Plan = "story.plan", Episodes = "story.episodes", Body = "story.body",
     Style = "assets.style", Settings = "assets.settings", Extract = "assets.extract", Catalog = "assets.catalog", Characters = "assets.characters", CharacterReferences = "assets.character_references", Environments = "assets.environments", EnvironmentReferences = "assets.environment_references", Props = "assets.props", PropReferences = "assets.prop_references", SpecialReferences = "assets.special_references", Voices = "assets.voices", AssetApproval = "assets.approve",
@@ -15,6 +16,7 @@ export enum ShortDramaStep {
 export type ShortDramaStepId = `${ShortDramaStep}`;
 export type ShortDramaStepDefinition = {
     id: ShortDramaStepId; stage: ShortDramaStageId; label: string;
+    // First dependency owns the default next-step shortcut; all remain required inputs.
     requires: readonly ShortDramaStepId[];
     requirement: string;
     // Text can document production work, but cannot attest that media was rendered or approved.
@@ -29,10 +31,11 @@ export type ShortDramaStepDefinition = {
 const S = ShortDramaStep;
 export const shortDramaSteps: readonly ShortDramaStepDefinition[] = [
     { id: S.Topic, stage: "story", label: "选题抽取", requires: [], requirement: "抽取选题。" },
-    { id: S.Plan, stage: "story", label: "制作方案", requires: [S.Topic], requirement: "完整制作方案，包含故事总纲。" },
-    { id: S.Episodes, stage: "story", label: "分集集纲", requires: [S.Plan], requirement: "逐集拆解集纲。" },
+    { id: S.Plan, stage: "story", label: "项目制作方案", requires: [S.Topic], scope: "project", output: "asset-group", requirement: "统一前置故事总纲、世界规则、视觉美术、导演视听、生成一致性规范，以及带系统编码的全部人物、场景、道具、特殊与声音资产设计。" },
+    { id: S.Episodes, stage: "story", label: "分集集纲", requires: [S.Plan], scope: "project", requirement: "全部集纲汇总为一份文稿，按集数顺序分节，不拆成逐集节点。" },
     { id: S.Body, stage: "story", label: "分集正文", requires: [S.Episodes], requirement: "生成指定集的完整剧本。" },
     { id: S.Bible, stage: "assets", label: "统一制作规范", requires: [S.Body], scope: "project", output: "asset-group", requirement: `基于所提供全部正文，分别生成8份可独立编辑的制作规范：${productionBibleInstruction}。每项区分正文事实（附集数场次与依据）、推断和可执行的设计建议；未明确的制作细节自行形成统一建议，不要求用户先确认，不虚称已获审核。不重复分集全文，不以逐人物/逐场景资产代替制作规范。` },
+    { id: S.Reconcile, stage: "assets", label: "正文资产校核与补充", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "按集一次性核对正文与前置制作方案，统一校核人物、场景、道具和声音。能力、变身、环境效果和界面归所属资产状态，不另设特殊资产分类。复用原资产编号、设定与规范，补充实际出场、状态变化、新增项和冲突。每个资产独立保存，不重建全局规范，不虚构未提供集数。" },
 { id: S.Special, stage: "assets", label: "特殊资产", requires: [S.Body, S.Bible], optional: true, scope: "project", output: "asset-group", requirement: "仅提取正文中需反复保持一致、且人物场景道具不能承载的特效、能力视觉、界面、标志符号等特殊资产。附出场集数场次、原文证据、触发规则、固定外观、状态变化、标志性声音、提示词和冲突。没有则输出空清单，不虚构补齐。遵循所选制作规范。" },
     { id: S.Extract, stage: "assets", label: "正文固定资产提取", requires: [S.Body], requirement: "从本集正文提取可复用的角色及别名、场景空间、道具、服装妆发、角色声线与口音、环境声及音乐音效母题、世界观与全局视觉风格线索。每项标注类别、出现集数、场次、原文依据、稳定特征与变化状态。区分原文事实和待设计建议；没有依据则标为待确认，不凭空补设定。本步只做候选提取，不各自制定一套全剧规范。" },
     { id: S.Catalog, stage: "assets", label: "跨集资产总表", requires: [S.Extract], scope: "project", requirement: "归并已提供的逐集固定资产提取表，按人物、场景、道具服化、声音、全局风格与其他可复用资产分类。建立稳定资产编号、别名表、出现集数与场次索引、正文依据、关系和状态版本。合并同一实体的别名，列出跨集冲突与待确认项。标明已覆盖集数和缺失集数，禁止宣称已覆盖未提供的正文；不重复逐集全文。" },
@@ -48,8 +51,8 @@ export const shortDramaSteps: readonly ShortDramaStepDefinition[] = [
     { id: S.Settings, stage: "assets", label: "全局设定", requires: [S.Body], scope: "project", requirement: "基于已提供的正文总结全剧设定：时代地域、世界观及能力规则和限制、时间线、人物身份关系、组织称谓、空间关系、关键道具规则、不可变事实与连续性约束。每项附出现集数场次和正文依据，归并别名、列出矛盾和待确认项；不虚构未提供的剧情，不用视觉画风代替世界规则。" },
     { id: S.AssetApproval, stage: "assets", label: "资产一致性检查", requires: [S.Characters, S.Environments, S.Props, S.Voices], scope: "project", requirement: "对照资产总表与全局规范检查人物、场景、道具服化、声音的编号、别名、版本、覆盖范围和跨集一致性，输出差异、缺件及待人工确认项，不把检查文稿视为实际资产审核通过。", production: true },
     { id: S.Scenes, stage: "storyboard", label: "场次目标、走位与空间关系", requires: [S.Body, S.Characters, S.Environments, S.Bible], optionalRequires: [S.Special], requirement: "逐场次设计目标、冲突、调度、轴线、出入场及空间连续性。遵循所选制作规范和关联资产的状态版本。" },
-    { id: S.Shots, stage: "storyboard", label: "场次与镜头拆解", requires: [S.Body, S.Characters, S.Environments, S.Bible], optionalRequires: [S.Scenes, S.Special], requirement: "一次完成场次调度与逐镜头拆解。先按场次明确目标、冲突、人物走位、轴线、出入口和空间关系，再按镜头编号给出景别、机位、构图、运动、时长、动作、表情、对白、音效和剪辑点。一个镜头只承担一个主要动作或信息，复杂动作拆为可控镜头；逐项核对服装、道具状态、光线、视线和前后镜头连续性。已有场次设计时沿用并补全，不重复另写一套。遵循所选制作规范与资产版本，缺失信息标明待设计。" },
-    { id: S.Production, stage: "storyboard", label: "资产绑定与镜头提示词", requires: [S.Shots, S.Characters, S.Environments, S.Props, S.Bible], optionalRequires: [S.Special], requirement: '逐镜头绑定角色场景道具及特殊资产的版本、出场状态和已选定参考，给出生成路线、正负提示词、首尾帧和连续性约束。统一核对镜头编号、资产状态、服装、视线、轴线、动作与声音衔接。仅描述或候选参考须标为待确认，不能假称媒体已完成。直接输出一个 JSON 对象，不重复另写文稿：{"shots":[{"id":"原镜头编号","title":"画面名称","assetKeys":["所用资产编号"],"assetStates":"版本和出场状态","route":"生成路线","prompt":"完整生图提示词","negativePrompt":"负面约束","startFramePrompt":"动作起点提示词","endFramePrompt":"动作终点提示词","keyframes":[{"id":"关键帧编号","time":"镜头内时间位置","prompt":"此时刻完整提示词"}],"continuity":"前后镜头衔接与声画约束"}],"checks":"差异、缺件与待验收项"}。每镜头一个条目，沿用原镜头编号；关键帧仅在必要时列出，没有则为空数组。每份提示词应可独立使用并遵循统一规范。' },
+    { id: S.Shots, stage: "storyboard", label: "场次与镜头拆解", requires: [S.Body], optionalRequires: [S.Scenes], requirement: "一次完成场次调度与逐镜头拆解。先按场次明确目标、冲突、人物走位、轴线、出入口和空间关系，再按镜头编号给出景别、机位、构图、运动、时长、动作、表情、对白、音效和剪辑点。一个镜头只承担一个主要动作或信息，复杂动作拆为可控镜头；逐项核对服装、道具状态、光线、视线和前后镜头连续性。已有场次设计时沿用并补全，不重复另写一套。遵循所选制作规范与资产版本，缺失信息标明待设计。" },
+    { id: S.Production, stage: "storyboard", label: "资产绑定与镜头提示词", requires: [S.Shots, S.Bible], optionalRequires: [S.Reconcile, S.Characters, S.Environments, S.Props, S.Special], requirement: '逐镜头绑定角色场景道具及特殊资产的版本、出场状态和已选定参考，给出生成路线、正负提示词、首尾帧和连续性约束。统一核对镜头编号、资产状态、服装、视线、轴线、动作与声音衔接。仅描述或候选参考须标为待确认，不能假称媒体已完成。直接输出一个 JSON 对象，不重复另写文稿：{"shots":[{"id":"原镜头编号","title":"画面名称","assetKeys":["所用资产编号"],"assetStates":"版本和出场状态","route":"生成路线","prompt":"完整生图提示词","negativePrompt":"负面约束","startFramePrompt":"动作起点提示词","endFramePrompt":"动作终点提示词","keyframes":[{"id":"关键帧编号","time":"镜头内时间位置","prompt":"此时刻完整提示词"}],"continuity":"前后镜头衔接与声画约束"}],"checks":"差异、缺件与待验收项"}。每镜头一个条目，沿用原镜头编号；关键帧仅在必要时列出，没有则为空数组。每份提示词应可独立使用并遵循统一规范。' },
     { id: S.Boards, stage: "storyboard", label: "分镜图生成", requires: [S.Production], mediaOutput: "image", mediaActionLabel: "根据镜头提示词生成分镜图", requirement: "生成所选镜头的一幅分镜画面，遵循镜头构图、人物状态、景别、机位、光线、资产参考和前后镜头连续性。不要将整集剧情拼成多格图。", production: true },
     { id: S.StartFrame, stage: "storyboard", label: "镜头首帧生成", requires: [S.Production], optionalRequires: [S.Boards], optional: true, mediaOutput: "image", mediaActionLabel: "生成镜头首帧", requirement: "生成所选镜头动作起点的首帧画面。固定主体位置、视线、姿态、景别、光线与前一镜头连续性，遵循关联人物和场景参考。" , production: true },
     { id: S.EndFrame, stage: "storyboard", label: "镜头尾帧生成", requires: [S.Production], optionalRequires: [S.Boards, S.StartFrame], optional: true, mediaOutput: "image", mediaActionLabel: "生成镜头尾帧", requirement: "生成所选镜头动作终点的尾帧画面。呈现动作结果，固定主体位置、视线、光线和与下一镜头连续性；已有首帧时保持角色外形与场景布局。", production: true },
@@ -76,14 +79,27 @@ export const shortDramaSteps: readonly ShortDramaStepDefinition[] = [
     { id: S.Promotion, stage: "delivery", label: "封面、预告、切片与发布文案", requires: [S.Verify, S.Plan], requirement: "生成封面方案、预告与切片脚本、发布文案，不代替实际发布。" },
 ];
 export function shortDramaStep(id: string) { return shortDramaSteps.find((step) => step.id === id); }
-const legacyAssetSteps: readonly ShortDramaStepId[] = [S.Extract, S.Catalog, S.AssetApproval, S.Style, S.Settings, S.Voices, S.Scenes];
+const legacyAssetSteps: readonly ShortDramaStepId[] = [S.Bible, S.Characters, S.Environments, S.Props, S.Special, S.SpecialReferences, S.Extract, S.Catalog, S.AssetApproval, S.Style, S.Settings, S.Voices, S.Scenes];
 export const activeShortDramaSteps = shortDramaSteps.filter((step) => !legacyAssetSteps.includes(step.id));
-export function nextShortDramaSteps(id: ShortDramaStepId) { return activeShortDramaSteps.filter((step) => step.requires.includes(id) || step.optionalRequires?.includes(id)); }
+// Reference dependencies are not workflow shortcuts. Keep only the primary
+// input path, plus explicit continuations for optional frames and parallel edits.
+const contextNextSteps: Partial<Record<ShortDramaStepId, readonly ShortDramaStepId[]>> = {
+    [S.Scenes]: [S.Shots],
+    [S.Boards]: [S.StartFrame, S.Previsualization],
+    [S.StartFrame]: [S.EndFrame, S.Keyframes, S.Previsualization],
+    [S.EndFrame]: [S.Keyframes, S.Previsualization],
+    [S.Keyframes]: [S.Previsualization],
+    [S.Sound]: [S.Subtitles],
+};
+export function nextShortDramaSteps(id: ShortDramaStepId) {
+    const explicit = contextNextSteps[id];
+    return activeShortDramaSteps.filter((step) => step.id !== id && (explicit ? explicit.includes(step.id) : step.requires[0] === id));
+}
 
 export type WorkflowAssetProfile = {
     aliases: string[];
     occurrences: { episode: number; scene: string; state: string; owner: string; location: string; evidence: string }[];
-    variants: { name: string; description: string }[];
+    variants: { code?: string; name: string; description: string }[];
     sounds: string[];
     conflicts: string[];
     indexContent: string;
@@ -91,6 +107,16 @@ export type WorkflowAssetProfile = {
 };
 
 export type ShortDramaWorkflowData = {
+    assetImageSourceIds?: string[];
+    assetRevision?: { sourceNodeId: string; contextNodeIds: string[] };
+    assetRevisionGroup?: { sourceNodeId: string; kind: `${import("./production-plan").PlannedAssetKind}` };
+	planGroups?: Partial<Record<import("./production-plan").PlannedAssetKind, string>>;
+	planGroup?: { rootFrameId: string; kind: import("./production-plan").PlannedAssetKind };
+    planVersion?: 2 | 3;
+    planAbsent?: Partial<Record<import("./production-plan").PlannedAssetKind, string>>;
+    planSection?: import("./production-plan").ProductionPlanSection;
+    assetIdentity?: import("./production-plan").ProductionAssetIdentity;
+    planAsset?: import("./production-plan").PlannedAsset;
     productionAgent?: { runId?: string; request?: import("@/services/api/agent").CreateAgentRunInput; maxCredits?: number; maxSteps?: number };
     stage: ShortDramaStageId; step: ShortDramaStepId; pipelineId: string;
     sourceNodeIds: string[]; sourceSignatures: Record<string, string>;
@@ -116,8 +142,9 @@ export type ShortDramaWorkflowData = {
     materializedTaskId?: string;
     version?: number;
     episodeNumber?: number;
-    parameters?: { episodeCount: number; minutesPerEpisode: string; instruction: string };
+    parameters?: { episodeCount: number; minutesPerEpisode: string; instruction: string; globalSettings?: import("./short-drama-settings").ShortDramaGlobalSettings };
     operationId?: string;
     textBatch?: import("@/lib/canvas/workflow-text-batch").WorkflowTextBatch;
+    bodyContextVersion?: 1;
     submission?: "planned" | "submitting" | "submitted" | "unknown" | "rejected";
 };

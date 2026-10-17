@@ -3,6 +3,7 @@ import { advanceStoryDevelopment, buildStoryDevelopmentPrompt, createNextStoryEp
 import { createShortDramaPipeline, deriveShortDramaProgress } from "@/lib/canvas/canvas-short-drama";
 import { createCanvasNode } from "@/lib/canvas/canvas-project-domain";
 import { CanvasNodeType } from "@/types/canvas";
+import { defaultShortDramaSettings, DramaEnding } from "@/lib/short-drama-settings";
 
 function writtenChain() {
     let { nodes } = createStoryDevelopmentChain({ x: 0, y: 0 });
@@ -95,12 +96,28 @@ describe("story development", () => {
     test("production plan includes story architecture and directly opens existing episode outlines", () => {
         const nodes = writtenChain();
         const prompt = buildStoryDevelopmentPrompt(nodes[1].metadata!.storyDevelopment!, nodes, "已有制作方案", "补全缺项");
-        for (const requirement of ["故事总纲", "明确结局", "人物弧光", "集数分配", "伏笔与回收", "AI生成可行性", "已有制作方案"]) expect(prompt).toContain(requirement);
+        for (const requirement of ["故事总纲", "结局遵循全局设置与用户要求", "人物弧光", "集数分配", "伏笔与回收", "AI生成可行性", "已有制作方案"]) expect(prompt).toContain(requirement);
         const next = advanceStoryDevelopment(nodes[1].id, nodes, []);
         expect(next.node).toBe(nodes[2]);
         expect(next.node.metadata!.storyDevelopment!.stage).toBe("episodes");
         expect(next.node.metadata!.content).toBe(nodes[2].metadata!.content);
         expect(next.connections.some((edge) => edge.fromNodeId === nodes[1].id && edge.toNodeId === nodes[2].id)).toBe(true);
+    });
+    test("plan honors an open ending and uses the ordered asset workflow", () => {
+        const nodes = writtenChain();
+        nodes[0].metadata!.storyDevelopment!.brief!.globalSettings = { ...defaultShortDramaSettings(), ending: DramaEnding.Open };
+        const prompt = buildStoryDevelopmentPrompt(nodes[1].metadata!.storyDevelopment!, nodes, "", "");
+        expect(prompt).toContain("结局偏好：开放结局");
+        expect(prompt).toContain("开放结局应交代阶段结果和保留悬念");
+        expect(prompt).not.toContain("明确结局");
+        expect(prompt).not.toContain("不以悬念代替结局");
+        const phases = ["1. 故事总纲与世界规则", "2. 全剧资产清单与系统编码", "3. 视觉与美术规范、导演与视听规范", "4. 按清单逐项保存", "5. 基于全部资产档案完成生成与一致性规范", "6. 校验清单覆盖"];
+        let previous = -1;
+        for (const phase of phases) {
+            const position = prompt.indexOf(phase);
+            expect(position).toBeGreaterThan(previous);
+            previous = position;
+        }
     });
     test("legacy outline is optional even empty, deleted or stale; required plan still gates generation", () => {
         for (const content of ["", "LEGACY_REFERENCE"]) {

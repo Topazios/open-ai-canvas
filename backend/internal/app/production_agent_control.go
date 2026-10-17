@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -11,15 +12,26 @@ import (
 )
 
 type ProductionAgentProgress struct {
-	MaxSteps              int    `json:"maxSteps"`
-	TargetNodeID          string `json:"targetNodeId"`
-	Paused                bool   `json:"paused"`
-	WaitingForBoundary    bool   `json:"waitingForBoundary"`
-	ProcessedPages        int    `json:"processedPages"`
-	TotalPages            int    `json:"totalPages"`
-	ArtifactCount         int    `json:"artifactCount"`
-	Validated             bool   `json:"validated"`
-	WaitingForSharedFacts bool   `json:"waitingForSharedFacts"`
+	ConcurrentItems       []string `json:"concurrentItems,omitempty"`
+	ConcurrencyLimit      int      `json:"concurrencyLimit,omitempty"`
+	DocumentCount         int      `json:"documentCount,omitempty"`
+	DocumentTotal         int      `json:"documentTotal,omitempty"`
+	AssetCount            int      `json:"assetCount,omitempty"`
+	AssetTotal            int      `json:"assetTotal,omitempty"`
+	Phase                 string   `json:"phase,omitempty"`
+	PhaseLabel            string   `json:"phaseLabel,omitempty"`
+	CurrentItem           string   `json:"currentItem,omitempty"`
+	InventoryComplete     bool     `json:"inventoryComplete,omitempty"`
+	WorkKind              string   `json:"workKind,omitempty"`
+	MaxSteps              int      `json:"maxSteps"`
+	TargetNodeID          string   `json:"targetNodeId"`
+	Paused                bool     `json:"paused"`
+	WaitingForBoundary    bool     `json:"waitingForBoundary"`
+	ProcessedPages        int      `json:"processedPages"`
+	TotalPages            int      `json:"totalPages"`
+	ArtifactCount         int      `json:"artifactCount"`
+	Validated             bool     `json:"validated"`
+	WaitingForSharedFacts bool     `json:"waitingForSharedFacts"`
 }
 
 func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgentRuntime) *ProductionAgentProgress {
@@ -27,6 +39,13 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 		return nil
 	}
 	view := &ProductionAgentProgress{MaxSteps: productionStepLimit(state), TargetNodeID: state.Request.Production.TargetNodeID, Paused: state.ProductionPaused, WaitingForBoundary: state.ProductionPaused && state.ActiveTaskID != ""}
+	for _, key := range productionParallelKeys(state.ProductionParallel) {
+		work := state.ProductionParallel[key]
+		if work.Error == "" {
+			view.ConcurrentItems = append(view.ConcurrentItems, work.Name)
+			view.WaitingForBoundary = view.WaitingForBoundary || (state.ProductionPaused && work.TaskID != "")
+		}
+	}
 	job, err := s.repo.ProductionAgentJob(userID, runID)
 	if err != nil {
 		return view
@@ -35,14 +54,62 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 	if json.Unmarshal([]byte(job.ManifestJSON), &m) != nil {
 		return view
 	}
+	if m.Storyboard != nil {
+		view.WorkKind = "storyboard"
+		view.TotalPages = len(m.Storyboard.Scenes)
+		for _, scene := range m.Storyboard.Scenes {
+			if scene.Complete {
+				view.ProcessedPages++
+			}
+			view.ArtifactCount += len(scene.Shots)
+		}
+		view.Validated = job.Validated
+		view.WaitingForSharedFacts, _ = s.productionSharedPredecessor(userID, runID, state.Request.CanvasID)
+		return view
+	}
 	_, done, total, err := productionFacts(s.repo, userID, m)
+	view.Validated = job.Validated
 	if err == nil {
 		view.ProcessedPages, view.TotalPages = done, total
 	}
 	if rows, err := s.repo.ProductionAgentArtifacts(userID, runID); err == nil {
 		view.ArtifactCount = len(rows)
+		if m.Plan != nil {
+			view.WorkKind = "plan"
+			view.TotalPages = len(m.Plan.Assets) + 1
+			if m.Plan.Version >= 2 {
+				if policy, err := s.runtimeConcurrencySetting(); err == nil {
+					view.ConcurrencyLimit = policy.ConcurrencyFor(model.TaskConcurrencyAgent)
+				}
+				view.DocumentTotal, view.AssetTotal = len(unifiedPlanSections)+1, len(m.Plan.Assets)
+				view.TotalPages = len(m.Plan.Assets) + len(unifiedPlanSections) + 1
+			}
+			view.ProcessedPages = len(rows)
+			if m.Plan.Version >= 2 {
+				canvas, e := s.repo.CanvasProjectForUser(userID, job.CanvasID)
+				if e == nil {
+					if doc, e := creationDocument(canvas.PayloadJSON); e == nil {
+						next := productionPlanNextAction(m, doc, rows)
+						view.Phase, view.PhaseLabel, view.CurrentItem = stringValue(next["phase"]), stringValue(next["phaseLabel"]), stringValue(next["name"])
+						view.InventoryComplete = productionPlanArtifactValid(m, doc, rows, "inventory")
+						report := productionOrderedPlanCoverage(m, doc, rows)
+						view.ProcessedPages = report["validArtifactCount"].(int)
+						view.Validated = job.Validated && report["valid"] == true
+						for _, artifact := range rows {
+							if !productionPlanArtifactValid(m, doc, rows, artifact.Key) {
+								continue
+							}
+							if _, section := planSection(artifact.Key); section {
+								view.DocumentCount++
+							} else {
+								view.AssetCount++
+							}
+						}
+					}
+				}
+			}
+		}
 	}
-	view.Validated = job.Validated
 	view.WaitingForSharedFacts, _ = s.productionSharedPredecessor(userID, runID, state.Request.CanvasID)
 	return view
 }
@@ -90,8 +157,18 @@ func (s *Service) productionSharedPredecessor(userID, runID, canvasID string) (b
 		return false, err
 	}
 	needed := map[string]bool{}
+	if current.Storyboard != nil {
+		page, err := s.repo.ProductionAgentPage(userID, current.Storyboard.BriefPageID)
+		if err != nil {
+			return false, err
+		}
+		if page.Processed {
+			return false, nil
+		}
+		needed[page.ID] = true
+	}
 	for _, source := range current.Sources {
-		if source.Step == "story.body" {
+		if current.Storyboard == nil && source.Step == "story.body" {
 			for _, id := range source.Pages {
 				page, err := s.repo.ProductionAgentPage(userID, id)
 				if err != nil {
@@ -131,6 +208,12 @@ func (s *Service) productionSharedPredecessor(userID, runID, canvasID string) (b
 		var m productionManifest
 		if err = json.Unmarshal([]byte(earlier.ManifestJSON), &m); err != nil {
 			return false, err
+		}
+		if m.Storyboard != nil {
+			if needed[m.Storyboard.BriefPageID] {
+				return true, nil
+			}
+			continue
 		}
 		for _, source := range m.Sources {
 			for _, id := range source.Pages {
@@ -196,6 +279,32 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 				state.ActiveTaskID = ""
 			}
 		}
+		if action == "resume" && run.Status == "failed" {
+			for key, work := range state.ProductionParallel {
+				if work.TaskID != "" {
+					task, err := s.repo.TaskForUser(userID, work.TaskID)
+					if err != nil {
+						return err
+					}
+					if !cloudAgentTaskTerminal(task.Status) {
+						continue
+					}
+					if task.ProviderCancelStatus == model.ProviderCancelStatusRequested || task.ProviderCancelStatus == model.ProviderCancelStatusUncertain {
+						return BadAuthRequest("并发调用上游状态待确认，未重新提交")
+					}
+					if task.Status != model.TaskStatusSucceeded {
+						if err := s.taskBilling().CheckRetryEligibility(task.BillingOrderID); err != nil {
+							return err
+						}
+					}
+					if work.Error == "" && task.Status == model.TaskStatusSucceeded {
+						continue
+					}
+				}
+				work.TaskID, work.Error, work.Attempts, work.RetryAt = "", "", 0, 0
+				state.ProductionParallel[key] = work
+			}
+		}
 		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 			if action == "resume" && current.Status == "failed" {
 				if _, _, _, err := productionLoad(repo, current, &state); err != nil {
@@ -214,8 +323,13 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 				current.FailureMessage = ""
 				state.LastError = ""
 				state.ProductionRepairs = 0
+				for name := range state.ToolRepairs {
+					if strings.HasPrefix(name, "production_") {
+						delete(state.ToolRepairs, name)
+					}
+				}
 				state.ProductionProgressStep = state.Step
-				state.PiResumePrompt = "继续当前制作作业。先查询 production_status 的持久记录，复用已处理事实和已写入资产，针对遗漏修复并通过 production_check；不要重复已完成工作。任务不再受旧调用次数和任务积分预算限制，以实际产出及覆盖检查判断完成。每批查询事实后先保存或增量修订资产，再按 nextOffset 继续，不能反复查询 offset=0。"
+				state.PiResumePrompt = "继续当前制作作业。以当前持久检查点的 nextAction 和本任务工具为准，沿用已保存文稿与当前版本材料，完成未完成项及对应覆盖检查。检查点已提供的来源无需重复读取，不能反复查询未变化的进度或重述启动计划。任务按实际产出及覆盖检查判断完成；保留正常计费与余额校验。"
 			}
 			state.ProductionPaused = action == "pause"
 			state.event(runID, "production_control", map[string]any{"action": action, "maxSteps": productionStepLimit(&state), "step": state.Step, "text": map[string]string{"pause": "已请求暂停，将在模型调用边界停止", "resume": "继续制作任务，复用已保存进度"}[action]})

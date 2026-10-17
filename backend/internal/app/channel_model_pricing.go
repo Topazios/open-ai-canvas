@@ -19,10 +19,11 @@ type ChannelModelRepriceRequest struct {
 type ChannelModelTierRepriceRequest struct {
 	ID           string            `json:"id"`
 	PriceVersion int64             `json:"priceVersion"`
+	BillingMode  string            `json:"billingMode,omitempty"`
 	Prices       map[string]*int64 `json:"prices"`
 }
 
-// RepriceAdminChannelModels only changes sale prices, never model availability or cost.
+// RepriceAdminChannelModels updates sale prices and explicitly requested units, never availability or cost.
 func (s *Service) RepriceAdminChannelModels(actor *model.User, channelID string, requests []ChannelModelRepriceRequest) (int, error) {
 	if err := s.RequireAdmin(actor); err != nil {
 		return 0, err
@@ -64,13 +65,19 @@ func (s *Service) RepriceAdminChannelModels(actor *model.User, channelID string,
 		active := 0
 		for index := range item.PriceTiers {
 			tier := &item.PriceTiers[index]
-			if !tier.Enabled {
-				continue
-			}
 			active++
 			input, exists := tiers[tier.ID]
 			if !exists || input.PriceVersion != tier.PriceVersion {
 				return 0, BadAuthRequest("规格价格已变化或提交不完整，请刷新后重新调价")
+			}
+			if input.BillingMode != "" && input.BillingMode != tier.BillingMode {
+				// A unit change cannot silently reinterpret an existing nonzero cost.
+				cost := tier.CostPricing
+				if cost.Configured && (cost.UnitPriceMicrocredits != 0 || cost.InputTokenPriceMicrocredits != 0 || cost.OutputTokenPriceMicrocredits != 0 || cost.CachedTokenPriceMicrocredits != 0) {
+					return 0, BadAuthRequest("模型 " + item.ModelKey + " 已配置成本，请在模型编辑中同时调整成本计费方式")
+				}
+				tier.BillingMode = input.BillingMode
+				tier.UnitPriceMicrocredits, tier.InputTokenPriceMicrocredits, tier.OutputTokenPriceMicrocredits, tier.CachedTokenPriceMicrocredits = 0, 0, 0, 0
 			}
 			if err := applyChannelModelTierPrices(tier, item.Capability, item.Protocol, input.Prices); err != nil {
 				return 0, BadAuthRequest(fmt.Sprintf("模型 %s（规格 %s）：%s；本次未修改任何价格", item.ModelKey, tier.SelectorKey, err.Error()))
@@ -98,8 +105,8 @@ func (s *Service) RepriceAdminChannelModels(actor *model.User, channelID string,
 }
 
 func applyChannelModelTierPrices(tier *model.ChannelModelPriceTier, capability string, protocol model.ChannelInterfaceType, prices map[string]*int64) error {
-	if tier.ID == "" || !tier.PriceConfigured || !tier.CostPricing.Configured {
-		return BadAuthRequest("请先保存完整的规格成本价和销售价配置")
+	if tier.ID == "" {
+		return BadAuthRequest("请先保存模型价格规格")
 	}
 	if err := validateCreditCostPricing(capability, tier.BillingMode, tier.CostPricing); err != nil {
 		return err

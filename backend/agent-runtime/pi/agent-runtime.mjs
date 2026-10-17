@@ -173,6 +173,7 @@ async function run() {
   let session;
   // 工具进入审批时主动中止本轮；这是暂停，不是失败。
   let pausedForApproval = false;
+  const bridgedCalls = new Set();
   const tools = (request.tools ?? []).map((tool) => ({
     name: tool.name,
     label: tool.label || tool.name,
@@ -180,6 +181,7 @@ async function run() {
     parameters: Type.Unsafe(tool.parameters ?? { type: "object", properties: {} }),
     executionMode: tool.executionMode || "sequential",
     async execute(toolCallId, params, signal) {
+      bridgedCalls.add(toolCallId);
       const result = await bridge(request, "/tool", {
         callId: toolCallId,
         name: tool.name,
@@ -329,7 +331,7 @@ async function run() {
       if (message?.role !== "assistant") return;
       if (pausedForApproval || message.stopReason === "aborted") return;
       if (message.stopReason === "error" || message.errorMessage) {
-        runtimeError = new Error(message.errorMessage || "Agent assistant message failed");
+        runtimeError ??= new Error(message.errorMessage || "Agent assistant message failed");
         return;
       }
       enqueueEvent({
@@ -389,6 +391,25 @@ async function run() {
         answers: event.answers,
         formId: event.formId,
       });
+    } else if (event.type === "tool_execution_end") {
+      const bridged = bridgedCalls.delete(event.toolCallId);
+      if (event.isError && !bridged && event.toolName?.startsWith("production_")) {
+        // SDK validation runs before execute(). Surface its failure instead of
+        // letting the model regenerate indefinitely without a backend receipt.
+        const detail = (event.result?.content ?? []).filter((item) => item.type === "text").map((item) => item.text).join("\n").split("Received arguments:")[0].slice(0, 2000);
+        runtimeError = new Error(`Agent tool validation failed (${event.toolName}): ${detail}`);
+        void session.abort();
+      }
+    } else if (event.type === "turn_end") {
+      eventChain.current = eventChain.current.then(async () => {
+        const sessionFile = sessionManager.getSessionFile();
+        if (!sessionFile) return;
+        await bridge(request, "/event", {
+          type: "session_snapshot",
+          sessionJSONL: await readFile(sessionFile, "utf8"),
+          contextUsage: session.getContextUsage(),
+        });
+      });
     } else if (event.type === "tool_call_start") {
       enqueueEvent({
         type: "tool_call_start",
@@ -433,7 +454,7 @@ async function run() {
     try {
       await session.prompt(request.prompt);
     } catch (error) {
-      if (!pausedForApproval) throw error;
+      if (!pausedForApproval && !runtimeError) throw error;
     }
     await eventChain.current;
     if (runtimeError && !pausedForApproval) throw runtimeError;

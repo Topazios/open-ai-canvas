@@ -36,7 +36,7 @@ func repricingRequest(id string, price int64) ChannelModelRepriceRequest {
 
 func TestRepriceAdminChannelModelsPreservesFinalManualPrices(t *testing.T) {
 	svc, db, admin := seedRepricingModels(t)
-	disabled := model.ChannelModelPriceTier{ID: "disabled", ChannelModelID: "a", SelectorKey: `{"quality":"high"}`, Enabled: false, UnitPriceMicrocredits: 99, PriceVersion: 7}
+	disabled := model.ChannelModelPriceTier{ID: "disabled", ChannelModelID: "a", SelectorKey: `{"quality":"high"}`, SelectorJSON: `{"quality":"high"}`, Resolution: "high", BillingMode: "fixed_request", Enabled: false, PriceConfigured: false, UnitPriceMicrocredits: 99, PriceVersion: 7, CostPricing: model.CreditCostPricing{Configured: true, UnitPriceMicrocredits: 50}}
 	if err := db.Create(&disabled).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +44,8 @@ func TestRepriceAdminChannelModelsPreservesFinalManualPrices(t *testing.T) {
 		t.Fatal(err)
 	}
 	requests := []ChannelModelRepriceRequest{repricingRequest("a", 1_250_000), repricingRequest("b", 1_370_000)}
+	legacyPrice := int64(125)
+	requests[0].PriceTiers = append(requests[0].PriceTiers, ChannelModelTierRepriceRequest{ID: "disabled", PriceVersion: 7, Prices: map[string]*int64{"unitPriceMicrocredits": &legacyPrice}})
 	updated, err := svc.RepriceAdminChannelModels(admin, "channel", requests)
 	if err != nil || updated != 2 {
 		t.Fatalf("updated=%d err=%v", updated, err)
@@ -59,7 +61,7 @@ func TestRepriceAdminChannelModelsPreservesFinalManualPrices(t *testing.T) {
 		}
 		for _, tier := range item.PriceTiers {
 			if tier.ID == "disabled" {
-				if tier.UnitPriceMicrocredits != 99 || tier.PriceVersion != 7 || tier.Enabled {
+				if tier.UnitPriceMicrocredits != legacyPrice || tier.PriceVersion != 8 || tier.CostPricing.UnitPriceMicrocredits != 50 {
 					t.Fatalf("disabled=%+v", tier)
 				}
 			} else if tier.UnitPriceMicrocredits != want || tier.PriceVersion != 2 || tier.CostPricing.UnitPriceMicrocredits != 1_000_000 {
@@ -155,11 +157,9 @@ func TestRepriceAdminChannelModelsRejectsWholeBatch(t *testing.T) {
 			r[1] = repricingRequest("b", 9_007_199_254_740_992)
 			return r
 		}},
-		{name: "missing cost", mutate: func(db *gorm.DB) error {
-			return db.Model(&model.ChannelModelPriceTier{}).Where("id = ?", "tier-b").Update("cost_configured", false).Error
-		}},
-		{name: "disabled tier", mutate: func(db *gorm.DB) error {
-			return db.Model(&model.ChannelModelPriceTier{}).Where("id = ?", "tier-b").Update("enabled", false).Error
+		{name: "mode change with nonzero cost", edit: func(r []ChannelModelRepriceRequest) []ChannelModelRepriceRequest {
+			r[1].PriceTiers[0].BillingMode = "token"
+			return r
 		}},
 		{name: "cross channel", mutate: func(db *gorm.DB) error {
 			return db.Model(&model.ChannelModel{}).Where("id = ?", "b").Update("channel_id", "other").Error

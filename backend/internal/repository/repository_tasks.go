@@ -50,13 +50,16 @@ func (r *Repository) ActiveTaskCountForProjectIDs(userID string, projectIDs []st
 }
 
 // 任务领取以数据库租约为真相；PostgreSQL 锁行跳过竞争任务，SQLite 继续依赖条件更新保证单实例原子性。
-func (r *Repository) ClaimNextTask(owner string, leaseDuration time.Duration) (*model.Task, error) {
+func (r *Repository) ClaimNextTask(owner string, leaseDuration time.Duration, kinds ...model.TaskConcurrencyKind) (*model.Task, error) {
 	var task model.Task
 	now := time.Now()
 	leaseExpiresAt := now.Add(leaseDuration)
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		query := tx.Where("(status = ? OR (status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?))) AND (next_poll_at IS NULL OR next_poll_at <= ?)", model.TaskStatusQueued, model.TaskStatusRunning, now, now).
 			Order("created_at asc").Limit(1)
+		if len(kinds) > 0 {
+			query = taskConcurrencyQuery(query, kinds[0])
+		}
 		if r.Dialect() == "postgres" {
 			query = query.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"})
 		}
@@ -375,7 +378,7 @@ func (r *Repository) Tasks(userID string, limit int, projectID string, activeOnl
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	query := r.db.Select("id", "project_id", "type", "status", "stage", "media_stage", "media_recovery_json", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at", "agent_run_id", "generation_id", "approval_id", "authorized_charge_microcredits", "execution_diagnostic_json", "cancellation_source", "cancellation_actor_id", "cancellation_requested_at").
+	query := r.db.Select("id", "user_id", "project_id", "type", "status", "stage", "media_stage", "media_recovery_json", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at", "agent_run_id", "generation_id", "approval_id", "authorized_charge_microcredits", "execution_diagnostic_json", "cancellation_source", "cancellation_actor_id", "cancellation_requested_at").
 		Where("user_id = ? AND removed_at IS NULL", userID)
 	if strings.TrimSpace(projectID) != "" {
 		query = query.Where("project_id = ?", strings.TrimSpace(projectID))

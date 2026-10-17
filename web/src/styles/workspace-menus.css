@@ -1,3 +1,5 @@
+.canvas-library-actions-popup { transition: none !important; }
+
 /* Same layer as the legacy overlay rules; explicit component classes keep
    menus quiet without changing dialogs, notifications or the canvas editor. */
 @layer utilities {

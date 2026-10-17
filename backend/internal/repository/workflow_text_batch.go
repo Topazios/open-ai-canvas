@@ -7,6 +7,53 @@ import (
 	"infinite-canvas/backend/internal/model"
 )
 
+func (r *Repository) WorkflowBatchExecutionChildren(userID, parentID string, limit int) ([]model.Task, error) {
+	var tasks []model.Task
+	err := r.workflowBatchChildren(userID, parentID).Order("created_at DESC, id DESC").Limit(limit).Find(&tasks).Error
+	return tasks, err
+}
+
+func (r *Repository) WorkflowBatchFirstDispatch(userID, parentID string) (*time.Time, error) {
+	var child model.Task
+	err := r.workflowBatchChildren(userID, parentID).Select("created_at").Order("created_at ASC").Limit(1).Find(&child).Error
+	if err != nil || child.CreatedAt.IsZero() {
+		return nil, err
+	}
+	return &child.CreatedAt, nil
+}
+
+func (r *Repository) workflowBatchChildren(userID, parentID string) *gorm.DB {
+	path := "json_extract(CASE WHEN json_valid(input_json) THEN input_json ELSE '{}' END, '$.metadata.parentTaskId')"
+	if r.Dialect() == "postgres" {
+		path = "(NULLIF(input_json, '')::jsonb -> 'metadata' ->> 'parentTaskId')"
+	}
+	// Batch child IDs use wb-<hash>-<attempt>; exclude unrelated large inputs.
+	return r.db.Where("user_id = ? AND id >= ? AND id < ? AND "+path+" = ?", userID, "wb-", "wb.", parentID)
+}
+
+func (r *Repository) ActiveWorkflowBatchChildren(userID, parentID string) ([]model.Task, error) {
+	var tasks []model.Task
+	err := r.workflowBatchChildren(userID, parentID).Where("status IN ?", []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Find(&tasks).Error
+	return tasks, err
+}
+
+// Exact message allowlist excludes lease heartbeats and all raw provider payloads.
+func (r *Repository) TaskExecutionEvents(userID, taskID string, messages []string, limit int) ([]model.TaskLog, error) {
+	var logs []model.TaskLog
+	err := r.db.Select("id", "task_id", "level", "message", "created_at").Where("user_id = ? AND task_id = ? AND message IN ?", userID, taskID, messages).
+		Order("created_at DESC, id DESC").Limit(limit).Find(&logs).Error
+	return logs, err
+}
+
+func (r *Repository) WorkflowExecutionSharedChildren(userID string, prefixes []string, limit int) ([]model.Task, error) {
+	var tasks []model.Task
+	if len(prefixes) == 0 {
+		return tasks, nil
+	}
+	err := r.db.Where("user_id = ? AND substr(id, 1, ?) IN ?", userID, len(prefixes[0]), prefixes).Order("created_at DESC, id DESC").Limit(limit).Find(&tasks).Error
+	return tasks, err
+}
+
 func (r *Repository) LatestWorkflowSharedTask(userID, prefix string) (*model.Task, error) {
 	var task model.Task
 	err := r.db.Where("user_id = ? AND id LIKE ?", userID, prefix+"%").Order("created_at DESC").First(&task).Error
@@ -32,14 +79,8 @@ func (r *Repository) CreateWorkflowBatchChild(parent, child *model.Task, order *
 		if err := r.requireActiveLogicalModelForTask(tx, child); err != nil {
 			return err
 		}
-		if limit > 0 {
-			var count int64
-			if err := tx.Model(&model.Task{}).Where("user_id = ? AND id <> ? AND status IN ?", child.UserID, parent.ID, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Count(&count).Error; err != nil {
-				return err
-			}
-			if count >= int64(limit) {
-				return ErrActiveTaskLimit
-			}
+		if err := enforceActiveTaskLimit(tx, child, limit, parent.ID); err != nil {
+			return err
 		}
 		if order != nil {
 			if err := reserveBillingOrder(tx, order); err != nil {

@@ -18,6 +18,8 @@ func (r *Repository) UpdateChannelModelSalePrices(channelID string, items []mode
 			result := tx.Model(&model.ChannelModel{}).
 				Where("id = ? AND channel_id = ? AND price_version = ? AND updated_at = ?", item.ID, channelID, item.PriceVersion, item.UpdatedAt).
 				Updates(map[string]any{
+					"billing_mode":                    item.BillingMode,
+					"price_configured":                item.PriceConfigured,
 					"unit_price_microcredits":         item.UnitPriceMicrocredits,
 					"input_token_price_microcredits":  item.InputTokenPriceMicrocredits,
 					"output_token_price_microcredits": item.OutputTokenPriceMicrocredits,
@@ -31,12 +33,11 @@ func (r *Repository) UpdateChannelModelSalePrices(channelID string, items []mode
 				return ErrChannelModelPriceConflict
 			}
 			for _, tier := range item.PriceTiers {
-				if !tier.Enabled {
-					continue
-				}
 				result = tx.Model(&model.ChannelModelPriceTier{}).
 					Where("id = ? AND channel_model_id = ? AND price_version = ? AND updated_at = ?", tier.ID, item.ID, tier.PriceVersion, tier.UpdatedAt).
 					Updates(map[string]any{
+						"billing_mode":                    tier.BillingMode,
+						"price_configured":                true,
 						"unit_price_microcredits":         tier.UnitPriceMicrocredits,
 						"input_token_price_microcredits":  tier.InputTokenPriceMicrocredits,
 						"output_token_price_microcredits": tier.OutputTokenPriceMicrocredits,

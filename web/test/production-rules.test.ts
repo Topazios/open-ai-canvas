@@ -32,6 +32,18 @@ test("normalization preserves content, remains idempotent and never contaminates
     }
 });
 
+test("asset images have a compact scoped envelope; old envelopes are replaced without editing user content", () => {
+    const old = "【制作执行规范 v1 · assets/image】\n旧逐集提取与配音规则\n【制作执行规范结束】\n\n";
+    const body = "资产外观\n  保留用户内容和空格。\n";
+    const result = applyProductionRules(old + old + body, "assets", "image");
+    expect(result).toBe(productionRuleBlock("assets", "image") + "\n\n" + body);
+    expect(applyProductionRules(result, "assets", "image")).toBe(result);
+    for (const unrelated of ["逐集", "声线", "配音", "发布", "武器制造"]) expect(productionRuleBlock("assets", "image")).not.toContain(unrelated);
+    expect(productionRuleBlock("assets", "text")).toContain("逐集");
+    expect(applyProductionRules(old + body, "voice", "audio")).toBe(old + body);
+    expect(applyProductionRules("用户引文\n" + old + body, "assets", "image")).toEndWith("用户引文\n" + old + body);
+});
+
 test("story generation and revision preserve structured output and user material with the rules", () => {
     let { nodes } = createStoryDevelopmentChain({ x: 0, y: 0 });
     nodes[0].metadata!.storyDevelopment!.brief = { genre: "悬疑", style: "水彩", premise: "相机记录时间", audience: "", episodeCount: 2, minutesPerEpisode: "2", topicCount: 3 };

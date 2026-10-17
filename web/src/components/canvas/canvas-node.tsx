@@ -154,6 +154,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const showChrome = effectiveRenderLOD === "full";
     const nodeState = isFocusRelated ? "focus" : isConnectionTarget ? "target" : isSelected ? "selected" : isRelated && !isBatchChild ? "related" : "idle";
     const showOutputConnection = getNodeDefinition(data.type)?.showOutputConnection !== false;
+    const automaticWorkflowConnections = Boolean(data.metadata?.storyDevelopment || data.metadata?.shortDrama);
     const assetTags = data.metadata?.assetTags?.filter((tag) => tag.trim()) || [];
     const scriptMinHeight = data.type === CanvasNodeType.Script ? storyboardMinNodeHeight(data.metadata?.storyboardComposerHeight) : null;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -442,7 +443,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                     />}
                 </div>
 
-                {showChrome && !projectView && data.type === CanvasNodeType.Text && data.metadata?.workflowKind !== "character" && data.metadata?.status !== "loading" && data.metadata?.status !== "error" && !readOnly ? (
+                {showChrome && !projectView && data.type === CanvasNodeType.Text && data.metadata?.workflowKind !== "character" && data.metadata?.workflowKind !== "story_input" && data.metadata?.status !== "loading" && data.metadata?.status !== "error" && !readOnly ? (
                     <div
                         className={`absolute bottom-[10%] left-1/2 z-[var(--node-z-overlay)] -translate-x-1/2 motion-safe:transition motion-safe:duration-200 ${isSelected ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-3 opacity-0"}`}
                         onMouseDown={(event) => event.stopPropagation()}
@@ -539,8 +540,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 </> : null}
             </div>
 
-            {(showChrome || forceInputVisible) && !readOnly && !connectionsAtContainer && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.BatchTable ? <ConnectionSideRail side="left" scale={scale} theme={theme} visible={hovered || forceInputVisible} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
-            {showChrome && !readOnly && !connectionsAtContainer && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config && showOutputConnection ? <ConnectionSideRail side="right" scale={scale} theme={theme} visible={hovered} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
+            {(showChrome || forceInputVisible) && !readOnly && !connectionsAtContainer && !automaticWorkflowConnections && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.BatchTable ? <ConnectionSideRail side="left" scale={scale} theme={theme} visible={hovered || forceInputVisible} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
+            {showChrome && !readOnly && !connectionsAtContainer && !automaticWorkflowConnections && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config && showOutputConnection ? <ConnectionSideRail side="right" scale={scale} theme={theme} visible={hovered} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
 
         </div>
     );
@@ -739,6 +740,7 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
         >
             <div className="flex min-w-0 items-center gap-1" style={{ maxWidth: maxHeaderWidth }}>
                 <Icon className="size-3 shrink-0" strokeWidth={1.8} />
+                {node.metadata?.shortDrama?.assetIdentity ? <code className="shrink-0 text-[var(--fs-micro)]" title="资产编码">{node.metadata.shortDrama.assetIdentity.code}</code> : null}
                 {editing ? (
                     <input
                         autoFocus

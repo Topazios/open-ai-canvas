@@ -54,7 +54,10 @@ func (w *taskWorkerCoordinator) start(ctx context.Context) {
 	s.startBillingReviewAudit(ctx)
 	s.startAgentMemoryCompactScheduler()
 	s.runWorkerLoop(func(ctx context.Context) {
-		slots := make(chan struct{}, maxChannelConcurrencyLimit)
+		lanes := make(map[model.TaskConcurrencyKind]chan struct{})
+		for _, kind := range model.TaskConcurrencyKinds() {
+			lanes[kind] = make(chan struct{}, maxChannelConcurrencyLimit)
+		}
 		dispatch := func() {
 			if ctx.Err() != nil || s.IsDraining() {
 				return
@@ -64,42 +67,48 @@ func (w *taskWorkerCoordinator) start(ctx context.Context) {
 				log.Printf("task dispatch paused: stage=runtime_policy worker_id=%s error=%v", s.workerID, err)
 				return
 			}
-			workerConcurrency := setting.WorkerConcurrency
-			for len(slots) < workerConcurrency {
-				globalSlot, acquired, err := s.coordinator.AcquireLease(ctx, "workers", workerConcurrency, workerSlotLeaseDuration)
-				if err != nil || !acquired {
-					if err != nil {
-						log.Printf("task dispatch paused: stage=global_slot worker_id=%s error=%v", s.workerID, err)
+			for _, kind := range model.TaskConcurrencyKinds() {
+				slots := lanes[kind]
+				workerConcurrency := setting.ConcurrencyFor(kind)
+				for dispatched := 0; dispatched < workerConcurrency && len(slots) < workerConcurrency; dispatched++ {
+					if ctx.Err() != nil || s.IsDraining() {
+						return
 					}
-					return
-				}
-				claimCtx, cancelClaim := context.WithTimeout(ctx, 5*time.Second)
-				// 每次领取使用独立 owner，防止同一进程内旧执行者恢复后覆盖新执行者。
-				task, err := s.repo.WithContext(claimCtx).ClaimNextTask(globalSlot.Token(), 45*time.Second)
-				cancelClaim()
-				if err != nil || task == nil {
-					globalSlot.Release()
-					if err != nil {
-						log.Printf("task dispatch paused: stage=claim worker_id=%s error=%v", s.workerID, err)
+					globalSlot, acquired, err := s.coordinator.AcquireLease(ctx, "workers:"+string(kind), workerConcurrency, workerSlotLeaseDuration)
+					if err != nil || !acquired {
+						if err != nil {
+							log.Printf("task dispatch paused: stage=global_slot worker_id=%s error=%v", s.workerID, err)
+						}
+						break
 					}
-					return
-				}
-				slots <- struct{}{}
-				started := s.runWorkerTask(func() {
-					defer func() {
+					claimCtx, cancelClaim := context.WithTimeout(ctx, 5*time.Second)
+					// 每次领取使用独立 owner，防止同一进程内旧执行者恢复后覆盖新执行者。
+					task, err := s.repo.WithContext(claimCtx).ClaimNextTask(globalSlot.Token(), 45*time.Second, kind)
+					cancelClaim()
+					if err != nil || task == nil {
+						globalSlot.Release()
+						if err != nil {
+							log.Printf("task dispatch paused: stage=claim worker_id=%s error=%v", s.workerID, err)
+						}
+						break
+					}
+					slots <- struct{}{}
+					started := s.runWorkerTask(func() {
+						defer func() {
+							<-slots
+							globalSlot.Release()
+							s.wakeTaskDispatcher()
+						}()
+						if err := w.processClaimedTask(task, globalSlot); err != nil {
+							_ = s.log(task.UserID, task.ID, "error", "后台任务处理失败", err.Error())
+						}
+					})
+					if !started {
 						<-slots
 						globalSlot.Release()
-						s.wakeTaskDispatcher()
-					}()
-					if err := w.processClaimedTask(task, globalSlot); err != nil {
-						_ = s.log(task.UserID, task.ID, "error", "后台任务处理失败", err.Error())
+						_ = s.repo.ReleaseTaskLease(task.ID, task.LeaseOwner)
+						return
 					}
-				})
-				if !started {
-					<-slots
-					globalSlot.Release()
-					_ = s.repo.ReleaseTaskLease(task.ID, task.LeaseOwner)
-					return
 				}
 			}
 		}
@@ -189,6 +198,9 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task, globalSlot 
 	}
 	if task.Operation == workflowBatchOperation {
 		return s.processWorkflowTextBatch(task)
+	}
+	if stopped, err := s.cancelWorkflowChildForTerminalParent(ctx, task); stopped {
+		return err
 	}
 	if task.MediaRecoveryJSON != "" {
 		result, recoveryErr := s.resumeTaskMedia(ctx, task)

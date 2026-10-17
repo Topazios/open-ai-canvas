@@ -1,5 +1,6 @@
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
+import { isGridFrame, layoutCanvasGridGroups } from "./canvas-group-grid";
 
 type Change<T> = { before: T | null; after: T | null };
 export type AgentCanvasPatch = {
@@ -78,7 +79,27 @@ export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvas
         }
         return { ...change, before: { ...change.before!, metadata } };
     });
-    const nodes = mergeItems(project.nodes, nodeChanges);
+    const gridChanges = nodeChanges.map(change => {
+        const { before, after } = change;
+        const current = after && byId.get(after.id);
+        if (!after || !current) return change;
+        const parent = current.parentId ? byId.get(current.parentId) : undefined;
+        const geometry = (node: CanvasNodeData): CanvasNodeData => ({ ...node, width: current.width, height: current.height,
+            metadata: { ...node.metadata, frame: { ...node.metadata!.frame!, expandedWidth: current.metadata!.frame!.expandedWidth, expandedHeight: current.metadata!.frame!.expandedHeight } } });
+        if (!before) {
+            if (parent && isGridFrame(parent) && after.parentId === current.parentId) return { before: null, after: { ...after, position: current.position, width: current.width, height: current.height } };
+            if (isGridFrame(current) && after.metadata?.frame && current.metadata?.frame) return { before: null, after: geometry(after) };
+            return change;
+        }
+        // Grid child coordinates are derived. Merge content/provenance first,
+        // then reflow so a server's old three-column layout cannot undo a resize.
+        if (parent && isGridFrame(parent) && before.parentId === current.parentId && after.parentId === current.parentId) {
+            return { before: { ...before, position: current.position }, after: { ...after, position: current.position } };
+        }
+        if (!isGridFrame(current) || !before.metadata?.frame || !after.metadata?.frame || !current.metadata?.frame) return change;
+        return { before: geometry(before), after: geometry(after) };
+    });
+    const nodes = layoutCanvasGridGroups(mergeItems(project.nodes, gridChanges));
     const connections = mergeItems(project.connections, patch.connections);
     if (nodes === project.nodes && connections === project.connections) return project;
     return { ...project, nodes, connections, updatedAt: patch.updatedAt || project.updatedAt };

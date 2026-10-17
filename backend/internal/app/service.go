@@ -95,7 +95,6 @@ type Service struct {
 	approvedMediaClosed      bool
 }
 
-const taskWorkerConcurrency = 3
 const taskLogPayloadLimit = 4000
 
 type CreateTaskRequest struct {
@@ -165,14 +164,21 @@ func (s *Service) StartWorker() {
 	}
 	s.taskWorker().start(ctx)
 	s.startResourceDeletionWorker(ctx)
+	s.startAPICallLogMaintenanceWorker(ctx)
 	s.startSkillSyncWorker(ctx)
 	s.startPaymentWorker(ctx)
-	go s.syncAgentSessionLimit()
 	s.runWorkerLoop(func(ctx context.Context) {
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
+		appliedLimit := 0
 		for {
-			s.recoverCloudAgentPiRunners()
+			var err error
+			appliedLimit, err = s.syncAgentSessionLimit(ctx, appliedLimit)
+			if err != nil {
+				slog.Warn("agent session limit sync failed", "error", err)
+			} else {
+				s.recoverCloudAgentPiRunners()
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -182,17 +188,20 @@ func (s *Service) StartWorker() {
 	})
 }
 
-func (s *Service) syncAgentSessionLimit() {
+func (s *Service) syncAgentSessionLimit(parent context.Context, applied int) (int, error) {
 	policy, err := s.RuntimePolicy()
 	if err != nil {
-		slog.Warn("agent session limit load failed", "error", err)
-		return
+		return applied, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if applied == policy.Task.AgentMaxSessions {
+		return applied, nil
+	}
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 	if err := s.applyAgentSessionLimit(ctx, policy.Task.AgentMaxSessions); err != nil {
-		slog.Warn("agent session limit apply failed", "error", err)
+		return applied, err
 	}
+	return policy.Task.AgentMaxSessions, nil
 }
 
 func (s *Service) BeginDrain() { s.backgroundWorkers().BeginDrain() }
@@ -261,7 +270,11 @@ func (s *Service) TasksWithOptions(userID string, options TaskListOptions) ([]Ta
 		}
 		tasks[index].ProviderRequestID = providerRequestIDs[tasks[index].ID]
 	}
-	return taskSummariesForOutputWithBilling(tasks, orders), nil
+	parents, err := s.repo.TaskPresentationParents(userID, missingTaskPresentationParents(tasks))
+	if err != nil {
+		return nil, err
+	}
+	return taskSummariesForOutputWithBilling(tasks, orders, parents...), nil
 }
 
 func (s *Service) Task(userID string, id string) (*model.Task, error) {

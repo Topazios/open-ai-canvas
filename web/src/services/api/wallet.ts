@@ -349,8 +349,31 @@ export function updateAdminChannelModelsSettings(channelId: string, input: Chann
 export type ChannelModelRepriceInput = {
     modelId: string;
     priceVersion: number;
-    priceTiers: { id: string; priceVersion: number; prices: Partial<Record<"unitPriceMicrocredits" | "inputTokenPriceMicrocredits" | "outputTokenPriceMicrocredits" | "cachedTokenPriceMicrocredits", number>> }[];
+    priceTiers: { id: string; priceVersion: number; billingMode?: ChannelModel["billingMode"]; prices: Partial<Record<"unitPriceMicrocredits" | "inputTokenPriceMicrocredits" | "outputTokenPriceMicrocredits" | "cachedTokenPriceMicrocredits", number>> }[];
 };
+
+export type ModelDefaultPrice = {
+    modelId: string;
+    tierId: string;
+    upstreamModel: string;
+    profileId?: string;
+    sourceUrl?: string;
+    note?: string;
+    supported: boolean;
+    reason?: string;
+    billingMode?: ChannelModel["billingMode"];
+    unitPrice: number;
+    inputTokenPrice: number;
+    outputTokenPrice: number;
+    cachedTokenPrice: number;
+};
+
+export type OfficialPriceProfile = { id: string; modelKey: string; label: string; capability: ChannelModel["capability"]; billingMode: string; sourceUrl: string; note: string; unsupportedReason?: string; autoMatch: boolean };
+export type ModelDefaultPricing = { currency: "USD"; source: string; verifiedAt?: string; fetchedAt: string; profiles?: OfficialPriceProfile[]; prices: ModelDefaultPrice[] };
+
+export function previewAdminDefaultPricing(channelId: string, modelIds: string[], signal?: AbortSignal, mappings?: Record<string, string>) {
+    return http.post<ModelDefaultPricing>(`/admin/channels/${encodeURIComponent(channelId)}/models/default-pricing`, { modelIds, mappings }, { signal });
+}
 
 export function repriceAdminChannelModels(channelId: string, models: ChannelModelRepriceInput[]) {
     return http.post<{ updated: number }>(`/admin/channels/${encodeURIComponent(channelId)}/models/batch-reprice`, { models });

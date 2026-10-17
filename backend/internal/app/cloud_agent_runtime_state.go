@@ -194,7 +194,7 @@ func validateCloudAgentRuntime(run *model.CloudAgentExecution, state *cloudAgent
 		return errors.New("Agent runtime call cursor is invalid")
 	}
 	for toolName, repair := range state.ToolRepairs {
-		if toolName == "" || utf8.RuneCountInString(toolName) > 80 || repair.Attempt < 1 || repair.Attempt > cloudAgentToolAttemptLimit || repair.GroupID == "" {
+		if toolName == "" || utf8.RuneCountInString(toolName) > 80 || repair.Attempt < 1 || repair.Attempt > cloudAgentToolAttemptLimit || repair.GroupID == "" || len(repair.Fingerprint) > 64 {
 			return errors.New("Agent runtime tool repair state is invalid")
 		}
 		if err := validateCloudAgentID(repair.GroupID, "工具纠错组 ID", 240); err != nil {
@@ -222,6 +222,16 @@ func validateCloudAgentRuntime(run *model.CloudAgentExecution, state *cloudAgent
 	}
 	if state.ActiveTaskID != "" && !cloudAgentContainsString(state.TaskIDs, state.ActiveTaskID) {
 		return errors.New("Agent runtime active task is not in task history")
+	}
+	if len(state.ProductionParallel) > 0 && (state.Request.Production == nil || state.ActiveTaskID != "" || state.MediaTaskID != "") {
+		return errors.New("Agent production parallel tasks conflict with the serial lane")
+	}
+	parallelTasks := map[string]bool{}
+	for key, work := range state.ProductionParallel {
+		if key == "" || key != work.Key || work.Attempts < 0 || (work.TaskID != "" && (!cloudAgentContainsString(state.TaskIDs, work.TaskID) || parallelTasks[work.TaskID])) {
+			return errors.New("Agent production parallel task checkpoint is invalid")
+		}
+		parallelTasks[work.TaskID] = true
 	}
 	if state.MediaTaskID != "" {
 		if !cloudAgentContainsString(state.TaskIDs, state.MediaTaskID) || state.CallIndex >= len(state.Calls) || (state.Calls[state.CallIndex].Function.Name != "generate_media" && state.Calls[state.CallIndex].Function.Name != "image_layer_split") {
@@ -267,7 +277,7 @@ func validateCloudAgentRuntime(run *model.CloudAgentExecution, state *cloudAgent
 		if err := validateCloudAgentID(call.ID, "工具调用 ID", 160); err != nil || call.Function.Name == "" || utf8.RuneCountInString(call.Function.Name) > 80 || !utf8.ValidString(call.Function.Name) {
 			return errors.New("Agent runtime tool call is invalid")
 		}
-		if len(call.Function.Arguments) > 32000 {
+		if len(call.Function.Arguments) > cloudAgentToolArgumentLimit(state.Request.Production != nil, call.Function.Name) {
 			return errors.New("Agent runtime tool arguments are too large")
 		}
 		if err := decodeCloudAgentJSONObject(call.Function.Arguments, &map[string]any{}); err != nil {

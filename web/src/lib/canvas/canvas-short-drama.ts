@@ -7,6 +7,8 @@ import { shortDramaStages, type ShortDramaStageId } from "@/lib/short-drama-stag
 import { shortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
 import { nodeWorkflow, workflowAncestors, workflowEpisodeProgress, episodeProgressLabel, productionBibleReady } from "./canvas-short-drama-workflow";
 import { workflowImageSubjects, workflowImageShots } from "./canvas-workflow-images";
+import { workflowAssetKind } from "./canvas-production-sources";
+import type { PlannedAssetKind } from "../production-plan";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
 
 const SHORT_DRAMA_GUIDE_STORAGE_KEY = "canvas-short-drama-guide-v2";
@@ -25,6 +27,7 @@ export type CanvasShortDramaTask = {
     nodeId?: string;
     unavailableReason?: string;
     progressLabel?: string;
+    statusDetail?: string;
     optional?: boolean;
 };
 export type CanvasShortDramaStepStatus = "pending" | "current" | "completed";
@@ -51,7 +54,7 @@ type ShortDramaGuideGroup = {
 
 const shortDramaGuideGroups: Record<"assets" | "storyboard", ShortDramaGuideGroup[]> = {
     assets: [
-        { id: "guide.assets.fixed", label: "固定资产提取与归并", stepIds: ["assets.characters", "assets.environments", "assets.props", "assets.special"] },
+        { id: "guide.assets.fixed", label: "正文资产校核与补充", stepIds: ["assets.reconcile"] },
         { id: "guide.assets.references", label: "参考资产生成", stepIds: ["assets.character_references", "assets.environment_references", "assets.prop_references", "assets.special_references"] },
     ],
     storyboard: [
@@ -163,7 +166,6 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
     const tasks: Record<ShortDramaStageId, CanvasShortDramaTask[]> = {
         story: storyTasks,
         assets: [
-            { id: "assets.bible", label: "统一制作规范" },
             ...shortDramaGuideGroups.assets.map((group) => ({ ...group, stepIds: [...group.stepIds] })),
         ],
         storyboard: shortDramaGuideGroups.storyboard.map((group) => ({ ...group, stepIds: [...group.stepIds], nodeId: storyboardNodeId })),
@@ -203,33 +205,57 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
         label: step.label,
         nodeId: tasks[step.key].find((task) => task.nodeId)?.nodeId,
         tasks: tasks[step.key].map((task) => {
-            const memberIds = task.stepIds || (shortDramaStep(task.id) ? [task.id as ShortDramaStepId] : []);
+            let memberIds = task.stepIds || (shortDramaStep(task.id) ? [task.id as ShortDramaStepId] : []);
+            if (pipelineId && task.id === "guide.assets.fixed" && !nodes.some((node) => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === "assets.reconcile")) {
+                const legacy: ShortDramaStepId[] = ["assets.characters", "assets.environments", "assets.props", "assets.special"];
+                if (nodes.some((node) => nodeWorkflow(node)?.pipelineId === pipelineId && legacy.includes(nodeWorkflow(node)!.step))) memberIds = legacy;
+            }
             if (!memberIds.length || task.id === "story.topic") return task;
             const memberState = memberIds.map((memberId) => {
                 const definition = shortDramaStep(memberId)!;
-                const documents = nodes.filter((node) => nodeWorkflow(node)?.step === definition.id && nodeWorkflow(node)?.pipelineId === pipelineId && !nodeWorkflow(node)?.mediaGroup);
+                const documents = nodes.filter((node) => nodeWorkflow(node)?.step === definition.id && nodeWorkflow(node)?.pipelineId === pipelineId && !nodeWorkflow(node)?.mediaGroup && !nodeWorkflow(node)?.planGroup);
+                let statusDetail = "";
                 const validDocument = (node: CanvasNodeData) => {
-                    if (node.metadata?.status === "loading" || node.metadata?.status === "error") return false;
-                    if (definition.output === "asset-group" && nodeWorkflow(node)?.role !== "collection") return false;
+                    if (node.metadata?.status === "loading" || node.metadata?.status === "error") {
+                        statusDetail = node.metadata.taskStage || (node.metadata.status === "loading" ? "生成中" : "生成失败");
+                        return false;
+                    }
+                    const legacyPlan = definition.id === "story.plan" && !nodeWorkflow(node)?.assetKey && !nodeWorkflow(node)?.assetGroup && nodeWorkflow(node)?.role !== "collection";
+                    if (definition.output === "asset-group" && nodeWorkflow(node)?.role !== "collection" && !legacyPlan) return false;
                     if (definition.id === "assets.bible" && !productionBibleReady(node, nodes)) return false;
-                    if (definition.output === "asset-group" && definition.id !== "assets.bible") {
+                    if (definition.output === "asset-group" && definition.id !== "assets.bible" && !legacyPlan) {
                         const manifest = nodes.find((entry) => entry.id === nodeWorkflow(node)?.assetGroup?.manifestId);
-                        if (manifest?.metadata?.status !== "success" || nodeWorkflow(manifest)?.assetOutput || !nodeWorkflow(manifest)?.materializedTaskId) return false;
+                        if (manifest?.metadata?.status !== "success" || nodeWorkflow(manifest)?.assetOutput || !nodeWorkflow(manifest)?.materializedTaskId) {
+                            const count = nodes.filter((entry) => entry.parentId === node.id && entry.id !== manifest?.id && entry.metadata?.content?.trim()).length;
+                            const action = definition.id === "story.plan" ? "方案制作" : "提取";
+                            statusDetail = `${manifest?.metadata?.status === "error" ? `任务失败，${action}未完成` : manifest?.metadata?.status === "loading" ? `${action}中` : `${action}待完成`} · 已保留 ${count} 项`;
+                            return false;
+                        }
                     }
                     if (definition.mediaOutput && (nodeWorkflow(node)?.mediaKind !== definition.mediaOutput || node.metadata?.status !== "success" || !(node.metadata?.storageKey || node.metadata?.content))) return false;
-                    try { workflowAncestors([node.id], nodes, nodeWorkflow(node)!.pipelineId, connections); return true; } catch { return false; }
+                    try { workflowAncestors([node.id], nodes, nodeWorkflow(node)!.pipelineId, connections); return true; }
+                    catch (error) { statusDetail = error instanceof Error ? error.message : "来源需核对"; return false; }
                 };
-                const latest = documents.filter((node) => definition.output !== "asset-group" || nodeWorkflow(node)?.role === "collection").at(-1);
+                const latest = documents.filter((node) => definition.output !== "asset-group" || nodeWorkflow(node)?.role === "collection" || (definition.id === "story.plan" && !nodeWorkflow(node)?.assetKey)).at(-1);
                 let outputReady = Boolean(latest && validDocument(latest));
                 if (definition.mediaOutput && definition.stage === "assets" && latest) {
                     const sourceNodeIds = nodeWorkflow(latest)!.sourceNodeIds;
                     const subjects = workflowImageSubjects({ step: definition.id, sourceNodeIds }, nodes);
-                    outputReady = subjects.length > 0 && subjects.every((subject) => {
+                    const completed = subjects.filter((subject) => {
                         const result = documents.filter((node) => nodeWorkflow(node)?.mediaSubjectId === subject.id).at(-1);
                         return Boolean(result && validDocument(result));
-                    });
+                    }).length;
+                    outputReady = subjects.length > 0 && completed === subjects.length;
+                    if (!outputReady) statusDetail = `已完成 ${completed}/${subjects.length} 项参考图`;
                 }
                 if (definition.mediaOutput && definition.stage === "assets" && !outputReady) {
+                    const kind = workflowAssetKind[definition.requires[0]] as PlannedAssetKind | undefined;
+                    const plans = nodes.filter((node) => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === "story.plan" && nodeWorkflow(node)?.role === "collection" && !nodeWorkflow(node)?.planGroup);
+                    const plan = plans.length === 1 ? plans[0] : undefined;
+                    const hasAssets = kind && nodes.some((node) => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.assetIdentity?.kind === kind);
+                    if (plan && kind && !hasAssets && nodeWorkflow(plan)?.planAbsent?.[kind]) {
+                        try { workflowAncestors([plan.id], nodes, pipelineId!, connections); outputReady = true; } catch { /* Stale absence declarations cannot skip production. */ }
+                    }
                     const input = nodes.filter((node) => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === definition.requires[0] && nodeWorkflow(node)?.assetGroup).at(-1);
                     const inputData = nodeWorkflow(input);
                     const manifest = nodes.find((node) => node.id === inputData?.assetGroup?.manifestId);
@@ -248,7 +274,8 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
                     });
                 }
                 const ready = definition.stage === "story" ? Boolean(task.ready) : definition.production && !definition.mediaOutput ? Boolean(task.ready) : outputReady;
-                return { definition, outputReady, ready, nodeId: latest?.id };
+                if (outputReady) statusDetail = ready ? "" : "文稿已产出 · 实际执行待验收";
+                return { definition, outputReady, ready, nodeId: latest?.id, statusDetail };
             });
             const next = memberState.find((member) => !member.outputReady && !member.definition.optional) || memberState.find((member) => !member.outputReady && member.nodeId);
             const ready = memberState.every((member) => member.ready || member.definition.optional);
@@ -262,6 +289,7 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
                 unavailableReason: undefined,
                 nodeId: next?.nodeId || memberState.findLast((member) => member.nodeId)?.nodeId || task.nodeId,
                 progressLabel: task.progressLabel || (memberIds.length > 1 ? `${memberState.filter((member) => member.outputReady && !member.definition.optional).length}/${memberState.filter((member) => !member.definition.optional).length} 项已产出` : undefined),
+                statusDetail: memberState.filter((member) => !member.definition.optional && member.statusDetail).map((member) => `${member.definition.label}：${member.statusDetail}`).join("；"),
                 ready,
             };
         }),

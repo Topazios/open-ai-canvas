@@ -158,7 +158,7 @@ func (s *Service) sanitizeChannelModel(cm *model.ChannelModel) (PublicChannelMod
 
 	publicTiers := make([]PublicChannelModelPriceTier, 0, len(priceTiers))
 	for _, tier := range priceTiers {
-		if !tier.Enabled || !tier.PriceConfigured || !ValidatePriceTierPrice(&tier, cm.Capability, cm.Protocol) {
+		if !ValidatePriceTierPrice(&tier, cm.Capability, cm.Protocol) {
 			continue
 		}
 		publicTiers = append(publicTiers, PublicChannelModelPriceTier{

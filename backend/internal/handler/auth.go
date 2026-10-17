@@ -154,17 +154,17 @@ func RegisterAuthRoutes(r *gin.RouterGroup, svc *service.Service) {
 		ok(c, gin.H{"ok": true})
 	})
 	r.GET("/auth/session", func(c *gin.Context) {
-		user, err := currentUser(c, svc)
-		if err != nil {
-			ok(c, gin.H{"user": nil})
-			return
-		}
-		publicUser, err := svc.PublicAuthUser(user)
+		limits, err := svc.PublicRuntimeLimits()
 		if err != nil {
 			failService(c, err)
 			return
 		}
-		limits, err := svc.PublicRuntimeLimits()
+		user, err := currentUser(c, svc)
+		if err != nil {
+			ok(c, gin.H{"user": nil, "runtimeLimits": limits})
+			return
+		}
+		publicUser, err := svc.PublicAuthUser(user)
 		if err != nil {
 			failService(c, err)
 			return
@@ -383,7 +383,7 @@ func proxySystemRequestPath(c *gin.Context, svc *service.Service, user *model.Us
 		return
 	}
 	// 同步代理与后台任务必须共享渠道槽位，否则两条入口会共同超过供应商并发上限。
-	releaseChannel, concurrencyLimit, err := svc.AcquireChannelSlot(c.Request.Context(), channel.ID, "", 36*time.Minute)
+	releaseChannel, concurrencyLimit, err := svc.AcquireChannelSlot(c.Request.Context(), channel.ID, "", 36*time.Minute, model.TaskConcurrency(capability, ""))
 	if err != nil {
 		log := apiCallLog(user, channel, billingOrderID, capability, protocol, c.Request.Method, path, target, body, c.GetHeader("Content-Type"), model.ApiCallStatusFailed, 0, time.Since(startedAt), err.Error(), concurrencyLimit)
 		log.ErrorCode, log.Error = service.ChannelSlotFailureDetails(err)

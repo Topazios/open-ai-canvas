@@ -75,9 +75,10 @@ export function CanvasWorkspacePanel({
                     ) : tasks.loading ? (
                         <p className="p-4">正在加载任务…</p>
                     ) : history ? (
-                        <CanvasWorkspaceHistoryPanel tasks={tasks.allTasks} refreshing={tasks.refreshing} onRefresh={() => void tasks.refetch()} onCancelTask={onCancelTask} />
+                        <CanvasWorkspaceHistoryPanel tasks={tasks.allTasks} nodes={nodes} refreshing={tasks.refreshing} onRefresh={() => void tasks.refetch()} onCancelTask={onCancelTask} />
                     ) : (
                         <CanvasWorkspaceTaskPanel
+                            nodes={nodes}
                             tasks={history ? tasks.allTasks : tasks.tasks.filter((t) => t.status === "queued" || t.status === "running")}
                             refreshing={tasks.refreshing}
                             onRefresh={() => void tasks.refetch()}

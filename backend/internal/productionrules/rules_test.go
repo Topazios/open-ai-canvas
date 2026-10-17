@@ -31,3 +31,26 @@ func TestUnknownScopeIsNotRewritten(t *testing.T) {
 		}
 	}
 }
+
+func TestAssetImageRulesReplaceOldEnvelopeOnly(t *testing.T) {
+	old := "【制作执行规范 v1 · assets/image】\n旧逐集提取与配音规则\n【制作执行规范结束】\n\n"
+	body := "资产外观\n  保留用户内容和空格。\n"
+	got := Apply(old+old+body, "assets", "image")
+	if got != Block("assets", "image")+"\n\n"+body || Apply(got, "assets", "image") != got {
+		t.Fatal("old envelope remained, body changed or normalization is not idempotent")
+	}
+	for _, unrelated := range []string{"逐集", "声线", "配音", "发布", "武器制造"} {
+		if strings.Contains(Block("assets", "image"), unrelated) {
+			t.Fatalf("unrelated image instruction: %s", unrelated)
+		}
+	}
+	if !strings.Contains(Block("assets", "text"), "逐集") || !strings.Contains(Block("assets", "text"), "声线") {
+		t.Fatal("asset text extraction rules changed")
+	}
+	if Apply(old+body, "voice", "audio") != old+body {
+		t.Fatal("audio content changed")
+	}
+	if !strings.HasSuffix(Apply("用户引文\n"+old+body, "assets", "image"), "用户引文\n"+old+body) {
+		t.Fatal("embedded user text rewritten")
+	}
+}

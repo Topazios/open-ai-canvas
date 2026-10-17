@@ -38,6 +38,13 @@ func cloudAgentMediaCall(call cloudAgentCall) cloudAgentCall {
 }
 
 func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *cloudAgentRuntime, req CreateTaskRequest, media *cloudAgentMediaPlan) error {
+	return s.enqueueCloudAgentTaskWithWork(run, state, req, media, nil)
+}
+
+func (s *Service) enqueueCloudAgentTaskWithWork(run *model.CloudAgentExecution, state *cloudAgentRuntime, req CreateTaskRequest, media *cloudAgentMediaPlan, work *productionParallelWork) error {
+	if s.IsDraining() {
+		return context.Canceled
+	}
 	unbounded := state.Request.Production != nil && media == nil
 	remaining := int64(0)
 	if !unbounded {
@@ -83,9 +90,16 @@ func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *c
 	}
 	prepare := &creationTaskPreparation{}
 	req.admission = &taskAdmission{ID: cloudAgentID(run.UserID, fmt.Sprintf("%s:task:%d", run.ID, len(state.TaskIDs))), MaxCharge: remaining, UnboundedAgentBudget: unbounded, AgentRunID: run.ID, GenerationID: generationID, ApprovalID: approvalID}
+	req.admission.WaitForActiveSlot = work != nil
 	req.creationPrepare = prepare
 	task, err := s.CreateTask(run.UserID, req)
 	if err != nil {
+		if s.IsDraining() {
+			return context.Canceled
+		}
+		if work != nil && errors.Is(err, repository.ErrActiveTaskLimit) {
+			return err
+		}
 		if media != nil {
 			return s.cloudAgentMediaError(run, state, "admission", false, false, err)
 		}
@@ -191,7 +205,7 @@ func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *c
 			state.AutoPreparedCallHash = ""
 		}
 		state.TaskIDs = append(state.TaskIDs, task.ID)
-		if state.Request.Production != nil && state.ProductionModelKey != "" && media == nil {
+		if state.Request.Production != nil && state.ProductionModelKey != "" && media == nil && work == nil {
 			if state.ProductionModelReceipts == nil {
 				state.ProductionModelReceipts = map[string]string{}
 			}
@@ -207,7 +221,15 @@ func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *c
 			}
 			state.event(run.ID, "generation_task_created", map[string]any{"toolName": toolName, "taskId": task.ID, "nodeId": media.Args.NodeID, "title": media.Args.Title, "mode": media.Args.Mode, "canvasId": state.Request.CanvasID, "referenceNodeIds": media.Args.ReferenceNodeIDs, "text": "媒体节点与引用连线已创建，生成任务已提交"})
 		} else {
-			state.ActiveTaskID = task.ID
+			if work == nil {
+				state.ActiveTaskID = task.ID
+			} else {
+				if state.ProductionParallel == nil {
+					state.ProductionParallel = map[string]productionParallelWork{}
+				}
+				work.TaskID, work.Step = task.ID, state.Step+1
+				state.ProductionParallel[work.Key] = *work
+			}
 			// 压缩调用不是本轮的一步：压完还要用压缩后的上下文继续步进，步数不该被它占掉。
 			if state.ContextCompaction != nil && req.Operation == cloudAgentContextCompactionOperation {
 				state.ContextCompaction.Status = "running"
@@ -233,7 +255,11 @@ func (s *Service) enqueueCloudAgentTask(run *model.CloudAgentExecution, state *c
 				}
 				state.Step++
 				if state.Request.Production != nil {
-					state.event(run.ID, "production_model_started", map[string]any{"step": state.Step, "taskId": task.ID, "text": "已调度模型调用"})
+					payload := map[string]any{"step": state.Step, "taskId": task.ID, "text": "已调度模型调用"}
+					if work != nil {
+						payload["itemName"], payload["assetKey"] = work.Name, work.Key
+					}
+					state.event(run.ID, "production_model_started", payload)
 				}
 			}
 		}

@@ -35,7 +35,13 @@ func (s *Service) finishCloudAgentCleanup(ctx context.Context, run *model.CloudA
 		run = refreshed
 	}
 	seen := map[string]bool{}
-	for _, id := range []string{run.ID, activeID, mediaID} {
+	ids := []string{run.ID, activeID, mediaID}
+	if decodeErr == nil {
+		for _, work := range state.ProductionParallel {
+			ids = append(ids, work.TaskID)
+		}
+	}
+	for _, id := range ids {
 		if id == "" || seen[id] {
 			continue
 		}

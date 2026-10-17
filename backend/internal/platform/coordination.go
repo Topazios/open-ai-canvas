@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"infinite-canvas/backend/internal/kernel"
+	"infinite-canvas/backend/internal/model"
 	"log"
 	"math/rand/v2"
 	"os"
@@ -22,9 +23,8 @@ type localRateEntry struct {
 }
 
 const (
-	MinChannelConcurrencyLimit     = 1
-	MaxChannelConcurrencyLimit     = maxRuntimeConcurrency
-	defaultChannelConcurrencyValue = 8
+	MinChannelConcurrencyLimit = 1
+	MaxChannelConcurrencyLimit = maxRuntimeConcurrency
 )
 
 type channelSlotError struct {
@@ -386,49 +386,54 @@ func defaultWorkerConcurrencyLimit() int {
 }
 
 func defaultChannelConcurrencyLimit() int {
-	return envInt("CANVAS_CHANNEL_CONCURRENCY", defaultChannelConcurrencyValue)
+	return envInt("CANVAS_CHANNEL_CONCURRENCY", defaultChannelConcurrency)
 }
 
-func effectiveChannelConcurrencyLimit(configured int) int {
-	if configured < MinChannelConcurrencyLimit || configured > MaxChannelConcurrencyLimit {
-		return defaultChannelConcurrencyLimit()
-	}
-	return configured
-}
-
-func (s *Service) AcquireChannelSlot(ctx context.Context, channelID string, fallbackScope string, ttl time.Duration) (func(), int, error) {
-	setting, err := s.RuntimeConcurrencySetting()
+func (s *Service) AcquireChannelSlot(ctx context.Context, channelID string, fallbackScope string, ttl time.Duration, kinds ...model.TaskConcurrencyKind) (func(), int, error) {
 	limit := defaultChannelConcurrencyLimit()
-	if err != nil {
-		return nil, limit, channelSlotError{scope: kernel.FirstNonEmpty(strings.TrimSpace(channelID), strings.TrimSpace(fallbackScope), "unknown"), limit: limit, err: fmt.Errorf("读取全局并发配置失败：%w", err)}
-	}
-	limit = setting.ChannelConcurrency
 	scope := strings.TrimSpace(channelID)
-	if scope != "" {
-		channelLimit, err := s.host.ChannelConcurrencyLimit(scope)
-		if err != nil {
-			return nil, limit, channelSlotError{scope: scope, limit: limit, err: fmt.Errorf("读取渠道并发配置失败：%w", err)}
-		}
-		if channelLimit > 0 {
-			if channelLimit < MinChannelConcurrencyLimit || channelLimit > MaxChannelConcurrencyLimit {
-				return nil, limit, channelSlotError{scope: scope, limit: limit, err: errors.New("渠道并发配置超出 1-999 范围")}
-			}
-			limit = channelLimit
-		}
-	} else {
+	if scope == "" {
 		scope = strings.TrimSpace(fallbackScope)
 	}
-	if scope == "" {
-		return nil, limit, channelSlotError{scope: "unknown", limit: limit, err: errors.New("渠道并发范围为空")}
+	if scope != "" && len(kinds) > 0 {
+		scope += ":kind:" + string(kinds[0])
 	}
-	if s.Coordinator == nil {
-		return nil, limit, channelSlotError{scope: scope, limit: limit, err: errors.New("运行时协调器未初始化")}
+	delay := 200 * time.Millisecond
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, limit, channelSlotError{scope: kernel.FirstNonEmpty(scope, "unknown"), limit: limit, err: err}
+		}
+		// Refresh the cached global policy on every attempt, including long waits.
+		setting, err := s.RuntimeConcurrencySetting()
+		if err != nil {
+			return nil, limit, channelSlotError{scope: kernel.FirstNonEmpty(scope, "unknown"), limit: limit, err: fmt.Errorf("读取全局并发配置失败：%w", err)}
+		}
+		limit = setting.ChannelConcurrency
+		if len(kinds) > 0 {
+			limit = min(limit, setting.ConcurrencyFor(kinds[0]))
+		}
+		if scope == "" {
+			return nil, limit, channelSlotError{scope: "unknown", limit: limit, err: errors.New("渠道并发范围为空")}
+		}
+		if s.Coordinator == nil {
+			return nil, limit, channelSlotError{scope: scope, limit: limit, err: errors.New("运行时协调器未初始化")}
+		}
+		release, acquired, err := s.Coordinator.Acquire(ctx, "channel:"+scope, limit, ttl)
+		if err != nil {
+			return nil, limit, channelSlotError{scope: scope, limit: limit, err: err}
+		}
+		if acquired {
+			return release, limit, nil
+		}
+		wait := time.NewTimer(channelSlotRetryDelay(delay))
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return nil, limit, channelSlotError{scope: scope, limit: limit, err: ctx.Err()}
+		case <-wait.C:
+		}
+		delay = min(delay*2, 2*time.Second)
 	}
-	release, err := s.Coordinator.AcquireWithWait(ctx, "channel:"+scope, limit, ttl)
-	if err != nil {
-		return nil, limit, channelSlotError{scope: scope, limit: limit, err: err}
-	}
-	return release, limit, nil
 }
 
 func (s *Service) Close() error {
@@ -452,11 +457,16 @@ func (s *Service) RequestRetryAfter(ctx context.Context, key string, window time
 	return s.Coordinator.RateRetryAfter(ctx, key, window)
 }
 
-func (s *Service) AcquireCustomRelaySlot(ctx context.Context, userID string, limit int, ttl time.Duration) (func(), bool, error) {
+func (s *Service) AcquireCustomRelaySlot(ctx context.Context, userID string, _ int, ttl time.Duration) (func(), bool, error) {
+	// Keep the legacy argument for callers, but enforce the current global policy.
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		return nil, false, err
+	}
 	if s.Coordinator == nil {
 		return nil, false, errors.New("运行时协调器未初始化")
 	}
-	return s.Coordinator.Acquire(ctx, "custom-relay:"+userID, limit, ttl)
+	return s.Coordinator.Acquire(ctx, "custom-relay:"+userID, policy.Request.CustomRelayConcurrency, ttl)
 }
 
 func (c *Coordinator) HasRedis() bool {

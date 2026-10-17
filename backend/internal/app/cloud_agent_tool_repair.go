@@ -1,8 +1,10 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"infinite-canvas/backend/internal/model"
 )
@@ -10,8 +12,9 @@ import (
 const cloudAgentToolAttemptLimit = 3
 
 type cloudAgentToolRepair struct {
-	GroupID string `json:"groupId"`
-	Attempt int    `json:"attempt"`
+	GroupID     string `json:"groupId"`
+	Attempt     int    `json:"attempt"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 func cloudAgentRetryReceipt(groupID string, attempt int, status string) map[string]any {
@@ -45,6 +48,19 @@ func cloudAgentTrackToolRepair(runID string, state *cloudAgentRuntime, call clou
 	if state.ToolRepairs == nil {
 		state.ToolRepairs = map[string]cloudAgentToolRepair{}
 	}
+	if state.Request.Production != nil && strings.HasPrefix(call.Function.Name, "production_") {
+		// Different documents or corrected fields are useful work, not retries of
+		// one failed mutation. Stop only an identical invalid request at unchanged
+		// progress; never accumulate all production validation errors into a cap.
+		var arguments any
+		if json.Unmarshal([]byte(call.Function.Arguments), &arguments) != nil {
+			arguments = call.Function.Arguments
+		}
+		fingerprint := productionHash([]any{call.Function.Name, arguments, cloudAgentSafeToolError(err), state.ProductionProgressStep})
+		if previous.Fingerprint != fingerprint {
+			previous, exists = cloudAgentToolRepair{Fingerprint: fingerprint}, false
+		}
+	}
 	if !exists {
 		previous.GroupID = runID + ":repair:" + call.ID
 	}
@@ -66,6 +82,9 @@ func cloudAgentRecordToolResult(run *model.CloudAgentExecution, state *cloudAgen
 	}
 	run.Status = "failed"
 	run.FailureMessage = truncateRunes(fmt.Sprintf("自动纠正已尝试 %d 次，仍未完成：%s", cloudAgentToolAttemptLimit, cloudAgentSafeToolError(err)), 1000)
+	if state.Request.Production != nil && strings.HasPrefix(call.Function.Name, "production_") {
+		run.FailureMessage = truncateRunes("相同工具参数连续失败且进度未变化，已保存进度；请修正后继续："+cloudAgentSafeToolError(err), 1000)
+	}
 	cloudAgentDropInterjections(run.ID, "本轮已结束："+truncateRunes(run.FailureMessage, 120), state)
 	state.event(run.ID, "run_failed", map[string]any{
 		"text": run.FailureMessage, "reason": "tool_retry_exhausted", "toolName": call.Function.Name,

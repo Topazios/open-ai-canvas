@@ -11,6 +11,10 @@ import (
 	"infinite-canvas/backend/internal/model"
 )
 
+func apiCallLogMetadataBytes(log model.ApiCallLog) int64 {
+	return int64(len(log.Path) + len(log.Model) + len(log.ProviderRequestID) + len(log.ErrorCode) + len(log.Error) + len(log.UpstreamURL) + len(log.RequestContentType))
+}
+
 func (s *Service) LogAPICall(log model.ApiCallLog) error {
 	if log.ID == "" {
 		log.ID = newID()
@@ -69,7 +73,11 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 	if err != nil {
 		return err
 	}
-	incomingBytes := int64(len(log.Path) + len(log.Model) + len(log.ProviderRequestID) + len(log.ErrorCode) + len(log.Error) + len(log.UpstreamURL) + len(log.RequestContentType) + len(log.RequestBody) + len(log.ResponseBody))
+	// Request/response bodies are diagnostic payloads. They are bounded on new
+	// writes and compacted in the background, but must not consume the task
+	// history quota used to admit production work. Billing and audit fields are
+	// still persisted and counted below.
+	incomingBytes := apiCallLogMetadataBytes(log)
 	if err := validateAPICallLogQuotaWithPolicy(usage, incomingBytes, policy.Resource); err != nil {
 		return err
 	}

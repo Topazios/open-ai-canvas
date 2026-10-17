@@ -389,7 +389,6 @@ export async function handleListGenerate({
             const storyboardRows = storyboard.rows.map((row, index) => ({ ...row, shotNumber: index + 1 }));
             const batchTable: CanvasBatchTableData = {
                 operation: "creative",
-                concurrency: 10,
                 aiGenerated: true,
                 contentKind: "storyboard",
                 storyboardRows,
@@ -476,7 +475,6 @@ export async function handleListGenerate({
 
         const batchTable: CanvasBatchTableData = {
             operation: "creative",
-            concurrency: 10,
             aiGenerated: true,
             referenceColumns: [referenceColumn],
             textColumns,

@@ -60,6 +60,15 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string, acknowled
 		return nil, BadAuthRequest("只有失败或已取消的任务可以重试")
 	}
 	if task.Operation == workflowBatchOperation {
+		var saved struct {
+			Batch    *workflowTextBatch `json:"workflowBatch"`
+			Metadata struct {
+				Step string `json:"workflowStep"`
+			} `json:"metadata"`
+		}
+		if json.Unmarshal([]byte(task.InputJSON), &saved) == nil && saved.Metadata.Step == "story.episodes" && saved.Batch != nil && saved.Batch.Version != 3 {
+			return nil, BadAuthRequest(legacyOutlineBatchMessage)
+		}
 		if err := s.ensureTaskProjectActive(userID, task.ProjectID); err != nil {
 			return nil, err
 		}
@@ -242,6 +251,9 @@ func (w *taskLifecycleCoordinator) cancelTaskWithIntent(_ context.Context, userI
 	task.CompletedAt = &now
 	task.CancellationSource, task.CancellationActorID, task.CancellationRequestedAt = intent.Source, intent.ActorID, &intent.RequestedAt
 	s.cancelActiveTask(task.ID)
+	if task.Operation == workflowBatchOperation {
+		s.cancelWorkflowBatchChildren(task)
+	}
 
 	// 这些收尾操作必须幂等；任何单项失败都记录日志，但不能让已经落库的
 	// cancelled 状态重新对用户表现为“取消失败”。

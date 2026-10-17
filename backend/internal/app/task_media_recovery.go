@@ -46,7 +46,6 @@ func (e *mediaRecoveryError) Error() string {
 }
 func (e *mediaRecoveryError) Unwrap() error { return e.cause }
 
-var mediaRecoverySlots = make(chan struct{}, 2)
 var mediaRecoveryDelays = []time.Duration{15 * time.Second, time.Minute, 3 * time.Minute, 10 * time.Minute}
 
 func mediaStageLabel(stage string) string {
@@ -172,13 +171,11 @@ func (s *Service) materializeTaskMedia(ctx context.Context, task *model.Task, co
 			err = &mediaRecoveryError{stage: task.MediaStage, cause: err}
 		}
 	}()
-	// Do not occupy a worker waiting for a download slot.
-	select {
-	case mediaRecoverySlots <- struct{}{}:
-		defer func() { <-mediaRecoverySlots }()
-	default:
-		return nil, &mediaRecoveryError{stage: task.MediaStage, retryable: true, cause: errMediaRecoveryBusy}
+	ctx, release, err := s.acquireMediaRecoverySlot(ctx)
+	if err != nil {
+		return nil, &mediaRecoveryError{stage: task.MediaStage, retryable: true, cause: err}
 	}
+	defer release()
 	if _, err := s.mediaTaskProject(task); err != nil {
 		return nil, &mediaRecoveryError{stage: "register", cause: err}
 	}
@@ -254,6 +251,44 @@ func (s *Service) materializeTaskMedia(ctx context.Context, task *model.Task, co
 }
 
 var errMediaRecoveryBusy = errors.New("作品保存并发已满")
+
+// Use the shared coordinator so separate workers obey the same resource policy.
+// A busy slot yields the task back to its existing recovery queue without billing again.
+func (s *Service) acquireMediaRecoverySlot(ctx context.Context) (context.Context, func(), error) {
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		return ctx, nil, err
+	}
+	if s.coordinator == nil {
+		return ctx, nil, errors.New("作品保存并发协调器未初始化")
+	}
+	lease, acquired, err := s.coordinator.AcquireLease(ctx, "resources:media-recovery", policy.Resource.MediaRecoveryConcurrency, workerSlotLeaseDuration)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if !acquired {
+		return ctx, nil, errMediaRecoveryBusy
+	}
+	workCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(workerSlotLeaseDuration / 3)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-workCtx.Done():
+				return
+			case <-ticker.C:
+				if err := lease.Renew(workCtx); err != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return workCtx, func() { cancel(); <-done; lease.Release() }, nil
+}
 
 func retryableMediaRecovery(err error) bool {
 	if retryableProtocolMediaDownload(err) || errors.Is(err, context.DeadlineExceeded) {

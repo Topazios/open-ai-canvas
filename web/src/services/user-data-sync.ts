@@ -3,8 +3,10 @@ import { ApiError } from "@/services/api/request";
 import { getAuthSession, invalidateAuthSessionCache } from "@/services/api/auth";
 import { useUserStore } from "@/stores/use-user-store";
 import { canvasContentHash, sameCanvasContent } from "@/lib/canvas/canvas-content";
+import { compactWorkflowNodes } from "@/lib/canvas/canvas-workflow-persistence";
 import { restoreCanvasTextResources } from "@/lib/canvas/canvas-text-resource";
 import { getActiveUserScope } from "@/lib/user-scope";
+import { validateShortDramaSettings, type ShortDramaGlobalSettings } from "@/lib/short-drama-settings";
 import { preserveCanvasSyncDraft, readCanvasSyncDrafts } from "@/services/canvas-sync-drafts";
 import { appQueryClient } from "@/lib/query-client";
 import { parseAssetRecordList } from "@/lib/asset-record";
@@ -600,9 +602,16 @@ export function localSavedRemotePendingMessage(localAction: string, error: unkno
     return formatLocalSavedRemotePending(localAction, error);
 }
 
-export async function createCanvasProjectWithRemoteSync(title: string, projectId?: string, initialContent?: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId">>) {
+export async function createCanvasProjectWithRemoteSync(title: string, projectId?: string, initialContent?: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "globalSettings" | "starterMode">>) {
+    const scope = getActiveUserScope();
     const id = useCanvasStore.getState().createProject(title, projectId);
     if (initialContent) useCanvasStore.getState().updateProject(id, initialContent);
+    try { await flushCanvasStorePersistence(); }
+    catch (error) {
+        if (getActiveUserScope() === scope) useCanvasStore.getState().deleteProjects([id]);
+        throw error;
+    }
+    if (getActiveUserScope() !== scope) throw new Error("账号已切换，请重新创建画布");
     if (!activeRemoteUserId) return { id, syncError: new Error("尚未建立云端同步会话") };
     try {
         await saveRemoteUserDataNow(id);
@@ -611,6 +620,30 @@ export async function createCanvasProjectWithRemoteSync(title: string, projectId
         scheduleRemoteUserDataSync();
         return { id, syncError };
     }
+}
+
+export async function saveCanvasGlobalSettingsWithRemoteSync(id: string, title: string, settings: ShortDramaGlobalSettings) {
+    const scope = getActiveUserScope();
+    const before = useCanvasStore.getState().openProject(id);
+    if (!before) throw new Error("画布已删除");
+    validateShortDramaSettings(settings);
+    if (!title.trim()) throw new Error("请填写作品名称");
+    if (settings.revision !== (before.globalSettings?.revision || 0) + 1) throw new Error("全局设定已被更新，请重新打开后修改");
+    useCanvasStore.getState().updateProject(id, { globalSettings: settings });
+    useCanvasStore.getState().renameProject(id, title);
+    try { await flushCanvasStorePersistence(); }
+    catch (error) {
+        // Roll back only this form's fields, preserving concurrent node and title edits.
+        if (getActiveUserScope() === scope) {
+            const latest = useCanvasStore.getState().openProject(id);
+            if (latest?.globalSettings === settings) useCanvasStore.getState().updateProject(id, { globalSettings: before.globalSettings });
+            if (latest?.title === title.trim()) useCanvasStore.getState().renameProject(id, before.title);
+        }
+        throw error;
+    }
+    if (getActiveUserScope() !== scope) throw new Error("账号已切换，请重新打开设定");
+    try { await saveRemoteUserDataNow(id); return {}; }
+    catch (syncError) { scheduleRemoteUserDataSync(); return { syncError }; }
 }
 
 export async function deleteAssetWithRemoteSync(id: string) {
@@ -872,7 +905,19 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
     // 中央兜底：任何调用方只要把持久媒体写进画布，提交前都会先补齐素材记录与 assetId。
     // 页面级入口仍主动入库，以便立即反馈；这里负责阻止遗漏入口形成远端幽灵资源。
     const changedProjectIds = new Set(useCanvasStore.getState().projects.filter((project) => !sameCanvasContent(acknowledgedProjects.get(project.id), project)).map((project) => project.id));
-    repairMissingCanvasAssets(changedProjectIds, incrementalSession);
+    // A partial library is not evidence that a node's claimed asset exists on
+    // the server. Resolve references before repair, then upload assets first.
+    const claimedIds = [...collectCanvasMediaAssetIds(useCanvasStore.getState().projects.filter(project => changedProjectIds.has(project.id)))]
+        .filter(id => !verifiedAssets.has(id));
+    for (let offset = 0; offset < claimedIds.length; offset += 100) {
+        const ids = claimedIds.slice(offset, offset + 100);
+        const { assets } = await getRemoteAssetsByIds(ids);
+        if (epoch !== sessionEpoch || scope !== getActiveUserScope()) throw new Error("账号已切换，已停止旧会话保存");
+        acceptRemoteAssets(assets);
+        const present = new Set(assets.map(asset => asset.id));
+        for (const id of ids) if (!present.has(id)) acknowledgedAssets.delete(id);
+    }
+    repairMissingCanvasAssets(changedProjectIds);
     const currentProjects = useCanvasStore.getState().projects;
     const currentAssets = useAssetStore.getState().assets;
     const dirtyProjects = currentProjects.filter((project) => !sameCanvasContent(acknowledgedProjects.get(project.id), project) && useSyncProgressStore.getState().syncingProjects[project.id]?.phase !== "conflict");
@@ -906,7 +951,12 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
         verifiedAssets.add(source.id);
     }
     const errors: unknown[] = [];
-    for (const source of dirtyProjects) {
+    for (const dirtySource of dirtyProjects) {
+        const compactedNodes = compactWorkflowNodes(dirtySource.nodes);
+        const source = compactedNodes.some((node, index) => node !== dirtySource.nodes[index]) ? { ...dirtySource, nodes: compactedNodes } : dirtySource;
+        // Acknowledgement hashes must describe the same compact document we upload.
+        // Replace only the captured project; concurrent edits stay pending.
+        if (source !== dirtySource) useCanvasStore.setState(state => ({ projects: state.projects.map(project => project === dirtySource ? source : project) }));
         const keysToUpload = collectLocalMediaKeys(source);
         const total = keysToUpload.length;
         useSyncProgressStore.getState().setProjectProgress(source.id, {
@@ -958,6 +1008,15 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
             if (pending) syncQueued = true;
         } catch (error) {
             if (epoch !== sessionEpoch || scope !== getActiveUserScope()) throw error;
+            if (error instanceof ApiError && error.reason === "canvas_assets_missing") {
+                const key = `assets:${source.id}`;
+                if (!reconciliations.has(key)) {
+                    reconciliations.set(key, 1);
+                    for (const id of collectCanvasMediaAssetIds([source])) { verifiedAssets.delete(id); acknowledgedAssets.delete(id); }
+                    syncQueued = true;
+                    continue;
+                }
+            }
             if (useSyncProgressStore.getState().syncingProjects[source.id]?.phase === "conflict") {
                 errors.push(error);
                 continue;

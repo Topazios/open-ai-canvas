@@ -57,6 +57,10 @@ type TaskClientContext struct {
 	ShotID            string `json:"shotId,omitempty"`
 	WorkflowStepID    string `json:"workflowStepId,omitempty"`
 	ArtifactType      string `json:"artifactType,omitempty"`
+	ParentTaskID      string `json:"parentTaskId,omitempty"`
+	ParentNodeID      string `json:"parentNodeId,omitempty"`
+	BatchKey          string `json:"batchKey,omitempty"`
+	SourceLabel       string `json:"sourceLabel,omitempty"`
 }
 
 type TaskBillingSummary struct {
@@ -68,10 +72,26 @@ func taskSummariesForOutput(tasks []model.Task) []TaskSummary {
 	return taskSummariesForOutputWithBilling(tasks, nil)
 }
 
-func taskSummariesForOutputWithBilling(tasks []model.Task, orders map[string]model.BillingOrder) []TaskSummary {
+func taskSummariesForOutputWithBilling(tasks []model.Task, orders map[string]model.BillingOrder, parents ...model.Task) []TaskSummary {
 	result := make([]TaskSummary, 0, len(tasks))
+	byID := make(map[string]model.Task, len(tasks))
+	for _, parent := range parents {
+		byID[parent.ID] = parent
+	}
+	for _, task := range tasks {
+		byID[task.ID] = task
+	}
 	for _, task := range tasks {
 		summary := taskSummaryForOutput(task)
+		if context := summary.ClientContext; context != nil && context.ParentTaskID != "" {
+			if parent, ok := byID[context.ParentTaskID]; ok && parent.UserID == task.UserID && parent.ProjectID == task.ProjectID {
+				if parentContext := taskClientContext(parent.InputJSON); parentContext != nil {
+					context.ParentNodeID = parentContext.NodeID
+					context.WorkflowStepID = parentContext.WorkflowStepID
+				}
+				context.SourceLabel = workflowBatchSourceLabel(parent.InputJSON, context.BatchKey)
+			}
+		}
 		if order, ok := orders[task.ID]; ok {
 			summary.Billing = &TaskBillingSummary{AmountMicrocredits: order.AmountMicrocredits, Status: order.Status}
 			if summary.ProviderRequestID == "" {
@@ -154,7 +174,10 @@ func taskClientContext(raw string) *TaskClientContext {
 			Operation         string `json:"operation"`
 			ShotID            string `json:"shotId"`
 			WorkflowStepID    string `json:"workflowStepId"`
+			WorkflowStep      string `json:"workflowStep"`
 			ArtifactType      string `json:"artifactType"`
+			ParentTaskID      string `json:"parentTaskId"`
+			BatchKey          string `json:"batchKey"`
 		} `json:"metadata"`
 	}
 	if json.Unmarshal([]byte(raw), &input) != nil {
@@ -165,6 +188,13 @@ func taskClientContext(raw string) *TaskClientContext {
 		return &TaskClientContext{StoryNodeID: metadata.StoryNodeID, ClientOperationID: metadata.ClientOperationID}
 	}
 	context := &TaskClientContext{NodeID: metadata.NodeID}
+	if metadata.Source == "canvas-workflow-batch-child" && metadata.ParentTaskID != "" {
+		// Child calls must never acquire a node binding: only the parent writes its result.
+		return &TaskClientContext{ParentTaskID: metadata.ParentTaskID, BatchKey: metadata.BatchKey}
+	}
+	if metadata.Source == "canvas-short-drama-workflow" {
+		context.WorkflowStepID = metadata.WorkflowStep
+	}
 	if metadata.Source == "create-page" && metadata.ConversationID != "" && metadata.MessageID != "" {
 		context.ConversationID = metadata.ConversationID
 		context.MessageID = metadata.MessageID
@@ -326,4 +356,33 @@ func publicTaskInputJSON(raw string) string {
 	}
 	data, _ := json.Marshal(public)
 	return string(data)
+}
+
+// Terminal storage and public output have different contracts. Keep only the
+// internal progress hashes needed by production recovery, never model inputs.
+func completedTaskInputJSON(task model.Task) string {
+	public := publicTaskInputJSON(task.InputJSON)
+	if task.Operation != cloudAgentStepOperation {
+		return public
+	}
+	var internal productionRuntimeStepInput
+	if json.Unmarshal([]byte(task.InputJSON), &internal) != nil || internal.Checkpoint == "" {
+		return public
+	}
+	input := map[string]any{}
+	if public != "" {
+		_ = json.Unmarshal([]byte(public), &input)
+	}
+	input["productionCheckpoint"] = internal.Checkpoint
+	if internal.Recovery != nil {
+		input["productionRecovery"] = internal.Recovery
+	}
+	if internal.RequiredTool != "" {
+		input["productionRequiredTool"] = internal.RequiredTool
+	}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return public
+	}
+	return string(encoded)
 }

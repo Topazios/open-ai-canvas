@@ -1112,16 +1112,105 @@ paths:
           $ref: "#/components/responses/Error"
         "404":
           $ref: "#/components/responses/Error"
+  /admin/channels/{id}/models/default-pricing:
+    post:
+      tags: [admin]
+      summary: 读取厂商官方公开价格快照并匹配所选模型
+      description: |
+        仅管理员可用，模型必须属于当前系统渠道。仅读取带来源及核验日期的内置厂商官方价目录，不访问渠道价目、不保存价格。
+        按完整上游模型 ID 匹配官方模型；渠道别名可通过 mappings 显式选择官方模型/档位。
+        金额为 USD，Token 单位为百万 Token；适用条件在 note 中，不能作为所有上下文和模态的通用成本。
+        多模态 Token、不匹配规格及成本单位冲突逐项返回 supported=false 和 reason。不支持的项保留原售价。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [modelIds]
+              properties:
+                modelIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  uniqueItems: true
+                  items: { type: string, minLength: 1 }
+                mappings:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: 可选；规格 ID 到官方价格 profile ID 的显式映射，空字符串恢复自动匹配
+      responses:
+        "200":
+          description: 默认定价预览，未支持的规格保持原售价
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: integer, enum: [0] }
+                  msg: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      currency: { type: string, enum: [USD] }
+                      source: { type: string }
+                      verifiedAt: { type: string, format: date }
+                      fetchedAt: { type: string, format: date-time }
+                      profiles:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            modelKey: { type: string }
+                            label: { type: string }
+                            capability: { type: string }
+                            billingMode: { type: string }
+                            sourceUrl: { type: string, format: uri }
+                            note: { type: string }
+                            unsupportedReason: { type: string }
+                            autoMatch: { type: boolean }
+                      prices:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            modelId: { type: string }
+                            tierId: { type: string }
+                            upstreamModel: { type: string }
+                            profileId: { type: string }
+                            sourceUrl: { type: string, format: uri }
+                            note: { type: string }
+                            supported: { type: boolean }
+                            reason: { type: string }
+                            billingMode: { type: string, enum: [fixed_request, token] }
+                            unitPrice: { type: number }
+                            inputTokenPrice: { type: number }
+                            outputTokenPrice: { type: number }
+                            cachedTokenPrice: { type: number }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
   /admin/channels/{id}/models/batch-reprice:
     post:
       tags: [admin]
       summary: 批量保存系统渠道模型最终销售价
       description: |
         仅管理员可用。接收浏览器计算或手工修改后的最终售价及原始价格版本，不在服务端重算。
-        前端按成本/(1−利润率)计算，支持0–6位积分小数四舍五入及重新计算。
-        必须提交所选模型全部已启用规格，不改变成本、规格启停或模型启停。
+        前端支持基准价乘统一倍率、官方美元参考价转积分或成本/(1−利润率)，支持0–6位积分小数四舍五入及重新计算。
+        必须提交所选模型全部未删除规格，不改变成本或模型启停。可显式调整计费单位，但禁止重新解释已有非零配置成本。
         当前计费方式的价格字段必须完整且不能多余，价格为非负整数微积分，null无效。
-        缺少成本/售价配置、重复或失效 ID、越权、超限价格、过期版本或并发版本冲突均整批拒绝。
+        重复或失效 ID、越权、超限价格、非法计费单位、过期版本或并发版本冲突均整批拒绝；允许修复缺失的售价，不要求已配置成本。
       parameters:
         - in: path
           name: id
@@ -1154,6 +1243,7 @@ paths:
                           properties:
                             id: { type: string, minLength: 1 }
                             priceVersion: { type: integer, format: int64, minimum: 1 }
+                            billingMode: { type: string, enum: [fixed_request, token, per_second], description: 可选；仅在明确转换计费单位时提交 }
                             prices:
                               type: object
                               additionalProperties: false

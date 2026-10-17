@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { installRuntimeLimits } from "./fixtures/runtime-limits";
+beforeEach(() => installRuntimeLimits());
 import axios from "axios";
 
 import { apiClient } from "@/services/api/request";

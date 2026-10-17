@@ -349,7 +349,7 @@ func TestProductionAgentSubmissionRollback(t *testing.T) {
 func TestProductionAgentModelReceiptReplayDoesNotEnqueue(t *testing.T) {
 	s, db, run := productionFixture(t)
 	messages := []map[string]any{{"role": "user", "content": "继续制作"}}
-	key := productionHash([]any{messages, "off", []map[string]any(nil)})
+	key := productionRuntimeTestModelKey(t, s, run.ID, messages)
 	var call cloudAgentCall
 	call.ID = "fixture-status"
 	call.Function.Name = "production_status"

@@ -45,6 +45,17 @@ func TestFinanceRoutesExposeChannelModelBatchReprice(t *testing.T) {
 	}
 }
 
+func TestFinanceRoutesExposeDefaultPricing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	RegisterFinanceRoutes(router.Group("/api"), &service.Service{})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/admin/channels/channel/models/default-pricing", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestFinanceRoutesExposeChannelModelBatchStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

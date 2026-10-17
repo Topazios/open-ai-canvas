@@ -341,6 +341,28 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"updated": updated})
 	})
+	r.POST("/admin/channels/:id/models/default-pricing", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
+		var req struct {
+			ModelIDs []string          `json:"modelIds" binding:"required"`
+			Mappings map[string]string `json:"mappings"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		result, err := svc.PreviewAdminDefaultPricing(c.Request.Context(), user, c.Param("id"), req.ModelIDs, req.Mappings)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, result)
+	})
 	r.POST("/admin/channels/:id/models/batch-reprice", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

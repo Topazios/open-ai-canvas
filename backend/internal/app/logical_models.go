@@ -194,7 +194,7 @@ func (s *Service) buildAdminLogicalModel(item model.LogicalModel, graph *reposit
 		_, channelOK = systemChannelByID[channelModel.ChannelID]
 		structurallyAvailable := route.Enabled && route.Weight > 0 && channelModel.Enabled && channelOK
 		billingAvailable := item.PricePolicy != "unified" || item.BillingMode != "token" || supportsTokenBilling(item.Capability, channelModel.Protocol)
-		available := structurallyAvailable && billingAvailable && (item.PricePolicy != "channel" || channelModel.PriceConfigured)
+		available := structurallyAvailable && billingAvailable && (item.PricePolicy != "channel" || HasValidPrice(&channelModel))
 		admin.Routes = append(admin.Routes, AdminLogicalRoute{ID: route.ID, ChannelModelID: channelModel.ID, ChannelID: channelModel.ChannelID, ChannelModelKey: channelModel.ModelKey, ChannelModelName: channelModel.DisplayName, Enabled: route.Enabled, Priority: route.Priority, Weight: route.Weight, Available: available, structurallyAvailable: structurallyAvailable, CapabilitySpec: capabilitySpec})
 	}
 	routeSpecs := make([]CapabilitySpec, 0, len(admin.Routes))
@@ -517,7 +517,7 @@ func (s *Service) logicalModelBundle(actor *model.User, id string, req LogicalMo
 		}
 		if req.Enabled && input.Enabled && channelModel.Enabled {
 			structuralRouteSpecs = append(structuralRouteSpecs, capabilitySpec)
-			if pricePolicy != "channel" || channelModel.PriceConfigured {
+			if pricePolicy != "channel" || HasValidPrice(channelModel) {
 				settlementRouteSpecs = append(settlementRouteSpecs, capabilitySpec)
 			}
 		}
@@ -620,7 +620,7 @@ func capabilitySpecWithPriceTiers(spec CapabilitySpec, channelModel model.Channe
 	}
 	tiers := make([]model.ChannelModelPriceTier, 0, len(channelModel.PriceTiers))
 	for _, tier := range channelModel.PriceTiers {
-		if tier.Enabled && tier.PriceConfigured {
+		if ValidatePriceTierPrice(&tier, channelModel.Capability, channelModel.Protocol) {
 			tiers = append(tiers, tier)
 		}
 	}
@@ -701,7 +701,7 @@ func channelModelDefaultOptions(channelModel model.ChannelModel, spec Capability
 	// 当渠道默认规格没有价格档时，优先选择第一个可结算档，确保初始选择可直接生成。
 	if normalizeCapability(channelModel.Capability) == "video" && channelModelPriceTierForIntent(channelModel, ModelRequestIntent{Capability: "video", Options: defaults}) == nil {
 		for _, tier := range channelModel.PriceTiers {
-			if !tier.Enabled || !tier.PriceConfigured {
+			if !ValidatePriceTierPrice(&tier, channelModel.Capability, channelModel.Protocol) {
 				continue
 			}
 			if tier.Resolution != "*" {

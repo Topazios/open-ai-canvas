@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { workflowBodyTaskInput } from "@/lib/canvas/canvas-short-drama-workflow";
 import { App } from "antd";
 import { createWorkflowDocuments, groupExistingWorkflowEpisodes, groupSelectedWorkflowDocuments, workflowGenerationSources, workflowSignatureMatches, workflowSourceSignaturesMatch, type WorkflowGenerationRequest } from "@/lib/canvas/canvas-short-drama-workflow";
 import { createWorkflowImages, workflowImageReferences } from "@/lib/canvas/canvas-workflow-images";
+import { compactWorkflowNodes, markWorkflowSubmissionBlocked } from "@/lib/canvas/canvas-workflow-persistence";
+import { workflowRequestWithCurrentSettings } from "@/lib/canvas/canvas-global-settings";
+import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { shortDramaStep } from "@/lib/short-drama-steps";
 import { mergedImageCapabilityConfig, modelCompatibilityError } from "@/lib/model-selection";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -11,6 +15,7 @@ import { cancelAgentRun, reconcileCanvasNodeTasks } from "@/services/api/agent";
 import { ApiError } from "@/services/api/request";
 import { prepareProductionAgent, submitProductionAgent } from "@/services/production-agent";
 import { refreshCanvasAfterAgent } from "@/services/user-data-sync";
+import { withRuntimeConcurrency } from "@/services/runtime-limits";
 import { selectableModelsByCapability, type AiConfig } from "@/stores/use-config-store";
 import type { CanvasConnection, CanvasNodeData, Position } from "@/types/canvas";
 
@@ -23,6 +28,50 @@ type Options = {
     bindTask: (id: string, task: GenerationTask) => void;
     applyResult: (id: string, task: GenerationTask) => Promise<void>;
 };
+
+const workflowSubmitGapMs = 220;
+const workflowSubmitRetryDelaysMs = [500, 1_000, 2_000] as const;
+
+function waitWithWorkflowAbort(delay: number, signal: AbortSignal) {
+    if (delay <= 0) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: unknown) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            signal.removeEventListener("abort", abort);
+            error ? reject(error) : resolve();
+        };
+        const abort = () => finish(new DOMException("已取消", "AbortError"));
+        const timer = window.setTimeout(() => finish(), delay);
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+    });
+}
+
+function waitForWorkflowSubmitGap(lastSubmittedAt: number, signal: AbortSignal) {
+    const remaining = workflowSubmitGapMs - (Date.now() - lastSubmittedAt);
+    return waitWithWorkflowAbort(Math.max(0, remaining), signal);
+}
+
+function retryableWorkflowSubmitError(error: unknown) {
+    if (error instanceof ApiError) return error.retryable || /database is (?:locked|busy)|sqlite_busy|sqlite_locked/i.test(`${error.reason || ""} ${error.message}`);
+    return /database is (?:locked|busy)|sqlite_busy|sqlite_locked/i.test(error instanceof Error ? error.message : String(error));
+}
+
+async function createWorkflowTaskWithBackoff(input: Parameters<typeof createGenerationTask>[0], signal: AbortSignal) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await createGenerationTask(input);
+        } catch (error) {
+            if (!retryableWorkflowSubmitError(error) || attempt >= workflowSubmitRetryDelaysMs.length) throw error;
+            const retryAfter = error instanceof ApiError ? error.retryAfterMs : undefined;
+            const delay = Math.max(retryAfter || 0, workflowSubmitRetryDelaysMs[attempt]);
+            await waitWithWorkflowAbort(delay, signal);
+        }
+    }
+}
 
 export function useShortDramaWorkflowGeneration(options: Options) {
     const ref = useRef(options); ref.current = options;
@@ -38,8 +87,11 @@ export function useShortDramaWorkflowGeneration(options: Options) {
 
     const submit = async (ids: string[]) => {
         const context = ref.current;
+        const compacted = compactWorkflowNodes(context.nodesRef.current);
+        if (compacted.some((node, index) => node !== context.nodesRef.current[index])) context.setNodes(compacted);
         const signal = lifetime.current.signal;
         const valid = () => !signal.aborted && context.projectId === ref.current.projectId && getActiveUserScope() === scope;
+        let lastSubmittedAt = 0;
         const patch = (id: string, update: (node: CanvasNodeData) => CanvasNodeData) => {
             if (valid()) context.setNodes((nodes) => nodes.map((node) => node.id === id ? update(node) : node));
         };
@@ -56,7 +108,7 @@ export function useShortDramaWorkflowGeneration(options: Options) {
             })) throw new Error("前置内容已变化，未提交节点保留，请重新生成");
             const validateAfterSave = async () => {
                 let referencesCurrent = true;
-                if (data.mediaKind === "image") {
+                if (data.mediaKind === "image" || data.assetRevision) {
                     try { workflowGenerationSources(data, context.nodesRef.current, context.connectionsRef.current); }
                     catch { referencesCurrent = false; }
                 }
@@ -70,15 +122,17 @@ export function useShortDramaWorkflowGeneration(options: Options) {
             if (data.productionAgent) {
                 const request = await prepareProductionAgent(context.projectId, node, context.config);
                 if (!valid() || !context.nodesRef.current.some((entry) => entry.id === id)) break;
-                patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "loading", taskStage: "正在提交制作 Agent", shortDrama: { ...data, submission: "submitting", productionAgent: { ...data.productionAgent!, request } } } }));
+                patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "loading", errorDetails: undefined, taskStage: "正在提交制作 Agent", shortDrama: { ...data, submission: "submitting", productionAgent: { ...data.productionAgent!, request } } } }));
                 if (!await context.save()) {
-                    patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "idle", taskStage: undefined, shortDrama: { ...data, submission: "planned" } } }));
+                    patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "error", taskStage: "等待云端保存", errorDetails: "制作任务尚未保存，未向模型提交请求", shortDrama: { ...data, submission: "planned" } } }));
                     throw new Error("制作任务尚未保存，未向模型提交请求");
                 }
                 await validateAfterSave();
                 try {
                     if (!valid() || !context.nodesRef.current.some((entry) => entry.id === id)) break;
-                    const { run } = await submitProductionAgent(request);
+                    await waitForWorkflowSubmitGap(lastSubmittedAt, signal);
+                    const { run } = await withRuntimeConcurrency("agent", () => submitProductionAgent(request), signal);
+                    lastSubmittedAt = Date.now();
                     if (valid() && !context.nodesRef.current.some((entry) => entry.id === id)) {
                         await cancelAgentRun(run.id);
                         if (await context.save()) await reconcileCanvasNodeTasks(context.projectId, [id]);
@@ -102,21 +156,24 @@ export function useShortDramaWorkflowGeneration(options: Options) {
                 const problem = modelCompatibilityError(context.config, selectedModel, { capability: "image", input: { textCount: 1, imageCount: referenceImages.length, videoCount: 0, audioCount: 0, characterCount: 0 }, imageSize: node.metadata?.size });
                 if (problem) throw new Error(problem);
             }
-            const input = await prepareBackendGenerationTask({ projectId: context.projectId, mode, prompt: node.metadata!.prompt!, workflowBatch: mode === "text" ? data.textBatch : undefined,
+            const textInput = workflowBodyTaskInput(node, context.nodesRef.current, context.connectionsRef.current);
+            const input = await prepareBackendGenerationTask({ projectId: context.projectId, mode, prompt: textInput.prompt, workflowBatch: mode === "text" ? textInput.workflowBatch : undefined,
                 config: { ...context.config, model: selectedModel, ...(mode === "image" ? { imageModel: selectedModel, size: node.metadata?.size || context.config.size, quality: node.metadata?.quality || context.config.quality, transparentBackground: node.metadata?.transparentBackground || "false", count: "1" } : {}) },
-                referenceImages, reasoningEffort: mode === "text" ? node.metadata!.reasoningEffort || "medium" : undefined, streamText: mode === "text" && !data.textBatch, clientOperationId: data.operationId,
+                referenceImages, reasoningEffort: mode === "text" ? node.metadata!.reasoningEffort || "medium" : undefined, streamText: mode === "text" && !textInput.workflowBatch, clientOperationId: data.operationId,
                 metadata: { source: "canvas-short-drama-workflow", nodeId: id, pipelineId: data.pipelineId, workflowStage: data.stage, workflowStep: data.step, episodeNumber: data.episodeNumber } });
             if (!valid() || !context.nodesRef.current.some((entry) => entry.id === id)) break;
-            patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "loading", taskStage: "正在提交", taskClientOperationId: data.operationId, shortDrama: { ...data, submission: "submitting" } } }));
+            patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "loading", errorDetails: undefined, taskStage: "正在提交", taskClientOperationId: data.operationId, shortDrama: { ...data, submission: "submitting" } } }));
             // Persist the uncertain-submit marker before POST. A reload must never replay it.
             if (!await context.save()) {
-                patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "idle", taskStage: undefined, shortDrama: { ...data, submission: "planned" } } }));
+                patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "error", taskStage: "等待云端保存", errorDetails: "节点未保存到云端，尚未提交生成任务", shortDrama: { ...data, submission: "planned" } } }));
                 throw new Error("节点未保存到云端，尚未提交生成任务，请恢复保存后继续");
             }
             await validateAfterSave();
             if (!valid() || !context.nodesRef.current.some((entry) => entry.id === id)) break;
             try {
-                const task = await createGenerationTask(input);
+                await waitForWorkflowSubmitGap(lastSubmittedAt, signal);
+                const task = await withRuntimeConcurrency(mode, () => createWorkflowTaskWithBackoff(input, signal), signal);
+                lastSubmittedAt = Date.now();
                 if (!valid()) break;
                 if (!context.nodesRef.current.some((entry) => entry.id === id)) {
                     if (["queued", "running"].includes(task.status)) await cancelGenerationTask(task.id);
@@ -154,19 +211,27 @@ export function useShortDramaWorkflowGeneration(options: Options) {
         if (!selectableModelsByCapability(context.config, mode).includes(request.model)) throw new Error(mode === "image" ? "请选择可用的生图模型" : "请选择可用的文本模型");
         lock.current = true; setSubmitting(true);
         const execute = async () => {
+            let createdIds: string[] = [];
             try {
                 // Let the dialog unmount before constructing nodes; the canvas owns the work.
                 await new Promise<void>((resolve) => setTimeout(resolve, 0));
                 if (!valid()) return;
+                // Resolve at creation time so an older dialog cannot pin new work to obsolete settings.
+                const currentRequest = workflowRequestWithCurrentSettings(request, useCanvasStore.getState().openProject(context.projectId)?.globalSettings);
                 const prepared = mode === "image"
-                    ? createWorkflowImages(request, context.nodesRef.current, context.connectionsRef.current, context.center(), mergedImageCapabilityConfig(context.config, request.model))
-                    : createWorkflowDocuments(request, context.nodesRef.current, context.connectionsRef.current, context.center());
+                    ? createWorkflowImages(currentRequest, context.nodesRef.current, context.connectionsRef.current, context.center(), mergedImageCapabilityConfig(context.config, request.model))
+                    : createWorkflowDocuments(currentRequest, context.nodesRef.current, context.connectionsRef.current, context.center());
                 context.setNodes(prepared.nodes); context.setConnections(prepared.connections);
+                createdIds = prepared.created.map((node) => node.id);
                 context.focus(prepared.created[0].id);
                 if (!await context.save()) throw new Error("结果节点已保留，云端保存失败，尚未发起生成；恢复后可右键继续提交");
                 if (valid()) await submit(prepared.created.map((node) => node.id));
             } catch (error) {
-                if (valid()) message.error(error instanceof Error ? error.message : "生成提交失败，请检查节点状态后重试");
+                if (valid()) {
+                    const reason = error instanceof Error ? error.message : "生成提交失败，请检查节点状态后重试";
+                    context.setNodes((nodes) => markWorkflowSubmissionBlocked(nodes, createdIds, reason));
+                    message.error(reason);
+                }
             } finally { lock.current = false; setSubmitting(false); }
         };
         void execute();
@@ -174,11 +239,23 @@ export function useShortDramaWorkflowGeneration(options: Options) {
     const resume = async (id: string) => {
         if (lock.current) return;
         lock.current = true; setSubmitting(true);
+        let ids: string[] = [];
+        const context = ref.current;
+        const signal = lifetime.current.signal;
         try {
-            const data = ref.current.nodesRef.current.find((node) => node.id === id)?.metadata?.shortDrama;
-            await submit(data?.role === "collection" ? data.sourceNodeIds : [id]);
+            const node = ref.current.nodesRef.current.find((node) => node.id === id);
+            const data = node?.metadata?.shortDrama;
+            ids = data?.role === "collection" ? data.sourceNodeIds : node?.type === "frame"
+                ? ref.current.nodesRef.current.filter(member => member.parentId === id && member.metadata?.shortDrama?.submission === "planned").map(member => member.id) : [id];
+            await submit(ids);
         }
-        catch (error) { message.error(error instanceof Error ? error.message : "提交失败"); }
+        catch (error) {
+            if (!signal.aborted && getActiveUserScope() === scope && context.projectId === ref.current.projectId) {
+                const reason = error instanceof Error ? error.message : "提交失败";
+                context.setNodes((nodes) => markWorkflowSubmissionBlocked(nodes, ids, reason));
+                message.error(reason);
+            }
+        }
         finally { lock.current = false; setSubmitting(false); }
     };
     const groupEpisodes = async (id: string | string[], targetId?: string) => {

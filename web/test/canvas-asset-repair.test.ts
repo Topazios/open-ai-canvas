@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { installRuntimeLimits } from "./fixtures/runtime-limits";
+beforeEach(() => installRuntimeLimits());
 
 import { collectCanvasMediaAssetIds, rebindInconsistentCanvasAssets, repairMissingCanvasAssets, repairMissingCanvasVideoPreviews } from "@/services/canvas-asset-repair";
 import { ApiError } from "@/services/api/request";
@@ -157,6 +159,7 @@ describe("repairMissingCanvasVideoPreviews", () => {
         useCanvasStore.setState({ projects: [project("canvas-1", [node])] });
         let rejectLookup!: (error: unknown) => void;
         const repair = repairMissingCanvasVideoPreviews(undefined, () => new Promise((_, reject) => { rejectLookup = reject; }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
         useCanvasStore.getState().updateProject("canvas-1", { title: "user edit" });
         rejectLookup(new ApiError("missing", { status: 404 }));
         await repair;

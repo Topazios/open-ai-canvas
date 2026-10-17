@@ -67,7 +67,7 @@ func (s *Service) startCloudAgentPi(userID, runID string) {
 			s.piRunnerWg.Done()
 		}()
 
-		if err := s.runCloudAgentPiSession(ctx, userID, runID); err != nil && !errors.Is(err, context.Canceled) {
+		if err := s.runCloudAgentPiSession(ctx, userID, runID); err != nil && ctx.Err() == nil && !s.IsDraining() && !errors.Is(err, context.Canceled) {
 			log.Printf("[Agent] session failed run=%s: %v", runID, err)
 			s.failPiRunner(runID, userID, errors.New(cloudAgentUserFailureMessage(runID, err)))
 		}
@@ -198,7 +198,7 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 			if decodeErr == nil {
 				if state.Request.Production != nil && state.ActiveTaskID != "" {
 					if task, err := repo.TaskForUser(userID, state.ActiveTaskID); err == nil && task.Status == model.TaskStatusFailed {
-						state.event(runID, "production_model_completed", map[string]any{"taskId": task.ID, "step": state.Step, "status": task.Status, "text": cloudAgentSafeMediaTaskError(task)})
+						state.event(runID, "production_model_completed", productionModelCompletedPayload(task, state.Step, cloudAgentSafeMediaTaskError(task)))
 					}
 				}
 				state.LastError = cause.Error()
@@ -394,7 +394,7 @@ func (s *Service) completeCloudAgentPiRun(userID, runID string) error {
 		}
 
 		// 检查是否有未完成的任务
-		if state.ActiveTaskID != "" || state.MediaTaskID != "" || state.Approval != nil {
+		if state.ActiveTaskID != "" || state.MediaTaskID != "" || len(state.ProductionParallel) > 0 || state.Approval != nil {
 			return nil
 		}
 

@@ -232,13 +232,20 @@ func (r *Repository) APICallLogUsageForTask(userID, taskID string) (model.ApiCal
 // LatestAPICallStatusForTask 返回任务最近一次上游调用的 HTTP 状态码；
 // 任务没收到任何上游响应（例如网络错误）时返回 0。
 func (r *Repository) LatestAPICallStatusForTask(taskID string) (int, error) {
+	log, err := r.LatestAPICallFailureForTask(taskID)
+	return log.StatusCode, err
+}
+
+// LatestAPICallFailureForTask includes failures reported after HTTP headers,
+// such as a Responses SSE error following HTTP 200. Polls remain excluded.
+func (r *Repository) LatestAPICallFailureForTask(taskID string) (model.ApiCallLog, error) {
 	if strings.TrimSpace(taskID) == "" {
-		return 0, nil
+		return model.ApiCallLog{}, nil
 	}
 	var log model.ApiCallLog
-	err := r.db.Select("status_code").Where("task_id = ? AND request_kind <> ?", taskID, "poll").
+	err := r.db.Select("status_code", "error_code", "error").Where("task_id = ? AND request_kind <> ?", taskID, "poll").
 		Order("created_at DESC").Limit(1).Find(&log).Error
-	return log.StatusCode, err
+	return log, err
 }
 
 func (r *Repository) HasAPICallLogForTask(taskID string) (bool, error) {

@@ -231,7 +231,7 @@ export default function SharedCanvasPage() {
             ...node,
             width: collapsed ? (isCanvasFolderNode(node) ? FOLDER_COLLAPSED_WIDTH : 240) : frame?.expandedWidth || node.width,
             height: collapsed ? (isCanvasFolderNode(node) ? FOLDER_COLLAPSED_HEIGHT : 144) : frame?.expandedHeight || node.height,
-            metadata: { ...node.metadata, frame: { collapsed, expandedWidth: collapsed ? node.width : frame?.expandedWidth || node.width, expandedHeight: collapsed ? node.height : frame?.expandedHeight || node.height } },
+            metadata: { ...node.metadata, frame: { ...frame, collapsed, expandedWidth: collapsed ? node.width : frame?.expandedWidth || node.width, expandedHeight: collapsed ? node.height : frame?.expandedHeight || node.height } },
         };
     }));
     const renderSharedNode = useCallback((node: CanvasNodeData): ReactNode => {

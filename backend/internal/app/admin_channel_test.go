@@ -31,8 +31,8 @@ func TestChannelFromRequestStoresConnectionWithoutDefaultProtocol(t *testing.T) 
 	if channel.APIFormat != "openai" {
 		t.Fatalf("APIFormat = %q, want openai", channel.APIFormat)
 	}
-	if channel.ConcurrencyLimit != 6 {
-		t.Fatalf("ConcurrencyLimit = %d, want 6", channel.ConcurrencyLimit)
+	if channel.ConcurrencyLimit != 0 {
+		t.Fatalf("ConcurrencyLimit = %d, want global policy", channel.ConcurrencyLimit)
 	}
 	if channel.APIKey != "access-key" || channel.SecretKey != "secret-key" {
 		t.Fatal("channel credentials were not stored")
@@ -200,11 +200,11 @@ func TestPublicChannelOnlyReturnsSystemHeadersToAdmin(t *testing.T) {
 	}
 }
 
-func TestChannelFromRequestRejectsInvalidConcurrencyLimit(t *testing.T) {
-	for _, limit := range []int{0, 1000} {
-		_, err := channelFromRequest(ChannelRequest{Name: "Bad", BaseURL: "https://example.com/v1", ConcurrencyLimit: &limit}, model.ModelChannel{})
-		if err == nil {
-			t.Fatalf("channelFromRequest() concurrencyLimit = %d, error = nil", limit)
+func TestChannelFromRequestAlwaysFollowsGlobalConcurrency(t *testing.T) {
+	for _, limit := range []int{0, 1, 10, 1000} {
+		channel, err := channelFromRequest(ChannelRequest{Name: "Global", BaseURL: "https://example.com/v1", ConcurrencyLimit: &limit}, model.ModelChannel{ConcurrencyLimit: 2})
+		if err != nil || channel.ConcurrencyLimit != 0 {
+			t.Fatalf("legacy concurrency %d changed policy: %d, %v", limit, channel.ConcurrencyLimit, err)
 		}
 	}
 }
@@ -579,6 +579,24 @@ func TestResolveProviderConfigMapsSKUToProviderModel(t *testing.T) {
 	}
 	if config.ChannelModelKey != item.ModelKey || config.Model != item.ProviderModelKey {
 		t.Fatalf("resolved config = %#v", config)
+	}
+	legacyTier := model.ChannelModelPriceTier{
+		ID: "legacy-tier", ChannelModelID: item.ID, SelectorKey: "{}", SelectorJSON: "{}",
+		BillingMode: "fixed_request", UnitPriceMicrocredits: 123, ProviderModelKey: "upstream-tier-model",
+		Enabled: false, PriceConfigured: false,
+	}
+	if err := db.Create(&legacyTier).Error; err != nil {
+		t.Fatal(err)
+	}
+	config, err = svc.resolveProviderConfig(providerConfig{ChannelID: channel.ID, Model: item.ModelKey, PriceTierID: legacyTier.ID})
+	if err != nil || config.Model != legacyTier.ProviderModelKey {
+		t.Fatalf("legacy tier rejected at execution: model=%q err=%v", config.Model, err)
+	}
+	if err := db.Model(&model.ChannelModel{}).Where("id = ?", item.ID).Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.resolveProviderConfig(providerConfig{ChannelID: channel.ID, Model: item.ModelKey, PriceTierID: legacyTier.ID}); err == nil {
+		t.Fatal("disabled model accepted at execution")
 	}
 }
 

@@ -1,5 +1,6 @@
 import { http, apiBaseURL } from "@/services/api/request";
 import type { ReasoningEffort } from "@/lib/reasoning-effort";
+import type { ProductionPlanPhase } from "@/lib/production-plan";
 import { consumeTaskTextStream, createTaskTextStreamParser } from "@/services/api/task-text-stream";
 
 export type AgentPermissionMode = "read_only" | "auto" | "request_approval";
@@ -63,7 +64,28 @@ export type AgentApproval = {
 };
 
 export type AgentRun = {
-    production?: { targetNodeId: string; paused: boolean; waitingForBoundary: boolean; waitingForSharedFacts?: boolean; processedPages: number; totalPages: number; artifactCount: number; validated: boolean; maxSteps?: number };
+    production?: {
+        targetNodeId: string;
+        workKind?: "storyboard" | "plan";
+        phase?: `${ProductionPlanPhase}`;
+        phaseLabel?: string;
+        currentItem?: string;
+        concurrentItems?: string[];
+        concurrencyLimit?: number;
+        documentCount?: number;
+        documentTotal?: number;
+        assetCount?: number;
+        assetTotal?: number;
+        inventoryComplete?: boolean;
+        paused: boolean;
+        waitingForBoundary: boolean;
+        waitingForSharedFacts?: boolean;
+        processedPages: number;
+        totalPages: number;
+        artifactCount: number;
+        validated: boolean;
+        maxSteps?: number;
+    };
     eventCount?: number;
     eventSeqBase?: number;
     id: string;

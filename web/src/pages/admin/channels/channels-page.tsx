@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, InputNumber, Modal, Spin, Switch } from "antd";
+import { App, Button, Form, Input, Modal, Spin, Switch } from "antd";
 import { ChevronRight, Copy, Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
@@ -22,8 +22,6 @@ type ChannelFormValues = {
     apiKey?: string;
     secretKey?: string;
     headers?: ChannelHeader[];
-    useGlobalConcurrency?: boolean;
-    concurrencyLimit?: number;
     enabled?: boolean;
 };
 
@@ -34,8 +32,6 @@ export function adminChannelSavePayload(values: ChannelFormValues) {
         apiKey: values.apiKey?.trim() || "",
         secretKey: values.secretKey?.trim() || "",
         headers: values.headers || [],
-        useGlobalConcurrency: values.useGlobalConcurrency !== false,
-        concurrencyLimit: values.useGlobalConcurrency === false ? values.concurrencyLimit : undefined,
         enabled: values.enabled !== false,
     };
 }
@@ -56,7 +52,6 @@ export default function ChannelsPage() {
     const [duplicatingChannelId, setDuplicatingChannelId] = useState<string | null>(null);
     const requestSequence = useRef(0);
     const [form] = Form.useForm<ChannelFormValues>();
-    const useGlobalConcurrency = Form.useWatch("useGlobalConcurrency", form) !== false;
     const hasFilters = Boolean(keyword || status !== "all");
     const { visibleChannels, selectedChannel } = selectChannelWorkspace(channels, keyword, status, selectedChannelId);
 
@@ -126,11 +121,9 @@ export default function ChannelsPage() {
                       apiKey: "",
                       secretKey: "",
                       headers: channel.headers || [],
-                      useGlobalConcurrency: !channel.concurrencyLimit,
-                      concurrencyLimit: channel.concurrencyLimit || undefined,
                       enabled: channel.enabled !== false,
                   }
-                : { name: "", baseUrl: "", apiKey: "", secretKey: "", headers: [], useGlobalConcurrency: true, concurrencyLimit: undefined, enabled: true },
+                : { name: "", baseUrl: "", apiKey: "", secretKey: "", headers: [], enabled: true },
         );
         setDrawerOpen(true);
     };
@@ -330,7 +323,7 @@ export default function ChannelsPage() {
                                     </p>
                                     <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground/50">
                                         <span>{selectedChannel.hasApiKey ? (selectedChannel.hasSecretKey ? "AK/SK 已配置" : "API Key 已配置") : "凭证未配置"}</span>
-                                        <span>最大并发：{selectedChannel.concurrencyLimit || "跟随系统"}</span>
+                                        <span>渠道分类并发：遵循系统全局策略</span>
                                     </div>
                                 </div>
                                 {channelActions(selectedChannel)}
@@ -393,24 +386,6 @@ export default function ChannelsPage() {
                             <ChannelHeadersEditor />
                         </Form.Item>
                     </div>
-                    <Form.Item name="useGlobalConcurrency" label="跟随系统并发配置" valuePropName="checked">
-                        <Switch />
-                    </Form.Item>
-                    <Form.Item
-                        name="concurrencyLimit"
-                        label="渠道最大并发数"
-                        extra="后台任务和系统代理请求共享该渠道上限；槽位暂满时请求会等待。"
-                        rules={
-                            useGlobalConcurrency
-                                ? []
-                                : [
-                                      { required: true, message: "请填写渠道最大并发数" },
-                                      { type: "number", min: 1, max: 999, message: "请输入 1-999 的整数" },
-                                  ]
-                        }
-                    >
-                        <InputNumber className="w-full" min={1} max={999} precision={0} disabled={useGlobalConcurrency} placeholder={useGlobalConcurrency ? "使用系统默认值" : "1-999"} />
-                    </Form.Item>
                     <Form.Item name="enabled" label="启用" valuePropName="checked">
                         <Switch />
                     </Form.Item>

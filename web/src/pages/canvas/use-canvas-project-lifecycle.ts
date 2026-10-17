@@ -1,5 +1,6 @@
 import { mergeAgentCanvasEditor } from "@/lib/canvas/agent-canvas-patch";
 import { layoutWorkflowImageGroups } from "@/lib/canvas/canvas-workflow-image-layout";
+import { layoutCanvasGridGroups } from "@/lib/canvas/canvas-group-grid";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { App } from "antd";
 import { useNavigate } from "react-router";
@@ -10,7 +11,7 @@ import { removeCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
 import { normalizeCanvasNodeTimestamps } from "@/lib/canvas/canvas-node-timestamps";
 import { hydrateAssistantImages, resetInterruptedGeneration } from "@/lib/canvas/canvas-project-generation";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
-import { createCanvasProjectWithRemoteSync, deleteCanvasProjectsWithRemoteSync, forceOverwriteRemoteCanvasSync, loadCanvasProjectForEditing, saveRemoteUserDataNow, subscribeAgentCanvasRefresh } from "@/services/user-data-sync";
+import { deleteCanvasProjectsWithRemoteSync, forceOverwriteRemoteCanvasSync, loadCanvasProjectForEditing, saveRemoteUserDataNow, subscribeAgentCanvasRefresh } from "@/services/user-data-sync";
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasThemeStore } from "@/stores/canvas/use-canvas-theme-store";
 import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
@@ -127,7 +128,7 @@ export function useCanvasProjectLifecycle({
                 updatedAt: targetProject.updatedAt,
             });
             const snapshot: CanvasHistorySnapshot = {
-                nodes: layoutWorkflowImageGroups(initialNodes),
+                nodes: layoutCanvasGridGroups(layoutWorkflowImageGroups(initialNodes)),
                 connections: targetProject.connections,
                 chatSessions: targetProject.chatSessions || [],
                 activeChatId: targetProject.activeChatId || null,
@@ -283,11 +284,8 @@ export function useCanvasProjectLifecycle({
     }, [projectId, projectLoaded, updateProject, viewportRef]);
 
     const createAndOpenProject = useCallback(() => {
-        void createCanvasProjectWithRemoteSync(`自由画布 ${useCanvasStore.getState().projects.length + 1}`).then(({ id, syncError }) => {
-            if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
-            navigate(`/canvas/${id}`);
-        });
-    }, [message, navigate]);
+        navigate("/canvas?create=1");
+    }, [navigate]);
 
     const deleteCurrentProject = useCallback(async () => {
         let drawingIds = nodesRef.current.flatMap((node) => node.type === "drawing" && node.metadata?.drawingId ? [node.metadata.drawingId] : []);

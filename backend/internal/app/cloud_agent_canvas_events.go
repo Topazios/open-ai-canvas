@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"reflect"
 
 	"infinite-canvas/backend/internal/repository"
@@ -189,6 +190,19 @@ func emitCloudAgentCanvasChange(repo *repository.Repository, runID string, state
 	}
 	if state.CallIndex >= 0 && state.CallIndex < len(state.Calls) {
 		payload["callId"] = state.Calls[state.CallIndex].ID
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if len(encoded) > 128<<10 {
+		// A regroup can change provenance on many long documents at once.
+		// The full canvas is already persisted in this transaction; invalidate
+		// the client snapshot instead of truncating content or failing the save.
+		payload = map[string]any{"canvasId": input.CanvasID, "operation": input.Operation, "requiresRefresh": true}
+		if state.CallIndex >= 0 && state.CallIndex < len(state.Calls) {
+			payload["callId"] = state.Calls[state.CallIndex].ID
+		}
 	}
 	state.event(runID, "canvas_updated", payload)
 	return nil

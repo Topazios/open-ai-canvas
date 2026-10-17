@@ -1,10 +1,10 @@
 import type { ChannelModel, ChannelModelPriceTier } from "@/services/api/wallet";
 import { AdminStatusBadge } from "./admin-ui";
-import { formatModelMargin, formatModelPrice, modelPriceFields } from "./channel-model-pricing";
+import { formatModelMargin, formatModelPrice, hasValidTierPrice, modelPriceFields } from "./channel-model-pricing";
 
 export function ChannelModelCostSummary({ item }: { item: ChannelModel }) {
-    const tiers = item.priceTiers?.filter((tier) => tier.enabled) || [];
-    if (!tiers.length) return <AdminStatusBadge label="无已启用规格" tone="warning" />;
+    const tiers = item.priceTiers || [];
+    if (!tiers.length) return <AdminStatusBadge label="无价格规格" tone="warning" />;
     const renderTier = (tier: ChannelModelPriceTier) => (
         <div className="admin-model-cost-tier" key={tier.id}>
             <div className="admin-model-cost-spec">{specificationLabel(tier)}</div>
@@ -27,10 +27,10 @@ export function ChannelModelCostSummary({ item }: { item: ChannelModel }) {
 function priceLabel(tier: ChannelModelPriceTier, capability: ChannelModel["capability"]) {
     return modelPriceFields(tier, capability).map(({ key, label, unit }) => {
         const cost = tier.costPricing?.configured ? tier.costPricing[key] : undefined;
-        const sale = tier.priceConfigured ? tier[key] : undefined;
+        const sale = hasValidTierPrice(tier, capability) ? tier[key] : undefined;
         return (
             <div key={key}>
-                <span>{label ? `${label} ` : ""}{tier.costPricing?.configured ? formatModelPrice(cost) : "未配置成本"} / {tier.priceConfigured ? formatModelPrice(sale) : "未配置售价"}</span>
+                <span>{label ? `${label} ` : ""}{tier.costPricing?.configured ? formatModelPrice(cost) : "未配置成本"} / {sale !== undefined ? formatModelPrice(sale) : "未配置售价"}</span>
                 <span className="admin-model-cost-unit">积分 / {unit} · 利润率 {formatModelMargin(cost, sale)}</span>
             </div>
         );

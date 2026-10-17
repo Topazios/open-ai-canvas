@@ -37,6 +37,12 @@ func (s *Service) buildEnhancedPiRequest(ctx context.Context, params EnhancedPiR
 	tools := s.buildCompletePiTools(params.Canonical.Tools)
 	if params.RuntimeState.Request.Production != nil {
 		tools = piToolDefinitions(productionAgentTools())
+		// The model bridge selects the current phase schema on every call. Pi's
+		// static registry must not reject documents against the startup template;
+		// the Go tool bridge owns authorization, size and business validation.
+		for _, tool := range tools {
+			tool["parameters"] = map[string]any{"type": "object", "additionalProperties": true}
+		}
 		return cloudAgentPiProcessRequest{SessionFile: params.SessionFile, SessionJSONL: params.SessionJSONL, SessionDir: params.SessionDir, Cwd: s.dataDir, AgentDir: params.SessionDir,
 			SessionId: params.RunID, UserId: params.UserID, CanvasId: params.CanvasID, RunId: params.RunID, Prompt: params.Prompt, SystemPrompt: productionCurrentPolicy(params.SystemPrompt),
 			Tools: tools, Compaction: s.buildCompactionStrategy(params.UserID, params.CanvasID), Model: s.buildModelConfig(params.ModelID, params.RuntimeState),

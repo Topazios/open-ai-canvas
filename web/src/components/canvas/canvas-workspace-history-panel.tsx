@@ -2,10 +2,11 @@ import { History, RefreshCw } from "lucide-react";
 
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import type { GenerationTask } from "@/services/api/task-center";
+import type { CanvasNodeData } from "@/types/canvas";
 import { TaskListItem } from "./canvas-workspace-task-list-item";
 
 // 历史面板：展示项目最近任务（含云端 Agent 根任务与步骤任务），与任务面板互不依赖。
-export function CanvasWorkspaceHistoryPanel({ tasks, refreshing, onRefresh, onCancelTask }: { tasks: GenerationTask[]; refreshing?: boolean; onRefresh?: () => void; onCancelTask?: (task: GenerationTask) => void }) {
+export function CanvasWorkspaceHistoryPanel({ tasks, nodes, refreshing, onRefresh, onCancelTask }: { tasks: GenerationTask[]; nodes?: CanvasNodeData[]; refreshing?: boolean; onRefresh?: () => void; onCancelTask?: (task: GenerationTask) => void }) {
     return (
         <>
             <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2.5">
@@ -23,7 +24,7 @@ export function CanvasWorkspaceHistoryPanel({ tasks, refreshing, onRefresh, onCa
                 {tasks.length ? (
                     <div className="space-y-0.5">
                         {tasks.map((task) => (
-                            <TaskListItem key={task.id} task={task} onCancelTask={onCancelTask} />
+                            <TaskListItem key={task.id} task={task} tasks={tasks} nodes={nodes} onCancelTask={onCancelTask} />
                         ))}
                     </div>
                 ) : (

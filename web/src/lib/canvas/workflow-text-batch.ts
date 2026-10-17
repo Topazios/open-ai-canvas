@@ -1,5 +1,5 @@
 export type WorkflowTextUnit = { label: string; text: string };
-export type WorkflowTextBatch = { version: 1; units: WorkflowTextUnit[] } | {
+export type WorkflowTextBatch = { version: 1; units: WorkflowTextUnit[] } | { version: 4; units: WorkflowTextUnit[]; context: WorkflowTextUnit[] } | { version: 3; units: WorkflowTextUnit[]; episodeCount: number } | {
     version: 2; units: WorkflowTextUnit[]; context: WorkflowTextUnit[]; scope: string;
     category: "bible" | "characters" | "environments" | "props" | "special";
 };
@@ -28,6 +28,18 @@ export function splitWorkflowText(text: string, limit = WORKFLOW_UNIT_LIMIT): st
 
 type WorkflowSource = { title?: string; episodeNumber?: number; [key: string]: unknown };
 
+export function workflowBodyBatch(sources: WorkflowSource[], instructionLength: number): WorkflowTextBatch | undefined {
+    if (JSON.stringify(sources).length + instructionLength <= WORKFLOW_CONTEXT_LIMIT) return;
+    return { version: 4, units: workflowSourceUnits(sources.filter(source => source.step !== "story.episodes")),
+        context: workflowSourceUnits(sources.filter(source => source.step === "story.episodes")) };
+}
+
+// Episode ranges share a single story spine and are concatenated, never reduced
+// through the asset-extraction map/merge pipeline.
+export function workflowOutlineBatch(sources: WorkflowSource[], episodeCount: number): WorkflowTextBatch {
+    return { version: 3, episodeCount, units: workflowSourceUnits(sources) };
+}
+
 export function sharedWorkflowTextBatch(sources: WorkflowSource[], scope: string, category: string): WorkflowTextBatch | undefined {
     if (!["bible", "characters", "environments", "props", "special"].includes(category)) return;
     const bodies = sources.filter((source) => source.step === "story.body");
@@ -36,9 +48,24 @@ export function sharedWorkflowTextBatch(sources: WorkflowSource[], scope: string
         units: workflowSourceUnits(bodies), context: workflowSourceUnits(sources.filter((source) => source.step !== "story.body")) };
 }
 
-export function workflowTextBatch(sources: WorkflowSource[], instructionLength = 0): WorkflowTextBatch | undefined {
+export function workflowTextBatch(sources: WorkflowSource[], instructionLength = 0, packSources = false): WorkflowTextBatch | undefined {
     if (JSON.stringify(sources).length + instructionLength <= WORKFLOW_CONTEXT_LIMIT) return undefined;
-    return { version: 1, units: workflowSourceUnits(sources) };
+    const units = workflowSourceUnits(sources);
+    if (!packSources) return { version: 1, units };
+    const packed: WorkflowTextUnit[] = [];
+    let first = 0;
+    for (let index = 0; index < units.length; index++) {
+        const unit = units[index];
+        const previous = packed.at(-1);
+        if (previous && previous.text.length + 2 + unit.text.length <= WORKFLOW_UNIT_LIMIT) {
+            previous.text += `\n\n${unit.text}`;
+            previous.label = `关联材料 ${first + 1}–${index + 1}`;
+        } else {
+            first = index;
+            packed.push({ ...unit });
+        }
+    }
+    return { version: 1, units: packed };
 }
 
 function workflowSourceUnits(sources: WorkflowSource[]): WorkflowTextUnit[] {

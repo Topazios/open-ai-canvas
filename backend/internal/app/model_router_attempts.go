@@ -156,7 +156,7 @@ func (s *Service) routedModelForTaskSelection(task *model.Task) (*RoutedModel, e
 	if err != nil || s.logicalRouteBlocked(cachedLogicalRoute{Route: *route, CapabilitySpec: capabilitySpec, ChannelModel: *channelModel}) {
 		return nil, errors.New("当前模型服务暂不可用")
 	}
-	if logicalModel.PricePolicy == "channel" && !channelModel.PriceConfigured {
+	if logicalModel.PricePolicy == "channel" && !HasValidPrice(channelModel) {
 		return nil, errors.New("任务使用的模型服务价格配置已失效")
 	}
 	if logicalModel.PricePolicy == "unified" && logicalModel.BillingMode == "token" && !supportsTokenBilling(logicalModel.Capability, channelModel.Protocol) {
@@ -443,7 +443,7 @@ func (s *Service) resolveArchivedTaskRoute(task *model.Task, intent ModelRequest
 	if err != nil || s.logicalRouteBlocked(cachedLogicalRoute{Route: *route, CapabilitySpec: capabilitySpec, ChannelModel: *channelModel}) {
 		return nil, BadAuthRequest("历史任务原模型供应线路暂不可用，无法重试")
 	}
-	if logicalModel.PricePolicy == "channel" && !channelModel.PriceConfigured {
+	if logicalModel.PricePolicy == "channel" && !HasValidPrice(channelModel) {
 		return nil, BadAuthRequest("历史任务原模型价格配置已失效，无法重试")
 	}
 	return &RoutedModel{LogicalModel: *logicalModel, Revision: *revision, Route: *route, ChannelModel: *channelModel, Defaults: defaults}, nil

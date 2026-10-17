@@ -572,10 +572,6 @@ func cloudAgentBatchTableState(table map[string]any, offset int, precise bool) m
 	if operation != "creative" {
 		operation = "try_on"
 	}
-	concurrency := 10
-	if value, ok := cloudAgentInteger(table["concurrency"]); ok && (value == 1 || value == 5 || value == 10) {
-		concurrency = value
-	}
 	columns := []any{}
 	for index, column := range creationMaps(table["referenceColumns"])[:min(len(creationMaps(table["referenceColumns"])), 6)] {
 		id, label := truncateRunes(stringValue(column["id"]), 120), truncateRunes(stringValue(column["label"]), 120)
@@ -648,7 +644,7 @@ func cloudAgentBatchTableState(table map[string]any, offset int, precise bool) m
 		rows = append(rows, item)
 	}
 	projected := map[string]any{
-		"operation": operation, "concurrency": concurrency, "referenceColumns": columns,
+		"operation": operation, "concurrencySource": "system", "referenceColumns": columns,
 		"rows": rows, "totalRows": len(all), "nextOffset": next, "hasMore": next > 0,
 		"generationPreview": map[string]any{
 			"enabledRows": enabled, "readyRows": ready, "missingPromptRows": missingPrompt,

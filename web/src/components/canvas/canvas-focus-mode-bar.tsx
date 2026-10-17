@@ -1,7 +1,7 @@
 import { Tooltip } from "@/components/ui/base/tooltip";
 import type { ReactNode } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { Clapperboard, FolderKanban, History, PanelBottom, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Clapperboard, FolderKanban, History, PanelBottom, Settings2, X, ZoomIn, ZoomOut } from "lucide-react";
 
 
 import { aceternityMotion } from "@/lib/aceternity-motion";
@@ -21,10 +21,11 @@ type CanvasFocusModeBarProps = {
     onZoomOut: () => void;
     onFit: () => void;
     onOpenProjectAssociation?: () => void;
+    onOpenGlobalSettings?: () => void;
     shortDramaGuide?: { progress: CanvasShortDramaProgress; collapsed: boolean; onToggle: () => void };
 };
 
-export function CanvasFocusModeBar({ versionsOpen, onToggleVersions, syncStatus, dockRevealed, zoomPercent, onToggleDock, onExit, onZoomIn, onZoomOut, onFit, shortDramaGuide, onOpenProjectAssociation }: CanvasFocusModeBarProps) {
+export function CanvasFocusModeBar({ versionsOpen, onToggleVersions, syncStatus, dockRevealed, zoomPercent, onToggleDock, onExit, onZoomIn, onZoomOut, onFit, shortDramaGuide, onOpenProjectAssociation, onOpenGlobalSettings }: CanvasFocusModeBarProps) {
     const theme = canvasThemes[useActiveTheme()];
     const reducedMotion = useReducedMotion();
 
@@ -51,6 +52,7 @@ export function CanvasFocusModeBar({ versionsOpen, onToggleVersions, syncStatus,
                     </button>
                 </Tooltip>
                 {syncStatus}
+                {onOpenGlobalSettings ? <Tooltip title="修改全局创作设定"><button type="button" onClick={onOpenGlobalSettings} className="inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-xs" aria-label="全局创作设定"><Settings2 className="size-4 shrink-0" /><span>全局设定</span></button></Tooltip> : null}
                 {onOpenProjectAssociation ? <Tooltip title="关联项目与章节"><button type="button" onClick={onOpenProjectAssociation} className="grid size-8 place-items-center rounded-md" aria-label="关联项目与章节"><FolderKanban className="size-4" /></button></Tooltip> : null}
                 {shortDramaGuide ? (
                     <Tooltip title={shortDramaGuide.collapsed ? "展开短剧流程" : "收起短剧流程"}>

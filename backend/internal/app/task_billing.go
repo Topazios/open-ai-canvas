@@ -29,7 +29,7 @@ type taskBillingRepository interface {
 
 var (
 	// errTaskBillingReview 表示订单状态已经不能由重试流程安全推断，必须先完成费用核对。
-	errTaskBillingReview = errors.New("task billing order requires review")
+	errTaskBillingReview = errors.New("上一次调用的费用仍待核对，已停止自动重试以免重复扣费；请在任务中心核对上游结果和账单，已完成结果及草稿保留")
 )
 
 func newTaskBillingCoordinator(repo taskBillingRepository) *taskBillingCoordinator {

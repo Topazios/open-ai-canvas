@@ -1,5 +1,6 @@
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
 import { buildCanvasSpatialIndex, canvasNodeBounds, type CanvasSpatialIndex } from "@/lib/canvas/canvas-spatial-index";
+import { isGridFrame, layoutCanvasGridGroups, snapGridDrop } from "./canvas-group-grid";
 
 export const FRAME_HEADER_HEIGHT = 36;
 export const FRAME_PADDING = 24;
@@ -99,7 +100,8 @@ export function applyFrameDrop(nodes: CanvasNodeData[], draggedNodeIds: Set<stri
         if (!frameId) return node.parentId ? { ...node, parentId: undefined } : node;
         return target && canContain(node) ? { ...node, parentId: frameId } : node;
     });
-    if (!frameId) return next;
+    if (!frameId) return layoutCanvasGridGroups(next);
+    if (target && isGridFrame(target)) return snapGridDrop(next, draggedNodeIds, target);
 
     const children = getFrameChildren(frameId, next);
     if (!children.length) return next;

@@ -66,6 +66,7 @@ export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyM
         metadata.generationResultPlacement = "replace-node";
     }
     metadata.frame = node.metadata?.frame ? { ...node.metadata.frame } : undefined;
+    if (metadata.frame?.gridOrder) metadata.frame.gridOrder = metadata.frame.gridOrder.map(id => idMap.get(id)).filter((id): id is string => Boolean(id));
     metadata.referenceSetId = remapOwnedNodeId(node.metadata?.referenceSetId, idMap);
     metadata.referenceAssetNodeIds = node.metadata?.referenceAssetNodeIds
         ?.map((nodeId) => remapOwnedNodeId(nodeId, idMap))

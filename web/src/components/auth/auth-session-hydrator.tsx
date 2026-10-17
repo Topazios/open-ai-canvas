@@ -6,9 +6,20 @@ import { FullScreenLoader } from "@/components/ui/aceternity/full-screen-loader"
 import { preloadWorkspaceRoute } from "@/lib/workspace-route-modules";
 import { useUserStore } from "@/stores/use-user-store";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
+import { readRuntimeLimits } from "@/services/runtime-limits";
 
 export function AuthSessionHydrator({ children }: { children: ReactNode }) {
     const hydrated = useUserStore((state) => state.hydrated);
+    const userId = useUserStore((state) => state.user?.id);
+
+    useEffect(() => {
+        if (!hydrated) return;
+        const refresh = () => { void readRuntimeLimits().catch((error) => console.warn("系统并发策略刷新失败", error)); };
+        const onFocus = () => { void readRuntimeLimits(true).catch((error) => console.warn("系统并发策略刷新失败", error)); };
+        refresh();
+        window.addEventListener("focus", onFocus);
+        return () => { window.removeEventListener("focus", onFocus); };
+    }, [hydrated, userId]);
 
     useEffect(() => {
         let cancelled = false;

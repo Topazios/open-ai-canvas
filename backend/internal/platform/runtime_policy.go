@@ -57,17 +57,45 @@ func agentStepTimeoutSecondsDefault() int {
 }
 
 type RuntimeResourcePolicy struct {
-	ResourceUploadMB        int64 `json:"resourceUploadMB"`
-	GeneratedFileMB         int64 `json:"generatedFileMB"`
-	DailyUploadMB           int64 `json:"dailyUploadMB"`
-	StoredFileGB            int64 `json:"storedFileGB"`
-	StructuredDataMB        int64 `json:"structuredDataMB"`
-	TaskDataGB              int64 `json:"taskDataGB"`
-	AssetCount              int64 `json:"assetCount"`
-	CanvasCount             int64 `json:"canvasCount"`
-	TaskCount               int64 `json:"taskCount"`
-	APICallLogCount         int64 `json:"apiCallLogCount"`
-	RecycleBinRetentionDays int   `json:"recycleBinRetentionDays"`
+	ImagePreparationConcurrency int   `json:"imagePreparationConcurrency"`
+	ResourceDownloadConcurrency int   `json:"resourceDownloadConcurrency"`
+	UploadConcurrency           int   `json:"uploadConcurrency"`
+	MediaRecoveryConcurrency    int   `json:"mediaRecoveryConcurrency"`
+	ResourceUploadMB            int64 `json:"resourceUploadMB"`
+	GeneratedFileMB             int64 `json:"generatedFileMB"`
+	DailyUploadMB               int64 `json:"dailyUploadMB"`
+	StoredFileGB                int64 `json:"storedFileGB"`
+	StructuredDataMB            int64 `json:"structuredDataMB"`
+	TaskDataGB                  int64 `json:"taskDataGB"`
+	AssetCount                  int64 `json:"assetCount"`
+	CanvasCount                 int64 `json:"canvasCount"`
+	TaskCount                   int64 `json:"taskCount"`
+	APICallLogCount             int64 `json:"apiCallLogCount"`
+	RecycleBinRetentionDays     int   `json:"recycleBinRetentionDays"`
+}
+
+// Older admin payloads omit these fields; explicit zero still reaches validation.
+func (p *RuntimeResourcePolicy) UnmarshalJSON(data []byte) error {
+	type resourcePolicy RuntimeResourcePolicy
+	value := resourcePolicy(*p)
+	defaults := DefaultRuntimePolicy().Resource
+	if value.ImagePreparationConcurrency == 0 {
+		value.ImagePreparationConcurrency = defaults.ImagePreparationConcurrency
+	}
+	if value.ResourceDownloadConcurrency == 0 {
+		value.ResourceDownloadConcurrency = defaults.ResourceDownloadConcurrency
+	}
+	if value.UploadConcurrency == 0 {
+		value.UploadConcurrency = defaults.UploadConcurrency
+	}
+	if value.MediaRecoveryConcurrency == 0 {
+		value.MediaRecoveryConcurrency = defaults.MediaRecoveryConcurrency
+	}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*p = RuntimeResourcePolicy(value)
+	return nil
 }
 
 type RuntimeStoragePolicy struct {
@@ -80,6 +108,11 @@ type RuntimeStoragePolicy struct {
 
 type RuntimeTaskPolicy struct {
 	WorkerConcurrency        int `json:"workerConcurrency"`
+	ImageConcurrency         int `json:"imageConcurrency"`
+	TextConcurrency          int `json:"textConcurrency"`
+	AgentConcurrency         int `json:"agentConcurrency"`
+	VideoConcurrency         int `json:"videoConcurrency"`
+	AudioConcurrency         int `json:"audioConcurrency"`
 	ChannelConcurrency       int `json:"channelConcurrency"`
 	ActiveTaskLimit          int `json:"activeTaskLimit"`
 	ImageTimeoutMinutes      int `json:"imageTimeoutMinutes"`
@@ -135,9 +168,26 @@ type PublicRuntimePolicySetting struct {
 }
 
 type PublicRuntimeLimits struct {
-	ActiveTaskLimit         int   `json:"activeTaskLimit"`
-	ResourceUploadMB        int64 `json:"resourceUploadMB"`
-	RecycleBinRetentionDays int   `json:"recycleBinRetentionDays"`
+	Concurrency             PublicRuntimeConcurrency `json:"concurrency"`
+	ActiveTaskLimit         int                      `json:"activeTaskLimit"`
+	ResourceUploadMB        int64                    `json:"resourceUploadMB"`
+	RecycleBinRetentionDays int                      `json:"recycleBinRetentionDays"`
+}
+
+type PublicRuntimeConcurrency struct {
+	Image            int `json:"image"`
+	Text             int `json:"text"`
+	Agent            int `json:"agent"`
+	Video            int `json:"video"`
+	Audio            int `json:"audio"`
+	Other            int `json:"other"`
+	Channel          int `json:"channel"`
+	CustomRelay      int `json:"customRelay"`
+	ImagePreparation int `json:"imagePreparation"`
+	ResourceDownload int `json:"resourceDownload"`
+	Upload           int `json:"upload"`
+	MediaRecovery    int `json:"mediaRecovery"`
+	AgentSessions    int `json:"agentSessions"`
 }
 
 // DefaultRuntimePolicy returns the effective baseline policy, including
@@ -147,17 +197,21 @@ type PublicRuntimeLimits struct {
 func DefaultRuntimePolicy() RuntimePolicySetting {
 	return RuntimePolicySetting{
 		Resource: RuntimeResourcePolicy{
-			ResourceUploadMB:        50,
-			GeneratedFileMB:         64,
-			DailyUploadMB:           2048,
-			StoredFileGB:            20,
-			StructuredDataMB:        256,
-			TaskDataGB:              1,
-			AssetCount:              2_000,
-			CanvasCount:             1_000,
-			TaskCount:               20_000,
-			APICallLogCount:         100_000,
-			RecycleBinRetentionDays: 30,
+			ImagePreparationConcurrency: 4,
+			ResourceDownloadConcurrency: 16,
+			UploadConcurrency:           4,
+			MediaRecoveryConcurrency:    2,
+			ResourceUploadMB:            50,
+			GeneratedFileMB:             64,
+			DailyUploadMB:               2048,
+			StoredFileGB:                20,
+			StructuredDataMB:            256,
+			TaskDataGB:                  1,
+			AssetCount:                  2_000,
+			CanvasCount:                 1_000,
+			TaskCount:                   20_000,
+			APICallLogCount:             100_000,
+			RecycleBinRetentionDays:     30,
 		},
 		Storage: RuntimeStoragePolicy{
 			TransferTimeoutSeconds:      120,
@@ -168,6 +222,11 @@ func DefaultRuntimePolicy() RuntimePolicySetting {
 		},
 		Task: RuntimeTaskPolicy{
 			WorkerConcurrency:        defaultWorkerConcurrencyLimit(),
+			ImageConcurrency:         6,
+			TextConcurrency:          3,
+			AgentConcurrency:         3,
+			VideoConcurrency:         2,
+			AudioConcurrency:         3,
 			ChannelConcurrency:       defaultChannelConcurrencyLimit(),
 			ActiveTaskLimit:          5,
 			ImageTimeoutMinutes:      8,
@@ -207,6 +266,8 @@ func DefaultRuntimePolicy() RuntimePolicySetting {
 func selfUseRuntimePolicy() RuntimePolicySetting {
 	value := DefaultRuntimePolicy()
 	value.Resource = RuntimeResourcePolicy{
+		ImagePreparationConcurrency: maxRuntimeConcurrency, ResourceDownloadConcurrency: maxRuntimeConcurrency,
+		UploadConcurrency: maxRuntimeConcurrency, MediaRecoveryConcurrency: maxRuntimeConcurrency,
 		ResourceUploadMB: maxRuntimeUploadMB, GeneratedFileMB: maxRuntimeUploadMB,
 		DailyUploadMB: maxRuntimeDataMB, StoredFileGB: maxRuntimeStorageGB, StructuredDataMB: maxRuntimeDataMB,
 		TaskDataGB: maxRuntimeStorageGB, AssetCount: maxRuntimeCount, CanvasCount: maxRuntimeCount,
@@ -215,6 +276,8 @@ func selfUseRuntimePolicy() RuntimePolicySetting {
 	}
 	value.Task = RuntimeTaskPolicy{
 		WorkerConcurrency: maxRuntimeConcurrency, ChannelConcurrency: maxRuntimeConcurrency, ActiveTaskLimit: maxRuntimeConcurrency,
+		ImageConcurrency: maxRuntimeConcurrency, TextConcurrency: maxRuntimeConcurrency, AgentConcurrency: maxRuntimeConcurrency,
+		VideoConcurrency: maxRuntimeConcurrency, AudioConcurrency: maxRuntimeConcurrency,
 		ImageTimeoutMinutes: maxRuntimeTimeoutMinutes, TextTimeoutMinutes: maxRuntimeTimeoutMinutes,
 		AudioTimeoutMinutes: maxRuntimeTimeoutMinutes, VideoTimeoutMinutes: maxRuntimeTimeoutMinutes,
 		StoryboardTimeoutMinutes: maxRuntimeTimeoutMinutes, DefaultTimeoutMinutes: maxRuntimeTimeoutMinutes,
@@ -273,6 +336,16 @@ func (s *Service) PublicRuntimeLimits() (*PublicRuntimeLimits, error) {
 		return nil, err
 	}
 	return &PublicRuntimeLimits{
+		Concurrency: PublicRuntimeConcurrency{
+			Image: policy.Task.ImageConcurrency, Text: policy.Task.TextConcurrency,
+			Agent: policy.Task.AgentConcurrency, Video: policy.Task.VideoConcurrency,
+			Audio: policy.Task.AudioConcurrency, Other: policy.Task.WorkerConcurrency,
+			Channel: policy.Task.ChannelConcurrency, CustomRelay: policy.Request.CustomRelayConcurrency,
+			ImagePreparation: policy.Resource.ImagePreparationConcurrency,
+			ResourceDownload: policy.Resource.ResourceDownloadConcurrency,
+			Upload:           policy.Resource.UploadConcurrency, MediaRecovery: policy.Resource.MediaRecoveryConcurrency,
+			AgentSessions: policy.Task.AgentMaxSessions,
+		},
 		ActiveTaskLimit: policy.Task.ActiveTaskLimit, ResourceUploadMB: policy.Resource.ResourceUploadMB,
 		RecycleBinRetentionDays: policy.Resource.RecycleBinRetentionDays,
 	}, nil
@@ -373,6 +446,14 @@ func (s *Service) readRuntimePolicy() (*model.SystemSetting, RuntimePolicySettin
 
 func validateRuntimePolicy(value RuntimePolicySetting) error {
 	resource := value.Resource
+	for label, item := range map[string]int{
+		"图片准备并发数": resource.ImagePreparationConcurrency, "资源下载并发数": resource.ResourceDownloadConcurrency,
+		"上传并发数": resource.UploadConcurrency, "媒体恢复并发数": resource.MediaRecoveryConcurrency,
+	} {
+		if item < 1 || item > maxRuntimeConcurrency {
+			return kernel.BadAuthRequest(fmt.Sprintf("%s必须是 1-%d 的整数", label, maxRuntimeConcurrency))
+		}
+	}
 	for label, item := range map[string]int64{
 		"普通资源单文件": resource.ResourceUploadMB,
 		"单个生成资源":  resource.GeneratedFileMB,
@@ -424,6 +505,8 @@ func validateRuntimePolicy(value RuntimePolicySetting) error {
 	task := value.Task
 	for label, item := range map[string]int{
 		"Worker 并发数": task.WorkerConcurrency, "全局渠道并发数": task.ChannelConcurrency,
+		"图片并发数": task.ImageConcurrency, "文本并发数": task.TextConcurrency, "Agent 并发数": task.AgentConcurrency,
+		"视频并发数": task.VideoConcurrency, "音频并发数": task.AudioConcurrency,
 	} {
 		if item < 1 || item > maxRuntimeConcurrency {
 			return kernel.BadAuthRequest(fmt.Sprintf("%s必须是 1-%d 的整数", label, maxRuntimeConcurrency))

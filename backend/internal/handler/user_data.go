@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"infinite-canvas/backend/internal/canvas/contract"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/service"
 
@@ -619,12 +620,22 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if !available || !enforceRateLimit(c, "canvas-write:"+user.ID, policy.Request.CanvasWritePerMinute, time.Minute) {
 			return
 		}
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 5<<20)
+		release, admitted := admitCanvasWrite(c)
+		if !admitted {
+			return
+		}
+		defer release()
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, contract.MaxCanvasRequestBytes)
 		var req struct {
 			Project                json.RawMessage `json:"project"`
 			RepairMissingResources bool            `json:"repairMissingResources"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
+			var sizeError *http.MaxBytesError
+			if errors.As(err, &sizeError) {
+				fail(c, http.StatusRequestEntityTooLarge, service.BadAuthRequest("画布数据超过 100MiB，未保存；本地内容请保留，媒体应保存到资源库"))
+				return
+			}
 			fail(c, http.StatusBadRequest, err)
 			return
 		}

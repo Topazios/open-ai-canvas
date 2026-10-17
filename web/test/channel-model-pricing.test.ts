@@ -22,6 +22,14 @@ const item = {
     ],
 } as ChannelModel;
 
+test("legacy disabled prices participate in repricing payloads and preserve model availability", () => {
+    const legacy = { ...item, enabled: false, priceTiers: [{ ...item.priceTiers[0]!, enabled: false, priceConfigured: false }] };
+    const rows = modelRepriceRows([legacy]);
+    expect(rows).toHaveLength(1);
+    expect(modelRepricePayload([legacy], rows)[0]!.priceTiers[0]!.prices.unitPriceMicrocredits).toBe(9);
+    expect(previewModelRepricing([legacy], 20)[0]!.enabled).toBe(false);
+});
+
 test("20% margin uses cost / 0.8, not markup, and leaves inputs unchanged", () => {
     const result = previewModelRepricing([item], 20);
     expect(result[0]!.priceTiers[0]!.unitPriceMicrocredits).toBe(1_250_000);
@@ -47,7 +55,7 @@ test("video token adjusts only output; per-second adjusts unit price", () => {
     expect(previewModelRepricing([video], 20)[0]!.priceTiers[0]!.unitPriceMicrocredits).toBe(1_250_000);
 });
 
-test("half-up rounding at microcredit precision and disabled tiers stay untouched", () => {
+test("half-up rounding at microcredit precision includes legacy disabled tiers", () => {
     const tiny = {
         ...item,
         priceTiers: [
@@ -57,7 +65,8 @@ test("half-up rounding at microcredit precision and disabled tiers stay untouche
     };
     const result = previewModelRepricing([tiny], 20, 6)[0]!;
     expect(result.priceTiers[0]!.unitPriceMicrocredits).toBe(1);
-    expect(result.priceTiers[1]).toBe(tiny.priceTiers[1]);
+    expect(result.priceTiers[1]!.unitPriceMicrocredits).toBe(1_250_000);
+    expect(tiny.priceTiers[1]!.unitPriceMicrocredits).toBe(9);
     expect(previewModelRepricing([tiny], 0, 6)[0]!.priceTiers[0]!.unitPriceMicrocredits).toBe(1);
 });
 
@@ -110,7 +119,7 @@ test("reject invalid rates, incomplete costs, invalid amounts and overflow", () 
     }
     expect(() => previewModelRepricing([{ ...item, priceTiers: [] }], 20)).toThrow();
     expect(() => previewModelRepricing([{ ...item, priceTiers: [{ ...item.priceTiers[0]!, costPricing: undefined }] }], 20)).toThrow();
-    expect(() => previewModelRepricing([{ ...item, priceTiers: [{ ...item.priceTiers[0]!, priceConfigured: false }] }], 20)).toThrow();
+    expect(() => previewModelRepricing([{ ...item, priceTiers: [{ ...item.priceTiers[0]!, unitPriceMicrocredits: -1 }] }], 20)).toThrow();
     const huge = { ...item, priceTiers: [{ ...item.priceTiers[0]!, costPricing: { ...item.priceTiers[0]!.costPricing!, unitPriceMicrocredits: 1_000_000_000_000 } }] };
     expect(() => previewModelRepricing([huge], 99.99)).toThrow();
 });

@@ -260,8 +260,8 @@ export function CanvasNodeContextMenu({
                                     {isFrame ? <MenuButton icon={isFolder ? <FolderOpen /> : <PanelTop />} label={node?.metadata?.frame?.collapsed ? `展开${isFolder ? "文件夹" : "背板"}` : `折叠${isFolder ? "文件夹" : "背板"}`} onClick={() => runAction(onToggleFrame)} /> : <MenuButton icon={<FolderPlus />} label="保存到我的素材" disabled={!canSaveAsset} onClick={() => runAction(onSaveAsset)} />}
                                     {isText ? <MenuButton icon={<Maximize2 />} label="放大编辑" onClick={() => runAction(onEditText)} /> : null}
                                     {isDrawing ? <MenuButton icon={<Pencil />} label="打开绘图" onClick={() => runAction(onOpenDrawing)} /> : null}
-                                    {isText ? <MenuButton icon={<ImageIcon />} label="用文本生图" disabled={!canGenerateFromText} onClick={() => runAction(onGenerateImage)} /> : null}
-                                    {isText ? <MenuButton icon={<Images />} label="拆分角色/场景并批量生图" disabled={!canGenerateFromText} onClick={() => runAction(onBatchGenerateImages)} /> : null}
+                                    {isText && !node?.metadata?.shortDrama ? <MenuButton icon={<ImageIcon />} label="用文本生图" disabled={!canGenerateFromText} onClick={() => runAction(onGenerateImage)} /> : null}
+                                    {isText && !node?.metadata?.shortDrama ? <MenuButton icon={<Images />} label="拆分角色/场景并批量生图" disabled={!canGenerateFromText} onClick={() => runAction(onBatchGenerateImages)} /> : null}
                                     <MenuDivider />
                                     <MenuSection label="副本与内容" />
                                     <MenuButton icon={<AtSign />} label="发送到 Agent" disabled={!onSendToAgent} onClick={() => onSendToAgent && runAction(onSendToAgent)} />

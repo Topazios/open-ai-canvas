@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createShortDramaPipeline } from "@/lib/canvas/canvas-short-drama";
 import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowAncestors, workflowGenerationSources, confirmProductionBible, productionBibleConfirmed, productionBibleReady } from "@/lib/canvas/canvas-short-drama-workflow";
 import { bibleOutput, legacyBibleOutput, assetOutput as output, assetItem } from "./fixtures/workflow-asset-output";
+import { completeWorkflowPlan } from "./fixtures/workflow-plan";
 import { productionBibleKeys, productionBibleSections } from "../src/lib/production-bible";
 import { commitCanvasGenerationResult } from "@/lib/canvas/canvas-generation-result";
 import { parseWorkflowAssetGroup, restoreEmptyWorkflowAssetGroup, emptyWorkflowAssetManifest } from "@/lib/canvas/canvas-workflow-assets";
@@ -16,12 +17,12 @@ function bodyFixture() {
     pipeline.nodes[0].metadata!.content = "Topic";
     const request = { step: "story.plan" as const, pipelineId: nodeWorkflow(pipeline.nodes[0])!.pipelineId, sourceNodeIds: [pipeline.nodes[0].id], model: "fixture", instruction: "", episodeCount: 6, minutesPerEpisode: "2", start: 1, count: 2 };
     let result = createWorkflowDocuments(request, pipeline.nodes, pipeline.connections, center);
-    result.created.forEach((node) => Object.assign(node.metadata!, { content: "Production plan", status: "success" }));
-    result = createWorkflowDocuments({ ...request, step: "story.episodes", sourceNodeIds: [result.created[0].id] }, result.nodes, result.connections, center);
+    const plan = completeWorkflowPlan(result);
+    result = createWorkflowDocuments({ ...request, step: "story.episodes", sourceNodeIds: [plan.frame.id] }, result.nodes, result.connections, center);
     result.created.forEach((node) => Object.assign(node.metadata!, { content: "Episode outline", status: "success" }));
     result = createWorkflowDocuments({ ...request, step: "story.body", sourceNodeIds: [result.created[0].id] }, result.nodes, result.connections, center);
     result.nodes.filter((node) => nodeWorkflow(node)?.step === "story.body" && nodeWorkflow(node)?.role !== "collection").forEach((node, index) => Object.assign(node.metadata!, { content: `BODY_${index + 1}`, status: "success" }));
-    const body = result.nodes.find((node) => nodeWorkflow(node)?.role === "collection")!;
+    const body = result.nodes.find((node) => nodeWorkflow(node)?.role === "collection" && nodeWorkflow(node)?.step === "story.body")!;
     result = createWorkflowDocuments({ ...request, step: "assets.bible", sourceNodeIds: [body.id] }, result.nodes, result.connections, center);
     const before = result.created[0];
     result.nodes = commitCanvasGenerationResult(result.nodes, before, { ...before, metadata: { ...before.metadata, content: bibleOutput, status: "success" } }, "bible-task");
@@ -210,10 +211,10 @@ describe("production guidelines and reusable asset outputs", () => {
     test("asset extraction and reference image actions preserve the body source and special assets remain optional downstream", () => {
         const f = bodyFixture();
         const steps = activeShortDramaSteps.filter((step) => step.stage === "assets");
-        expect(steps.filter((step) => !step.optional).map((step) => step.label)).toEqual(["统一制作规范", "人物资产", "人物参考图生成", "场景资产", "场景参考图生成", "道具资产", "道具参考图生成"]);
-        expect(steps).toHaveLength(9);
-        expect(steps.filter((step) => !step.mediaOutput)).toHaveLength(5);
-        expect(nextShortDramaSteps("story.body").filter((step) => step.stage === "assets").map((step) => step.id)).toEqual(["assets.bible", "assets.special", "assets.characters", "assets.environments", "assets.props"]);
+        expect(steps.filter((step) => !step.optional).map((step) => step.label)).toEqual(["正文资产校核与补充", "人物参考图生成", "场景参考图生成", "道具参考图生成"]);
+        expect(steps).toHaveLength(5);
+        expect(steps.filter((step) => !step.mediaOutput)).toHaveLength(1);
+        expect(nextShortDramaSteps("story.body").filter((step) => step.stage === "assets").map((step) => step.id)).toEqual(["assets.reconcile"]);
         expect(nextShortDramaSteps("assets.characters").map((step) => step.id)).toContain("assets.character_references");
         expect(nextShortDramaSteps("assets.environments").map((step) => step.id)).toContain("assets.environment_references");
         expect(nextShortDramaSteps("assets.props").map((step) => step.id)).toContain("assets.prop_references");
@@ -226,9 +227,9 @@ describe("production guidelines and reusable asset outputs", () => {
             expect(generated.created[0].metadata?.shortDrama?.sourceNodeIds).toContain(f.body.id);
             expect(workflowGenerationSources(nodeWorkflow(generated.created[0])!, generated.nodes, generated.connections).filter((node) => nodeWorkflow(node)?.step === "story.body" && nodeWorkflow(node)?.role !== "collection").map((node) => node.metadata?.content)).toEqual(["BODY_1", "BODY_2"]);
             expect(generated.created[0].metadata?.prompt).not.toContain("BODY_1");
-            expect(generated.created[0].metadata?.prompt).toContain("分页读取材料");
+            expect(generated.created[0].metadata?.prompt).toContain("沿用已有设定");
             expect(generated.created[0].metadata?.shortDrama?.episodeNumber).toBeUndefined();
-            expect(generated.nodes.filter((node) => node.metadata?.shortDrama?.assetGroup)).toHaveLength(2);
+            expect(generated.nodes.filter((node) => node.metadata?.shortDrama?.assetGroup && nodeWorkflow(node)?.stage === "assets")).toHaveLength(2);
             if (step.output) {
                 generated.created[0].metadata!.content = output;
                 generated.created[0].metadata!.status = "success";

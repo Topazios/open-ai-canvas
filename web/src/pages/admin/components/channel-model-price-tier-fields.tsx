@@ -1,4 +1,4 @@
-import { Alert, Button, Form, Input, InputNumber, Segmented, Switch, type FormInstance } from "antd";
+import { Alert, Button, Form, Input, InputNumber, Segmented, type FormInstance } from "antd";
 import { Trash2 } from "lucide-react";
 import type { ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { modelProtocolSupportsTokenBilling, type ModelProtocol } from "@/lib/model-protocols";
@@ -31,8 +31,6 @@ export function PriceTierFields({
 }) {
     const billingMode = Form.useWatch(["priceTiers", index, "billingMode"], form) || "fixed_request";
     const matchMode = Form.useWatch(["priceTiers", index, "matchMode"], form) || "default";
-    const priceConfigured = Form.useWatch(["priceTiers", index, "priceConfigured"], form) !== false;
-    const tierEnabled = Form.useWatch(["priceTiers", index, "enabled"], form) !== false;
     const tierUpstream = normalizeUpstreamModelKey(Form.useWatch(["priceTiers", index, "providerModelKey"], form));
     // 统一价格档不展示上游键输入，但历史数据可能固化了独立键；它与模型级不一致时会
     // 静默改变实际发往供应商的模型，必须显式提示并允许一键恢复“跟随模型默认”。
@@ -45,12 +43,6 @@ export function PriceTierFields({
     return (
         <article className="admin-price-tier-card">
             <header className="admin-price-tier-card-header">
-                <Form.Item name={[index, "priceConfigured"]} hidden valuePropName="checked">
-                    <Switch />
-                </Form.Item>
-                <Form.Item name={[index, "enabled"]} hidden valuePropName="checked">
-                    <Switch />
-                </Form.Item>
                 <div className="admin-price-tier-card-heading">
                     <span className="admin-price-tier-card-index">{String(ordinal).padStart(2, "0")}</span>
                     <div className="admin-price-tier-card-heading-copy">
@@ -59,18 +51,6 @@ export function PriceTierFields({
                     </div>
                 </div>
                 <div className="admin-price-tier-card-actions">
-                    <div className="admin-price-tier-toggle">
-                        <span title="关闭后保留配置，但不参与用户请求及计费匹配">可供用户使用</span>
-                        <Switch
-                            aria-label="可供用户使用"
-                            checked={priceConfigured && tierEnabled}
-                            onChange={(checked) => {
-                                onDirty();
-                                form.setFieldValue(["priceTiers", index, "priceConfigured"], checked);
-                                form.setFieldValue(["priceTiers", index, "enabled"], checked);
-                            }}
-                        />
-                    </div>
                     <Button type="text" danger aria-label={`删除价格档 ${ordinal}`} icon={<Trash2 className="size-3.5" />} onClick={onRemove}>
                         删除
                     </Button>

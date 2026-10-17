@@ -4,12 +4,15 @@ import { createShortDramaPipeline } from "../src/lib/canvas/canvas-short-drama";
 import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowGenerationSources, workflowSignature, workflowSignatureMatches, workflowSourceSignaturesMatch } from "../src/lib/canvas/canvas-short-drama-workflow";
 import { commitCanvasGenerationResult } from "../src/lib/canvas/canvas-generation-result";
 import { bibleOutput } from "./fixtures/workflow-asset-output";
+import { completeWorkflowPlan } from "./fixtures/workflow-plan";
 import type { CanvasNodeData } from "../src/types/canvas";
 
 function legacy(node: CanvasNodeData) {
     const d = nodeWorkflow(node);
+    if (d?.planAsset || d?.planVersion || d?.planSection || d?.assetIdentity) return workflowSignature(node);
     const fields: unknown[] = [node.title, node.metadata?.content || "", d?.step, d?.sourceNodeIds, d?.parameters, node.metadata?.storyDevelopment?.brief];
     if (d?.assetProfile || d?.bibleConfirmation) fields.push({ assetProfile: d.assetProfile, bibleConfirmation: d.bibleConfirmation });
+    if (d?.planAsset) fields.push({ planAsset: d.planAsset });
     let h = 2166136261;
     const text = JSON.stringify(fields);
     for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
@@ -33,8 +36,10 @@ test("Go key ordering preserves current and existing workflow inputs for every e
     const base = { pipelineId, model: "fixture", episodeCount: 2, minutesPerEpisode: "3", instruction: "", start: 1, count: 2 };
     let result = { ...p, created: [p.nodes[0]] };
     for (const step of ["story.plan", "story.episodes", "story.body"] as const) {
-        const next = createWorkflowDocuments({ ...base, step, sourceNodeIds: [result.created[0].id] }, result.nodes, result.connections, { x: 0, y: 0 });
-        next.created.forEach((node) => { node.metadata!.content = "Complete document"; node.metadata!.status = "success"; });
+        const prior = result.created[0];
+        const next = createWorkflowDocuments({ ...base, step, sourceNodeIds: [nodeWorkflow(prior)?.step === "story.plan" ? prior.parentId! : prior.id] }, result.nodes, result.connections, { x: 0, y: 0 });
+        if (step === "story.plan") completeWorkflowPlan(next);
+        else next.created.forEach((node) => { node.metadata!.content = "Complete document"; node.metadata!.status = "success"; });
         result = { ...result, ...next };
     }
     const body = result.nodes.find((n) => nodeWorkflow(n)?.step === "story.body" && nodeWorkflow(n)?.role === "collection")!;

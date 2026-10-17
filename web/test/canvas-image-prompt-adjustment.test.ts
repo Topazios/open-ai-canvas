@@ -34,7 +34,7 @@ test("character and environment use their own visual views", () => {
     for (const step of [ShortDramaStep.CharacterReferences, ShortDramaStep.EnvironmentReferences]) {
         const f = fixture(step);
         const prompt = adjustWorkflowImagePrompt(f.image, f.nodes, f.image.metadata!.prompt!);
-        expect(prompt).toContain(step === ShortDramaStep.CharacterReferences ? "同一人物的正面全身" : "同一空间的主视角全景");
+        expect(prompt).toContain(step === ShortDramaStep.CharacterReferences ? "正面全身、左侧全身、右侧全身、背面全身" : "主视角全景、正立面、侧剖面、俯视平面布局");
     }
 });
 

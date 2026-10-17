@@ -5,8 +5,27 @@ import (
 	"strings"
 	"testing"
 
+	"infinite-canvas/backend/internal/canvas/contract"
 	"infinite-canvas/backend/internal/model"
 )
+
+func TestCanvasPayloadLimitMatchesAgentAndPreservesAssetLimit(t *testing.T) {
+	for _, tc := range []struct {
+		label   string
+		size    int
+		allowed bool
+	}{
+		{"画布", 6 << 20, true},
+		{"画布", contract.MaxCanvasPayloadBytes, true},
+		{"画布", contract.MaxCanvasPayloadBytes + 1, false},
+		{"素材", (4 << 20) + 1, false},
+	} {
+		raw := json.RawMessage(`"` + strings.Repeat("a", tc.size-2) + `"`)
+		if err := ValidateSyncedPayload(raw, tc.label); (err == nil) != tc.allowed {
+			t.Fatalf("%s %d bytes allowed=%t: %v", tc.label, tc.size, tc.allowed, err)
+		}
+	}
+}
 
 func testUserAssetPayload(kind string, extra map[string]any) map[string]any {
 	payload := map[string]any{

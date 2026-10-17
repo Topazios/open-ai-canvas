@@ -130,8 +130,8 @@ func (s *Service) saveTaskCompletionWithinStorageQuota(task *model.Task, resultJ
 	if err != nil {
 		return err
 	}
-	publicInputJSON := publicTaskInputJSON(task.InputJSON)
-	taskDelta := int64(len(resultJSON) + len(publicInputJSON) - len(task.ResultJSON) - len(task.InputJSON))
+	completedInputJSON := completedTaskInputJSON(*task)
+	taskDelta := int64(len(resultJSON) + len(completedInputJSON) - len(task.ResultJSON) - len(task.InputJSON))
 
 	results := make([]model.Result, 0, 2)
 	structuredDelta := int64(0)
@@ -154,7 +154,7 @@ func (s *Service) saveTaskCompletionWithinStorageQuota(task *model.Task, resultJ
 	completed.Stage = "任务完成"
 	completed.Progress = 100
 	completed.ResultJSON = string(resultJSON)
-	completed.InputJSON = publicInputJSON
+	completed.InputJSON = completedInputJSON
 	completed.CompletedAt = ptr(time.Now())
 	var register func(*repository.Repository) error
 	if task.MediaRecoveryJSON != "" {

@@ -3,7 +3,10 @@ import { useNavigate, useSearchParams } from "react-router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { App, Button, Dropdown, Input, Modal } from "antd";
 import { Select } from "@/components/ui/base/select";
-import { ArrowDownAZ, Clock3, Download, FileUp, History, ListFilter, MoreHorizontal, Plus, Search, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArrowDownAZ, Clock3, Download, FileUp, History, ListFilter, MoreHorizontal, Plus, RefreshCw, Search, SlidersHorizontal, Trash2 } from "lucide-react";
+import { CanvasGlobalSettingsDialog } from "@/components/canvas/canvas-global-settings-dialog";
+import { newDramaCanvasContent } from "@/lib/canvas/canvas-global-settings";
+import type { ShortDramaGlobalSettings } from "@/lib/short-drama-settings";
 
 import { CollectionGrid, PageHeader, WorkspacePage } from "@/components/layout/workspace-page";
 import { CollectionToolbar } from "@/components/layout/collection-toolbar";
@@ -11,6 +14,7 @@ import { WorkspaceLoadingState, WorkspaceState } from "@/components/layout/works
 
 import { readZip } from "@/lib/zip";
 import { setMediaBlob } from "@/services/file-storage";
+import { readRuntimeLimits, RuntimeLimitsError } from "@/services/runtime-limits";
 import { setImageBlob } from "@/services/image-storage";
 import { CanvasFolderCard } from "@/components/canvas/canvas-folder-card";
 import { CanvasHistoryDrawer } from "@/components/canvas/canvas-history-drawer";
@@ -42,6 +46,10 @@ export default function CanvasPage() {
     const [searchParams] = useSearchParams();
     const inputRef = useRef<HTMLInputElement>(null);
     const autoOpenRef = useRef(false);
+    const [creationOpen, setCreationOpen] = useState(false);
+    const [moreOpen, setMoreOpen] = useState(false);
+    const [creatingFree, setCreatingFree] = useState(false);
+    const freeCreationLock = useRef(false);
     const [keyword, setKeyword] = useState("");
     const [sort, setSort] = useState<"updated" | "name" | "nodes">("updated");
     const [projectFilter, setProjectFilter] = useState("all");
@@ -80,6 +88,7 @@ export default function CanvasPage() {
     const projectQuery = useQuery({ queryKey: ["projects"], queryFn: () => listProjects() });
 
     const mode = searchParams.get("mode");
+    const createMode = searchParams.get("create") === "1";
     const agentMode = mode === "new" || mode === "recent" || mode === "choose";
     const handoffMode = mode === "handoff";
     const forwardedQuery = agentMode || handoffMode || searchParams.get("agent") === "1" ? `?${searchParams.toString()}` : "";
@@ -96,11 +105,22 @@ export default function CanvasPage() {
         },
         [forwardedQuery, navigate, preloadProject],
     );
-    const createAndEnter = () => {
-        void createCanvasProjectWithRemoteSync(`自由画布 ${projects.length + 1}`).then(({ id, syncError }) => {
+    const createAndEnter = () => setCreationOpen(true);
+    const saveNewDrama = async (title: string, settings: ShortDramaGlobalSettings, sourceContent?: string) => {
+        const { id, syncError } = await createCanvasProjectWithRemoteSync(title, undefined, newDramaCanvasContent(settings, sourceContent));
+        if (syncError) message.warning(`画布已保存到本地，云端同步待重试：${syncError instanceof Error ? syncError.message : "同步失败"}`);
+        setCreationOpen(false);
+        enterProject(id);
+    };
+    const createFreeCanvas = async () => {
+        if (freeCreationLock.current) return;
+        freeCreationLock.current = true; setCreatingFree(true);
+        try {
+            const { id, syncError } = await createCanvasProjectWithRemoteSync(`自由画布 ${projects.length + 1}`, undefined, { starterMode: "freeform" });
             if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
             enterProject(id);
-        });
+        } catch (error) { message.error(error instanceof Error ? error.message : "创建失败，请重试"); }
+        finally { freeCreationLock.current = false; setCreatingFree(false); }
     };
     const filteredProjects = useMemo(() => {
         if (userId) return projects;
@@ -202,33 +222,29 @@ export default function CanvasPage() {
                 try {
                     const storageKeyMap = new Map<string, { storageKey: string; url: string; textContent?: string }>();
                     const textStorageKeys = new Set((item.project.nodes || []).filter((node) => node.type === CanvasNodeType.Text).map((node) => node.metadata?.storageKey).filter((key): key is string => Boolean(key)));
-                    const concurrency = 4;
-                    let fileIndex = 0;
-                    const workers = new Array(Math.min(item.files.length, concurrency)).fill(null).map(async () => {
-                        while (fileIndex < item.files.length) {
-                            const current = fileIndex++;
-                            const fileItem = item.files[current];
-                            const blob = zip.get(fileItem.path)!;
-                            const mime = fileItem.mimeType || blob.type || "image/png";
-                            const typedBlob = blob.type ? blob : blob.slice(0, blob.size, mime);
-                            const kind: "image" | "video" | "audio" | "file" = mime.startsWith("image/") ? "image" : mime.startsWith("video/") ? "video" : mime.startsWith("audio/") ? "audio" : "file";
-                            const textContent = textStorageKeys.has(fileItem.storageKey) ? await typedBlob.text() : undefined;
+                    if (item.files.length) await readRuntimeLimits();
+                    const workers = item.files.map(async (fileItem) => {
+                        const blob = zip.get(fileItem.path)!;
+                        const mime = fileItem.mimeType || blob.type || "image/png";
+                        const typedBlob = blob.type ? blob : blob.slice(0, blob.size, mime);
+                        const kind: "image" | "video" | "audio" | "file" = mime.startsWith("image/") ? "image" : mime.startsWith("video/") ? "video" : mime.startsWith("audio/") ? "audio" : "file";
+                        const textContent = textStorageKeys.has(fileItem.storageKey) ? await typedBlob.text() : undefined;
 
-                            try {
-                                const resource = await uploadResourceFile(typedBlob, kind, { fileName: fileItem.path.split("/").pop() });
-                                const newStorageKey = resourceStorageKey(resource.id);
-                                const newUrl = resourceFileUrl(resource.id);
-                                await primeResourceBlobCache(newStorageKey, typedBlob).catch(() => "");
-                                storageKeyMap.set(fileItem.storageKey, { storageKey: newStorageKey, url: newUrl, textContent });
-                            } catch (uploadErr) {
-                                console.warn("上传资源到后端失败，降级保存本地", uploadErr);
-                                const localUrl = await (fileItem.storageKey.startsWith("image:") ? setImageBlob(fileItem.storageKey, typedBlob) : setMediaBlob(fileItem.storageKey, typedBlob));
-                                if (localUrl) {
-                                    storageKeyMap.set(fileItem.storageKey, { storageKey: fileItem.storageKey, url: localUrl, textContent });
-                                }
-                            } finally {
-                                useSyncProgressStore.getState().incrementProjectCompleted(importedProjectId);
+                        try {
+                            const resource = await uploadResourceFile(typedBlob, kind, { fileName: fileItem.path.split("/").pop() });
+                            const newStorageKey = resourceStorageKey(resource.id);
+                            const newUrl = resourceFileUrl(resource.id);
+                            await primeResourceBlobCache(newStorageKey, typedBlob).catch(() => "");
+                            storageKeyMap.set(fileItem.storageKey, { storageKey: newStorageKey, url: newUrl, textContent });
+                        } catch (uploadErr) {
+                            if (uploadErr instanceof RuntimeLimitsError) throw uploadErr;
+                            console.warn("上传资源到后端失败，降级保存本地", uploadErr);
+                            const localUrl = await (fileItem.storageKey.startsWith("image:") ? setImageBlob(fileItem.storageKey, typedBlob) : setMediaBlob(fileItem.storageKey, typedBlob));
+                            if (localUrl) {
+                                storageKeyMap.set(fileItem.storageKey, { storageKey: fileItem.storageKey, url: localUrl, textContent });
                             }
+                        } finally {
+                            useSyncProgressStore.getState().incrementProjectCompleted(importedProjectId);
                         }
                     });
                     await Promise.all(workers);
@@ -390,19 +406,20 @@ export default function CanvasPage() {
     };
 
     useEffect(() => {
-        if (!hydrated || !sessionHydrated || (userId && !libraryQuery.isSuccess) || autoOpenRef.current || (mode !== "new" && mode !== "recent" && mode !== "handoff")) return;
+        if (!hydrated || !sessionHydrated || (userId && !libraryQuery.isSuccess) || autoOpenRef.current || (!createMode && mode !== "new" && mode !== "recent" && mode !== "handoff")) return;
         autoOpenRef.current = true;
         if (mode === "recent" && projects[0]?.id) {
             enterProject(projects[0].id);
             return;
         }
+        if (mode !== "handoff") { setCreationOpen(true); return; }
         void createCanvasProjectWithRemoteSync(`自由画布 ${projects.length + 1}`).then(({ id, syncError }) => {
             if (syncError) message.warning(syncError instanceof Error ? `画布已在本地创建，云端同步失败：${syncError.message}` : "画布已在本地创建，云端同步失败");
             enterProject(id);
         });
-    }, [hydrated, message, mode, projects, sessionHydrated, userId, libraryQuery.isSuccess]);
+    }, [hydrated, message, mode, createMode, projects, sessionHydrated, userId, libraryQuery.isSuccess]);
 
-    if (hydrated && !libraryQuery.isError && (mode === "new" || mode === "recent" || mode === "handoff")) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">正在打开画布...</main>;
+    if (hydrated && !libraryQuery.isError && (mode === "handoff" || openingProjectId)) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">正在打开画布...</main>;
 
     return (
         <WorkspacePage className="studio-collection-page">
@@ -414,22 +431,41 @@ export default function CanvasPage() {
                     actions={
                         <div className="collection-header-actions">
                             <CanvasSyncDraftMenu />
-                            <Button type="primary" disabled={!hydrated} icon={<Plus />} onClick={createAndEnter}>
+                            <Button type="primary" disabled={!hydrated || creatingFree} icon={<Plus />} onClick={createAndEnter}>
                                 新建画布
                             </Button>
-                            {projects.length ? (
                                 <Dropdown
+                                    classNames={{ root: "canvas-library-actions-popup" }}
+                                    open={moreOpen}
+                                    onOpenChange={setMoreOpen}
                                     menu={{
                                         classNames: { root: "canvas-library-actions-menu", item: "canvas-library-actions-menu-item" },
-                                        items: [{ key: "delete-loaded", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除当前已加载画布", onClick: () => setDeleteIds(projects.map((project) => project.id)) }],
+                                        onClick: ({ key }) => {
+                                            setMoreOpen(false);
+                                            if (key === "free") void createFreeCanvas();
+                                            if (key === "import") inputRef.current?.click();
+                                            if (key === "history") setHistoryOpen(true);
+                                            if (key === "refresh") {
+                                                if (userId) void libraryQuery.refetch().then((result) => result.isError ? message.error("刷新失败，请重试") : message.success("画布列表已刷新"));
+                                                else message.success("已显示本地画布");
+                                            }
+                                            if (key === "delete-loaded") setDeleteIds(projects.map((project) => project.id));
+                                        },
+                                        items: [
+                                            { key: "free", label: "新建自由画布", icon: <Plus className="size-3.5" />, disabled: !hydrated || creatingFree },
+                                            { key: "import", label: "导入画布", icon: <FileUp className="size-3.5" />, disabled: !hydrated },
+                                            { key: "history", label: "创作历史", icon: <History className="size-3.5" /> },
+                                            { key: "refresh", label: "刷新列表", icon: <RefreshCw className="size-3.5" />, disabled: libraryQuery.isFetching },
+                                            { type: "divider" },
+                                            { key: "delete-loaded", danger: true, disabled: !projects.length, icon: <Trash2 className="size-3.5" />, label: `删除当前已加载画布（${projects.length}）` },
+                                        ],
                                     }}
                                     openClassName="is-open"
                                     placement="bottomRight"
                                     trigger={["click"]}
                                 >
-                                    <Button type="text" aria-label="更多画布操作" title="更多操作" icon={<MoreHorizontal />} />
+                                    <Button type="text" aria-label="更多画布操作" aria-haspopup="menu" aria-expanded={moreOpen} title="更多操作" icon={<MoreHorizontal />} />
                                 </Dropdown>
-                            ) : null}
                             <Button disabled={!hydrated} icon={<FileUp />} onClick={() => inputRef.current?.click()}>
                                 导入
                             </Button>
@@ -535,6 +571,7 @@ export default function CanvasPage() {
                 />
             </Modal>
             <CanvasHistoryDrawer open={historyOpen} onClose={() => setHistoryOpen(false)} />
+            {creationOpen ? <CanvasGlobalSettingsDialog title={`未命名短剧 ${totalProjects + 1}`} onClose={() => { setCreationOpen(false); if (createMode || mode === "new" || mode === "recent") navigate("/canvas", { replace: true }); }} onSave={saveNewDrama} /> : null}
             {deleteDialogOpen ? <Suspense fallback={null}><CanvasDeleteProjectsDialog /></Suspense> : null}
         </WorkspacePage>
     );

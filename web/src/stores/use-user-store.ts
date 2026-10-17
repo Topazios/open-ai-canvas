@@ -22,7 +22,10 @@ export type RuntimeLimits = {
     activeTaskLimit: number;
     resourceUploadMB: number;
     recycleBinRetentionDays?: number;
+    concurrency?: RuntimeConcurrency;
 };
+
+export type RuntimeConcurrency = Record<"image" | "text" | "agent" | "video" | "audio" | "other" | "channel" | "customRelay" | "imagePreparation" | "resourceDownload" | "upload" | "mediaRecovery" | "agentSessions", number>;
 
 export type FeatureAvailability = {
     welcomeEnabled: boolean;
@@ -53,6 +56,8 @@ type UserStore = {
     hydrated: boolean;
     user: LocalUser | null;
     runtimeLimits: RuntimeLimits;
+    runtimeLimitsUpdatedAt: number;
+    runtimeLimitsError: string;
     drawingEngine: CanvasDrawingEngineSetting;
     features: FeatureAvailability;
     setUser: (user: LocalUser | null) => void;
@@ -67,12 +72,14 @@ export const useUserStore = create<UserStore>()((set) => ({
     hydrated: false,
     user: null,
     runtimeLimits: { activeTaskLimit: 5, resourceUploadMB: 50, recycleBinRetentionDays: 30 },
+    runtimeLimitsUpdatedAt: 0,
+    runtimeLimitsError: "",
     drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE },
     features: defaultFeatureAvailability,
     setUser: (user) => set({ user }),
-    setRuntimeLimits: (runtimeLimits) => set({ runtimeLimits: runtimeLimits || { activeTaskLimit: 5, resourceUploadMB: 50, recycleBinRetentionDays: 30 } }),
+    setRuntimeLimits: (runtimeLimits) => set({ runtimeLimits: runtimeLimits || { activeTaskLimit: 5, resourceUploadMB: 50, recycleBinRetentionDays: 30 }, runtimeLimitsUpdatedAt: runtimeLimits ? Date.now() : 0, runtimeLimitsError: "" }),
     setDrawingEngine: (drawingEngine) => set({ drawingEngine: drawingEngine || { defaultEngine: DEFAULT_DRAWING_ENGINE } }),
     setFeatures: (features) => set({ features: features ? { ...defaultFeatureAvailability, ...features } : defaultFeatureAvailability }),
     setHydrated: (hydrated) => set({ hydrated }),
-    clearSession: () => set({ user: null, runtimeLimits: { activeTaskLimit: 5, resourceUploadMB: 50, recycleBinRetentionDays: 30 }, drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE }, features: defaultFeatureAvailability }),
+    clearSession: () => set({ user: null, runtimeLimits: { activeTaskLimit: 5, resourceUploadMB: 50, recycleBinRetentionDays: 30 }, runtimeLimitsUpdatedAt: 0, runtimeLimitsError: "", drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE }, features: defaultFeatureAvailability }),
 }));

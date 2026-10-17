@@ -175,16 +175,8 @@ func (s *Service) channelFromRequest(req ChannelRequest, channel model.ModelChan
 	}
 	// 系统渠道只保存地址与凭证；实际协议和鉴权方式由所选模型决定。
 	channel.APIFormat = "openai"
-	if req.UseGlobalConcurrency != nil && *req.UseGlobalConcurrency {
-		channel.ConcurrencyLimit = 0
-	} else if req.ConcurrencyLimit != nil {
-		if *req.ConcurrencyLimit < minChannelConcurrencyLimit || *req.ConcurrencyLimit > maxChannelConcurrencyLimit {
-			return channel, BadAuthRequest("最大并发数必须是 1-999 的整数")
-		}
-		channel.ConcurrencyLimit = *req.ConcurrencyLimit
-	} else if req.UseGlobalConcurrency != nil {
-		return channel, BadAuthRequest("请填写渠道最大并发数")
-	}
+	// Keep accepting legacy DTO fields, but concurrency has one policy source.
+	channel.ConcurrencyLimit = 0
 	channel.ModelsJSON = string(modelsJSON)
 	channel.HeadersJSON = headersJSON
 	if req.Enabled != nil {
@@ -217,7 +209,7 @@ func publicChannel(channel model.ModelChannel, admin bool, channelModels []model
 			continue
 		}
 		models = append(models, item.ModelKey)
-		if item.Enabled && item.PriceConfigured {
+		if HasValidPrice(&item) {
 			capabilityConfig, decodeErr := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
 			if decodeErr == nil && capabilityConfig != nil {
 				if normalized, normalizeErr := NormalizeModelCapabilityConfigForModel(item.Capability, string(item.Protocol), firstNonEmpty(item.ProviderModelKey, item.ModelKey), capabilityConfig); normalizeErr == nil {
@@ -254,7 +246,7 @@ func publicChannel(channel model.ModelChannel, admin bool, channelModels []model
 		BaseURL:          baseURL,
 		APIKey:           apiKey,
 		APIFormat:        channel.APIFormat,
-		ConcurrencyLimit: channel.ConcurrencyLimit,
+		ConcurrencyLimit: 0,
 		Models:           models,
 		ModelCosts:       modelCosts,
 		Headers:          headers,

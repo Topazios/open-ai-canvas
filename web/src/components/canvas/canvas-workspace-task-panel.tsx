@@ -2,10 +2,11 @@ import { ListChecks, RefreshCw } from "lucide-react";
 
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import type { GenerationTask } from "@/services/api/task-center";
+import type { CanvasNodeData } from "@/types/canvas";
 import { TaskListItem } from "./canvas-workspace-task-list-item";
 
 // 任务面板：展示用户直接发起的生成任务；云端 Agent 内部任务由历史面板承载。
-export function CanvasWorkspaceTaskPanel({ tasks, refreshing, onRefresh, onCancelTask }: { tasks: GenerationTask[]; refreshing?: boolean; onRefresh?: () => void; onCancelTask?: (task: GenerationTask) => void }) {
+export function CanvasWorkspaceTaskPanel({ tasks, nodes, refreshing, onRefresh, onCancelTask }: { tasks: GenerationTask[]; nodes?: CanvasNodeData[]; refreshing?: boolean; onRefresh?: () => void; onCancelTask?: (task: GenerationTask) => void }) {
     return (
         <>
             <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2.5">
@@ -23,7 +24,7 @@ export function CanvasWorkspaceTaskPanel({ tasks, refreshing, onRefresh, onCance
                 {tasks.length ? (
                     <div className="space-y-0.5">
                         {tasks.map((task) => (
-                            <TaskListItem key={task.id} task={task} onCancelTask={onCancelTask} />
+                            <TaskListItem key={task.id} task={task} tasks={tasks} nodes={nodes} onCancelTask={onCancelTask} />
                         ))}
                     </div>
                 ) : (

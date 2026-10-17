@@ -20,8 +20,6 @@ const sessionBlobs = new Map<string, Blob>();
 const inFlight = new Map<string, Promise<string>>();
 const cacheMetaTouchWarnings = new Set<string>();
 const metaTouchedAt = new Map<string, number>();
-const downloadQueue: Array<() => void> = [];
-let activeDownloads = 0;
 let persistQueue: Promise<void> = Promise.resolve();
 let cacheGeneration = 0;
 const MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -30,8 +28,6 @@ const MIN_CACHE_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 500;
 const TOUCH_INTERVAL_MS = 10 * 60 * 1000;
 const BUDGET_REFRESH_MS = 5 * 60 * 1000;
-// 现代浏览器对同源 HTTP/2 连接多路复用；上限给到 16 让大画布冷启动在 1~2 轮内完成并发拉取。
-const MAX_CONCURRENT_DOWNLOADS = 16;
 
 /** Release session-only byte resources during account/logout transitions. */
 export function clearResourceBlobCache() {
@@ -70,30 +66,11 @@ export async function cacheResourceObjectUrl(storageKey: string) {
 
     const generation = cacheGeneration;
     let task: Promise<string>;
-    task = withDownloadSlot(() => downloadAndCacheResource(storageKey, target, generation)).finally(() => {
+    task = downloadAndCacheResource(storageKey, target, generation).finally(() => {
         if (inFlight.get(target.key) === task) inFlight.delete(target.key);
     });
     inFlight.set(target.key, task);
     return task;
-}
-
-function withDownloadSlot<T>(task: () => Promise<T>) {
-    return new Promise<T>((resolve, reject) => {
-        downloadQueue.push(() => {
-            activeDownloads += 1;
-            task()
-                .then(resolve, reject)
-                .finally(() => {
-                    activeDownloads -= 1;
-                    runDownloadQueue();
-                });
-        });
-        runDownloadQueue();
-    });
-}
-
-function runDownloadQueue() {
-    while (activeDownloads < MAX_CONCURRENT_DOWNLOADS && downloadQueue.length) downloadQueue.shift()?.();
 }
 
 export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
@@ -117,12 +94,12 @@ export async function getCachedResourceBlob(storageKey: string) {
     if (sessionBlob) return sessionBlob;
     const pending = inFlight.get(target.key);
     if (pending) {
-        await pending.catch(() => "");
+        await pending;
         const downloaded = sessionBlobs.get(target.key) || (await blobStore.getItem<Blob>(target.key));
         if (downloaded) return downloaded;
         return loadAndPersistResource(storageKey);
     }
-    await cacheResourceObjectUrl(storageKey).catch(() => "");
+    await cacheResourceObjectUrl(storageKey);
     const downloaded = sessionBlobs.get(target.key) || (await blobStore.getItem<Blob>(target.key));
     if (downloaded) return downloaded;
     return loadAndPersistResource(storageKey);

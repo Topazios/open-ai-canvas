@@ -14,6 +14,7 @@ import { useCanvasThemeStore } from "@/stores/canvas/use-canvas-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { CanvasMediaPerformanceMode } from "@/types/canvas";
 import { CanvasShortcutsModal } from "./canvas-shortcuts-modal";
+import { Settings2 } from "lucide-react";
 
 type CanvasTopBarProps = {
     syncStatus?: ReactNode;
@@ -29,6 +30,7 @@ type CanvasTopBarProps = {
     canUndo: boolean;
     canRedo: boolean;
     onCreateProject: () => void;
+    onOpenGlobalSettings?: () => void;
     onDeleteProject: () => void;
     onSave: () => void | Promise<void>;
     onForceSave: () => void;
@@ -62,6 +64,7 @@ export function CanvasTopBar({
     canUndo,
     canRedo,
     onCreateProject,
+    onOpenGlobalSettings,
     onDeleteProject,
     onSave,
     onForceSave,
@@ -119,6 +122,7 @@ export function CanvasTopBar({
                                     ...(onOpenProjectAssociation ? [{ key: "associate", icon: <FolderKanban className="size-4" />, label: "关联项目与章节", onClick: onOpenProjectAssociation }] : []),
                                     { type: "divider" },
                                     { key: "new", icon: <Plus className="size-4" />, label: "新建画布", onClick: onCreateProject },
+                                    ...(onOpenGlobalSettings ? [{ key: "global-settings", icon: <Settings2 className="size-4" />, label: "全局创作设定", onClick: onOpenGlobalSettings }] : []),
                                     { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: "删除当前画布", onClick: onDeleteProject },
                                     { key: "save", icon: <Save className="size-4" />, label: <MenuLabel text="保存" shortcut="⌘ S" />, onClick: () => void onSave() },
                                     { key: "force-save", icon: <CloudUpload className="size-4" />, label: "修复素材关联并保存", onClick: onForceSave },
@@ -197,6 +201,7 @@ export function CanvasTopBar({
                         ) : null}
                     </div>
                     {syncStatus}
+                    {onOpenGlobalSettings ? <CanvasTopBarTooltip label="修改全局创作设定"><button type="button" className="canvas-topbar-action inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-xs" aria-label="全局创作设定" onClick={onOpenGlobalSettings}><Settings2 className="size-4 shrink-0" /><span>全局设定</span></button></CanvasTopBarTooltip> : null}
                 </div>
 
                 <div className="canvas-topbar-cluster canvas-topbar-tools-cluster pointer-events-auto flex items-center gap-1.5" style={dockStyle}>

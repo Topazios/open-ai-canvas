@@ -83,8 +83,8 @@ export function priceTierToForm(tier: ChannelModelPriceTier): PriceTierFormValue
         costInputTokenPrice: (tier.costPricing?.inputTokenPriceMicrocredits ?? 0) / 1_000_000,
         costOutputTokenPrice: (tier.costPricing?.outputTokenPriceMicrocredits ?? 0) / 1_000_000,
         costCachedTokenPrice: (tier.costPricing?.cachedTokenPriceMicrocredits ?? 0) / 1_000_000,
-        priceConfigured: tier.priceConfigured,
-        enabled: tier.enabled,
+        priceConfigured: true,
+        enabled: true,
     };
 }
 
@@ -98,8 +98,8 @@ export function legacyPriceTierToForm(item: ChannelModel): PriceTierFormValues {
         inputTokenPrice: item.inputTokenPriceMicrocredits / 1_000_000,
         outputTokenPrice: item.outputTokenPriceMicrocredits / 1_000_000,
         cachedTokenPrice: item.cachedTokenPriceMicrocredits / 1_000_000,
-        priceConfigured: item.priceConfigured,
-        enabled: item.enabled,
+        priceConfigured: true,
+        enabled: true,
     };
 }
 
@@ -146,7 +146,8 @@ export function priceTierPayloadFromForm(capability: ModelCapabilityChoice, tier
             outputTokenPriceMicrocredits: Math.round(tier.costOutputTokenPrice * 1_000_000),
             cachedTokenPriceMicrocredits: videoTokens ? 0 : Math.round(tier.costCachedTokenPrice * 1_000_000),
         },
-        priceConfigured: tier.priceConfigured !== false,
-        enabled: tier.enabled !== false,
+        // Compatibility fields; availability is controlled by the model switch.
+        priceConfigured: true,
+        enabled: true,
     };
 }

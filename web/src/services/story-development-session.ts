@@ -3,6 +3,7 @@ import { parseStoryTopics, storyDocumentSignature } from "@/lib/canvas/canvas-st
 import { parseBackendGenerationResult } from "@/services/api/generation-task";
 import type { GenerationTask, TaskStatus } from "@/services/api/task-center";
 import type { CanvasNodeData, StoryDevelopmentData } from "@/types/canvas";
+import type { StoryTopicSettingsPatch } from "@/lib/story-topic-settings";
 
 export type StoryPreview = { text: string; draft: string; signatures: Record<string, string>; topicCount?: number; error?: string };
 type StoryRevision = Pick<StorySession, "content" | "data">;
@@ -21,6 +22,7 @@ export type StoryJob = {
 };
 export type StoryEpisodeBatch = { id: string; items: Array<{ nodeId: string; episodeNumber: number; operationId: string }>; skipped: number[]; stopped?: boolean };
 export type StorySession = {
+    topicSettingsPatch?: StoryTopicSettingsPatch;
     revision: number;
     baseSignature: string;
     title: string;

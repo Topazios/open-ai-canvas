@@ -395,7 +395,7 @@ func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, 
 	if config.PriceTierID != "" {
 		matched := false
 		for _, tier := range channelModel.PriceTiers {
-			if tier.ID == config.PriceTierID && tier.Enabled && tier.PriceConfigured {
+			if tier.ID == config.PriceTierID && ValidatePriceTierPrice(&tier, channelModel.Capability, channelModel.Protocol) {
 				providerModelKey = firstNonEmpty(providerModelKey, tier.ProviderModelKey)
 				matched = true
 				break

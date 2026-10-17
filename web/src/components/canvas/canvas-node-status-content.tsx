@@ -149,7 +149,7 @@ export function ErrorContent({ node, theme, onRetry, onReloadResource }: Pick<Ca
                     onMouseDown={(event) => event.stopPropagation()}
                 >
                     <RefreshCw className="size-3.5" />
-                    {node.metadata?.shortDrama?.productionAgent ? "查看详情并重试" : node.metadata?.taskCanRecoverMedia ? "重试保存（不重新生成）" : node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"}
+                    {node.metadata?.shortDrama?.submission === "planned" ? "查看详情并继续" : node.metadata?.shortDrama?.productionAgent ? "查看详情并重试" : node.metadata?.taskCanRecoverMedia ? "重试保存（不重新生成）" : node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"}
                 </button>
             )}
         </div>

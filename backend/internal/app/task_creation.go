@@ -20,6 +20,7 @@ type taskAdmission struct {
 	ApprovalID           string
 	NonBillable          bool
 	UnboundedAgentBudget bool
+	WaitForActiveSlot    bool
 	BatchParent          *model.Task
 }
 
@@ -135,15 +136,16 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		return nil, err
 	}
 	if policy.Task.ActiveTaskLimit > 0 {
-		activeTasks, err := s.repo.ActiveTaskCountForUser(userID)
+		kind := model.TaskConcurrency(taskType, req.Operation)
+		activeTasks, err := s.repo.ActiveTaskCountForKind(userID, kind)
 		if err != nil {
 			return nil, err
 		}
-		if req.admission != nil && req.admission.BatchParent != nil {
+		if req.admission != nil && req.admission.BatchParent != nil && model.TaskConcurrency(req.admission.BatchParent.Type, req.admission.BatchParent.Operation) == kind {
 			activeTasks-- // The child borrows its coordinator's admission slot.
 		}
 		if activeTasks >= int64(policy.Task.ActiveTaskLimit) {
-			if req.admission != nil && req.admission.BatchParent != nil {
+			if req.admission != nil && (req.admission.BatchParent != nil || req.admission.WaitForActiveSlot) {
 				return nil, repository.ErrActiveTaskLimit
 			}
 			return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))

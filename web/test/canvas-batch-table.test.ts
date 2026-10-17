@@ -105,7 +105,7 @@ describe("batch creation table", () => {
         expect(node.title).toBe("批量创作表");
         expect(node.width).toBe(1280);
         expect(node.height).toBe(560);
-        expect(node.metadata?.batchTable).toEqual({ operation: "try_on", concurrency: 10, referenceColumns: [{ id: "reference-1", label: "参考图 1" }, { id: "reference-2", label: "参考图 2" }, { id: "reference-3", label: "参考图 3" }], rows: [] });
+        expect(node.metadata?.batchTable).toEqual({ operation: "try_on", referenceColumns: [{ id: "reference-1", label: "参考图 1" }, { id: "reference-2", label: "参考图 2" }, { id: "reference-3", label: "参考图 3" }], rows: [] });
     });
 
     test("promotes the previous 900-wide default without touching resized tables", () => {

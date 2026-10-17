@@ -1,6 +1,8 @@
 import type { Asset } from "@/stores/use-asset-store";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { compactApiParams, http } from "@/services/api/request";
+import { compactWorkflowNodes } from "@/lib/canvas/canvas-workflow-persistence";
+import { canvasPayloadBytes } from "@/lib/canvas/canvas-payload";
 
 export type RemoteUserDataSummary = {
     id: string;
@@ -132,7 +134,11 @@ export function getRemoteCanvasProject(id: string, knownProject?: CanvasProject)
 
 export function upsertRemoteCanvasProject(project: CanvasProject, options?: { repairMissingResources?: boolean }) {
     const { viewport: _viewport, remoteContentHash: _hash, ...content } = project;
-    return http.put<{ project: RemoteUserDataSummary & { revision: number } }>(`/canvas-projects/${encodeURIComponent(project.id)}`, { project: content, ...(options?.repairMissingResources ? { repairMissingResources: true } : {}) });
+    const compacted = { ...content, nodes: compactWorkflowNodes(content.nodes) };
+    const serialized = JSON.stringify(compacted);
+    try { canvasPayloadBytes(serialized); } catch (error) { return Promise.reject(error); }
+    return http.put<{ project: RemoteUserDataSummary & { revision: number } }>(`/canvas-projects/${encodeURIComponent(project.id)}`,
+        `{"project":${serialized}${options?.repairMissingResources ? ',"repairMissingResources":true' : ""}}`, { headers: { "Content-Type": "application/json" }, transformRequest: [data => data] });
 }
 
 export function deleteRemoteCanvasProject(id: string) {

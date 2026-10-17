@@ -5,6 +5,13 @@ import type { ChannelModelPriceTier } from "../src/services/api/wallet";
 import { validateChannelModelPrices } from "../src/pages/admin/components/channel-model-editor-form";
 
 describe("channel model price tier defaults", () => {
+    test("legacy switches are normalized without changing prices or selectors", () => {
+        const tier = { ...defaultPriceTier("advanced"), quality: "2k", unitPrice: 3.25, enabled: false, priceConfigured: false };
+        const payload = priceTierPayloadFromForm("image", tier, "image-model");
+        expect(payload).toMatchObject({ enabled: true, priceConfigured: true, unitPriceMicrocredits: 3_250_000, selector: { quality: "2k" } });
+        const restored = priceTierToForm({ ...payload, enabled: false, priceConfigured: false } as ChannelModelPriceTier);
+        expect(restored).toMatchObject({ enabled: true, priceConfigured: true, unitPrice: 3.25, quality: "2k" });
+    });
     test("cost edit payload preserves independent sale and cost prices including explicit zero", () => {
         const tier = { ...defaultPriceTier(), unitPrice: 0.09, costConfigured: true, costUnitPrice: 0.035678 };
         const payload = priceTierPayloadFromForm("video", tier, "MiniMax-H3");

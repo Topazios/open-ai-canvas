@@ -35,10 +35,10 @@
 .production-agent-parameters[open] > summary .production-agent-chevron, .production-agent-event[open] > summary .production-agent-chevron { transform: rotate(90deg); }
 .production-agent-parameters dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; margin: 12px 0 0; }
 .production-agent-parameters dt { color: var(--muted-foreground); font-size: var(--fs-micro); }
-.production-agent-parameters dd { margin: 2px 0 0; }
+.production-agent-parameters dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .production-agent-parameters .production-agent-prompt { grid-column: 1 / -1; }
 .production-agent-prompt dd { white-space: pre-wrap; }
-.production-agent-journal-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.production-agent-journal-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
 .production-agent-history { justify-self: center; }
 .production-agent-journal { min-width: 0; }
 .production-agent-event { padding: 6px 0; }

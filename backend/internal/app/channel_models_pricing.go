@@ -97,7 +97,6 @@ func (s *Service) normalizeChannelModelPriceTiers(req ChannelModelRequest, capab
 		if idErr != nil {
 			return nil, idErr
 		}
-		enabled := input.Enabled == nil || *input.Enabled
 		result = append(result, model.ChannelModelPriceTier{
 			CostPricing:                  input.CostPricing,
 			ID:                           id,
@@ -112,8 +111,8 @@ func (s *Service) normalizeChannelModelPriceTiers(req ChannelModelRequest, capab
 			InputTokenPriceMicrocredits:  input.InputTokenPriceMicrocredits,
 			OutputTokenPriceMicrocredits: input.OutputTokenPriceMicrocredits,
 			CachedTokenPriceMicrocredits: input.CachedTokenPriceMicrocredits,
-			PriceConfigured:              input.PriceConfigured,
-			Enabled:                      enabled,
+			PriceConfigured:              true, // Pricing was validated above; legacy switches no longer gate usage.
+			Enabled:                      true,
 			PriceVersion:                 1,
 		})
 	}
@@ -252,7 +251,7 @@ func (s *Service) applyChannelModelPriceTierSummary(item *model.ChannelModel, ti
 	var summary *model.ChannelModelPriceTier
 	for index := range tiers {
 		tier := &tiers[index]
-		if tier.Enabled && tier.PriceConfigured {
+		if ValidatePriceTierPrice(tier, item.Capability, item.Protocol) {
 			item.PriceConfigured = true
 		}
 		if summary == nil || (tier.Resolution == "*" && tier.VideoSeconds == 0) {

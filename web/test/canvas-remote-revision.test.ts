@@ -13,6 +13,11 @@ import { CanvasNodeType } from "../src/types/canvas";
 import { resourceFileUrl } from "../src/services/api/resources";
 import { useUserStore } from "../src/stores/use-user-store";
 import { invalidateAuthSessionCache } from "../src/services/api/auth";
+import { defaultShortDramaSettings, DramaLanguage } from "../src/lib/short-drama-settings";
+import { newDramaCanvasContent, workflowRequestWithCurrentSettings } from "../src/lib/canvas/canvas-global-settings";
+import { createWorkflowDocuments, nodeWorkflow } from "../src/lib/canvas/canvas-short-drama-workflow";
+import { completeUnifiedWorkflowPlan } from "./fixtures/workflow-plan";
+import { createCanvasProjectWithRemoteSync, saveCanvasGlobalSettingsWithRemoteSync } from "../src/services/user-data-sync";
 
 const originalWindow = globalThis.window;
 const originalAdapter = apiClient.defaults.adapter;
@@ -163,6 +168,31 @@ function allowSessionRecovery() {
     };
 }
 
+test("save verifies missing asset claims and uploads the repaired asset before the canvas", async () => {
+    const adapter = apiClient.defaults.adapter as (config: any) => Promise<any>;
+    const assets = new Map<string, any>();
+    const order: string[] = [];
+    apiClient.defaults.adapter = async config => {
+        const body = config.data ? JSON.parse(config.data) : undefined;
+        const ok = (data: unknown) => ({ config, status: 200, statusText: "OK", headers: {}, data: { code: 0, data } });
+        if (config.url === "/assets/batch") { order.push("verify"); return ok({ assets: [] }); }
+        if (config.url?.startsWith("/assets/") && config.method === "put") {
+            order.push("asset"); assets.set(body.asset.id, body.asset); return ok({ asset: body.asset });
+        }
+        if (config.url === "/canvas-projects/canvas" && config.method === "put") {
+            order.push("canvas");
+            expect(assets.has(body.project.nodes[0].metadata.assetId)).toBe(true);
+            expect(body.project.nodes[0].metadata.storageKey).toBe("resource:media-ready");
+        }
+        return adapter(config);
+    };
+    const current = useCanvasStore.getState().openProject("canvas")!;
+    useCanvasStore.getState().updateProject("canvas", { nodes: [{ ...current.nodes[0], metadata: { assetId: "ghost-asset", storageKey: "resource:media-ready" } }] });
+    await saveRemoteUserDataNow();
+    expect(order).toEqual(["verify", "asset", "canvas"]);
+    expect(remote.get("canvas")!.nodes[0].metadata!.assetId).not.toBe("ghost-asset");
+});
+
 test("missing sync session recovers authenticated baselines without acknowledging unsaved nodes", async () => {
     allowSessionRecovery();
     useCanvasStore.getState().renameProject("canvas", "pending generation");
@@ -172,6 +202,102 @@ test("missing sync session recovers authenticated baselines without acknowledgin
     expect(remote.get("canvas")!.title).toBe("pending generation");
     expect(requests.filter((request) => request.method === "put")).toHaveLength(1);
     expect(requests.filter((request) => request.id === "session")).toHaveLength(1);
+});
+
+test("recovering planned body payloads saves the same normalized baseline and does not repeat uploads", async () => {
+    const created = newDramaCanvasContent(defaultShortDramaSettings());
+    created.nodes[0].metadata!.content = "已选定的故事";
+    const request = { step: "story.plan" as const, pipelineId: nodeWorkflow(created.nodes[0])!.pipelineId, sourceNodeIds: [created.nodes[0].id], model: "test", instruction: "", episodeCount: 2, minutesPerEpisode: "2", start: 1, count: 2 };
+    const plans = createWorkflowDocuments(request, created.nodes, created.connections, { x: 0, y: 0 });
+    const plan = completeUnifiedWorkflowPlan(plans);
+    const outlines = createWorkflowDocuments({ ...request, step: "story.episodes", sourceNodeIds: [plan.frame.id] }, plans.nodes, plans.connections, { x: 0, y: 0 });
+    outlines.created[0].metadata!.content = "## 第 1 集\n剧情一 CHR-0001\n## 第 2 集\n剧情二";
+    outlines.created[0].metadata!.status = "success";
+    const bodies = createWorkflowDocuments({ ...request, step: "story.body", sourceNodeIds: [outlines.created[0].id] }, outlines.nodes, outlines.connections, { x: 0, y: 0 });
+    for (const body of bodies.created) {
+        delete body.metadata!.shortDrama!.bodyContextVersion;
+        body.metadata!.shortDrama!.textBatch = { version: 1, units: [{ label: "旧上下文", text: "旧上下文".repeat(20000) }] };
+    }
+    useCanvasStore.getState().updateProject("canvas", { nodes: bodies.nodes, connections: bodies.connections });
+    await saveRemoteUserDataNow("canvas");
+    const saved = remote.get("canvas")!;
+    const local = useCanvasStore.getState().openProject("canvas")!;
+    expect(saved.nodes.filter(node => node.metadata?.shortDrama?.bodyContextVersion === 1)).toHaveLength(2);
+    expect(local.remoteContentHash).toBe(await canvasContentHash(local));
+    expect(await canvasContentHash(saved)).toBe(await canvasContentHash(local));
+    requests = [];
+    await saveRemoteUserDataNow("canvas");
+    expect(requests.filter(request => request.method === "put")).toHaveLength(0);
+    const reopened = await loadCanvasProjectForEditing("canvas");
+    expect(reopened!.nodes.map(node => node.id)).toEqual(saved.nodes.map(node => node.id));
+});
+
+test("global settings reject stale edits and keep durable changes when cloud save fails", async () => {
+    const settings = defaultShortDramaSettings();
+    temporaryPutFailures = 1;
+    const result = await saveCanvasGlobalSettingsWithRemoteSync("canvas", "new title", settings);
+    expect(result.syncError).toBeDefined();
+    expect(useCanvasStore.getState().openProject("canvas")!.globalSettings).toEqual(settings);
+    await expect(saveCanvasGlobalSettingsWithRemoteSync("canvas", "stale title", settings)).rejects.toThrow("全局设定已被更新");
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.globalSettings).toEqual(settings);
+    expect(remote.get("canvas")!.title).toBe("new title");
+});
+
+test("editing saved canvas settings reaches subsequent work after reopening without rewriting source nodes", async () => {
+    const original = defaultShortDramaSettings();
+    const created = newDramaCanvasContent(original);
+    created.nodes[0].metadata!.content = "已有选题";
+    useCanvasStore.getState().updateProject("canvas", created);
+    await saveRemoteUserDataNow("canvas");
+    const before = JSON.stringify(created.nodes);
+    const next = { ...original, revision: 2, language: DramaLanguage.Japanese, episodeCount: 8 };
+    expect((await saveCanvasGlobalSettingsWithRemoteSync("canvas", "更新后的设定", next)).syncError).toBeUndefined();
+    const reopened = await loadCanvasProjectForEditing("canvas", { latest: true });
+    expect(reopened!.globalSettings).toEqual(next);
+    expect(JSON.stringify(reopened!.nodes)).toBe(before);
+    const request = workflowRequestWithCurrentSettings({ step: "story.plan", pipelineId: nodeWorkflow(created.nodes[0])!.pipelineId, sourceNodeIds: [created.nodes[0].id], model: "test", instruction: "", episodeCount: 12, minutesPerEpisode: "3-5", start: 1, count: 1, globalSettings: original }, reopened!.globalSettings);
+    const plan = createWorkflowDocuments(request, reopened!.nodes, [], { x: 0, y: 0 }).created[0];
+    expect(plan.metadata?.prompt).toContain("正文语言：日语");
+    expect(nodeWorkflow(plan)?.parameters?.episodeCount).toBe(8);
+    expect(nodeWorkflow(plan)?.parameters?.globalSettings?.revision).toBe(2);
+});
+
+test("local storage failure leaves no duplicate canvas and allows retrying settings", async () => {
+    await flushCanvasStorePersistence();
+    const setItem = localforage.setItem;
+    const originalIds = useCanvasStore.getState().projects.map((project) => project.id);
+    localforage.setItem = (async () => { throw new Error("local storage unavailable"); }) as typeof localforage.setItem;
+    try {
+        await expect(createCanvasProjectWithRemoteSync("failed create", undefined, newDramaCanvasContent(defaultShortDramaSettings()))).rejects.toThrow();
+        expect(useCanvasStore.getState().projects.map((project) => project.id)).toEqual(originalIds);
+        await expect(saveCanvasGlobalSettingsWithRemoteSync("canvas", "failed edit", defaultShortDramaSettings())).rejects.toThrow();
+        expect(useCanvasStore.getState().openProject("canvas")!.globalSettings).toBeUndefined();
+        expect(useCanvasStore.getState().openProject("canvas")!.title).toBe("canvas");
+    } finally { localforage.setItem = setItem; }
+    await saveCanvasGlobalSettingsWithRemoteSync("canvas", "saved edit", defaultShortDramaSettings());
+    expect(remote.get("canvas")!.title).toBe("saved edit");
+});
+
+test("global settings persist through cloud failure, retry, reopening and canvas import", async () => {
+    const globalSettings = { ...defaultShortDramaSettings(), language: DramaLanguage.Japanese, episodeCount: 8 };
+    useCanvasStore.getState().updateProject("canvas", newDramaCanvasContent(globalSettings));
+    temporaryPutFailures = 1;
+    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow();
+    expect(useCanvasStore.getState().openProject("canvas")!.globalSettings).toEqual(globalSettings);
+    expect(remote.get("canvas")!.globalSettings).toBeUndefined();
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.globalSettings).toEqual(globalSettings);
+    const reopened = await loadCanvasProjectForEditing("canvas", { latest: true });
+    expect(reopened!.globalSettings).toEqual(globalSettings);
+    const importedId = useCanvasStore.getState().importProject(reopened!);
+    await flushCanvasStorePersistence();
+    expect(useCanvasStore.getState().openProject(importedId)!.globalSettings).toEqual(globalSettings);
+    const next = { ...globalSettings, revision: 2, episodeCount: 10 };
+    useCanvasStore.getState().updateProject("canvas", { globalSettings: next });
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.globalSettings).toEqual(next);
+    expect(useCanvasStore.getState().openProject(importedId)!.globalSettings).toEqual(globalSettings);
 });
 
 test("recovering sync preserves node deletions and saves them instead of restoring the remote nodes", async () => {

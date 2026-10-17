@@ -48,7 +48,7 @@ func TestSharedWorkflowFactsConcurrentConsumersAndCancellation(t *testing.T) {
 	}
 	var children []model.Task
 	db.Where("operation = ?", "text").Find(&children)
-	if len(children) != 1 {
+	if len(children) != 2 {
 		t.Fatalf("duplicate concurrent parse: %d", len(children))
 	}
 	if _, err := s.taskLifecycle().cancelTask(context.Background(), "concurrent", parents[0].ID); err != nil {
@@ -63,7 +63,7 @@ func TestSharedWorkflowFactsConcurrentConsumersAndCancellation(t *testing.T) {
 	}
 	var count int64
 	db.Model(&model.Task{}).Where("operation = ?", "text").Count(&count)
-	if count != 1 {
+	if count != 2 {
 		t.Fatal("remaining consumer repeated parse")
 	}
 }
@@ -368,13 +368,22 @@ func TestSharedWorkflowFactsReuseRunningAndCompletedWorkAcrossCategoriesAndResta
 		}
 		var children []model.Task
 		db.Where("operation = ? AND status = ?", "text", model.TaskStatusQueued).Find(&children)
-		if len(children) != 1 {
+		if len(children) != 2-unit {
 			t.Fatalf("unit %d repeated work: %d", unit, len(children))
 		}
-		if strings.Contains(children[0].Prompt, "计划12集") || strings.Contains(children[0].Prompt, "生成characters") || strings.Contains(children[0].Prompt, "生成environments") {
-			t.Fatal("output requirements or plan entered shared prose parsing")
+		childID := ""
+		for _, child := range children {
+			if strings.Contains(child.Prompt, "计划12集") || strings.Contains(child.Prompt, "生成characters") || strings.Contains(child.Prompt, "生成environments") {
+				t.Fatal("output requirements or plan entered shared prose parsing")
+			}
+			if strings.Contains(child.Prompt, evidence) {
+				childID = child.ID
+			}
 		}
-		child := claimSpecificSharedParent(t, s, db, children[0].ID)
+		if childID == "" {
+			t.Fatal("requested unit was not scheduled")
+		}
+		child := claimSpecificSharedParent(t, s, db, childID)
 		payload, _ := json.Marshal(map[string]any{"mode": "text", "text": factsJSON(evidence)})
 		if err := s.saveTaskCompletionWithinStorageQuota(child, payload, nil, false); err != nil {
 			t.Fatal(err)
@@ -429,7 +438,7 @@ func TestSharedWorkflowFactsReuseRunningAndCompletedWorkAcrossCategoriesAndResta
 		t.Fatal(err)
 	}
 	stored, _ = s.repo.Task(edited.ID)
-	if !strings.Contains(stored.Stage, "共享正文解析 2/2") {
+	if !strings.Contains(stored.Stage, "共享正文解析 · 已完成 1/2") {
 		t.Fatalf("unchanged unit reparsed: %s", stored.Stage)
 	}
 }

@@ -116,6 +116,7 @@ type cloudAgentApproval struct {
 }
 
 type cloudAgentRuntime struct {
+	ProductionParallel      map[string]productionParallelWork     `json:"productionParallel,omitempty"`
 	ProductionProgressStep  int                                   `json:"productionProgressStep,omitempty"`
 	ProductionStepLimit     int                                   `json:"productionStepLimit,omitempty"`
 	ProductionPaused        bool                                  `json:"productionPaused,omitempty"`

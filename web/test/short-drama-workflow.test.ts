@@ -4,6 +4,7 @@ import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflow
 import { shortDramaSteps, activeShortDramaSteps, ShortDramaStep, nextShortDramaSteps } from "../src/lib/short-drama-steps";
 import { confirmProductionBible } from "../src/lib/canvas/canvas-short-drama-workflow";
 import { bibleOutput, assetItem } from "./fixtures/workflow-asset-output";
+import { completeWorkflowPlan } from "./fixtures/workflow-plan";
 import { shortDramaStages } from "../src/lib/short-drama-stages";
 import { productionRuleBlock } from "../src/lib/production-rules";
 import type { CanvasNodeData, CanvasConnection } from "../src/types/canvas";
@@ -25,7 +26,7 @@ function complete(nodes: CanvasNodeData[]) {
 
 describe("short drama document workflow", () => {
     test("active and saved legacy steps belong to an enum stage and form an acyclic reachable dependency graph", () => {
-        expect(shortDramaSteps).toHaveLength(46);
+        expect(shortDramaSteps).toHaveLength(47);
         expect(new Set(Object.values(ShortDramaStep))).toEqual(new Set(shortDramaSteps.map((step) => step.id)));
         const visited = new Set<string>();
         for (const step of shortDramaSteps) {
@@ -39,31 +40,33 @@ describe("short drama document workflow", () => {
         const f = fixture();
         expect(f.nodes).toHaveLength(1);
         const first = createWorkflowDocuments(f.request, f.nodes, [], center);
-        complete(first.created);
+        completeWorkflowPlan(first);
         const second = createWorkflowDocuments(f.request, first.nodes, first.connections, center);
         expect(first.created[0].id).not.toBe(second.created[0].id);
         expect(second.nodes.find((node) => node.id === first.created[0].id)?.metadata?.content).toContain("完整文稿");
         expect(second.created[0].metadata?.shortDrama).toMatchObject({ stage: "story", step: "story.plan", sourceNodeIds: [f.storyNodeId], pipelineId: f.request.pipelineId });
-        expect(second.connections.filter((edge) => edge.toNodeId === second.created[0].id).map((edge) => edge.fromNodeId)).toEqual([f.storyNodeId]);
+        expect(second.connections.filter((edge) => edge.toNodeId === second.created[0].parentId).map((edge) => edge.fromNodeId)).toEqual([f.storyNodeId]);
         expect(second.created[0].metadata?.shortDrama?.operationId).not.toBe(first.created[0].metadata?.shortDrama?.operationId);
     });
     test("right-click next carries the chosen branch, ambiguity is explicit and ancestors enter prompts", () => {
         const f = fixture();
-        const a = createWorkflowDocuments(f.request, f.nodes, [], center); complete(a.created);
-        const b = createWorkflowDocuments(f.request, a.nodes, a.connections, center); complete(b.created);
+        const a = createWorkflowDocuments(f.request, f.nodes, [], center); const planA = completeWorkflowPlan(a);
+        const b = createWorkflowDocuments(f.request, a.nodes, a.connections, center); completeWorkflowPlan(b);
         expect(defaultWorkflowSources("story.episodes", f.request.pipelineId, b.nodes)).toEqual([""]);
         const selected = defaultWorkflowSources("story.episodes", f.request.pipelineId, b.nodes, a.created[0].id);
-        expect(selected).toEqual([a.created[0].id]);
+        expect(selected).toEqual([a.created[0].parentId!]);
         const result = createWorkflowDocuments({ ...f.request, step: "story.episodes", sourceNodeIds: selected }, b.nodes, b.connections, center);
-        expect(result.created[0].metadata?.prompt).toContain(a.created[0].id);
-        expect(result.created[0].metadata?.prompt).toContain(f.nodes[0].metadata!.content!);
-        expect(result.created[0].metadata?.prompt).not.toContain(b.created[0].id);
+        const input = result.created[0].metadata?.shortDrama?.textBatch?.units.map(unit => unit.text).join("\n") || result.created[0].metadata?.prompt;
+        expect(input).toContain(planA.docs[0].id);
+        expect(input).toContain(f.nodes[0].metadata!.content!);
+        expect(input).not.toContain(b.created[0].id);
         expect(nextShortDramaSteps("story.plan").map((step) => step.id)).toContain("story.episodes");
     });
     test("every step can generate a document while actual production and review are not falsely completed", () => {
         const f = fixture();
         let nodes = f.nodes; let connections: CanvasConnection[] = [];
-        for (const step of activeShortDramaSteps.slice(1)) {
+        const legacyHidden = new Set([ShortDramaStep.Extract, ShortDramaStep.Catalog, ShortDramaStep.AssetApproval, ShortDramaStep.Style, ShortDramaStep.Settings, ShortDramaStep.Voices, ShortDramaStep.Scenes, ShortDramaStep.Reconcile]);
+        for (const step of shortDramaSteps.slice(1).filter((entry) => !legacyHidden.has(entry.id as ShortDramaStep))) {
             const sourceNodeIds = step.requires.map((required) => nodes.find((node) => nodeWorkflow(node)?.step === required && !nodeWorkflow(node)?.assetKey)!.id);
             const generated = createWorkflowDocuments({ ...f.request, step: step.id, sourceNodeIds }, nodes, connections, center);
             const metadata = generated.created[0].metadata!;
@@ -72,8 +75,10 @@ describe("short drama document workflow", () => {
                 expect(metadata.prompt?.startsWith(productionRuleBlock(step.stage, "text"))).toBe(true);
                 expect(metadata.prompt?.split("【制作执行规范 v")).toHaveLength(2);
             }
-            complete(generated.created); nodes = generated.nodes; connections = generated.connections;
-            if (step.output) {
+            if (step.id === "story.plan") completeWorkflowPlan(generated);
+            else complete(generated.created);
+            nodes = generated.nodes; connections = generated.connections;
+            if (step.output && step.id !== "story.plan") {
                 const before = generated.created[0];
                 nodes = commitCanvasGenerationResult(nodes, before, { ...before, metadata: { ...before.metadata, content: step.id === "assets.bible" ? bibleOutput : JSON.stringify({ summary: "covered", items: [assetItem(step.label, "prompt")] }), status: "success" } }, step.id);
                 if (step.id === "assets.bible") {
@@ -84,7 +89,7 @@ describe("short drama document workflow", () => {
             const ancestorTail = workflowAncestors([generated.created[0].id], nodes, f.request.pipelineId).at(-1)?.id;
             if (step.output === "asset-group") expect(ancestorTail).toBeUndefined();
             else expect(ancestorTail).toBe(generated.created[0].id);
-            expect(connections.filter((edge) => edge.toNodeId === generated.created[0].id)).toHaveLength(step.requires.length);
+            expect(connections.filter((edge) => edge.toNodeId === (step.id === "story.plan" ? generated.created[0].parentId : generated.created[0].id))).toHaveLength(step.requires.length);
             if (step.production) expect(generated.created[0].metadata?.prompt).toContain("不得宣称媒体已生成");
         }
         const progress = deriveShortDramaProgress(nodes, connections);
@@ -94,21 +99,21 @@ describe("short drama document workflow", () => {
     });
     test("missing, stale, circular, cross-pipeline and conflicting versions cannot be used as prerequisites", () => {
         const f = fixture();
-        const first = createWorkflowDocuments(f.request, f.nodes, [], center); complete(first.created);
-        expect(() => workflowAncestors([first.created[0].id], first.created, f.request.pipelineId)).toThrow("已删除");
-        expect(() => workflowSources("story.episodes", "other", first.nodes, [first.created[0].id])).toThrow("不属于");
-        expect(() => workflowSources("story.episodes", f.request.pipelineId, first.nodes, [f.storyNodeId])).toThrow("请选择制作方案");
-        const second = createWorkflowDocuments(f.request, first.nodes, [], center); complete(second.created);
-        expect(() => workflowAncestors([first.created[0].id, second.created[0].id], second.nodes, f.request.pipelineId)).toThrow("不同版本");
+        const first = createWorkflowDocuments(f.request, f.nodes, [], center); const one = completeWorkflowPlan(first);
+        expect(() => workflowAncestors([one.docs[0].id], one.docs, f.request.pipelineId)).toThrow("已删除");
+        expect(() => workflowSources("story.episodes", "other", first.nodes, [one.frame.id])).toThrow("不属于");
+        expect(() => workflowSources("story.episodes", f.request.pipelineId, first.nodes, [f.storyNodeId])).toThrow("请选择项目制作方案");
+        const second = createWorkflowDocuments(f.request, first.nodes, [], center); const two = completeWorkflowPlan(second);
+        expect(() => workflowAncestors([one.frame.id, two.frame.id], second.nodes, f.request.pipelineId)).toThrow("不同版本");
         first.nodes[0].metadata!.content = "changed topic";
-        expect(() => workflowAncestors([first.created[0].id], first.nodes, f.request.pipelineId)).toThrow("前文已更新");
-        first.created[0].metadata!.shortDrama!.sourceNodeIds = [first.created[0].id];
-        expect(() => workflowAncestors([first.created[0].id], first.nodes, f.request.pipelineId)).toThrow("循环");
+        expect(() => workflowAncestors([one.frame.id], first.nodes, f.request.pipelineId)).toThrow("前文已更新");
+        one.docs[0].metadata!.shortDrama!.sourceNodeIds = [one.docs[0].id];
+        expect(() => workflowAncestors([one.docs[0].id], first.nodes, f.request.pipelineId)).toThrow("循环");
     });
     test("body batches use the selected plan range, keep previous drafts and create a new node for every episode", () => {
         const f = fixture();
-        const plan = createWorkflowDocuments(f.request, f.nodes, [], center); complete(plan.created);
-        const episodes = createWorkflowDocuments({ ...f.request, step: "story.episodes", sourceNodeIds: [plan.created[0].id] }, plan.nodes, plan.connections, center); complete(episodes.created);
+        const plan = createWorkflowDocuments(f.request, f.nodes, [], center); const planned = completeWorkflowPlan(plan);
+        const episodes = createWorkflowDocuments({ ...f.request, step: "story.episodes", sourceNodeIds: [planned.frame.id] }, plan.nodes, plan.connections, center); complete(episodes.created);
         const request = { ...f.request, step: "story.body" as const, sourceNodeIds: [episodes.created[0].id], start: 2, count: 3 };
         const batch = createWorkflowDocuments(request, episodes.nodes, episodes.connections, center); complete(batch.created);
         expect(batch.created.map((node) => nodeWorkflow(node)?.episodeNumber)).toEqual([2, 3, 4]);
@@ -122,12 +127,12 @@ describe("short drama document workflow", () => {
 
 function bodyFixture(count = 3) {
     const f = fixture();
-    const plan = createWorkflowDocuments({ ...f.request, minutesPerEpisode: "2-3" }, f.nodes, [], center); complete(plan.created);
-    const outline = createWorkflowDocuments({ ...f.request, step: "story.episodes", sourceNodeIds: [plan.created[0].id] }, plan.nodes, plan.connections, center); complete(outline.created);
+    const plan = createWorkflowDocuments({ ...f.request, minutesPerEpisode: "2-3" }, f.nodes, [], center); const planned = completeWorkflowPlan(plan);
+    const outline = createWorkflowDocuments({ ...f.request, step: "story.episodes", sourceNodeIds: [planned.frame.id] }, plan.nodes, plan.connections, center); complete(outline.created);
     const request = { ...f.request, step: "story.body" as const, sourceNodeIds: [outline.created[0].id], start: 1, count };
     const batch = createWorkflowDocuments(request, outline.nodes, outline.connections, center);
-    const collection = batch.nodes.find((node) => nodeWorkflow(node)?.role === "collection")!;
-    return { ...batch, request, collection, outlineId: outline.created[0].id, planId: plan.created[0].id };
+    const collection = batch.nodes.find((node) => nodeWorkflow(node)?.role === "collection" && nodeWorkflow(node)?.step === "story.body")!;
+    return { ...batch, request, collection, outlineId: outline.created[0].id, planId: planned.frame.id };
 }
 
 describe("episode collections and bounded workflow context", () => {
@@ -150,7 +155,8 @@ describe("episode collections and bounded workflow context", () => {
         expect(workflowAncestors([old.id], nodes, f.request.pipelineId, edges).at(-1)?.id).toBe(old.id);
         expect(old.metadata!.shortDrama.sourceSteps).toBeUndefined();
         expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.style")).toBe(false);
-        expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.bible")).toBe(true);
+        expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.bible")).toBe(false);
+        expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.reconcile")).toBe(true);
         expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.extract")).toBe(false);
     });
     test("plan parameters reach all episodes and a persisted native frame holds the batch", () => {
@@ -181,10 +187,10 @@ describe("episode collections and bounded workflow context", () => {
     test("disjoint batches reuse the frame while another version never replaces a member", () => {
         const f = bodyFixture(2);
         const next = createWorkflowDocuments({ ...f.request, start: 3, count: 2 }, f.nodes, f.connections, center);
-        expect(next.nodes.filter((node) => nodeWorkflow(node)?.role === "collection")).toHaveLength(1);
+        expect(next.nodes.filter((node) => nodeWorkflow(node)?.role === "collection" && nodeWorkflow(node)?.step === "story.body")).toHaveLength(1);
         expect(nodeWorkflow(next.nodes.find((node) => node.id === f.collection.id))?.sourceNodeIds).toHaveLength(4);
         const retry = createWorkflowDocuments({ ...f.request, start: 1, count: 1 }, next.nodes, next.connections, center);
-        expect(retry.nodes.filter((node) => nodeWorkflow(node)?.role === "collection")).toHaveLength(2);
+        expect(retry.nodes.filter((node) => nodeWorkflow(node)?.role === "collection" && nodeWorkflow(node)?.step === "story.body")).toHaveLength(2);
         expect(retry.nodes.find((node) => node.id === f.created[0].id)?.parentId).toBe(f.collection.id);
         expect(retry.nodes.find((node) => node.id === retry.created[0].id)?.parentId).not.toBe(f.collection.id);
     });
@@ -241,7 +247,7 @@ describe("episode collections and bounded workflow context", () => {
     });
     test("existing ungrouped episodes can be organized without changing content, task IDs or source graph", () => {
         const f = bodyFixture();
-        const nodes = f.nodes.filter((node) => node.id !== f.collection.id).map((node) => ({ ...node, parentId: undefined }));
+        const nodes = f.nodes.filter((node) => node.id !== f.collection.id).map((node) => node.parentId === f.collection.id ? { ...node, parentId: undefined } : node);
         const connections = f.connections.filter((edge) => edge.toNodeId !== f.collection.id);
         const result = groupExistingWorkflowEpisodes(f.created[0].id, nodes, connections);
         expect(nodeWorkflow(result.collection)?.sourceNodeIds).toHaveLength(3);
@@ -268,7 +274,7 @@ describe("episode collections and bounded workflow context", () => {
     });
     test("organizing resized legacy documents keeps them inside non-overlapping cells", () => {
         const f = bodyFixture();
-        const nodes = f.nodes.filter((node) => node.id !== f.collection.id).map((node) => ({ ...node, parentId: undefined, width: 720, height: 540 }));
+        const nodes = f.nodes.filter((node) => node.id !== f.collection.id).map((node) => node.parentId === f.collection.id ? { ...node, parentId: undefined, width: 720, height: 540 } : node);
         const result = groupExistingWorkflowEpisodes(f.created[0].id, nodes, f.connections);
         const members = result.nodes.filter((node) => node.parentId === result.collection.id);
         expect(members[1].position.x).toBeGreaterThan(members[0].position.x + members[0].width);
@@ -282,7 +288,7 @@ describe("episode collections and bounded workflow context", () => {
     });
     test("explicit selection groups only selected completed nodes and supports adding to that existing container", () => {
         const f = bodyFixture(3);
-        const nodes = f.nodes.filter((node) => node.id !== f.collection.id).map((node) => ({ ...node, parentId: undefined }));
+        const nodes = f.nodes.filter((node) => node.id !== f.collection.id).map((node) => node.parentId === f.collection.id ? { ...node, parentId: undefined } : node);
         complete(nodes.filter((node) => nodeWorkflow(node)?.step === "story.body"));
         const ids = f.created.map((node) => node.id);
         const result = groupSelectedWorkflowDocuments(ids.slice(0, 2), nodes, f.connections);
@@ -308,7 +314,7 @@ describe("episode collections and bounded workflow context", () => {
     });
     test("grouping rejects conflicting episode versions, steps, pipelines and upstream branches without changing nodes", () => {
         const f = bodyFixture(2);
-        const nodes = f.nodes.filter((node) => node.id !== f.collection.id).map((node) => ({ ...node, parentId: undefined }));
+        const nodes = f.nodes.filter((node) => node.id !== f.collection.id).map((node) => node.parentId === f.collection.id ? { ...node, parentId: undefined } : node);
         const ids = f.created.map((node) => node.id);
         const before = JSON.stringify(nodes);
         const copy = structuredClone(nodes.find((node) => node.id === ids[0])!); copy.id = "other-version";

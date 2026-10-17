@@ -21,11 +21,13 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     renderLOD = "full",
     dragOffset,
     childNodes,
+    taskAnchor,
     scale,
     isSelected,
     isDropTarget,
     onMouseDown,
     onResize,
+    onResizeGesture,
     onToggleCollapsed,
     onFolderStyleChange,
     onFolderThemeChange = () => undefined,
@@ -39,12 +41,14 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     data: CanvasNodeData;
     dragOffset?: Position;
     childNodes: CanvasNodeData[];
+    taskAnchor?: CanvasNodeData;
     renderLOD?: CanvasNodeRenderLOD;
     scale: number;
     isSelected: boolean;
     isDropTarget: boolean;
     onMouseDown: (event: ReactMouseEvent, nodeId: string) => void;
     onResize: (nodeId: string, width: number, height: number, position?: Position) => void;
+    onResizeGesture?: (nodeId: string, phase: "start" | "end" | "cancel") => void;
     onToggleCollapsed: (nodeId: string) => void;
     onFolderStyleChange: (nodeId: string, style: CanvasFolderStyle) => void;
     onFolderThemeChange?: (nodeId: string, theme: CanvasFolderTheme) => void;
@@ -62,6 +66,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     const [editing, setEditing] = useState(false);
     const [hovered, setHovered] = useState(false);
     const [title, setTitle] = useState(data.title);
+    const resizeCancelCleanup = useRef<(() => void) | null>(null);
     const resizeRef = useRef({
         active: false,
         corner: "bottom-right" as ResizeCorner,
@@ -71,11 +76,13 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
         startTop: 0,
         startWidth: 0,
         startHeight: 0,
+        minWidth: 360,
         nodeId: data.id,
         scale,
         childBounds: null as { left: number; top: number; right: number; bottom: number } | null,
         contentInset: data.metadata?.shortDrama?.role === "collection" ? 100 : FRAME_HEADER_HEIGHT + FRAME_PADDING,
         onResize,
+        onResizeGesture,
     });
 
     useEffect(() => setTitle(data.title), [data.title]);
@@ -106,9 +113,9 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
             const fromTop = state.corner.includes("top");
             const startRight = state.startLeft + state.startWidth;
             const startBottom = state.startTop + state.startHeight;
-            let left = fromLeft ? Math.min(state.startLeft + dx, startRight - 360) : state.startLeft;
+            let left = fromLeft ? Math.min(state.startLeft + dx, startRight - state.minWidth) : state.startLeft;
             let top = fromTop ? Math.min(state.startTop + dy, startBottom - 240) : state.startTop;
-            let right = fromLeft ? startRight : Math.max(state.startLeft + 360, startRight + dx);
+            let right = fromLeft ? startRight : Math.max(state.startLeft + state.minWidth, startRight + dx);
             let bottom = fromTop ? startBottom : Math.max(state.startTop + 240, startBottom + dy);
 
             if (state.childBounds) {
@@ -123,18 +130,21 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     );
 
     const handleResizeUp = useCallback(() => {
+        if (resizeRef.current.active) resizeRef.current.onResizeGesture?.(resizeRef.current.nodeId, "end");
         resizeRef.current.active = false;
         window.removeEventListener("mousemove", handleResizeMove);
         window.removeEventListener("mouseup", handleResizeUp);
+        resizeCancelCleanup.current?.();
+        resizeCancelCleanup.current = null;
     }, [handleResizeMove]);
 
-    useEffect(
-        () => () => {
-            window.removeEventListener("mousemove", handleResizeMove);
-            window.removeEventListener("mouseup", handleResizeUp);
-        },
-        [handleResizeMove, handleResizeUp],
-    );
+    const cancelResize = useCallback(() => {
+        if (resizeRef.current.active) resizeRef.current.onResizeGesture?.(resizeRef.current.nodeId, "cancel");
+        resizeRef.current.active = false;
+        handleResizeUp();
+    }, [handleResizeUp]);
+
+    useEffect(() => () => cancelResize(), [cancelResize]);
 
     const startResize = (event: ReactMouseEvent, corner: ResizeCorner) => {
         event.preventDefault();
@@ -148,26 +158,33 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
             startTop: data.position.y,
             startWidth: data.width,
             startHeight: data.height,
+            minWidth: folder ? 360 : Math.max(360, ...childNodes.filter(node => node.metadata?.shortDrama?.assetKey !== "$summary").map(node => (data.metadata?.shortDrama?.mediaGroup ? 280 : node.width) + FRAME_PADDING * 2)),
             nodeId: data.id,
             scale,
-            childBounds,
+            childBounds: folder || childNodes.some(node => node.metadata?.locked) ? childBounds : null,
             contentInset: data.metadata?.shortDrama?.role === "collection" ? 100 : FRAME_HEADER_HEIGHT + FRAME_PADDING,
             onResize,
+            onResizeGesture,
         };
+        onResizeGesture?.(data.id, "start");
         window.addEventListener("mousemove", handleResizeMove);
         window.addEventListener("mouseup", handleResizeUp);
+        const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelResize(); } };
+        window.addEventListener("blur", cancelResize);
+        window.addEventListener("keydown", onKey, true);
+        resizeCancelCleanup.current = () => { window.removeEventListener("blur", cancelResize); window.removeEventListener("keydown", onKey, true); };
     };
 
     const active = isSelected || isDropTarget;
     const linkedFolder = Boolean(data.metadata?.folder?.assetFolderId);
     const fullDetail = renderLOD === "full" || hovered || editing;
     const collection = data.metadata?.shortDrama?.role === "collection" ? data.metadata.shortDrama : undefined;
-    const progress = collection && !collection.assetGroup && !collection.mediaGroup ? episodeProgress(childNodes.filter((node) => collection.sourceNodeIds.includes(node.id)), collection.parameters?.episodeCount || childNodes.length) : undefined;
-    const mediaMembers = collection?.mediaGroup ? childNodes.filter((node) => collection.sourceNodeIds.includes(node.id)) : [];
+    const progress = collection && !collection.assetGroup && !collection.mediaGroup && !collection.assetRevisionGroup ? episodeProgress(childNodes.filter((node) => collection.sourceNodeIds.includes(node.id)), collection.parameters?.episodeCount || childNodes.length) : undefined;
+    const mediaMembers = collection?.mediaGroup || collection?.assetRevisionGroup ? childNodes.filter((node) => collection.sourceNodeIds.includes(node.id)) : [];
     const mediaComplete = mediaMembers.filter((node) => node.metadata?.status === "success" && (node.metadata.storageKey || node.metadata.content)).length;
     const mediaRunning = mediaMembers.filter((node) => node.metadata?.status === "loading").length;
     const mediaFailed = mediaMembers.filter((node) => node.metadata?.status === "error").length;
-    const assetManifest = collection?.assetGroup ? childNodes.find((node) => node.id === collection.assetGroup!.manifestId) : undefined;
+    const assetManifest = collection?.assetGroup ? taskAnchor || childNodes.find((node) => node.id === collection.assetGroup!.manifestId) : undefined;
     const assetCount = collection?.assetGroup ? childNodes.filter((node) => collection.sourceNodeIds.includes(node.id) && node.id !== collection.assetGroup!.manifestId).length : 0;
     const assetManifestData = assetManifest?.metadata?.shortDrama;
     const expectedAssetCount = collection?.assetGroup?.kind === "bible" ? collection.assetGroup.sections?.length || 2 : undefined;
@@ -186,6 +203,11 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                         ? `已生成 ${assetCount}${expectedAssetCount ? `/${expectedAssetCount}` : ""} · 待核对`
                         : "等待生成"
         : "";
+    const collectionDetails = onOpenTaskDetails ? <button type="button" aria-label="查看分组任务详情" title="查看分组任务详情"
+        className="pointer-events-auto ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-black/10 dark:hover:bg-white/10"
+        style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenTaskDetails(data); }}>
+        <Info className="size-3.5" aria-hidden="true" />详情
+    </button> : null;
 
     return (
         <div
@@ -291,7 +313,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                         </button>
                     )}
                     <span className="ml-auto shrink-0 pr-1 text-[var(--fs-label)] tabular-nums" style={{ color: theme.node.muted }}>
-                        {collection?.mediaGroup ? `${mediaMembers.length} 张图片` : collection?.assetGroup?.kind === "bible" ? `${assetCount}/${collection.assetGroup.sections?.length || 2} 项规范` : collection?.assetGroup ? `${assetCount} 项资产` : collection && !collapsed ? `${collection.parameters?.episodeCount || childNodes.length} 集 · ${collection.parameters?.minutesPerEpisode || "待定"} 分钟/集` : childNodes.length}
+                        {collection?.assetRevisionGroup ? `${mediaMembers.length} 项资产` : collection?.mediaGroup ? `${mediaMembers.length} 张图片` : collection?.assetGroup?.kind === "bible" ? `${assetCount}/${collection.assetGroup.sections?.length || 2} 项规范` : collection?.assetGroup ? `${assetCount} ${collection.step === "story.plan" && !collection.planGroup ? "份方案文稿" : "项资产"}` : collection && !collapsed ? `${collection.parameters?.episodeCount || childNodes.length} 集 · ${collection.parameters?.minutesPerEpisode || "待定"} 分钟/集` : childNodes.length}
                     </span>
                 </div>
 
@@ -307,14 +329,16 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                         onMouseDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                             event.stopPropagation();
-                            onOpenTaskDetails(assetManifest);
+                            onOpenTaskDetails(data);
                         }}
                     ><Info className="size-3.5" aria-hidden="true" />详情</button> : null}
-                </div> : collection?.mediaGroup ? <div aria-label="图片容器进度" className="pointer-events-none absolute inset-x-3 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
+                </div> : collection?.mediaGroup || collection?.assetRevisionGroup ? <div aria-label={collection.assetRevisionGroup ? "资产重做进度" : "图片容器进度"} className="pointer-events-none absolute inset-x-3 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
                     已完成 {mediaComplete}/{mediaMembers.length} · 进行中 {mediaRunning} · 失败 {mediaFailed}
+                    {collectionDetails}
                 </div> : collection && progress ? <div aria-label="分集容器进度" className="pointer-events-none absolute inset-x-3 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
                     {collapsed ? <div>共 {progress.total} 集 · 每集 {collection.parameters?.minutesPerEpisode || "待定"} 分钟</div> : null}
                     {episodeProgressLabel(progress)}
+                    {collectionDetails}
                 </div> : collapsed ? <FramePreview nodes={childNodes.filter((node) => node.id !== collection?.assetGroup?.manifestId)} frame={data} theme={theme} /> : null}
                     </>
                 )}

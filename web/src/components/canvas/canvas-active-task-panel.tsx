@@ -1,23 +1,27 @@
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react";
-import { ChevronDown, ChevronUp, Clock3, Coins, ListTodo, LoaderCircle, XCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, ChevronUp, Clock3, Coins, FileText, ListTodo, LoaderCircle, XCircle } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { formatCredits } from "@/constant/credits";
 import { aceternityMotion } from "@/lib/aceternity-motion";
-import { canCancelGenerationTask, formatTaskKind, generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel } from "@/lib/generation-task-display";
+import { canCancelGenerationTask, generationTaskShowsProgress, generationTaskStatusLabel } from "@/lib/generation-task-display";
+import { canvasTaskCounts, canvasTaskPresentation, type CanvasTaskPresentation } from "@/lib/canvas/canvas-task-presentation";
+import type { CanvasNodeData } from "@/types/canvas";
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { GenerationTask } from "@/services/api/task-center";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 // 顶栏是绝对定位浮层，面板必须按调用方传入的 topInset 避让；专注模式隐藏顶栏时传小间距。
-export function CanvasActiveTaskPanel({ tasks, align = "right", topInset = "var(--canvas-topbar-offset)", onCancelTask }: { tasks: GenerationTask[]; align?: "left" | "right"; topInset?: string; onCancelTask?: (task: GenerationTask) => void }) {
+export function CanvasActiveTaskPanel({ tasks, nodes = [], align = "right", topInset = "var(--canvas-topbar-offset)", onCancelTask, onOpenNode }: { tasks: GenerationTask[]; nodes?: CanvasNodeData[]; align?: "left" | "right"; topInset?: string; onCancelTask?: (task: GenerationTask) => void; onOpenNode?: (nodeId: string) => void }) {
     const theme = canvasThemes[useActiveTheme()];
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const reducedMotion = useReducedMotion();
     const [now, setNow] = useState(() => Date.now());
     const [open, setOpen] = useState(false);
     const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+    const presentations = useMemo(() => new Map(tasks.map((task) => [task.id, canvasTaskPresentation(task, tasks, nodes)])), [tasks, nodes]);
+    const counts = canvasTaskCounts(tasks);
 
     useEffect(() => {
         if (!tasks.length) return;
@@ -42,7 +46,7 @@ export function CanvasActiveTaskPanel({ tasks, align = "right", topInset = "var(
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -8, scale: 0.98 }}
                 transition={motionTransition}
-                className={`pointer-events-none absolute z-[var(--z-panel-floating)] w-[var(--canvas-panel-width)] ${align === "left" ? "left-3" : "right-3"}`}
+                className={`pointer-events-none absolute z-[var(--z-panel-floating)] w-[var(--canvas-panel-width)] max-w-[calc(100%-24px)] ${align === "left" ? "left-3" : "right-3"}`}
                 style={{ top: topInset }}
             >
                 <LayoutGroup id="canvas-active-tasks">
@@ -67,7 +71,7 @@ export function CanvasActiveTaskPanel({ tasks, align = "right", topInset = "var(
                                 <span className="min-w-0">
                                     <span className="block text-sm font-semibold leading-5">生成任务</span>
                                     <span className="block truncate text-[var(--fs-label)]" style={{ color: theme.node.muted }} aria-live="polite">
-                                        当前画布 · {tasks.length} 个进行中
+                                        {counts.roots} 项制作{counts.children ? ` · ${counts.children} 个子任务` : ""}{counts.queued ? ` · ${counts.queued} 个排队` : ""}
                                     </span>
                                 </span>
                             </span>
@@ -87,11 +91,14 @@ export function CanvasActiveTaskPanel({ tasks, align = "right", topInset = "var(
                                     exit={{ opacity: 0, height: 0 }}
                                     transition={motionTransition}
                                     className="thin-scrollbar max-h-[min(70vh,520px)] space-y-2 overflow-y-auto px-2.5 pb-2.5"
+                                    data-canvas-wheel-scroll
                                 >
                                     {tasks.map((task) => (
-                                        <ActiveTaskCard
+                                        <CanvasActiveTaskCard
                                             key={task.id}
                                             task={task}
+                                            presentation={presentations.get(task.id)!}
+                                            onOpenNode={onOpenNode}
                                             now={now}
                                             theme={theme}
                                             expanded={expandedTaskId === task.id}
@@ -111,8 +118,10 @@ export function CanvasActiveTaskPanel({ tasks, align = "right", topInset = "var(
     );
 }
 
-function ActiveTaskCard({
+export function CanvasActiveTaskCard({
     task,
+    presentation,
+    onOpenNode,
     now,
     theme,
     expanded,
@@ -122,6 +131,8 @@ function ActiveTaskCard({
     creditsEnabled,
 }: {
     task: GenerationTask;
+    presentation: CanvasTaskPresentation;
+    onOpenNode?: (nodeId: string) => void;
     now: number;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     expanded: boolean;
@@ -135,12 +146,12 @@ function ActiveTaskCard({
     const startedAt = task.startedAt || task.createdAt;
     const elapsedMs = Math.max(0, now - parseTime(startedAt));
     const durationLabel = `${task.status === "queued" ? "已等待" : "已运行"} ${formatDuration(elapsedMs)}`;
-    const billingLabel = task.billing ? `冻结 ${formatCredits(task.billing.amountMicrocredits)} 积分` : "未计费";
+    const billingLabel = task.billing ? `${({ reserved: "冻结", running: "处理中", settled: "已结算", refunded: "已退还", uncertain: "待核对" } as const)[task.billing.status]} ${formatCredits(task.billing.amountMicrocredits)} 积分` : "";
     const statusTone = task.status === "running" ? theme.accent.primary : theme.node.muted;
     const transition = reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel;
 
     return (
-        <motion.article layout layoutId={`canvas-active-task-${task.id}`} className="overflow-hidden rounded-xl border" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
+        <motion.article layout layoutId={`canvas-active-task-${task.id}`} className="overflow-hidden rounded-[var(--r-md)] border" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
             <button type="button" className="block w-full p-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px]" onClick={onToggle} aria-expanded={expanded}>
                 <div className="flex min-w-0 items-start gap-2">
                     <motion.span layout="position" className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md" style={{ background: `${statusTone}18`, color: statusTone }}>
@@ -148,16 +159,18 @@ function ActiveTaskCard({
                     </motion.span>
                     <span className="min-w-0 flex-1">
                         <span className="flex items-center justify-between gap-2">
-                            <span className="truncate text-xs font-semibold" title={formatTaskKind(task)}>
-                                {formatTaskKind(task)}
+                            <span className="min-w-0 break-words text-xs font-semibold" title={presentation.title}>
+                                {presentation.title}
                             </span>
                             <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[var(--fs-tiny)] font-medium" style={{ borderColor: `${statusTone}44`, color: statusTone }}>
                                 {generationTaskStatusLabel(task)}
                             </span>
                         </span>
-                        <span className="mt-1 block truncate text-[var(--fs-label)]" style={{ color: theme.node.muted }} title={generationTaskStageLabel(task)}>
-                            {generationTaskStageLabel(task)}
+                        <span className="mt-1 block break-words text-[var(--fs-label)]" style={{ color: theme.node.text }}>
+                            {presentation.work}
                         </span>
+                        {presentation.source ? <span className="mt-1 block line-clamp-2 break-words text-[var(--fs-tiny)]" style={{ color: theme.node.muted }} title={presentation.source}>{presentation.source}</span> : null}
+                        <span className="mt-1 block break-words text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{presentation.stage}</span>
                     </span>
                     {expanded ? <ChevronUp className="mt-0.5 size-3.5 shrink-0" style={{ color: theme.node.muted }} /> : <ChevronDown className="mt-0.5 size-3.5 shrink-0" style={{ color: theme.node.muted }} />}
                 </div>
@@ -193,12 +206,12 @@ function ActiveTaskCard({
                         </span>
                     </div>
                 ) : (
-                    <div className={`mt-3 grid gap-2 text-[var(--fs-tiny)] ${creditsEnabled ? "grid-cols-2" : "grid-cols-1"}`} style={{ color: theme.node.muted }}>
+                    <div className={`mt-3 grid gap-2 text-[var(--fs-tiny)] ${creditsEnabled && billingLabel ? "grid-cols-2" : "grid-cols-1"}`} style={{ color: theme.node.muted }}>
                         <span className="inline-flex min-w-0 items-center gap-1 truncate" title={durationLabel}>
                             <Clock3 className="size-3 shrink-0" />
                             {durationLabel}
                         </span>
-                        {creditsEnabled ? (
+                        {creditsEnabled && billingLabel ? (
                             <span className="inline-flex min-w-0 items-center justify-end gap-1 truncate" title={billingLabel}>
                                 <Coins className="size-3 shrink-0" />
                                 {billingLabel}
@@ -218,12 +231,15 @@ function ActiveTaskCard({
                         className="border-t px-3 pb-3 pt-2 text-[var(--fs-label)]"
                         style={{ borderColor: theme.toolbar.border, color: theme.node.muted }}
                     >
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2">
                             <span>当前阶段</span>
-                            <span className="max-w-[200px] truncate text-right" style={{ color: theme.node.text }}>
-                                {generationTaskStageLabel(task)}
+                            <span className="break-words text-right" style={{ color: theme.node.text }}>
+                                {presentation.stage}
                             </span>
                         </div>
+                        {task.model ? <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-2"><span>模型</span><span className="break-all text-right" style={{ color: theme.node.text }}>{task.model}</span></div> : null}
+                        <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-2"><span>任务编号</span><span className="break-all text-right">{task.id}</span></div>
+                        {onOpenNode && presentation.nodeId ? <button type="button" className="mt-3 inline-flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[var(--fs-tiny)] font-medium" style={{ background: theme.toolbar.itemHover, color: theme.node.text }} onClick={() => onOpenNode(presentation.nodeId!)}><FileText className="size-3" />{presentation.parentTaskId ? "查看所属节点详情" : "查看节点详情"}</button> : null}
                         {onCancelTask && canCancelGenerationTask(task) ? (
                             <button
                                 type="button"

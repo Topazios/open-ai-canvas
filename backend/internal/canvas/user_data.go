@@ -3,6 +3,7 @@ package canvas
 import (
 	"encoding/json"
 	"errors"
+	"infinite-canvas/backend/internal/canvas/contract"
 	"infinite-canvas/backend/internal/kernel"
 	"net/http"
 	"strings"
@@ -410,8 +411,19 @@ func canvasProjectFromJSON(userID string, raw json.RawMessage) (model.CanvasProj
 }
 
 func ValidateSyncedPayload(raw json.RawMessage, label string) error {
-	if len(raw) > 4<<20 {
-		return kernel.BadAuthRequest(label + "数据超过 4MB，请先把媒体文件保存到资源存储")
+	limit := 4 << 20
+	limitLabel := "4MB"
+	if label == "画布" {
+		limit = contract.MaxCanvasPayloadBytes
+		limitLabel = "100MiB"
+	}
+	if len(raw) > limit {
+		if label == "画布" {
+			err := kernel.NewAppError(http.StatusRequestEntityTooLarge, "画布数据超过 100MiB，未保存；本地内容请保留")
+			err.Reason = "canvas_payload_too_large"
+			return err
+		}
+		return kernel.BadAuthRequest(label + "数据超过 " + limitLabel + "，请拆分画布或把媒体文件保存到资源存储")
 	}
 	var payload interface{}
 	if err := json.Unmarshal(raw, &payload); err == nil && ContainsInlineMediaDataURL(payload) {

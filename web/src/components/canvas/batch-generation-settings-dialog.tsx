@@ -18,12 +18,11 @@ type BatchGenerationSettingsDialogProps = {
     open: boolean;
     config: AiConfig;
     rowCount: number;
-    concurrency: number;
     onClose: () => void;
     onConfirm: (settings: BatchGenerationSettings) => void;
 };
 
-export function BatchGenerationSettingsDialog({ open, config, rowCount, concurrency, onClose, onConfirm }: BatchGenerationSettingsDialogProps) {
+export function BatchGenerationSettingsDialog({ open, config, rowCount, onClose, onConfirm }: BatchGenerationSettingsDialogProps) {
     const theme = canvasThemes[useActiveTheme()];
     const [generationConfig, setGenerationConfig] = useState<AiConfig>(config);
     const [cameraControl, setCameraControl] = useState<CameraControlOptions | undefined>(undefined);
@@ -59,7 +58,7 @@ export function BatchGenerationSettingsDialog({ open, config, rowCount, concurre
         >
             <div className="flex flex-col gap-4 py-2">
                 <div className="rounded-lg bg-black/5 px-3 py-2 text-sm dark:bg-white/[0.04]">
-                    共 <span className="font-semibold">{rowCount}</span> 个任务（每行 1 张） · 并发上限 <span className="font-semibold">{concurrency}</span>
+                    共 <span className="font-semibold">{rowCount}</span> 个任务（每行 1 张） · 并发遵循系统全局策略
                     <div className="mt-1 text-xs opacity-75">确认后将提交生成任务，可能消耗积分或产生外部模型费用。</div>
                 </div>
 
