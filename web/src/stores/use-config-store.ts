@@ -15,6 +15,7 @@ import {
     decodeChannelModel,
     modelOptionName,
     modelOptionsFromChannels,
+    modelOptionsForPickerFromChannels,
     normalizeModelOptionValue,
     CHANNEL_MODEL_SEPARATOR,
     uniqueModelOptions,
@@ -29,7 +30,7 @@ import { normalizeRawModelName } from "./config-model-options";
 
 export { CHANNEL_MODEL_SEPARATOR, normalizeRawModelName, uniqueModelOptions } from "./config-model-options";
 export { mergeWorkflowFieldMappings, normalizeRunningHubCapability, normalizeRunningHubWorkflowKind, normalizeWorkflowFieldMappings, type WorkflowFieldMapping } from "./config-workflow-fields";
-export { decodeChannelModel, encodeChannelModel, hasSystemModelPrice, isChannelModelValue, modelDisplayName, modelIcon, modelOptionLabel, modelOptionName, modelOptionsFromChannels, normalizeModelOptionValue } from "./config-model-options";
+export { decodeChannelModel, encodeChannelModel, hasSystemModelPrice, isChannelModelValue, modelDisplayName, modelIcon, modelOptionLabel, modelOptionName, modelOptionsForPickerFromChannels, modelOptionsFromChannels, normalizeModelOptionValue } from "./config-model-options";
 
 export type ApiCallFormat = "openai" | "gemini" | "claude";
 export type ChannelInterfaceType = ModelProtocol;
@@ -91,6 +92,7 @@ export type ModelChannel = {
     concurrencyLimit?: number;
     modelCosts?: Array<{
         model: string;
+        available?: boolean;
         displayName?: string;
         channelLabel?: string;
         tags?: ModelTag[];

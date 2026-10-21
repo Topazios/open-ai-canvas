@@ -32,6 +32,16 @@ func (r *Repository) TaskForUser(userID string, id string) (*model.Task, error) 
 	return &task, nil
 }
 
+// Progress polling needs identities and states, never stored prompts or results.
+func (r *Repository) TaskStatesForUser(userID string, ids []string) ([]model.Task, error) {
+	rows := []model.Task{}
+	if len(ids) == 0 {
+		return rows, nil
+	}
+	err := r.db.Select("id", "status").Where("user_id = ? AND id IN ?", userID, ids).Find(&rows).Error
+	return rows, err
+}
+
 func (r *Repository) ActiveTaskCountForUser(userID string) (int64, error) {
 	var count int64
 	err := r.db.Model(&model.Task{}).Where("user_id = ? AND status IN ?", userID, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Count(&count).Error

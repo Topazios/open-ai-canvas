@@ -25,6 +25,8 @@ import (
 	"infinite-canvas/backend/internal/platform"
 )
 
+const imageProviderRequestTimeout = 3 * time.Minute
+
 func postGeminiJSON(ctx context.Context, config providerConfig, path string, body interface{}, target interface{}) error {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -292,6 +294,20 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 			defer release()
 		}
 	}
+	// Channel-slot wait is scheduling time, not provider execution time. Start
+	// request analytics and the image generation deadline only after admission.
+	startedAt = time.Now()
+	if requestKind == "create" && metadataCapability(req.Context()) == "image" {
+		imageCtx, cancel := context.WithTimeout(req.Context(), imageProviderRequestTimeout)
+		defer cancel()
+		req = req.WithContext(imageCtx)
+		requestTimeout = imageProviderRequestTimeout
+		if deadline, ok := imageCtx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > 0 {
+				requestTimeout = remaining
+			}
+		}
+	}
 	if _, err := ValidateOutboundURL(req.URL.String()); err != nil {
 		recordProviderRequest(req, startedAt, 0, nil, err)
 		return nil, "", err
@@ -358,6 +374,11 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 		_ = runtimeService.RecordChannelResult(req.Context(), channelID, false)
 	}
 	return data, mimeType, nil
+}
+
+func metadataCapability(ctx context.Context) string {
+	metadata, _ := ctx.Value(providerAnalyticsKey{}).(providerAnalyticsContext)
+	return metadata.Capability
 }
 
 func providerRequestKindFromContext(ctx context.Context) string {

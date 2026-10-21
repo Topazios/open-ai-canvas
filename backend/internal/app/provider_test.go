@@ -50,6 +50,10 @@ func TestProviderMediaHydrationPolicyPrefersObjectURLs(t *testing.T) {
 	if prefer.requireURL || !prefer.preferURL {
 		t.Fatalf("grok image policy = %#v", prefer)
 	}
+	openAIImage := providerMediaHydrationPolicyFor(context.Background(), canvasGenerationInput{Config: providerConfig{InterfaceType: string(model.ChannelInterfaceOpenAIImage)}})
+	if openAIImage.requireURL || !openAIImage.preferURL {
+		t.Fatalf("OpenAI image edit should prefer signed URLs when object storage is available: %#v", openAIImage)
+	}
 	required := providerMediaHydrationPolicyFor(context.Background(), canvasGenerationInput{Config: providerConfig{InterfaceType: string(model.ChannelInterfaceMiniMaxVideo)}})
 	if !required.requireURL || !required.preferURL {
 		t.Fatalf("minimax policy = %#v", required)

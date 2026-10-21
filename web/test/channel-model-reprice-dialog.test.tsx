@@ -96,3 +96,11 @@ test("recalculate supports both modes and default-price fetch is abortable", asy
     expect(source).toContain("controller.signal");
     expect(source).toContain("modelRepricePayloadWithModes(items, preview, rows)");
 });
+
+test("batch repricing only changes prices and leaves model status to batch settings", async () => {
+    const source = await Bun.file(new URL("../src/pages/admin/components/channel-model-reprice-dialog.tsx", import.meta.url)).text();
+    expect(source).toContain("const result = await repriceAdminChannelModels(channelId, modelRepricePayloadWithModes(items, preview, rows))");
+    expect(source).toContain("调价不修改成本或模型启停状态");
+    expect(source).not.toContain("updateAdminChannelModelsSettings");
+    expect(source).not.toContain("同时统一设置模型状态");
+});

@@ -3,6 +3,9 @@ package app
 import (
 	"strings"
 	"testing"
+
+	"gorm.io/gorm"
+	"infinite-canvas/backend/internal/repository"
 )
 
 func TestTaskTypeProducesStoredFile(t *testing.T) {
@@ -41,5 +44,19 @@ func TestValidateStoredFileCapacityAllowsRemainingSpace(t *testing.T) {
 	limit := gigabytes(defaultRuntimePolicy().Resource.StoredFileGB)
 	if err := validateStoredFileCapacity(limit-2, 1, limit); err != nil {
 		t.Fatalf("validateStoredFileCapacity() error = %v", err)
+	}
+}
+
+func TestStoredFileAdmissionInsideApprovalLockStillEnforcesCapacity(t *testing.T) {
+	s, db, _, _ := creationTestService(t)
+	policy := defaultRuntimePolicy()
+	s.storageMu.Lock()
+	defer s.storageMu.Unlock()
+	s.pendingStorage = map[string]int64{"user": gigabytes(policy.Resource.StoredFileGB)}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return s.requireStoredFileCapacityForTaskLocked(repository.New(tx), "user", "canvas_image", policy)
+	})
+	if err == nil || !strings.Contains(err.Error(), "账号文件容量已达到") {
+		t.Fatalf("locked admission bypassed capacity: %v", err)
 	}
 }

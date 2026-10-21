@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createShortDramaPipeline, deriveShortDramaProgress } from "../src/lib/canvas/canvas-short-drama";
-import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowAncestors, workflowSources, workflowEpisodeProgress, groupExistingWorkflowEpisodes, groupSelectedWorkflowDocuments, workflowGroupingProblem, type WorkflowGenerationRequest } from "../src/lib/canvas/canvas-short-drama-workflow";
+import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowAncestors, workflowSources, workflowContinuationRange, workflowEpisodeProgress, groupExistingWorkflowEpisodes, groupSelectedWorkflowDocuments, workflowGroupingProblem, type WorkflowGenerationRequest } from "../src/lib/canvas/canvas-short-drama-workflow";
 import { shortDramaSteps, activeShortDramaSteps, ShortDramaStep, nextShortDramaSteps } from "../src/lib/short-drama-steps";
 import { confirmProductionBible } from "../src/lib/canvas/canvas-short-drama-workflow";
 import { bibleOutput, assetItem } from "./fixtures/workflow-asset-output";
@@ -26,7 +26,7 @@ function complete(nodes: CanvasNodeData[]) {
 
 describe("short drama document workflow", () => {
     test("active and saved legacy steps belong to an enum stage and form an acyclic reachable dependency graph", () => {
-        expect(shortDramaSteps).toHaveLength(47);
+        expect(shortDramaSteps).toHaveLength(48);
         expect(new Set(Object.values(ShortDramaStep))).toEqual(new Set(shortDramaSteps.map((step) => step.id)));
         const visited = new Set<string>();
         for (const step of shortDramaSteps) {
@@ -70,7 +70,8 @@ describe("short drama document workflow", () => {
             const sourceNodeIds = step.requires.map((required) => nodes.find((node) => nodeWorkflow(node)?.step === required && !nodeWorkflow(node)?.assetKey)!.id);
             const generated = createWorkflowDocuments({ ...f.request, step: step.id, sourceNodeIds }, nodes, connections, center);
             const metadata = generated.created[0].metadata!;
-            if (metadata.shortDrama?.productionAgent) expect(metadata.prompt).not.toContain("【制作执行规范 v");
+            if (step.id === ShortDramaStep.Audit) expect(metadata.shortDrama?.screenplayAudit?.bodyNodeId).toBe(sourceNodeIds[0]);
+            else if (metadata.shortDrama?.productionAgent) expect(metadata.prompt).not.toContain("【制作执行规范 v");
             else {
                 expect(metadata.prompt?.startsWith(productionRuleBlock(step.stage, "text"))).toBe(true);
                 expect(metadata.prompt?.split("【制作执行规范 v")).toHaveLength(2);
@@ -156,7 +157,8 @@ describe("episode collections and bounded workflow context", () => {
         expect(old.metadata!.shortDrama.sourceSteps).toBeUndefined();
         expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.style")).toBe(false);
         expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.bible")).toBe(false);
-        expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.reconcile")).toBe(true);
+        expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.reconcile")).toBe(false);
+        expect(nextShortDramaSteps("story.body").some((step) => step.id === "story.audit")).toBe(true);
         expect(nextShortDramaSteps("story.body").some((step) => step.id === "assets.extract")).toBe(false);
     });
     test("plan parameters reach all episodes and a persisted native frame holds the batch", () => {
@@ -183,6 +185,18 @@ describe("episode collections and bounded workflow context", () => {
         expect(progress).toMatchObject({ total: 6, complete: 1, running: 1, failed: 1, pending: 1, missing: 2, next: 3 });
         f.nodes.find((node) => node.id === f.planId)!.metadata!.content = "changed";
         expect(workflowEpisodeProgress(f.nodes, f.request.pipelineId, f.outlineId).complete).toBe(0);
+    });
+    test("continuation starts at the current gap and defaults to ten episodes", () => {
+        const f = bodyFixture(3);
+        const members = f.nodes.filter((node) => node.parentId === f.collection.id);
+        members[0].metadata!.content = "done"; members[0].metadata!.status = "success";
+        members[1].metadata!.content = "done"; members[1].metadata!.status = "success";
+        members[2].metadata!.content = "done"; members[2].metadata!.status = "success";
+        const progress = workflowEpisodeProgress(f.nodes, f.request.pipelineId, f.outlineId);
+        expect(workflowContinuationRange(progress)).toEqual({ start: 4, count: 3 });
+        expect(workflowContinuationRange({ ...progress, total: 60, next: 4 })).toEqual({ start: 4, count: 10 });
+        expect(workflowContinuationRange({ ...progress, total: 8, next: 1 })).toEqual({ start: 1, count: 8 });
+        expect(workflowContinuationRange({ ...progress, total: 60, next: 55 })).toEqual({ start: 55, count: 6 });
     });
     test("disjoint batches reuse the frame while another version never replaces a member", () => {
         const f = bodyFixture(2);

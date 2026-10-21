@@ -1,6 +1,7 @@
 import { mergeAgentCanvasEditor } from "@/lib/canvas/agent-canvas-patch";
 import { layoutWorkflowImageGroups } from "@/lib/canvas/canvas-workflow-image-layout";
 import { layoutCanvasGridGroups } from "@/lib/canvas/canvas-group-grid";
+import { reconcileStoryboardFramesGroups } from "@/lib/canvas/storyboard-frame-groups";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { App } from "antd";
 import { useNavigate } from "react-router";
@@ -127,9 +128,10 @@ export function useCanvasProjectLifecycle({
                 createdAt: targetProject.createdAt,
                 updatedAt: targetProject.updatedAt,
             });
+            const frames = reconcileStoryboardFramesGroups(initialNodes, targetProject.connections);
             const snapshot: CanvasHistorySnapshot = {
-                nodes: layoutCanvasGridGroups(layoutWorkflowImageGroups(initialNodes)),
-                connections: targetProject.connections,
+                nodes: layoutCanvasGridGroups(layoutWorkflowImageGroups(frames.nodes)),
+                connections: frames.connections,
                 chatSessions: targetProject.chatSessions || [],
                 activeChatId: targetProject.activeChatId || null,
                 canvasAppearance: restoredAppearance,
@@ -400,6 +402,7 @@ export function useCanvasProjectLifecycle({
         reloadLatestCanvasProject,
         restoreCanvasProjectVersion,
         saveCanvasProject,
+        persistLocalEdits,
         forceSaveCanvasProject,
         updateProject,
     };

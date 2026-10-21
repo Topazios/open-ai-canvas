@@ -11,19 +11,39 @@ import (
 	"infinite-canvas/backend/internal/repository"
 )
 
-func productionCurrentPolicy(system string) string {
+func productionPolicyBase(system string) string {
 	const marker = "本轮是制作长任务。只能使用 production_* 工具"
 	if index := strings.Index(system, marker); index >= 0 {
 		system = system[:index]
 	}
+	// Restored runs may predate source scoping. Their system snapshot must not
+	// silently reintroduce the whole canvas library outside the manifest.
+	const contextMarker = "\n\n本轮执行上下文：\n"
+	if index := strings.Index(system, contextMarker); index >= 0 {
+		start := index + len(contextMarker)
+		decoder := json.NewDecoder(strings.NewReader(system[start:]))
+		var context map[string]any
+		if decoder.Decode(&context) == nil {
+			if _, exists := context["referenceCandidates"]; exists {
+				delete(context, "referenceCandidates")
+				encoded, err := json.Marshal(context)
+				if err == nil {
+					system = system[:start] + string(encoded) + system[start+int(decoder.InputOffset()):]
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(system)
+}
+
+func productionCurrentPolicy(system string) string {
+	system = productionPolicyBase(system)
 	return strings.TrimSpace(system) + "\n\n" + productionAgentPolicy + "\n\n" + productionrules.Block("assets", "text")
 }
 
 func productionScopedPolicy(system string, m productionManifest) string {
+	system = productionPolicyBase(system)
 	if m.Plan != nil {
-		if index := strings.Index(system, "本轮是制作长任务。只能使用 production_* 工具"); index >= 0 {
-			system = system[:index]
-		}
 		policy := productionPlanPolicy
 		if m.Plan.Version >= 2 {
 			policy = unifiedPlanPolicy
@@ -35,8 +55,8 @@ func productionScopedPolicy(system string, m productionManifest) string {
 		return strings.TrimSpace(system) + "\n\n" + policy + "\n\n" + productionrules.Block("story", "text")
 	}
 	if m.Storyboard != nil {
-		if index := strings.Index(system, "本轮是制作长任务。只能使用 production_* 工具"); index >= 0 {
-			system = system[:index]
+		if m.Storyboard.Version == storyboardEpisodeVersion {
+			return strings.TrimSpace(system) + "\n\n" + storyboardEpisodePolicy + "\n\n" + productionrules.Block("storyboard", "text")
 		}
 		return strings.TrimSpace(system) + "\n\n" + storyboardPolicy + "\n\n" + productionrules.Block("storyboard", "text")
 	}

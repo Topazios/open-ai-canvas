@@ -3,7 +3,7 @@ import { Button, Tooltip } from "antd";
 import { Pause, Play, Square, RefreshCw, ChevronRight, SlidersHorizontal } from "lucide-react";
 import { CanvasExecutionJournal } from "./canvas-execution-journal";
 import { getAgentRun, type AgentEvent } from "@/services/api/agent";
-import { mergeProductionEvents, productionJournalRows } from "@/lib/canvas/production-agent-journal";
+import { mergeProductionEvents, productionJournalRows, productionParallelSummary } from "@/lib/canvas/production-agent-journal";
 import { productionPlanPhaseLabels } from "@/lib/production-plan";
 import type { CanvasNodeData } from "@/types/canvas";
 import type { useProductionAgentRuns } from "./use-production-agent-runs";
@@ -31,6 +31,7 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
     }, [runId]);
     useEffect(() => { if (run?.events) setEvents((current) => mergeProductionEvents(current, run.events!.filter((event) => event.runId === runId))); }, [run?.events, runId]);
     const progress = run?.production;
+    const assetGeneration = Boolean(node.metadata?.shortDrama?.assetGroup || node.metadata?.shortDrama?.mediaGroup);
     const planPhaseLabel = progress?.phaseLabel?.trim() || (progress?.phase && productionPlanPhaseLabels[progress.phase]) || "制作方案";
     const planCurrentItem = progress?.currentItem?.trim();
     const planCount = progress?.documentTotal
@@ -67,14 +68,14 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
     return <section className="canvas-node-inspector-section production-agent-details" aria-label="制作任务执行记录" data-canvas-no-zoom data-canvas-wheel-scroll>
         <div className="production-agent-overview">
             <div className="production-agent-heading"><strong>{node.title || "制作任务"}</strong><span className="production-agent-status" role="status">{label}</span></div>
-            {run ? <div className="production-agent-note">{progress?.workKind === "plan" ? `${planCount} · ${planPhaseLabel}${!progress.concurrentItems?.length && planCurrentItem && planCurrentItem !== planPhaseLabel ? ` · ${planCurrentItem}` : ""}` : progress?.workKind === "storyboard" ? `已完成 ${progress.processedPages}/${progress.totalPages} 场 · 已保存 ${progress.artifactCount} 镜头` : `已解析 ${progress?.processedPages || 0}/${progress?.totalPages || 0} 集正文 · 已产出 ${progress?.artifactCount || 0} 项`}</div> : <div>{runId ? "正在读取该节点的任务记录" : "尚未取得后台任务回执，可继续提交并核对原任务。"}</div>}
-            {!!progress?.concurrentItems?.length && <div className="production-agent-note" role="status">{progress.paused ? "收尾中" : "并行制作"} {progress.concurrentItems.length}/{progress.concurrencyLimit ?? "--"} · {progress.concurrentItems.join("、")}</div>}
+            {run ? <div className="production-agent-note">{progress?.workKind === "plan" ? `${planCount} · ${planPhaseLabel}${!progress.concurrentItems?.length && planCurrentItem && planCurrentItem !== planPhaseLabel ? ` · ${planCurrentItem}` : ""}` : progress?.workKind === "storyboard" ? `已完成 ${progress.processedPages}/${progress.totalPages} 场 · 详情 ${progress.artifactCount}/${progress.shotTotal ?? progress.artifactCount} 镜头` : `已解析 ${progress?.processedPages || 0}/${progress?.totalPages || 0} 集正文 · 已产出 ${progress?.artifactCount || 0} 项`}</div> : <div>{runId ? "正在读取该节点的任务记录" : "尚未取得后台任务回执，可继续提交并核对原任务。"}</div>}
+            {(progress?.executionMode === "episode" || !!progress?.concurrentItems?.length) && <div className="production-agent-note" role="status">{productionParallelSummary(progress) || `${progress.paused ? "收尾中" : "并行制作"} ${progress.concurrentItems!.length}/${progress.concurrencyLimit ?? "--"} · ${progress.concurrentItems!.join("、")}`}</div>}
         </div>
         {error && <div className="production-agent-error" role="alert">{error}</div>}
         {state.readErrors[node.id] && <div role="alert">状态核对失败：{state.readErrors[node.id]}</div>}
         {state.syncError && <div role="alert">{state.syncError}</div>}
         <div className="production-agent-actions">
-            {(active || run?.status === "failed" || (!runId && agent?.request)) && <Button type="primary" loading={!!state.busy[node.id]} icon={active && !progress?.paused ? <Pause size={14} /> : <Play size={14} />} onClick={() => void state.control(node.id, active && !progress?.paused ? "pause" : "resume")}>{active && !progress?.paused ? "暂停任务" : !runId ? "继续提交" : "继续任务"}</Button>}
+            {(active || run?.status === "failed" || (!runId && agent?.request)) && <Button type="primary" loading={!!state.busy[node.id]} icon={active && !progress?.paused ? <Pause size={14} /> : <Play size={14} />} onClick={() => void state.control(node.id, active && !progress?.paused ? "pause" : "resume")}>{active && !progress?.paused ? (assetGeneration ? "暂停生成" : "暂停任务") : !runId ? (assetGeneration ? "继续生成" : "继续提交") : (assetGeneration ? "继续生成" : "继续任务")}</Button>}
             {active && <Button disabled={!!state.busy[node.id]} icon={<Square size={14} />} onClick={() => void state.control(node.id, "cancel")}>取消任务</Button>}
             <Tooltip title="刷新任务状态"><Button aria-label="刷新任务状态" icon={<RefreshCw size={14} />} onClick={state.refresh} /></Tooltip>
         </div>

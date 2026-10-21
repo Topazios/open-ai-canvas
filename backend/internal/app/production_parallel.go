@@ -15,6 +15,8 @@ import (
 
 type productionParallelOutputError struct{ error }
 
+const rejectedStoryboardToolMessage = "请直接调用 production_submit，仅保存指定的一项完整内容"
+
 // Task identities and input receipts survive process restarts. Model calls use
 // the regular queue/billing path; only their result commits are serialized.
 type productionParallelWork struct {
@@ -30,6 +32,12 @@ type productionParallelWork struct {
 }
 
 func productionParallelReady(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact) []productionParallelWork {
+	if m.Storyboard != nil {
+		if m.Storyboard.Version == storyboardEpisodeVersion {
+			return nil
+		}
+		return storyboardParallelReady(m)
+	}
 	if m.Plan == nil || m.Plan.Version < 2 {
 		return nil
 	}
@@ -60,6 +68,19 @@ func productionParallelReady(m productionManifest, doc map[string]any, artifacts
 		ready = append(ready, work)
 	}
 	return ready
+}
+
+func productionParallelDependencyHash(m productionManifest, artifacts []model.ProductionAgentArtifact, key string) string {
+	if m.Storyboard != nil {
+		return storyboardParallelDependencies(m, key)
+	}
+	return productionStoredValueHash(productionPlanDependencies(m, artifacts, key))
+}
+func productionParallelPrerequisites(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact, key string) error {
+	if m.Storyboard != nil {
+		return storyboardParallelPrerequisites(m, key)
+	}
+	return productionPlanPrerequisites(m, doc, artifacts, key)
 }
 
 func productionParallelKeys(work map[string]productionParallelWork) []string {
@@ -100,10 +121,21 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 		if err != nil {
 			return handled, err
 		}
-		if m.Plan == nil || m.Plan.Version < 2 {
+		if m.Storyboard != nil && m.Storyboard.Version == storyboardEpisodeVersion {
 			return handled, nil
 		}
-		if len(state.ProductionParallel) == 0 {
+		if m.Storyboard != nil && m.Storyboard.Version != storyboardLayoutVersion {
+			if err := s.upgradeStoryboardLayout(run, &state); errors.Is(err, repository.ErrCreationConflict) {
+				continue
+			} else if err != nil {
+				return handled, err
+			}
+			continue
+		}
+		if m.Storyboard == nil && (m.Plan == nil || m.Plan.Version < 2) {
+			return handled, nil
+		}
+		if m.Plan != nil && len(state.ProductionParallel) == 0 {
 			changed, err := s.ensureProductionPlanGroups(userID, runID)
 			if errors.Is(err, repository.ErrCreationConflict) {
 				continue
@@ -122,12 +154,12 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 		changed, running, failed := false, false, ""
 		for _, key := range productionParallelKeys(state.ProductionParallel) {
 			work := state.ProductionParallel[key]
-			if work.Error != "" {
+			if work.Error != "" && !(m.Storyboard != nil && work.TaskID != "" && work.Error == rejectedStoryboardToolMessage) {
 				failed = work.Name + "：" + work.Error
 				continue
 			}
 			if work.TaskID == "" {
-				if work.Dependencies != productionStoredValueHash(productionPlanDependencies(m, artifacts, key)) || productionPlanPrerequisites(m, doc, artifacts, key) != nil {
+				if work.Dependencies != productionParallelDependencyHash(m, artifacts, key) || productionParallelPrerequisites(m, doc, artifacts, key) != nil {
 					return true, BadAuthRequest("前置文稿已变化或缺失，已停止旧版本重试：" + work.Name)
 				}
 				continue
@@ -215,35 +247,51 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 }
 
 func (s *Service) enqueueProductionParallel(run *model.CloudAgentExecution, state *cloudAgentRuntime, m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact, work productionParallelWork) error {
+	if m.Storyboard != nil && m.Storyboard.Version == storyboardEpisodeVersion {
+		return BadAuthRequest("本集使用连续批量分镜，不创建逐镜并发任务")
+	}
 	if state.ProductionPaused {
 		return repository.ErrCreationConflict
 	}
-	if err := productionPlanPrerequisites(m, doc, artifacts, work.Key); err != nil {
+	if err := productionParallelPrerequisites(m, doc, artifacts, work.Key); err != nil {
 		return err
 	}
-	if work.Dependencies != productionStoredValueHash(productionPlanDependencies(m, artifacts, work.Key)) {
+	if work.Dependencies != productionParallelDependencyHash(m, artifacts, work.Key) {
 		return BadAuthRequest("前置文稿版本已变化，未继续旧文稿调用")
 	}
-	context, err := productionPlanContext(s.repo, run, m, doc)
+	var context map[string]any
+	var err error
+	toolName := "production_submit"
+	if m.Storyboard != nil {
+		context, err = storyboardParallelContext(s.repo, run, m, doc, work)
+		toolName = "production_storyboard_expand"
+		if work.Correction == rejectedStoryboardToolMessage {
+			work.Correction = ""
+		}
+	} else {
+		context, err = productionPlanContext(s.repo, run, m, doc)
+	}
 	if err != nil {
 		return err
 	}
-	args := map[string]any{"key": work.Key, "name": work.Name, "factIds": []string{}}
-	for _, a := range artifacts {
-		if a.Key == work.Key {
-			args["expectedHash"] = a.ContentHash
+	if m.Storyboard == nil {
+		args := map[string]any{"key": work.Key, "name": work.Name, "factIds": []string{}}
+		for _, a := range artifacts {
+			if a.Key == work.Key {
+				args["expectedHash"] = a.ContentHash
+			}
 		}
+		context["nextAction"] = map[string]any{"key": work.Key, "name": work.Name, "kind": productionPlanKind(m, work.Key), "tool": "production_submit", "arguments": args}
+		context["requiredDocuments"] = productionPlanRequiredContext(m, doc, artifacts, work.Key)
+		context["instruction"] = "本次只完成指定文稿。上下文已提供当前版本前置成果，直接调用 production_submit 保存；不读取或查询状态，不输出开场说明，不生成其他文稿。所有模板必填字段完整填写。"
 	}
-	context["nextAction"] = map[string]any{"key": work.Key, "name": work.Name, "kind": productionPlanKind(m, work.Key), "tool": "production_submit", "arguments": args}
-	context["requiredDocuments"] = productionPlanRequiredContext(m, doc, artifacts, work.Key)
-	context["instruction"] = "本次只完成指定文稿。上下文已提供当前版本前置成果，直接调用 production_submit 保存；不读取或查询状态，不输出开场说明，不生成其他文稿。所有模板必填字段完整填写。"
 	if work.Correction != "" {
 		context["correction"] = work.Correction
 	}
 	tools := productionRuntimeTools(m, context)
 	var submit []map[string]any
 	for _, tool := range tools {
-		if tool["function"].(map[string]any)["name"] == "production_submit" {
+		if tool["function"].(map[string]any)["name"] == toolName {
 			submit = append(submit, tool)
 		}
 	}
@@ -270,18 +318,42 @@ func (s *Service) settleProductionParallel(userID, runID string, work production
 		failure = BadAuthRequest(userFacingTaskFailure(task))
 		retryable = s.cloudAgentModelTaskRetryable(task.ID)
 	} else {
+		// Terminal task inputs are intentionally compacted. The durable job,
+		// rather than a retained request or the model response, owns the tool contract.
+		job, err := s.repo.ProductionAgentJob(userID, runID)
+		if err != nil {
+			return err
+		}
+		var manifest productionManifest
+		if err := json.Unmarshal([]byte(job.ManifestJSON), &manifest); err != nil {
+			return err
+		}
+		toolName := "production_submit"
+		if manifest.Storyboard != nil {
+			toolName = "production_storyboard_expand"
+		}
 		var result struct {
 			ToolCalls []cloudAgentCall `json:"toolCalls"`
 		}
-		if err := json.Unmarshal([]byte(task.ResultJSON), &result); err != nil || len(result.ToolCalls) != 1 || result.ToolCalls[0].Function.Name != "production_submit" {
-			failure = BadAuthRequest("请直接调用 production_submit，仅保存指定的一份完整文稿")
+		if err := json.Unmarshal([]byte(task.ResultJSON), &result); err != nil || len(result.ToolCalls) != 1 || result.ToolCalls[0].Function.Name != toolName {
+			failure = BadAuthRequest("请直接调用 " + toolName + "，仅保存指定的一项完整内容")
 			retryable = true
 		} else {
 			call := result.ToolCalls[0]
 			call.ID = "parallel-" + task.ID
 			var args map[string]any
-			if json.Unmarshal([]byte(call.Function.Arguments), &args) != nil || stringValue(args["key"]) != work.Key || stringValue(args["name"]) != work.Name {
+			invalid := json.Unmarshal([]byte(call.Function.Arguments), &args) != nil
+			if toolName == "production_storyboard_expand" {
+				shot, _ := args["shot"].(map[string]any)
+				invalid = invalid || stringValue(shot["id"]) != work.Key
+			} else {
+				invalid = invalid || stringValue(args["key"]) != work.Key || stringValue(args["name"]) != work.Name
+			}
+			if invalid {
 				failure = BadAuthRequest("返回的文稿 key/name 与当前分工不一致，请沿用指定 key/name")
+				if toolName == "production_storyboard_expand" {
+					failure = BadAuthRequest("返回的镜头编号与当前分工不一致，请沿用指定的sceneId和shot.id")
+				}
 				retryable = true
 			} else {
 				failure = s.commitProductionParallel(userID, runID, work, task, call)
@@ -332,16 +404,24 @@ func (s *Service) commitProductionParallel(userID, runID string, work production
 		if err != nil {
 			return err
 		}
-		if reason := stringValue(productionPlanNextAction(m, doc, artifacts)["blockedReason"]); reason != "" {
-			return BadAuthRequest(reason)
+		if m.Plan != nil {
+			if reason := stringValue(productionPlanNextAction(m, doc, artifacts)["blockedReason"]); reason != "" {
+				return BadAuthRequest(reason)
+			}
 		}
-		if work.Dependencies != productionStoredValueHash(productionPlanDependencies(m, artifacts, work.Key)) {
+		if work.Dependencies != productionParallelDependencyHash(m, artifacts, work.Key) {
 			return BadAuthRequest("前置文稿版本已变化，旧结果未写入")
 		}
-		if err := productionPlanPrerequisites(m, doc, artifacts, work.Key); err != nil {
+		if err := productionParallelPrerequisites(m, doc, artifacts, work.Key); err != nil {
 			return err
 		}
-		if !productionPlanArtifactValid(m, doc, artifacts, work.Key) {
+		done := false
+		if m.Storyboard != nil {
+			done = storyboardShotDone(m, work.Key)
+		} else {
+			done = productionPlanArtifactValid(m, doc, artifacts, work.Key)
+		}
+		if !done {
 			if _, err = productionAgentTool(repo, current, &state, call, policy); err != nil {
 				var invalid *kernel.AppError
 				if errors.As(err, &invalid) && invalid.Status == 400 {
@@ -363,7 +443,13 @@ func (s *Service) recordProductionParallelFailure(userID, runID string, work pro
 	if err != nil {
 		return err
 	}
-	return s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		return err
+	}
+	s.storageMu.Lock()
+	defer s.storageMu.Unlock()
+	return s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 		state, err := cloudAgentDecode(current)
 		if err != nil {
 			return err
@@ -387,6 +473,9 @@ func (s *Service) recordProductionParallelFailure(userID, runID string, work pro
 			work.Error = work.Correction
 		}
 		state.ProductionParallel[work.Key] = work
+		if err := persistStoryboardWork(repo, current, &state, policy); err != nil {
+			return err
+		}
 		return cloudAgentSave(current, &state)
 	})
 }

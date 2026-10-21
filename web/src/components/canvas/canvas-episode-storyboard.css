@@ -1,0 +1,228 @@
+.canvas-episode-storyboard-scroll {
+    container-type: inline-size;
+    min-width: 0;
+}
+
+.canvas-episode-storyboard-rows {
+    display: grid;
+    gap: 10px;
+    padding: 10px 2px 12px;
+}
+
+.canvas-episode-storyboard-card {
+    display: grid;
+    grid-template-columns: minmax(76px, 0.55fr) minmax(0, 1.35fr) minmax(0, 2fr) minmax(120px, 0.8fr);
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid;
+    border-radius: 6px;
+    text-align: left;
+}
+
+.canvas-episode-storyboard-card-main {
+    display: contents;
+}
+
+.canvas-episode-storyboard-meta,
+.canvas-episode-storyboard-prompt,
+.canvas-episode-storyboard-media,
+.canvas-episode-storyboard-video {
+    min-width: 0;
+    padding: 12px;
+}
+
+.canvas-episode-storyboard-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.canvas-episode-storyboard-prompt {
+    overflow: hidden;
+}
+
+.canvas-episode-storyboard-prompt > p:first-of-type {
+    margin: 5px 0 0;
+}
+
+.canvas-episode-storyboard-section-label {
+    display: block;
+    margin-bottom: 7px;
+    font-size: 11px;
+    line-height: 1.3;
+    opacity: 0.65;
+}
+
+.canvas-episode-storyboard-status {
+    margin-top: 8px;
+}
+
+.canvas-episode-storyboard-media,
+.canvas-episode-storyboard-video {
+    border-left: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.canvas-episode-storyboard-media {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-content: start;
+    align-items: start;
+    gap: 12px;
+    overflow: visible;
+}
+
+.canvas-episode-storyboard-media > .canvas-episode-storyboard-section-label {
+    grid-column: 1 / -1;
+    margin-bottom: 0;
+}
+
+.canvas-episode-storyboard-media > [role="group"],
+.canvas-episode-storyboard-media > .canvas-episode-storyboard-placeholder,
+.canvas-episode-storyboard-media > .canvas-episode-storyboard-reference-block {
+    display: grid;
+    align-content: start;
+    gap: 5px;
+    min-width: 0;
+}
+
+.canvas-episode-frame-gallery,
+.canvas-episode-asset-references {
+    display: flex;
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px 12px;
+}
+
+.canvas-episode-frame-gallery-group {
+    display: grid;
+    min-width: 0;
+    align-content: start;
+}
+
+.canvas-episode-storyboard-reference-block {
+    overflow: visible;
+}
+
+.canvas-episode-storyboard-reference-block > .canvas-episode-asset-references {
+    min-width: 0;
+}
+
+.canvas-episode-storyboard-media .canvas-storyboard-image-stack {
+    width: 112px;
+    flex-basis: 112px;
+}
+
+.canvas-episode-storyboard-placeholder {
+    display: grid;
+    min-height: 100px;
+    flex: 1 1 132px;
+    place-items: center;
+    border: 1px dashed currentColor;
+    border-radius: 4px;
+    opacity: 0.7;
+    text-align: center;
+}
+
+.canvas-episode-storyboard-empty-reference,
+.canvas-episode-storyboard-asset-error {
+    max-width: 100%;
+    padding: 4px 0;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.canvas-episode-storyboard-asset-error {
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+}
+
+.canvas-episode-storyboard-video {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+}
+
+.canvas-episode-storyboard-video-status {
+    display: grid;
+    min-height: 72px;
+    width: 100%;
+    place-items: center;
+    border: 1px dashed currentColor;
+    border-radius: 4px;
+    opacity: 0.8;
+    text-align: center;
+}
+
+.canvas-episode-storyboard-actions {
+    display: flex;
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+    padding: 8px 10px;
+}
+
+.canvas-episode-storyboard-actions > * {
+    flex: 0 0 auto;
+}
+
+.canvas-episode-storyboard-meta-link {
+    align-self: flex-start;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
+}
+
+@container (max-width: 760px) {
+    .canvas-episode-storyboard-card {
+        grid-template-columns: minmax(70px, 0.55fr) minmax(0, 1fr);
+    }
+
+    .canvas-episode-storyboard-media,
+    .canvas-episode-storyboard-video {
+        border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+    }
+
+    .canvas-episode-storyboard-media {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .canvas-episode-storyboard-video {
+        border-left: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+    }
+}
+
+@container (max-width: 460px) {
+    .canvas-episode-storyboard-card {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .canvas-episode-storyboard-meta,
+    .canvas-episode-storyboard-prompt,
+    .canvas-episode-storyboard-media,
+    .canvas-episode-storyboard-video {
+        border-left: 0;
+        border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+    }
+
+    .canvas-episode-storyboard-meta {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: baseline;
+    }
+
+    .canvas-episode-storyboard-media {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .canvas-episode-storyboard-reference-block {
+        grid-column: auto;
+    }
+}

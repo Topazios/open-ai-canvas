@@ -44,7 +44,7 @@ export async function retryWorkflowGeneration(node: CanvasNodeData, source: Gene
         if (original.status === "failed" || original.status === "cancelled") {
             const moderated = isContentModerationError(original.errorCode) || isContentModerationError(original.error);
             const revised = node.metadata?.prompt?.trim();
-            if (!moderated && data.step !== "story.body") {
+            if (!moderated && data.step !== "story.body" && !data.screenplayAudit) {
                 if (original.canRecoverMedia || original.mediaStage) return retryTask(original.id);
                 if (data.mediaKind !== "image" || !revised || !original.prompt) return retryTask(original.id);
                 const normalize = (value: string) => applyProductionRules(value, data.stage, "image");
@@ -64,7 +64,7 @@ export async function retryWorkflowGeneration(node: CanvasNodeData, source: Gene
             if (moderated && (!revised || !original.prompt || generationPromptFingerprint(revised) === generationPromptFingerprint(original.prompt))) {
                 throw new Error("内容审核未通过，请先修改生成要求，不能原样重试");
             }
-            if (data.mediaKind !== "image" && data.step !== "story.body") throw new Error("请在原制作步骤修改生成要求后重新提交");
+            if (data.mediaKind !== "image" && data.step !== "story.body" && !data.screenplayAudit) throw new Error("请在原制作步骤修改生成要求后重新提交");
         }
     }
     const prompt = rebuiltPrompt || node.metadata?.prompt?.trim();
@@ -75,11 +75,13 @@ export async function retryWorkflowGeneration(node: CanvasNodeData, source: Gene
     const mode = data.mediaKind === "image" ? "image" : "text";
     if (mode === "image") workflowGenerationSources(data, nodes);
     const textInput = workflowBodyTaskInput(node, nodes);
-    const input = await api.prepare({ projectId, mode, prompt: mode === "text" ? textInput.prompt : prompt, workflowBatch: mode === "text" ? textInput.workflowBatch : undefined,
+    const input = await api.prepare({ projectId, mode, prompt: mode === "text" ? textInput.prompt : prompt, workflowBatch: mode === "text" ? textInput.workflowBatch : undefined, structuredOutput: mode === "text" ? textInput.structuredOutput : undefined,
         referenceImages: mode === "image" ? workflowImageReferences(node, nodes) : undefined,
         reasoningEffort: mode === "text" ? node.metadata?.reasoningEffort || "medium" : undefined,
         config: { ...config, model: node.metadata!.model || config[`${mode}Model`] || config.model,
             ...(mode === "image" ? { size: node.metadata?.size || config.size, quality: node.metadata?.quality || config.quality, transparentBackground: node.metadata?.transparentBackground || "false", count: "1" } : {}) }, streamText: mode === "text" && !textInput.workflowBatch, ...retry,
-        metadata: { source: "canvas-short-drama-workflow", nodeId: node.id, pipelineId: data.pipelineId, workflowStage: data.stage, workflowStep: data.step, episodeNumber: data.episodeNumber } });
+        // 审核仍写回正文节点，节点 step 可能保持 story.body；任务元数据必须使用
+        // story.audit，后端才能按审核任务进入可持久化排队和专用重试路径。
+        metadata: { source: "canvas-short-drama-workflow", nodeId: node.id, pipelineId: data.pipelineId, workflowStage: data.stage, workflowStep: textInput.structuredOutput ? "story.audit" : data.step, episodeNumber: data.episodeNumber } });
     return api.create(input);
 }

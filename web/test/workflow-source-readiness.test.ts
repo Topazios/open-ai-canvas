@@ -47,15 +47,15 @@ describe("asset task state and usable output are independent", () => {
         });
     }
 
-    test("failed extraction is not marked complete merely because downstream images are available", () => {
+    test("failed legacy extraction does not become a new mandatory workflow task", () => {
         const f = fixture();
         const group = f.nodes.find((node) => nodeWorkflow(node)?.step === "assets.characters" && nodeWorkflow(node)?.assetGroup)!;
         const manifest = f.nodes.find((node) => node.id === nodeWorkflow(group)!.assetGroup!.manifestId)!;
         manifest.metadata!.status = "error";
         nodeWorkflow(manifest)!.assetOutput = true;
-        const task = deriveShortDramaProgress(f.nodes, f.connections).steps.find((step) => step.id === "assets")!.tasks.find((task) => task.id === "guide.assets.fixed")!;
-        expect(task.ready).toBe(false);
-        expect(task.progressLabel).toBe("2/3 项已产出");
+        const tasks = deriveShortDramaProgress(f.nodes, f.connections).steps.flatMap(step => step.tasks);
+        expect(tasks.some(task => task.id === "guide.assets.fixed")).toBe(false);
+        expect(tasks.some(task => task.id === "story.audit")).toBe(true);
     });
 
     test("empty pending groups, failed children and missing or stale members still block generation", () => {

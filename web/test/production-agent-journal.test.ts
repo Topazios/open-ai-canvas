@@ -1,8 +1,83 @@
 import { describe, test, expect } from "bun:test";
-import { mergeProductionEvents, productionJournalRows } from "../src/lib/canvas/production-agent-journal";
+import { mergeProductionEvents, productionJournalRows, productionParallelSummary } from "../src/lib/canvas/production-agent-journal";
 import type { AgentEvent } from "../src/services/api/agent";
 const event = (seq: number, type: string, payload: Record<string, unknown> = {}): AgentEvent => ({ seq, type, payload, runId: "run", eventId: `event-${seq}`, createdAt: new Date(Date.UTC(2026, 9, 14, 0, 0, seq)).toISOString() });
 describe("production execution journal", () => {
+    const repair = (status: "retrying" | "recovered" | "exhausted", groupId = "plan-repair") => ({ groupId, attempt: 1, maxAttempts: 3, status });
+    test("a recoverable storyboard error is correcting, then retains its recovered history", () => {
+        const failed = event(1, "tool_failed", { toolName: "production_storyboard_plan", text: "参数结构异常", result: { reason: "invalid_tool_arguments", field: "parameters.scenes[0]", errorClass: "schema_error", guidance: "请按 parameters 修正", parameters: { private: "SCHEMA" }, retry: repair("retrying") } });
+        const waiting = productionJournalRows([failed]);
+        expect(waiting).toHaveLength(1);
+        expect(waiting[0]).toMatchObject({ title: "规划本集场次 · 自动纠正中", failed: false, pending: true });
+        expect(waiting[0].detail).toContain("parameters.scenes[0]");
+        const rows = productionJournalRows([failed, event(2, "tool_completed", { toolName: "production_storyboard_plan", retry: repair("recovered"), result: { saved: true } })]);
+        expect(rows).toHaveLength(2);
+        for (const row of rows) {
+            expect(row).toMatchObject({ title: "规划本集场次 · 自动纠正后已恢复", failed: false, pending: false });
+        }
+        expect(JSON.stringify(rows)).not.toContain("SCHEMA");
+    });
+    test("repair groups remain isolated by run and terminal failures stay actionable", () => {
+        const input = [
+            event(1, "tool_failed", { toolName: "production_storyboard_plan", retry: repair("retrying") }),
+            { ...event(2, "tool_failed", { toolName: "production_storyboard_plan", retry: repair("retrying") }), runId: "other" },
+            event(3, "tool_completed", { toolName: "production_storyboard_plan", retry: repair("recovered") }),
+        ];
+        const rows = productionJournalRows(input);
+        expect(rows[0]).toMatchObject({ failed: false, pending: false });
+        expect(rows[1]).toMatchObject({ failed: false, pending: true });
+        const exhausted = productionJournalRows([...input, { ...event(4, "tool_failed", { toolName: "production_storyboard_plan", retry: repair("exhausted") }), runId: "other" }]);
+        expect(exhausted[1]).toMatchObject({ failed: true, pending: false });
+        expect(exhausted[3]).toMatchObject({ title: "规划本集场次 · 自动纠正未完成", failed: true, pending: false });
+    });
+    test("a stopped run does not leave repair records spinning", () => {
+        const rows = productionJournalRows([
+            event(1, "tool_failed", { toolName: "production_storyboard_plan", retry: repair("retrying") }),
+            event(2, "run_failed", { text: "上游响应中断" }),
+        ]);
+        expect(rows[0]).toMatchObject({ title: "规划本集场次 · 纠正未完成 · 任务已停止", pending: false, failed: true });
+    });
+    test("changed invalid parameters supersede older repairs without inventing recovery", () => {
+        const rows = productionJournalRows([
+            event(1, "tool_failed", { toolName: "production_storyboard_plan", retry: repair("retrying", "old") }),
+            event(2, "tool_failed", { toolName: "production_storyboard_plan", retry: repair("retrying", "new") }),
+            event(3, "tool_completed", { toolName: "production_storyboard_plan", retry: repair("recovered", "new") }),
+        ]);
+        expect(rows[0]).toMatchObject({ title: "规划本集场次 · 已由后续参数纠正接替", pending: false, failed: false });
+        expect(rows[1]).toMatchObject({ title: "规划本集场次 · 自动纠正后已恢复", pending: false, failed: false });
+    });
+    test("resume closes a repair whose backend tracker was reset", () => {
+        const rows = productionJournalRows([
+            event(1, "tool_failed", { toolName: "production_storyboard_plan", retry: repair("retrying") }),
+            event(2, "production_control", { action: "pause", text: "等待当前响应后暂停" }),
+            event(3, "production_control", { action: "resume", text: "继续任务" }),
+            event(4, "tool_completed", { toolName: "production_storyboard_plan" }),
+        ]);
+        expect(rows[0]).toMatchObject({ title: "规划本集场次 · 已从检查点继续", pending: false, failed: false });
+    });
+    test("parallel summary distinguishes workers from queued task receipts", () => {
+        const summary = productionParallelSummary({ targetNodeId: "node", paused: false, waitingForBoundary: false, processedPages: 0, totalPages: 1, artifactCount: 0, validated: false, concurrencyLimit: 3, parallelItems: [{ key: "one", name: "镜头一", status: "running" }, { key: "two", name: "镜头二", status: "queued" }, { key: "three", name: "镜头三", status: "succeeded" }] });
+        expect(summary).toContain("执行 1 · 排队 1 · 待保存 1");
+        expect(summary).toContain("全局 Agent 并发上限 3");
+        expect(summary).toContain("镜头二（排队）");
+        expect(productionParallelSummary()).toBe("");
+    });
+    test("episode summary shows batch and actual worker state without child tasks", () => {
+        const progress = { targetNodeId: "node", paused: false, waitingForBoundary: false, processedPages: 0, totalPages: 1, artifactCount: 0, validated: false, executionMode: "episode" as const, episodeTaskStatus: "queued", phaseLabel: "连续补全镜头", currentItem: "S1-001 ~ S1-003", concurrencyLimit: 3 };
+        expect(productionParallelSummary(progress)).toBe("连续补全镜头 · S1-001 ~ S1-003 · 等待全局并发名额 · 全局 Agent 并发上限 3");
+        expect(productionParallelSummary({ ...progress, episodeTaskStatus: "running" })).toContain("正在执行");
+        expect(productionParallelSummary({ ...progress, paused: true })).toContain("本集已暂停");
+        expect(productionParallelSummary({ ...progress, paused: true, waitingForBoundary: true })).toContain("当前响应完成后暂停");
+        expect(productionParallelSummary({ ...progress, episodeTaskStatus: "missing" })).toContain("正在核对状态");
+        expect(productionParallelSummary({ ...progress, validated: true })).toBe("本集完整分镜校验通过");
+    });
+    test("production validation errors explain correction without exposing tool schemas", () => {
+        const rows = productionJournalRows([event(1, "tool_failed", { toolName: "production_facts", text: "工具执行失败，请检查输入或稍后重试", result: { errorClass: "schema_error", issue: "invalid_evidence", guidance: "请从本集原文复制证据后修正", parameters: { private: "FULL_SCHEMA" } } })]);
+        expect(rows[0].detail).toContain("参数不符合契约");
+        expect(rows[0].detail).toContain("原文证据未匹配");
+        expect(rows[0].detail).toContain("请从本集原文复制证据后修正");
+        expect(JSON.stringify(rows)).not.toContain("FULL_SCHEMA");
+    });
     test("concurrent completions update only their own model row", () => {
         const rows = productionJournalRows([
             event(1, "production_model_started", { taskId: "character", step: 1, itemName: "人物" }),

@@ -84,7 +84,11 @@ func completeParallel(t *testing.T, db *gorm.DB, work productionParallelWork) {
 	args, _ := json.Marshal(map[string]any{"key": work.Key, "name": work.Name, "document": orderedPlanDocument(work.Key, kind), "factIds": []string{}})
 	call := productionRuntimeCall("production_submit")
 	call.Function.Arguments = string(args)
-	if err := db.Model(&model.Task{}).Where("id = ?", work.TaskID).Updates(map[string]any{"status": model.TaskStatusSucceeded, "result_json": productionRuntimeResult(t, call)}).Error; err != nil {
+	var task model.Task
+	if err := db.First(&task, "id = ?", work.TaskID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Task{}).Where("id = ?", work.TaskID).Updates(map[string]any{"status": model.TaskStatusSucceeded, "input_json": completedTaskInputJSON(task), "result_json": productionRuntimeResult(t, call)}).Error; err != nil {
 		t.Fatal(err)
 	}
 }

@@ -81,6 +81,32 @@ func TestProductionPolicyDoesNotExposeOrdinaryAgentToolQuota(t *testing.T) {
 	}
 }
 
+func TestProductionPolicyExcludesUnscopedCanvasReferences(t *testing.T) {
+	req := agentTestRequest()
+	req.Production = &ProductionAgentRequest{TargetNodeID: "production-node"}
+	anchor := cloudAgentCreativeAnchor{Version: 2, ReferenceAssets: []cloudAgentReferenceAnchor{{NodeID: "unrelated-image", Title: "UNRELATED_CANVAS_LIBRARY"}}}
+	text, _, err := compileCloudAgentPolicies(req, nil, "", cloudAgentProfileSnapshot{}, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, `"referenceCandidates"`) || strings.Contains(text, "UNRELATED_CANVAS_LIBRARY") {
+		t.Fatal("production input leaked an unscoped all-canvas reference catalog")
+	}
+	legacy := "Safety policy\n\n本轮执行上下文：\n" + `{"permissionMode":"auto","skills":[{"name":"keep-skill"}],"referenceCandidates":[{"title":"UNRELATED_CANVAS_LIBRARY"}]}` + "\nKeep trailing policy\n\n本轮是制作长任务。只能使用 production_* 工具\nold policy"
+	scoped := productionScopedPolicy(legacy, productionManifest{Storyboard: &productionStoryboard{}})
+	if strings.Contains(scoped, "UNRELATED_CANVAS_LIBRARY") || strings.Contains(scoped, "referenceCandidates") || strings.Contains(scoped, "old policy") {
+		t.Fatal("restored production policy still carries obsolete input")
+	}
+	for _, required := range []string{"Safety policy", "keep-skill", "permissionMode", "Keep trailing policy", "按集规划清单并并发补全分镜"} {
+		if !strings.Contains(scoped, required) {
+			t.Fatalf("scoping removed required policy %s", required)
+		}
+	}
+	if productionScopedPolicy(scoped, productionManifest{Storyboard: &productionStoryboard{}}) != scoped {
+		t.Fatal("production scoping must be idempotent after resume")
+	}
+}
+
 func TestCloudAgentAnchorDoesNotInferReferenceRequirement(t *testing.T) {
 	canvas := &model.CanvasProject{PayloadJSON: `{"nodes":[{"id":"image-1","type":"image","title":"候选图"}]}`}
 	for _, prompt := range []string{"不要用参考图，只修正标点", "请解释图生视频是什么意思", "只改台词，不改变风格"} {

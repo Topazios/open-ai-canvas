@@ -1,0 +1,11 @@
+.canvas-storyboard-image-stack { margin: 0; width: 112px; max-width: 100%; flex: 0 0 112px; }
+.canvas-storyboard-image-stack-trigger { display: block; position: relative; width: 112px; max-width: 100%; height: 82px; margin-bottom: 4px; cursor: zoom-in; }
+.canvas-storyboard-image-stack-layer { position: absolute; display: grid; place-items: center; width: calc(100% - 14px); height: 66px; left: 0; top: 10px; overflow: hidden; border: 1px solid var(--workspace-border); border-radius: 4px; background: var(--workspace-surface-strong); box-shadow: 0 2px 5px #0002; }
+.canvas-storyboard-image-stack-layer[data-stack-depth="1"] { left: 7px; top: 6px; transform: rotate(4deg); }
+.canvas-storyboard-image-stack-layer[data-stack-depth="2"] { left: 13px; top: 2px; transform: rotate(8deg); }
+.canvas-storyboard-image-stack-count { position: absolute; z-index: 1; top: 16px; right: 21px; min-width: 20px; padding: 1px 5px; border-radius: 4px; background: #000b; color: white; text-align: center; font-size: 11px; }
+.canvas-storyboard-image-stack-eye { position: absolute; left: 6px; bottom: 10px; padding: 2px; border-radius: 3px; background: #000a; color: white; }
+.canvas-storyboard-image-stack-trigger:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; border-radius: 4px; }
+.canvas-storyboard-image-stack-caption { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 2px 5px; overflow: hidden; font-size: 10px; line-height: 1.35; }
+.canvas-storyboard-image-stack-caption > span:first-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-storyboard-image-stack-pending { border: 0; background: transparent; padding: 0; color: var(--workspace-danger, #c43d3d); cursor: pointer; font-size: inherit; }

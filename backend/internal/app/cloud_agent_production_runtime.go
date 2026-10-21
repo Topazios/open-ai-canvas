@@ -125,7 +125,29 @@ var errProductionRuntimeNoProgress = errors.New("模型重复读取或说明且�
 
 // Bump when the durable context contract changes. Old provider receipts and
 // loop evidence must not bypass a newly repaired context after deployment.
-const productionRuntimeContextRevision = 4
+const productionRuntimeContextRevision = 7
+
+// The checkpoint already supplies phase/status and the exact source range.
+// Scope provider tools without narrowing the durable execution whitelist: a
+// restored response can still settle its previously authorized context read.
+func productionConstrainStoryboard(work map[string]any, canonical *canonicalAgentRequest) {
+	next := stringValue(work["nextTool"])
+	phase := stringValue(work["phase"])
+	if !strings.HasPrefix(next, "production_storyboard_") || phase == "" {
+		return
+	}
+	var tools []map[string]any
+	for _, tool := range canonical.Tools {
+		fn, _ := tool["function"].(map[string]any)
+		name := stringValue(fn["name"])
+		if name == next || (name == "production_storyboard_plan" && phase == "layout" && work["canRebudget"] == true) || (name == "production_storyboard_read" && (phase == "scene" || phase == "review")) || (name == "production_storyboard_reset" && phase == "scene") {
+			tools = append(tools, tool)
+		}
+	}
+	if len(tools) > 0 {
+		canonical.Tools, canonical.ToolChoice = tools, "required"
+	}
+}
 
 // Include durable inputs and receipts so an identical runtime transcript cannot
 // replay a response from before a read, fact extraction, or saved artifact.

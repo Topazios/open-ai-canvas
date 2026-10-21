@@ -160,7 +160,7 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 	}
 	if data["step"] == "direction.shots" {
 		m.Category = "storyboard"
-		m.Storyboard = &productionStoryboard{Version: "storyboard-scenes-v1", Scenes: []productionScene{}}
+		m.Storyboard = &productionStoryboard{Version: storyboardEpisodeVersion, Scenes: []productionScene{}}
 	}
 	if m.Category == "bible" {
 		for _, section := range productionBibleSections {
@@ -428,6 +428,9 @@ func productionLoad(repo *repository.Repository, run *model.CloudAgentExecution,
 		}
 	}
 	if err := productionRestoreBibleScope(repo, run, state, job, &m, doc); err != nil {
+		return nil, m, nil, err
+	}
+	if err := storyboardDocumentTiming(m, doc); err != nil {
 		return nil, m, nil, err
 	}
 	return job, m, doc, nil

@@ -49,7 +49,7 @@ func (s *Service) updateCloudAgentMediaApproval(repo *repository.Repository, run
 	}
 	// Dry admission uses the same model, ownership and option checks as task
 	// submission, without reserving credits or creating a generation task.
-	preparation := &creationTaskPreparation{}
+	preparation := &creationTaskPreparation{lockedRepository: repo}
 	req.creationPrepare = preparation
 	task, err := s.CreateTask(run.UserID, req)
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 )
 
 const maxAPICallPayloadBytes = 128 << 10
-const maxAPICallPayloadSourceBytes = 1 << 20
+const maxAPICallPayloadSourceBytes = 16 << 20
 
 // SanitizeAPICallPayload 保留排障所需报文，同时阻止密钥和大段内嵌媒体进入日志库。
 func SanitizeAPICallPayload(data []byte, contentType string) string {

@@ -1,4 +1,6 @@
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
+import { isEpisodeStoryboardVideo } from "@/lib/canvas/workflow-episode-storyboard";
+import { storyboardFrameHash } from "@/lib/canvas/episode-storyboard-frames";
 import { useCallback, useRef, type Dispatch, type SetStateAction } from "react";
 import { App } from "antd";
 
@@ -103,6 +105,16 @@ export function useCanvasGenerationExecutor({
                 nodeId,
                 async () => {
                     const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
+                    const frame = sourceNode?.metadata?.storyboardFrame || sourceNode?.metadata?.storyboardFramePlan;
+                    const frameIsCurrent = () => {
+                        if (!frame) return true;
+                        const row = nodesRef.current.find(node => node.id === frame.scriptId)?.metadata?.storyboard?.rows.find(row => row.id === frame.rowId);
+                        return Boolean(nodesRef.current.some(node => node.id === nodeId) && row && storyboardFrameHash(row) === frame.sourcePromptHash);
+                    };
+                    if (!frameIsCurrent()) {
+                            setNodes(current => current.map(node => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: "分镜已修改，未提交旧版本画面，请重新生成" } } : node));
+                            return;
+                    }
                     if (isCanvasNodeGenerating(sourceNode)) {
                         message.info("该节点的生成任务仍在进行中，请等待完成后再生成");
                         return;
@@ -150,7 +162,8 @@ export function useCanvasGenerationExecutor({
                     // 模型视频接口才把提示词视为纯文本输入。
                     const usesWorkflowProvider = Boolean(mode !== "text" && generationConfig.taskWorkflowProvider && generationConfig.taskWorkflowProvider !== "model");
                     // 普通视频协议只保留输入框文本（显式 @文本 引用仍会展开为真实内容）；声明式工作流还要保留连接媒体。
-                    const promptOnly = mode === "video" && !usesWorkflowProvider;
+                    const episodeShot = isEpisodeStoryboardVideo(nodeId, nodesRef.current, connectionsRef.current);
+                    const promptOnly = mode === "video" && !usesWorkflowProvider && !episodeShot;
                     try {
                         const baseContext = buildNodeGenerationContext(
                             nodeId,
@@ -173,6 +186,7 @@ export function useCanvasGenerationExecutor({
                     } catch (error) {
                         const errorDetails = generationErrorMessage(error);
                         message.error(errorDetails);
+                        setNodes(current => current.map(node => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...generationFailureMetadata(error, prompt) } } : node));
                         return;
                     }
 
@@ -201,6 +215,7 @@ export function useCanvasGenerationExecutor({
                     const promptLengthError = mode === "video" ? modelPromptLengthError(generationConfig, generationConfig.model, mode, effectivePrompt) : "";
                     if (promptLengthError) {
                         message.error(promptLengthError);
+                        setNodes(current => current.map(node => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails: promptLengthError } } : node));
                         return;
                     }
                     const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
@@ -253,7 +268,14 @@ export function useCanvasGenerationExecutor({
                     });
                     const duplicateConfirmationRequired = !options?.skipDuplicateConfirmation && !options?.retryContext && sourceNode?.metadata?.lastGenerationRequestFingerprint === requestFingerprint;
                     if (duplicateConfirmationRequired && !(await confirmDuplicateSubmission())) return;
+                    if (!frameIsCurrent()) {
+                        setNodes(current => current.map(node => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: "分镜已修改，未提交旧版本画面，请重新生成" } } : node));
+                        return;
+                    }
 
+                    // 准备参考素材期间可能移动或删除节点，执行时只使用当前节点。
+                    const executionSourceNode = nodesRef.current.find(node => node.id === nodeId);
+                    if (!executionSourceNode || options?.controller?.signal.aborted) return;
                     setRunningNodeId(nodeId);
                     const controller = startGenerationRequest(nodeId, nodeId, nodeId, options?.controller);
                     if (controller.signal.aborted) {
@@ -306,7 +328,7 @@ export function useCanvasGenerationExecutor({
                     const execution = {
                         projectId,
                         nodeId,
-                        sourceNode,
+                        sourceNode: executionSourceNode,
                         canvasNodes: nodesRef.current,
                         canvasConnections: connectionsRef.current,
                         prompt,

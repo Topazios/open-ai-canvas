@@ -8,6 +8,7 @@ import { nodeWorkflow } from "@/lib/canvas/canvas-short-drama-workflow";
 import { shortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
 
 type UseCanvasShortDramaOptions = {
+    globalSettings?: import("@/lib/short-drama-settings").ShortDramaGlobalSettings;
     nodes: CanvasNodeData[];
     connections: CanvasConnection[];
     nodesRef: { current: CanvasNodeData[] };
@@ -30,11 +31,11 @@ type UseCanvasShortDramaOptions = {
     openGeneration?: (step: ShortDramaStepId, anchorId?: string, stepIds?: ShortDramaStepId[]) => void;
 };
 
-export function useCanvasShortDrama({ nodes, connections, nodesRef, connectionsRef, selectedNodeIdsRef, getCanvasCenter, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setStylePickerOpen, fitCanvasSelection, focusCanvasNode, openTextEditor, openAssets, openAudio, openStoryboard, openTimeline, openPreview, openGeneration }: UseCanvasShortDramaOptions) {
+export function useCanvasShortDrama({ nodes, connections, nodesRef, connectionsRef, selectedNodeIdsRef, getCanvasCenter, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setStylePickerOpen, fitCanvasSelection, focusCanvasNode, openTextEditor, openAssets, openAudio, openStoryboard, openTimeline, openPreview, openGeneration, globalSettings }: UseCanvasShortDramaOptions) {
     const { message } = App.useApp();
     const dismissedRef = useRef(readShortDramaGuideDismissed());
     const [guideCollapsed, setGuideCollapsed] = useState(dismissedRef.current);
-    const progress = useMemo(() => deriveShortDramaProgress(nodes, connections), [connections, nodes]);
+    const progress = useMemo(() => deriveShortDramaProgress(nodes, connections, globalSettings), [connections, nodes, globalSettings]);
 
     const selectNodes = useCallback((ids: string[]) => {
         const selection = new Set(ids);

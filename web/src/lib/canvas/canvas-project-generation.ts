@@ -37,6 +37,7 @@ export async function runBackendCanvasGenerationTask(
         clientOperationId,
         retryOf,
         attemptGroupId,
+        structuredOutput,
     }: {
         projectId: string;
         nodeId: string;
@@ -53,6 +54,7 @@ export async function runBackendCanvasGenerationTask(
         clientOperationId?: string;
         retryOf?: string;
         attemptGroupId?: string;
+        structuredOutput?: Parameters<typeof runBackendGenerationTask>[0]["structuredOutput"];
     },
     dependencies?: GenerationTaskDependencies,
 ) {
@@ -73,6 +75,7 @@ export async function runBackendCanvasGenerationTask(
             clientOperationId,
             retryOf,
             attemptGroupId,
+            structuredOutput,
         },
         dependencies,
     );

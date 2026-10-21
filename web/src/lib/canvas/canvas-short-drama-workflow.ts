@@ -4,7 +4,7 @@ import { applyProductionRules } from "../production-rules";
 import { legacyProductionBibleKeys, productionBibleKeys, productionBibleSection, productionBibleInstruction } from "../production-bible";
 import { normalizeReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-effort";
 import { canonicalize } from "json-canonicalize";
-import { sharedWorkflowTextBatch, workflowTextBatch, workflowOutlineBatch, workflowBodyBatch } from "./workflow-text-batch";
+import { sharedWorkflowTextBatch, workflowTextBatch, workflowOutlineBatch, workflowBodyBatch, type WorkflowTextBatch } from "./workflow-text-batch";
 import { createCanvasNode } from "./canvas-project-domain";
 import { defaultStoryBrief, storyDevelopmentStages, storySourceState } from "./canvas-story-development";
 import { shortDramaStep, ShortDramaStep, type ShortDramaStepId, type ShortDramaWorkflowData } from "../short-drama-steps";
@@ -18,8 +18,12 @@ import { createWorkflowAssetRevision, workflowAssetRevisionSources } from "./can
 import { resolveProductionAssetReferences } from "./production-asset-references";
 import { outlineAssetNarrative, outlineDirectionContext } from "./workflow-outline-context";
 import { bodySourceRecords } from "./workflow-body-context";
+import { resetGenerationTaskMetadata } from "./canvas-task-state";
+import { bodyWritingPrompt, bodyWritingSpec } from "./workflow-body-writing";
+import { auditContextNodes, auditSources, selectedAuditBodies, screenplayAuditPrompt, screenplayAuditState, screenplayRepairPrompt, screenplayAuditOutput } from "./workflow-screenplay-audit";
 import { placeWorkflowFootprint } from "./canvas-workflow-placement";
 import { groupGridMetrics, layoutCanvasGridGroups } from "./canvas-group-grid";
+import { EPISODE_STORYBOARD_SIZE } from "./workflow-episode-storyboard";
 import { assetAppliesToEpisode, assetProfileOutputInstruction, assetReferenceState, assetMediaSignature, assetContentSignature, assetContextProfile } from "./canvas-workflow-asset-profile";
 
 const previousAssetRequirements: Partial<Record<ShortDramaStepId, ShortDramaStepId[]>> = {
@@ -76,6 +80,16 @@ export function workflowEpisodeProgress(nodes: CanvasNodeData[], pipelineId: str
     try { ancestors = workflowAncestors(outlineId ? [outlineId] : [], nodes, pipelineId, connections); } catch { /* Invalid branches remain unready. */ }
     const total = nodeWorkflow(collection)?.parameters?.episodeCount || workflowParameters(ancestors).episodeCount;
     return episodeProgress(members, total, (node) => { try { workflowAncestors([node.id], nodes, pipelineId, connections); return true; } catch { return false; } });
+}
+
+export const DEFAULT_WORKFLOW_CONTINUATION_SPAN = 10;
+
+export function workflowContinuationRange(progress: ReturnType<typeof workflowEpisodeProgress>, span = DEFAULT_WORKFLOW_CONTINUATION_SPAN) {
+    const start = Math.max(1, Math.min(progress.total, progress.next));
+    return {
+        start,
+        count: Math.min(Math.max(1, span), Math.max(1, progress.total - start + 1)),
+    };
 }
 
 export function workflowSourceSignaturesMatch(data: ShortDramaWorkflowData, nodes: CanvasNodeData[]) {
@@ -228,6 +242,17 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
         const branchKey = collection ? `collection:${id}` : data.mediaKind ? `media:${id}` : `${data.step}:${data.assetKey || data.episodeNumber || "all"}`;
         if (branch.has(branchKey) && branch.get(branchKey)!.id !== id) throw new Error(`前置材料引用了不同版本的${shortDramaStep(data.step)?.label}，请统一来源分支`);
         branch.set(branchKey, node); visiting.add(id);
+        if (data.screenplayAudit || data.screenplayRepair) {
+            const evidence = auditSources(data, nodes);
+            if (!workflowSourceSignaturesMatch(data, nodes)) throw new Error("正文或诊断依据已变化，请重新审核");
+            // A repaired document is a new version, not a second active body in
+            // the same branch. Its old body/report remain immutable evidence.
+            for (const source of evidence.filter(source => data.screenplayRepair ? data.screenplayRepair.contextNodeIds.includes(source.id) : true)) {
+                if (!visited.has(source.id)) { visited.add(source.id); ordered.push(source); }
+            }
+            visiting.delete(id); visited.add(id); ordered.push(node);
+            return;
+        }
         // Asset revisions and images consume scoped document snapshots; do not
         // expand their sources back into an entire, possibly still-running plan.
         if (data.assetRevision || data.assetImageSourceIds) {
@@ -312,6 +337,16 @@ export function workflowSources(stepId: ShortDramaStepId, pipelineId: string, no
 }
 
 export function defaultWorkflowSources(stepId: ShortDramaStepId, pipelineId: string, nodes: CanvasNodeData[], anchorId?: string) {
+    if (stepId === ShortDramaStep.Audit) {
+        const anchor = nodes.find(node => node.id === anchorId);
+        if (nodeWorkflow(anchor)?.step === ShortDramaStep.Body) return [anchor!.id];
+        const bound = nodeWorkflow(anchor)?.screenplayAudit?.bodyNodeId;
+        if (bound && nodes.some(node => node.id === bound)) return [bound];
+        const candidates = nodes.filter(node => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === ShortDramaStep.Body);
+        const groups = candidates.filter(node => nodeWorkflow(node)?.role === "collection");
+        const options = groups.length ? groups : candidates;
+        return [options.length === 1 ? options[0].id : ""];
+    }
     let selected = nodes.find((node) => node.id === anchorId);
     if (nodeWorkflow(selected)?.mediaGroup) {
         const ids = nodeWorkflow(selected)!.sourceNodeIds;
@@ -348,6 +383,9 @@ export function defaultWorkflowSources(stepId: ShortDramaStepId, pipelineId: str
 }
 
 export type WorkflowGenerationRequest = {
+    shotDurationSeconds?: number;
+    shotDurationToleranceSeconds?: number;
+    auditRepairReportId?: string;
     assetRevisionSourceId?: string;
     globalSettings?: ShortDramaGlobalSettings;
     reasoningEffort?: ReasoningEffort;
@@ -362,9 +400,24 @@ export type WorkflowGenerationRequest = {
     aggregate?: boolean;
 };
 
-export function workflowGenerationSources(request: Pick<WorkflowGenerationRequest, "step" | "pipelineId" | "sourceNodeIds" | "aggregate" | "assetRevisionSourceId" | "imageSubjectIds"> & { assetImageSourceIds?: string[]; mediaSubjectId?: string; assetRevision?: ShortDramaWorkflowData["assetRevision"]; sourceSteps?: ShortDramaStepId[]; referenceSignatures?: Record<string, string> }, nodes: CanvasNodeData[], connections?: CanvasConnection[]) {
+export function workflowGenerationSources(request: Pick<WorkflowGenerationRequest, "step" | "pipelineId" | "sourceNodeIds" | "aggregate" | "assetRevisionSourceId" | "imageSubjectIds" | "auditRepairReportId"> & { screenplayAudit?: ShortDramaWorkflowData["screenplayAudit"]; screenplayRepair?: ShortDramaWorkflowData["screenplayRepair"]; assetImageSourceIds?: string[]; mediaSubjectId?: string; assetRevision?: ShortDramaWorkflowData["assetRevision"]; sourceSteps?: ShortDramaStepId[]; referenceSignatures?: Record<string, string> }, nodes: CanvasNodeData[], connections?: CanvasConnection[]) {
     request = { ...request, sourceNodeIds: [...new Set(request.sourceNodeIds)] };
     validateWorkflowReferences(request.referenceSignatures, new Map(nodes.map((node) => [node.id, node])));
+    if (request.screenplayAudit || request.screenplayRepair) return auditSources(request, nodes);
+    if (request.auditRepairReportId) {
+        const report = nodes.find(node => node.id === request.auditRepairReportId);
+        const reportData = nodeWorkflow(report);
+        const inlineBinding = reportData?.step === ShortDramaStep.Body ? reportData.screenplayAudit : undefined;
+        if (request.step !== ShortDramaStep.Body || !report || nodeWorkflow(report)?.pipelineId !== request.pipelineId || (!inlineBinding && !reportData?.screenplayAudit)) throw new Error("请选择当前流程的正文诊断报告");
+        if (inlineBinding?.bodyNodeId === report.id) return auditSources({ pipelineId: request.pipelineId, screenplayAudit: inlineBinding, screenplayRepair: { bodyNodeId: report.id, contextNodeIds: inlineBinding.contextNodeIds, reportSignature: inlineBinding.reportSignature || inlineBinding.bodySignature || workflowSignature(report) } }, nodes);
+        const binding = reportData?.screenplayAudit;
+        if (!binding) throw new Error("请选择当前流程的正文诊断报告");
+        return auditSources({ pipelineId: request.pipelineId, screenplayRepair: { bodyNodeId: binding.bodyNodeId, contextNodeIds: binding.contextNodeIds, reportNodeId: report.id, reportSignature: workflowSignature(report) } }, nodes);
+    }
+    if (request.step === ShortDramaStep.Audit) {
+        const selected = selectedAuditBodies(request.sourceNodeIds, request.pipelineId, nodes);
+        return [...new Map(selected.bodies.flatMap(body => [body, ...auditContextNodes(body, nodes)]).map(node => [node.id, node])).values()];
+    }
     if (request.assetRevisionSourceId || request.assetRevision) return workflowAssetRevisionSources(request, nodes);
     if (assetSheetKind(request.step)) return workflowAssetImageSources(request, nodes, connections);
     if (!request.aggregate) return workflowSources(request.step, request.pipelineId, nodes, request.sourceNodeIds, connections, request.sourceSteps);
@@ -480,6 +533,7 @@ export function groupExistingWorkflowEpisodes(anchorId: string, nodes: CanvasNod
 }
 
 export function createWorkflowDocuments(request: WorkflowGenerationRequest, nodes: CanvasNodeData[], connections: CanvasConnection[], center: Position, group = true): { nodes: CanvasNodeData[]; connections: CanvasConnection[]; created: CanvasNodeData[] } {
+    if (request.step === ShortDramaStep.Audit || request.auditRepairReportId) return createScreenplayReviewDocuments(request, nodes, connections, center);
     if (request.assetRevisionSourceId) return createWorkflowAssetRevision(request, nodes, connections, center);
     request = { ...request, sourceNodeIds: [...new Set(request.sourceNodeIds)] };
     const step = shortDramaStep(request.step);
@@ -521,7 +575,9 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
             sourceNodeIds: [...request.sourceNodeIds], sourceSignatures: Object.fromEntries(sources.map((node) => [node.id, workflowSignature(node)])),
             sourceSteps: request.sourceNodeIds.map((id) => nodeWorkflow(nodes.find((node) => node.id === id))!.step),
             ...(step.output === "asset-group" ? { assetOutput: true, assetKey: "$summary", assetSchemaVersion: 2 as const } : {}),
-            episodeNumber, version, parameters: { episodeCount: brief.episodeCount, minutesPerEpisode: brief.minutesPerEpisode, instruction: request.instruction, ...(brief.globalSettings ? { globalSettings: { ...brief.globalSettings } } : {}) },
+            episodeNumber, version, parameters: { episodeCount: brief.episodeCount, minutesPerEpisode: brief.minutesPerEpisode, instruction: request.instruction,
+                ...(step.id === ShortDramaStep.Shots ? { shotDurationSeconds: request.shotDurationSeconds ?? 10, shotDurationToleranceSeconds: request.shotDurationToleranceSeconds ?? 3 } : {}),
+                ...(brief.globalSettings ? { globalSettings: { ...brief.globalSettings } } : {}) },
             ...(request.aggregate ? { aggregate: true } : {}),
             operationId: crypto.randomUUID(), submission: "planned",
         };
@@ -579,15 +635,17 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
         else data.textBatch = isBody ? undefined : step.id === ShortDramaStep.Episodes ? workflowOutlineBatch(sourceRecords, brief.episodeCount) : (step.stage === "assets" ? sharedWorkflowTextBatch(sourceRecords, request.pipelineId, step.id.slice(7)) : undefined) || workflowTextBatch(sourceRecords, instructions.length);
         if (isBody) data.bodyContextVersion = 1;
         // Production agents receive the catalog in their server-owned system policy.
-        const prompt = productionAgent ? `使用制作领域工具完成${step.label}。\n${requirement}\n制作参数：${JSON.stringify(brief)}\n补充要求：${request.instruction || "遵循已有设定，事实与设计建议分开"}\n${step.id === ShortDramaStep.Plan ? "先读取选题，保存故事总纲，登记全剧资产清单，再逐资产保存完整设定并核对覆盖。" : step.id === ShortDramaStep.Shots ? "先读取持久检查点与整集场次计划，逐场生成并增量保存镜头，最后核对剧情、对白、时长与连续性。" : "先查询持久进度，读取制作方案和材料，沿用已有设定，保存共享事实，再逐项提交资产，最后检查覆盖。"}` : data.textBatch || isBody ? instructions : `${instructions}\n\n关联来源：${JSON.stringify(sourceRecords)}`;
-        const node = createCanvasNode(CanvasNodeType.Text, { x, y: y + index * 344 }, {
+        const prompt = productionAgent ? `使用制作领域工具完成${step.label}。\n${requirement}\n制作参数：${JSON.stringify(brief)}\n补充要求：${request.instruction || "遵循已有设定，事实与设计建议分开"}\n${step.id === ShortDramaStep.Plan ? "先读取选题，保存故事总纲，登记全剧资产清单，再逐资产保存完整设定并核对覆盖。" : step.id === ShortDramaStep.Shots ? "先读取持久检查点，规划本集场次和完整镜头清单，确定总数、编号和合法时长并铺好列表占位；按系统全局Agent并发策略以集为单位并发，同一集连续批量补全1至8镜的完整分镜信息与资产编码，承接前镜实际结果，有前置依赖的等待前置完成。不创建逐镜并发任务；每批保存检查点，保留全部对白与行动，最后直接对照本集正文和完整分镜校验剧情、时长与连续性。" : "先查询持久进度，读取制作方案和材料，沿用已有设定，保存共享事实，再逐项提交资产，最后检查覆盖。"}` : data.textBatch || isBody ? instructions : `${instructions}\n\n关联来源：${JSON.stringify(sourceRecords)}`;
+        const node = createCanvasNode(step.id === ShortDramaStep.Shots ? CanvasNodeType.Script : CanvasNodeType.Text, { x, y: y + index * 344 }, {
             shortDrama: data, workflowTitle: step.label, content: "", status: "idle", generationMode: "text", model: request.model, reasoningEffort: normalizeReasoningEffort(request.reasoningEffort),
             prompt: productionAgent ? `${globalSettingsPrompt(brief.globalSettings, step.stage)}\n${prompt}` : prompt, textCount: 1, taskStage: "等待保存并提交",
+            ...(step.id === ShortDramaStep.Shots ? { storyboard: { rows: [], visibleColumns: ["shotNumber", "videoMotionPrompt", "assets"], referenceNodeIds: [] } } : {}),
             ...(storyStage ? { storyDevelopment: { stage: storyStage, pipelineId: request.pipelineId, sourceNodeIds: sources.map((source) => source.id), episodeNumber } } : {}),
         });
         node.title = `${request.aggregate ? "跨集汇总 · " : episodeNumber ? `第 ${episodeNumber} 集 · ` : ""}${step.label} · 第 ${version} 版`;
         node.position = { x, y: y + index * 344 };
-        node.width = 400; node.height = 280;
+        node.width = step.id === ShortDramaStep.Shots ? EPISODE_STORYBOARD_SIZE.width : 400;
+        node.height = step.id === ShortDramaStep.Shots ? EPISODE_STORYBOARD_SIZE.height : 280;
         return node;
     });
     const result = { nodes: [...nodes, ...created], connections: [...connections, ...created.flatMap((node) => request.sourceNodeIds.map((fromNodeId) => ({ id: nanoid(), fromNodeId, toNodeId: node.id })))], created };
@@ -638,9 +696,11 @@ export function compactUnsubmittedBodyNodes(nodes: CanvasNodeData[]): CanvasNode
     });
 }
 
-export function workflowBodyTaskInput(node: CanvasNodeData, nodes: CanvasNodeData[], connections?: CanvasConnection[]) {
+export function workflowBodyTaskInput(node: CanvasNodeData, nodes: CanvasNodeData[], connections?: CanvasConnection[]): { prompt: string; workflowBatch?: WorkflowTextBatch; structuredOutput?: typeof screenplayAuditOutput } {
     const data = node.metadata?.shortDrama;
     let prompt = node.metadata?.prompt || "";
+    if (data?.screenplayRepair) return { prompt: screenplayRepairPrompt(node, nodes), workflowBatch: undefined };
+    if (data?.screenplayAudit) return { prompt: screenplayAuditPrompt(node, nodes), structuredOutput: screenplayAuditOutput };
     if (data?.step !== ShortDramaStep.Body) return { prompt, workflowBatch: data?.textBatch };
     if (!data.episodeNumber) throw new Error("正文节点缺少对应集号，未提交生成");
     // Old saved tasks can still carry the generic all-material map/reduce plan.
@@ -650,8 +710,44 @@ export function workflowBodyTaskInput(node: CanvasNodeData, nodes: CanvasNodeDat
     if (!workflowSourceSignaturesMatch(data, nodes)) throw new Error("正文来源已变化，请根据最新集纲重新生成");
     const sources = workflowGenerationSources(data, nodes, connections);
     const records = bodySourceRecords(sources, data.episodeNumber!, data.parameters?.instruction || "");
-    const workflowBatch = workflowBodyBatch(records, prompt.length);
+    const parameters = data.parameters || workflowParameters(sources);
+    const writing = bodyWritingSpec(parameters.minutesPerEpisode, parameters.globalSettings);
+    prompt += `\n\n${bodyWritingPrompt(writing)}`;
+    const workflowBatch = workflowBodyBatch(records, prompt.length, writing);
     return { prompt: workflowBatch ? prompt : `${prompt}\n\n关联来源：${JSON.stringify(records)}`, workflowBatch };
+}
+
+function createScreenplayReviewDocuments(request: WorkflowGenerationRequest, nodes: CanvasNodeData[], connections: CanvasConnection[], center: Position) {
+    if (!request.model) throw new Error("请选择审核或修复使用的文本模型");
+    const repairing = Boolean(request.auditRepairReportId);
+    const selected = repairing ? undefined : selectedAuditBodies(request.sourceNodeIds, request.pipelineId, nodes, { start: request.start, end: request.start + request.count - 1 });
+    const repairTarget = repairing ? nodes.find(node => node.id === request.auditRepairReportId) : undefined;
+    const repairData = repairTarget ? nodeWorkflow(repairTarget) : undefined;
+    const inlineRepair = Boolean(repairTarget && repairData?.step === ShortDramaStep.Body && repairData.screenplayAudit?.bodyNodeId === repairTarget.id);
+    const repairSources = repairing ? workflowGenerationSources(request, nodes) : [];
+    const reportNode = repairing && !inlineRepair ? repairSources.at(-1)! : undefined;
+    const bodies = selected?.bodies || (repairTarget ? [inlineRepair ? repairTarget : repairSources[0]] : []);
+    if (!bodies.length || bodies.some(body => !body)) throw new Error("未找到可处理的正文节点");
+    const created = bodies.map(body => {
+        const currentData = nodeWorkflow(body)!;
+        const context = repairing ? (inlineRepair ? (currentData.screenplayAudit?.contextNodeIds || []).map(id => nodes.find(node => node.id === id)).filter((node): node is CanvasNodeData => Boolean(node)) : repairSources.slice(1, -1)) : auditContextNodes(body, nodes);
+        const sources = [body, ...context, ...(reportNode ? [reportNode] : [])];
+        const state = reportNode ? screenplayAuditState(reportNode, nodes, request.globalSettings) : screenplayAuditState(body, nodes, request.globalSettings);
+        if (repairing && !state.report && !reportNode) throw new Error("当前正文没有可用的诊断报告，请先重新审核");
+        if (repairing && state.stale && !reportNode) throw new Error("正文、诊断或全局设定已变化，请先重新审核");
+        if (repairing && reportNode && screenplayAuditState(reportNode, nodes, request.globalSettings).stale) throw new Error("正文、诊断或全局设定已变化，请先重新审核");
+        const brief = { ...workflowParameters(sources), ...currentData.parameters, ...(request.globalSettings ? storyBriefFromSettings(request.globalSettings) : {}) };
+        const parameters = { ...currentData.parameters, episodeCount: brief.episodeCount, minutesPerEpisode: brief.minutesPerEpisode, instruction: request.instruction, ...(brief.globalSettings ? { globalSettings: brief.globalSettings } : {}) };
+        const episodeNumber = currentData.episodeNumber!;
+        const auditedBodySignature = workflowSignature({ ...body, metadata: { ...body.metadata, shortDrama: { ...currentData, parameters } } });
+        const nextData: ShortDramaWorkflowData = repairing
+            ? { ...currentData, parameters, operationId: crypto.randomUUID(), submission: "planned", screenplayRepair: { bodyNodeId: body.id, ...(reportNode ? { reportNodeId: reportNode.id } : {}), reportSignature: reportNode ? workflowSignature(reportNode) : currentData.screenplayAudit?.reportSignature || currentData.screenplayAudit?.bodySignature || workflowSignature(body), contextNodeIds: context.map(node => node.id), previousContent: body.metadata?.content, previousRichText: body.metadata?.richText, previousVersion: currentData.version } }
+            : { ...currentData, parameters, operationId: crypto.randomUUID(), submission: "planned", materializedTaskId: undefined, screenplayAudit: { bodyNodeId: body.id, contextNodeIds: context.map(node => node.id), contextSignatures: Object.fromEntries(context.map(node => [node.id, workflowSignature(node)])), selectedEpisodes: selected!.selectedEpisodes, omittedEpisodes: selected!.omittedEpisodes, bodySignature: auditedBodySignature, report: undefined, rawResult: undefined, reportMarkdown: undefined }, screenplayRepair: undefined };
+        const nextNode: CanvasNodeData = { ...body, metadata: { ...resetGenerationTaskMetadata(body.metadata, "idle"), shortDrama: nextData, taskStage: "等待保存并提交", generationMode: "text", model: request.model, reasoningEffort: normalizeReasoningEffort(request.reasoningEffort), prompt: repairing ? "依据诊断修复本集正文，保留修复前版本" : "只审核本集正文，不修改正文" } };
+        workflowBodyTaskInput(nextNode, nodes);
+        return nextNode;
+    });
+    return { nodes: nodes.map(node => created.find(next => next.id === node.id) || node), connections, created };
 }
 
 export function workflowContextContent(node: CanvasNodeData, step: ShortDramaStepId, episode?: number) {

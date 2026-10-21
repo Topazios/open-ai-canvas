@@ -229,6 +229,9 @@ func (s *Service) enqueueCloudAgentTaskWithWork(run *model.CloudAgentExecution, 
 				}
 				work.TaskID, work.Step = task.ID, state.Step+1
 				state.ProductionParallel[work.Key] = *work
+				if err := persistStoryboardWork(repo, current, state, policy); err != nil {
+					return err
+				}
 			}
 			// 压缩调用不是本轮的一步：压完还要用压缩后的上下文继续步进，步数不该被它占掉。
 			if state.ContextCompaction != nil && req.Operation == cloudAgentContextCompactionOperation {

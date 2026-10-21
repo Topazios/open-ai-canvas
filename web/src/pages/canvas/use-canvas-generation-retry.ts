@@ -4,6 +4,8 @@ import { WandSparkles } from "lucide-react";
 import { useConfirmedTaskRetry } from "@/components/use-confirmed-task-retry";
 
 import { buildNodeGenerationContext, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
+import { isEpisodeStoryboardVideo } from "@/lib/canvas/workflow-episode-storyboard";
+import { storyboardFrameHash } from "@/lib/canvas/episode-storyboard-frames";
 import { producedModelCandidateForGeneration } from "@/lib/canvas/produced-model";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { buildEmotionImageArtifacts, emotionGenerationSize, emotionProviderMask, normalizeEmotionPromptForProvider, resolveEmotionEditPlan } from "@/lib/canvas/canvas-emotion";
@@ -86,6 +88,15 @@ export function useCanvasGenerationRetry({
 
     const runRetry = useCallback(
         async (node: CanvasNodeData, options?: CanvasNodeRetryOptions) => {
+            const frame = node.metadata?.storyboardFrame;
+            const frameIsCurrent = () => {
+                if (!frame) return true;
+                const current = nodesRef.current.find(item => item.id === node.id);
+                const row = nodesRef.current.find(item => item.id === frame.scriptId)?.metadata?.storyboard?.rows.find(item => item.id === frame.rowId);
+                return Boolean(current && row && current.metadata?.storyboardFrame?.sourcePromptHash === frame.sourcePromptHash && storyboardFrameHash(row) === frame.sourcePromptHash);
+            };
+            if (!frameIsCurrent()) { message.warning("分镜已修改，请生成当前版本画面"); return; }
+            if (node.metadata?.shortDrama?.step === "assets.reconcile") { message.info("正文资产校核步骤已停用，请在正文节点或流程面板中发起正文质量审核"); return; }
             const production = node.metadata?.shortDrama?.productionAgent;
             if (production) {
                 try {
@@ -111,7 +122,7 @@ export function useCanvasGenerationRetry({
                 message.info("任务状态已变化，请刷新后查看；未重复提交");
                 return;
             }
-            if (node.metadata?.shortDrama && (node.type === CanvasNodeType.Text || (node.metadata.shortDrama.mediaKind === "image" && !sourceTask?.mediaStage))) {
+            if (!frame && node.metadata?.shortDrama && (node.type === CanvasNodeType.Text || (node.metadata.shortDrama.mediaKind === "image" && !sourceTask?.mediaStage))) {
                 if (node.metadata.shortDrama.mediaKind === "image" && sourceTask?.status === "failed" && (isContentModerationError(sourceTask.errorCode) || isContentModerationError(sourceTask.error))) {
                     const previousPrompt = sourceTask.prompt;
                     const adjust = () => adjustWorkflowImagePrompt(node, nodesRef.current, previousPrompt || "");
@@ -174,7 +185,7 @@ export function useCanvasGenerationRetry({
                 }
                 return;
             }
-            if (sourceTask?.mediaStage && sourceTask.status !== "cancelled") {
+            if (sourceTask && ((sourceTask.mediaStage && sourceTask.status !== "cancelled") || (frame && ["queued", "running", "succeeded"].includes(sourceTask.status)))) {
                 const controller = startGenerationRequest(node.id, node.id, node.id);
                 try {
                     const initialTask = sourceTask.status === "failed" ? await recoverGenerationTaskMedia(sourceTask.id) : sourceTask;
@@ -197,7 +208,8 @@ export function useCanvasGenerationRetry({
                 message.warning("当前节点不能使用通用生成重试");
                 return;
             }
-            const sourceNode = findRetrySourceNode(node.id, nodesRef.current, connectionsRef.current) || node;
+            if (!frameIsCurrent()) { message.warning("分镜已修改，请生成当前版本画面"); return; }
+            const sourceNode = frame ? node : findRetrySourceNode(node.id, nodesRef.current, connectionsRef.current) || node;
             const batchRoot = node.metadata?.batchRootId ? nodesRef.current.find((item) => item.id === node.metadata?.batchRootId) : null;
             const savedImageMetadata = node.type === CanvasNodeType.Image ? { ...batchRoot?.metadata, ...node.metadata } : undefined;
             const hasSavedImageMetadata = Boolean(savedImageMetadata?.generationType);
@@ -227,10 +239,10 @@ export function useCanvasGenerationRetry({
             }
             let rawContext: Awaited<ReturnType<typeof hydrateNodeGenerationContext>> | null;
             try {
-                const promptOnly = retryMode === "video";
+                const promptOnly = retryMode === "video" && !isEpisodeStoryboardVideo(sourceNode.id, nodesRef.current, connectionsRef.current);
                 const baseContext = buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, retryContextPrompt, assets, promptOnly);
                 rawContext =
-                    hasSavedImageMetadata && !baseContext.characterReferences.length
+                    hasSavedImageMetadata && !frame && !baseContext.characterReferences.length
                         ? null
                         : await hydrateNodeGenerationContext(baseContext, projectId, domainProjectId, retryMode, retryMode === "video" && supportsVideoReferenceAudio(generationConfig), !promptOnly);
             } catch (error) {
@@ -255,7 +267,7 @@ export function useCanvasGenerationRetry({
                     return;
                 }
             }
-            const prompt = (context?.characterReferences.length ? context.prompt : savedImageMetadata?.prompt || context?.prompt || "").trim();
+            const prompt = (frame || context?.characterReferences.length ? context?.prompt || "" : savedImageMetadata?.prompt || context?.prompt || "").trim();
             if (!prompt) {
                 message.warning("找不到提示词，无法重试");
                 return;
@@ -292,10 +304,10 @@ export function useCanvasGenerationRetry({
                 message.error("表情编辑需要支持蒙版的 OpenAI Images 渠道，当前渠道已拒绝整图重绘");
                 return;
             }
-            const useReferenceImages = isEmotionRetry ? false : context?.characterReferences.length ? true : generationType ? generationType === "edit" : Boolean(context?.referenceImages.length);
+            const useReferenceImages = isEmotionRetry ? false : frame ? Boolean(context?.referenceImages.length) : context?.characterReferences.length ? true : generationType ? generationType === "edit" : Boolean(context?.referenceImages.length);
             const retryReferenceImages = isEmotionRetry
                 ? []
-                : hasSavedImageMetadata && savedImageMetadata && !context?.characterReferences.length
+                : hasSavedImageMetadata && savedImageMetadata && !frame && !context?.characterReferences.length
                   ? await resolveMetadataReferences(savedImageMetadata)
                   : useReferenceImages
                     ? context?.referenceImages.length
@@ -341,6 +353,7 @@ export function useCanvasGenerationRetry({
             const controller = startGenerationRequest(node.id, sourceNode.id, node.id);
             const retryContext = node.metadata?.taskId ? await createGenerationRetryContext(node.metadata.taskId, node.metadata.attemptGroupId) : {};
             const runAndConsumeRetry = async (input: Parameters<typeof runBackendCanvasGenerationTask>[0]) => {
+                if (!frameIsCurrent()) throw new Error("分镜已修改，未提交旧版本画面，请重新生成");
                 await runCanvasGenerationTaskToConsumer(
                     { ...input, ...retryContext },
                     {
@@ -473,7 +486,7 @@ export function useCanvasGenerationRetry({
                     return;
                 }
 
-                const generationMetadata = savedImageMetadata?.generationType
+                const generationMetadata = savedImageMetadata?.generationType && !frame
                     ? {
                           generationType: savedImageMetadata.generationType,
                           model: generationConfig.model,

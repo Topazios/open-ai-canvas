@@ -12,6 +12,9 @@ import (
 )
 
 func storyboardFixture(t *testing.T) (*Service, *gorm.DB, *CloudAgentRun) {
+	return storyboardFixtureWithTiming(t)
+}
+func storyboardFixtureWithTiming(t *testing.T, timing ...float64) (*Service, *gorm.DB, *CloudAgentRun) {
 	t.Helper()
 	s, db, run := productionFixture(t, "林岚进入照相馆。\n林岚说：我回来了。\n她放下相机。")
 	productionEditCanvas(t, s, db, func(doc map[string]any) {
@@ -20,6 +23,9 @@ func storyboardFixture(t *testing.T) (*Service, *gorm.DB, *CloudAgentRun) {
 		data := productionWorkflow(target)
 		data["step"] = "direction.shots"
 		data["stage"] = "storyboard"
+		if len(timing) == 2 {
+			data["parameters"] = map[string]any{"shotDurationSeconds": timing[0], "shotDurationToleranceSeconds": timing[1]}
+		}
 		delete(data, "assetKey")
 		delete(data, "assetOutput")
 		frame := productionWorkflow(productionNode(doc, "group"))
@@ -41,14 +47,32 @@ func storyboardFixture(t *testing.T) (*Service, *gorm.DB, *CloudAgentRun) {
 	if err := s.initializeProductionAgent("user", run.ID); err != nil {
 		t.Fatal(err)
 	}
+	// These fixtures exercise settlement of legacy serial checkpoints. New layout
+	// scheduling has its own fixture and tests.
+	job, _ := s.repo.ProductionAgentJob("user", run.ID)
+	var manifest productionManifest
+	_ = json.Unmarshal([]byte(job.ManifestJSON), &manifest)
+	manifest.Storyboard.Version = "storyboard-scenes-v1"
+	raw, _ := json.Marshal(manifest)
+	if err := s.repo.UpdateProductionAgentManifest("user", run.ID, string(raw)); err != nil {
+		t.Fatal(err)
+	}
 	return s, db, run
 }
 func storyboardFixturePlan(t *testing.T, s *Service, runID string) {
 	productionCall(t, s, runID, "production_storyboard_brief", map[string]any{"brief": "依据正文，保持相机与人物动作连续，未提供额外美术约束。", "sourceIds": []string{}}, false)
-	productionCall(t, s, runID, "production_storyboard_plan", map[string]any{"scenes": []productionScene{
+	productionCall(t, s, runID, "production_storyboard_plan", storyboardPlanArgs([]productionScene{
 		{ID: "S1", Title: "入场", Start: 1, End: 1, Goal: "建立回归", Duration: 10, Entry: "门外", Exit: "馆内", AssetIDs: []string{}},
 		{ID: "S2", Title: "回归", Start: 2, End: 3, Goal: "确认情绪", Duration: 20, Entry: "馆内", Exit: "放下相机", AssetIDs: []string{}},
-	}}, false)
+	}), false)
+}
+func storyboardPlanArgs(scenes []productionScene) map[string]any {
+	// Serialize the public input contract, excluding internal checkpoint fields.
+	items := make([]map[string]any, 0, len(scenes))
+	for _, scene := range scenes {
+		items = append(items, map[string]any{"id": scene.ID, "title": scene.Title, "start": scene.Start, "end": scene.End, "goal": scene.Goal, "duration": scene.Duration, "entry": scene.Entry, "exit": scene.Exit, "assetIds": scene.AssetIDs})
+	}
+	return map[string]any{"scenes": items}
 }
 func storyboardShot(scene string, index, start, end int, duration float64) productionShot {
 	return productionShot{ID: scene + "-00" + string(rune('0'+index)), Start: start, End: end, Duration: duration, Visual: "人物完成一个动作", Camera: "中景，平视，固定", Dialogue: "", Sound: "环境声", Continuity: "保持相机位置与视线", AssetIDs: []string{}}
@@ -142,7 +166,7 @@ func TestProductionStoryboardPlanValidation(t *testing.T) {
 		{{ID: "S1", Title: "漏段", Start: 2, End: 3, Goal: "x", Duration: 20, Entry: "a", Exit: "b"}},
 		{{ID: "S1", Title: "虚构资产", Start: 1, End: 3, Goal: "x", Duration: 20, Entry: "a", Exit: "b", AssetIDs: []string{"foreign"}}},
 	} {
-		productionCall(t, s, run.ID, "production_storyboard_plan", map[string]any{"scenes": scenes}, true)
+		productionCall(t, s, run.ID, "production_storyboard_plan", storyboardPlanArgs(scenes), true)
 	}
 }
 
@@ -313,5 +337,8 @@ func TestProductionStoryboardManifestIgnoresAssetsNestedInEpisodeBody(t *testing
 	encoded, _ := json.Marshal(context)
 	if strings.Contains(string(encoded), "catalog") || strings.Contains(string(encoded), "character-assets") || strings.Contains(string(encoded), "asset-bundle") {
 		t.Fatalf("storyboard context leaked asset catalog: %s", encoded)
+	}
+	if context["phase"] != "plan" || context["nextTool"] != "production_storyboard_plan" {
+		t.Fatal("body-only storyboard must not call a model just to summarize absent rules")
 	}
 }

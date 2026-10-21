@@ -65,16 +65,18 @@ type AdminChannelModelImportRequest struct {
 }
 
 type AdminChannelModelBatchSettingsRequest struct {
-	Protocols    *ModelProtocolConfig     `json:"protocols"`
-	ModelIDs     []string                 `json:"modelIds"`
-	Enabled      *bool                    `json:"enabled"`
-	DisplayName  *string                  `json:"displayName"`
-	ChannelLabel *string                  `json:"channelLabel"`
-	Description  *string                  `json:"description"`
-	Icon         *string                  `json:"icon"`
-	Tags         *[]model.ChannelModelTag `json:"tags"`
-	Capability   *string                  `json:"capability"`
-	Protocol     *string                  `json:"protocol"`
+	Protocols        *ModelProtocolConfig     `json:"protocols"`
+	ModelIDs         []string                 `json:"modelIds"`
+	Enabled          *bool                    `json:"enabled"`
+	CostConfigured   *bool                    `json:"costConfigured"`
+	CostMicrocredits *int64                   `json:"costMicrocredits"`
+	DisplayName      *string                  `json:"displayName"`
+	ChannelLabel     *string                  `json:"channelLabel"`
+	Description      *string                  `json:"description"`
+	Icon             *string                  `json:"icon"`
+	Tags             *[]model.ChannelModelTag `json:"tags"`
+	Capability       *string                  `json:"capability"`
+	Protocol         *string                  `json:"protocol"`
 }
 
 type AdminChannelModelTestResult struct {
@@ -359,8 +361,14 @@ func (s *Service) UpdateAdminChannelModelsSettings(actor *model.User, channelID 
 	if err != nil {
 		return 0, err
 	}
-	if req.Enabled == nil && req.DisplayName == nil && req.ChannelLabel == nil && req.Description == nil && req.Icon == nil && req.Tags == nil && req.Capability == nil && req.Protocol == nil {
+	if req.Enabled == nil && req.CostConfigured == nil && req.CostMicrocredits == nil && req.DisplayName == nil && req.ChannelLabel == nil && req.Description == nil && req.Icon == nil && req.Tags == nil && req.Capability == nil && req.Protocol == nil {
 		return 0, BadAuthRequest("请至少选择一个要批量设置的参数")
+	}
+	if req.CostMicrocredits != nil && (*req.CostMicrocredits < 0 || *req.CostMicrocredits > 1_000_000_000_000) {
+		return 0, BadAuthRequest("积分成本必须在 0 到 1000000 之间")
+	}
+	if req.CostMicrocredits != nil && (req.CostConfigured == nil || !*req.CostConfigured) {
+		return 0, BadAuthRequest("设置积分成本金额时必须同时启用成本配置")
 	}
 	if (req.Capability == nil) != (req.Protocol == nil) {
 		return 0, BadAuthRequest("批量设置模型能力时必须同时选择调用协议")
@@ -492,11 +500,7 @@ func (s *Service) UpdateAdminChannelModelsSettings(actor *model.User, channelID 
 		}
 	}
 	var updated int64
-	if updatesByModel != nil {
-		updated, err = s.repo.UpdateChannelModelsSettingsPerModel(channelID, updatesByModel)
-	} else {
-		updated, err = s.repo.UpdateChannelModelsSettings(channelID, modelIDs, updates)
-	}
+	updated, err = s.repo.UpdateChannelModelsBatchSettings(channelID, modelIDs, updates, updatesByModel, req.CostConfigured, req.CostMicrocredits)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, BadAuthRequest("所选模型已删除或不属于当前渠道，请刷新后重试")
 	}

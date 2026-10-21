@@ -1,13 +1,67 @@
 import { useEffect, useRef, useState } from "react";
 import { getAgentRun, controlProductionAgent, cancelAgentRun, reconcileCanvasNodeTasks, type AgentRun } from "@/services/api/agent";
-import { submitProductionAgent } from "@/services/production-agent";
+import { prepareProductionAgent, submitProductionAgent } from "@/services/production-agent";
 import { applyAgentCanvasPatches, refreshCanvasAfterAgent } from "@/services/user-data-sync";
 import { createAgentCanvasSync } from "@/services/agent-canvas-sync";
 import { getActiveUserScope } from "@/lib/user-scope";
-import { workflowSourceSignaturesMatch } from "@/lib/canvas/canvas-short-drama-workflow";
+import { workflowSignature, workflowSourceSignaturesMatch } from "@/lib/canvas/canvas-short-drama-workflow";
+import type { AiConfig } from "@/stores/use-config-store";
 import type { CanvasNodeData } from "@/types/canvas";
 
-export function useProductionAgentRuns(canvasId: string, nodesRef: { current: CanvasNodeData[] }, submissionLock: { current: boolean }) {
+type ProductionAgentRunOptions = {
+    config: AiConfig;
+    setNodes: (update: CanvasNodeData[] | ((nodes: CanvasNodeData[]) => CanvasNodeData[])) => void;
+    save: () => Promise<boolean>;
+};
+
+/**
+ * A storyboard run is bound to an immutable episode body version. When that
+ * body is edited while the Agent is running, the old run must stay immutable,
+ * but the user should be able to retry the same node against the new version.
+ */
+export function rebaseStoryboardAgentNode(node: CanvasNodeData, nodes: CanvasNodeData[]): CanvasNodeData {
+    const data = node.metadata?.shortDrama;
+    if (!data || data.step !== "direction.shots" || !data.productionAgent?.runId) throw new Error("当前节点不是可重新绑定的分镜任务");
+    const sourceSignatures = Object.fromEntries(Object.keys(data.sourceSignatures).map((sourceId) => {
+        const source = nodes.find((candidate) => candidate.id === sourceId);
+        if (!source) throw new Error("分镜来源节点已删除，请重新创建当前集分镜");
+        return [sourceId, workflowSignature(source)];
+    }));
+    const nextData = {
+        ...data,
+        sourceSignatures,
+        operationId: crypto.randomUUID(),
+        productionAgent: {},
+        submission: "planned" as const,
+    };
+    return {
+        ...node,
+        metadata: {
+            ...node.metadata,
+            status: "idle",
+            taskStage: "准备基于新版正文重试",
+            errorDetails: undefined,
+            taskId: undefined,
+            taskClientOperationId: undefined,
+            taskStatus: undefined,
+            taskProgress: undefined,
+            taskMediaStage: undefined,
+            taskCanRecoverMedia: undefined,
+            taskProvider: undefined,
+            taskStartedAt: undefined,
+            taskCompletedAt: undefined,
+            taskDurationMs: undefined,
+            taskErrorCode: undefined,
+            taskOfficialStatus: undefined,
+            taskReceiptRecorded: undefined,
+            taskCreatedAt: undefined,
+            taskUpdatedAt: undefined,
+            shortDrama: nextData,
+        },
+    };
+}
+
+export function useProductionAgentRuns(canvasId: string, nodesRef: { current: CanvasNodeData[] }, submissionLock: { current: boolean }, options: ProductionAgentRunOptions) {
     const [runs, setRuns] = useState<AgentRun[]>([]);
     const [nodeErrors, setNodeErrors] = useState<Record<string, string>>({});
     const [readErrors, setReadErrors] = useState<Record<string, string>>({});
@@ -74,10 +128,36 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
         try {
             const node = nodesRef.current.find((entry) => entry.id === nodeId);
             const data = node?.metadata?.shortDrama;
+            if (action === "resume" && data?.step === "assets.reconcile") throw new Error("旧正文资产校核已停用，请改用正文质量审核；已有内容和执行记录保留");
             const agent = data?.productionAgent;
             if (!node || !agent || !node.parentId || !nodesRef.current.some((entry) => entry.id === node.parentId)) throw new Error("任务节点或容器已不存在");
             if (agent.runId) {
-                if (action === "cancel") await cancelAgentRun(agent.runId);
+                const run = runs.find((entry) => entry.id === agent.runId);
+                const canRebaseStoryboard = action === "resume" && data.step === "direction.shots" &&
+                    (run?.status === "failed" || node.metadata?.status === "error") &&
+                    !workflowSourceSignaturesMatch(data, nodesRef.current);
+                if (canRebaseStoryboard) {
+                    await cancelAgentRun(agent.runId);
+                    const rebased = rebaseStoryboardAgentNode(node, nodesRef.current);
+                    options.setNodes((current) => current.map((entry) => entry.id === nodeId ? rebased : entry));
+                    if (!await options.save()) throw new Error("分镜节点已重置，但新版正文尚未保存到云端，请保存成功后重试");
+                    const current = nodesRef.current.find((entry) => entry.id === nodeId);
+                    if (!current) throw new Error("分镜节点已被删除");
+                    const request = await prepareProductionAgent(canvasId, current, options.config);
+                    options.setNodes((currentNodes) => currentNodes.map((entry) => entry.id === nodeId ? {
+                        ...entry,
+                        metadata: {
+                            ...entry.metadata,
+                            status: "loading",
+                            taskStage: "正在基于新版正文提交分镜",
+                            shortDrama: { ...entry.metadata!.shortDrama!, submission: "submitting", productionAgent: { request } },
+                        },
+                    } : entry));
+                    if (!await options.save()) throw new Error("新版分镜任务参数未能保存，尚未重新提交");
+                    const { run: nextRun } = await submitProductionAgent(request);
+                    if (epoch === generation.current && !nodesRef.current.some((entry) => entry.id === nodeId)) { await cancelAgentRun(nextRun.id); return; }
+                    if (epoch === generation.current) setRuns((currentRuns) => [...currentRuns.filter((entry) => entry.id !== nextRun.id && entry.production?.targetNodeId !== nodeId), nextRun]);
+                } else if (action === "cancel") await cancelAgentRun(agent.runId);
                 else await controlProductionAgent(agent.runId, action, maxSteps);
             } else {
                 if (action !== "resume" || !agent.request) throw new Error("任务尚未准备完成，请从制作步骤继续提交");

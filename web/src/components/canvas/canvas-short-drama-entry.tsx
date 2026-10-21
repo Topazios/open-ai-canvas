@@ -1,8 +1,9 @@
 import { useId, useState, type CSSProperties } from "react";
 import { Popover } from "antd";
-import { AlignLeft, ArrowLeft, ArrowUpRight, Check, ChevronUp, Clapperboard, FolderKanban, GripHorizontal, Images, LayoutGrid, Palette, Pencil, Plus, Settings2, Sparkles, Type, Upload, X } from "lucide-react";
+import { AlignLeft, ArrowLeft, ArrowUpRight, Check, ChevronUp, Clapperboard, FolderKanban, GripHorizontal, Images, Info, LayoutGrid, Palette, Pencil, Plus, Settings2, Sparkles, Type, Upload, X } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { CanvasNodeActionButton } from "./canvas-node-action-bar";
 import { CanvasCreateMenu, type CanvasCreateCommand } from "@/components/canvas/canvas-create-menu";
 import type { CanvasShortDramaProgress, CanvasShortDramaStepId, CanvasShortDramaTask } from "@/lib/canvas/canvas-short-drama";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
@@ -251,7 +252,7 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
                 <div className="canvas-drama-guide-title">
                     <strong>短剧完整制作流程</strong>
                     <span>
-                        {progress.steps.length} 个阶段 · {taskCount} 个子任务
+                        {progress.steps.length} 个制作阶段 · {taskCount} 个工作单元
                     </span>
                 </div>
                 <div className="canvas-drama-guide-controls">
@@ -354,30 +355,23 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
     );
 }
 
-export function CanvasStylePlaceholderNodeContent({ onChoose }: { onChoose: () => void }) {
+export function CanvasStylePlaceholderNodeContent({ onChoose, onInfo }: { onChoose: () => void; onInfo?: () => void }) {
     const theme = canvasThemes[useActiveTheme()];
     return (
-        <div className="flex h-full w-full flex-col items-center justify-center px-6 text-center" style={{ color: theme.node.text }}>
-            <span className="grid size-10 place-items-center rounded-md" style={{ background: `${theme.accent.primary}16`, color: theme.accent.primary }}>
-                <Palette className="size-5" />
-            </span>
-            <div className="mt-3 text-sm font-semibold">项目画风</div>
-            <div className="mt-1 text-xs" style={{ color: theme.node.muted }}>
-                待选择
+        <div className="flex h-full w-full flex-col overflow-hidden" style={{ color: theme.node.text }}>
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
+                <span className="grid size-10 place-items-center rounded-md" style={{ background: `${theme.accent.primary}16`, color: theme.accent.primary }}>
+                    <Palette className="size-5" />
+                </span>
+                <div className="mt-3 text-sm font-semibold">项目画风</div>
+                <div className="mt-1 text-xs" style={{ color: theme.node.muted }}>
+                    待选择
+                </div>
             </div>
-            <button
-                type="button"
-                className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium outline-none transition hover:brightness-105 focus-visible:ring-2"
-                style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke, "--tw-ring-color": theme.accent.primary } as CSSProperties}
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                    event.stopPropagation();
-                    onChoose();
-                }}
-            >
-                <Sparkles className="size-3.5" />
-                选择画风
-            </button>
+            <div className="flex min-h-10 shrink-0 items-center justify-start gap-1 border-t px-3 py-1.5" style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel }} data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                <CanvasNodeActionButton theme={theme} label="选择画风" icon={<Sparkles className="size-3.5" />} primary onClick={onChoose} />
+                {onInfo ? <CanvasNodeActionButton theme={theme} label="详情" icon={<Info className="size-3.5" />} onClick={onInfo} /> : null}
+            </div>
         </div>
     );
 }
@@ -400,19 +394,9 @@ export function CanvasStoryInputNodeContent({ node, onEdit }: { node: CanvasNode
             <div className="mt-4 min-h-0 flex-1 overflow-hidden border-t pt-3 text-xs leading-6" style={{ borderColor: theme.node.stroke, color: content ? theme.node.muted : theme.node.placeholder }}>
                 {content || (development ? "待创作" : "写下题材、角色、冲突和结局方向…")}
             </div>
-            <button
-                type="button"
-                className="mt-3 inline-flex h-8 w-fit items-center gap-1.5 rounded-md px-2 text-xs font-medium outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10"
-                style={{ color: theme.node.text, "--tw-ring-color": theme.accent.primary } as CSSProperties}
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                    event.stopPropagation();
-                    onEdit();
-                }}
-            >
-                <AlignLeft className="size-3.5" />
-                详情
-            </button>
+            <div className="mt-3 flex min-h-10 min-w-0 items-center border-t pt-2" style={{ borderColor: theme.node.stroke }}>
+                <CanvasNodeActionButton theme={theme} label="详情" icon={<AlignLeft className="size-3.5" />} onClick={onEdit} />
+            </div>
         </div>
     );
 }

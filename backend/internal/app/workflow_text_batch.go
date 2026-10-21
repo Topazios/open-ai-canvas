@@ -31,6 +31,7 @@ type workflowTextBatch struct {
 	Scope        string             `json:"scope,omitempty"`
 	Category     string             `json:"category,omitempty"`
 	EpisodeCount int                `json:"episodeCount,omitempty"`
+	BodyWriting  *bodyWritingSpec   `json:"bodyWriting,omitempty"`
 }
 
 func validateWorkflowTextBatch(taskType, prompt string, input map[string]any) (*workflowTextBatch, error) {
@@ -47,6 +48,11 @@ func validateWorkflowTextBatch(taskType, prompt string, input map[string]any) (*
 		metadata, _ := input["metadata"].(map[string]any)
 		if metadata["workflowStep"] != "story.body" || len(batch.Context) == 0 || batch.Scope != "" || batch.Category != "" {
 			return nil, BadAuthRequest("正文执行计划必须包含本集集纲，且只用于正文步骤")
+		}
+	}
+	if batch.BodyWriting != nil {
+		if batch.Version != 4 || !batch.BodyWriting.valid() {
+			return nil, BadAuthRequest("正文时长与语言要求无效")
 		}
 	}
 	if batch.Version == 3 {

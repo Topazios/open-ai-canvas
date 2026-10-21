@@ -24,6 +24,19 @@ type taskAdmission struct {
 	BatchParent          *model.Task
 }
 
+// screenplayAuditCanWaitForTextSlot keeps a review request durable when the
+// user's text admission limit is already full. The worker still enforces the
+// global text concurrency policy; this only prevents a quality review from
+// being rejected before it can enter the queue.
+func screenplayAuditCanWaitForTextSlot(taskType string, metadata map[string]any) bool {
+	if taskType != "canvas_text" {
+		return false
+	}
+	source, _ := metadata["source"].(string)
+	step, _ := metadata["workflowStep"].(string)
+	return source == "canvas-short-drama-workflow" && step == "story.audit"
+}
+
 // CreateTask 收敛任务进入系统前的 admission 流程：输入标准化、逻辑模型路由、
 // 能力/额度校验和持久化。执行阶段由 worker 与 provider 相关模块负责。
 // CreateTask 校验并创建一条生成任务。
@@ -49,6 +62,7 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		return nil, err
 	}
 	productionMetadata, _ := normalizedInput["metadata"].(map[string]any)
+	canWaitForTextSlot := screenplayAuditCanWaitForTextSlot(taskType, productionMetadata)
 	_, hasProductionStage := productionMetadata["workflowStage"]
 	// Only trusted children of older, unscoped batch coordinators retain their
 	// original input/identity. Public batch-child requests still require a stage.
@@ -135,6 +149,11 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if err != nil {
 		return nil, err
 	}
+	if canWaitForTextSlot {
+		// Keep the task queued and let the worker's text lane control actual
+		// execution. Billing and model validation still happen normally.
+		policy.Task.ActiveTaskLimit = 0
+	}
 	if policy.Task.ActiveTaskLimit > 0 {
 		kind := model.TaskConcurrency(taskType, req.Operation)
 		activeTasks, err := s.repo.ActiveTaskCountForKind(userID, kind)
@@ -152,7 +171,12 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		}
 	}
 	// 媒体任务在扣费和调用上游前确认账号文件容量，避免容量已满仍然计费却无法回存产物。
-	if err := s.requireStoredFileCapacityForTask(userID, taskType, policy); err != nil {
+	if req.creationPrepare != nil && req.creationPrepare.lockedRepository != nil {
+		err = s.requireStoredFileCapacityForTaskLocked(req.creationPrepare.lockedRepository, userID, taskType, policy)
+	} else {
+		err = s.requireStoredFileCapacityForTask(userID, taskType, policy)
+	}
+	if err != nil {
 		return nil, err
 	}
 	task := model.Task{ID: newID(), UserID: userID, TraceID: req.TraceID, RequestID: req.RequestID, ProjectID: req.ProjectID, Type: taskType, Status: model.TaskStatusQueued, Stage: "等待队列调度", Progress: 5, Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: req.Model}

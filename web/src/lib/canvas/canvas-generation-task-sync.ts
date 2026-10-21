@@ -13,6 +13,8 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { applyGenerationConsumerEffect, generationEffectApplied } from "@/services/generation-consumer-dedupe";
 import { commitProducedModel } from "@/lib/canvas/produced-model";
+import { canonicalize } from "json-canonicalize";
+import { parseScreenplayAuditReport, screenplayReportMarkdown } from "./workflow-screenplay-audit";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
 export function generationTaskInput(task: GenerationTask) {
@@ -198,6 +200,24 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
     }
 
     if (!result.text) throw new Error("后端任务没有返回文本");
+    if (node.metadata?.shortDrama?.screenplayRepair) {
+        const repair = node.metadata.shortDrama.screenplayRepair;
+        const previousContent = repair.previousContent ?? node.metadata.content;
+        return { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, ...completedTaskMetadata(task), content: result.text, richText: undefined, status: "success", taskStage: "修复完成，待重新诊断", errorDetails: undefined,
+            shortDrama: { ...node.metadata.shortDrama, materializedTaskId: task.id, submission: "submitted", screenplayRepair: { ...repair, previousContent, previousRichText: repair.previousRichText ?? node.metadata.richText, repairedAt: new Date().toISOString() } } } };
+    }
+    if (node.metadata?.shortDrama?.screenplayAudit) {
+        try {
+            const report = parseScreenplayAuditReport(result.text, node, nodes);
+            return { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, ...completedTaskMetadata(task), status: "success", taskStage: "正文诊断完成", errorDetails: undefined,
+                shortDrama: { ...node.metadata.shortDrama, materializedTaskId: task.id, screenplayAudit: { ...node.metadata.shortDrama.screenplayAudit, report, reportSignature: canonicalize(report), reportMarkdown: screenplayReportMarkdown(report), rawResult: undefined } } } };
+        } catch (error) {
+            // Retain the charged result for inspection. An invalid report is not
+            // a pass and must never trigger an automatic repair/retry loop.
+            return { ...node, metadata: { ...node.metadata, ...completedTaskMetadata(task), status: "error", taskStage: "诊断报告待核对", errorDetails: error instanceof Error ? error.message : "报告格式不符合审核合同",
+                shortDrama: { ...node.metadata.shortDrama, materializedTaskId: task.id, screenplayAudit: { ...node.metadata.shortDrama.screenplayAudit, report: undefined, rawResult: result.text } } } };
+        }
+    }
     return {
         ...node,
         type: CanvasNodeType.Text,

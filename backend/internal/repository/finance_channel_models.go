@@ -13,6 +13,7 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"infinite-canvas/backend/internal/database"
 	"infinite-canvas/backend/internal/model"
 )
 
@@ -299,6 +300,140 @@ func (r *Repository) UpdateChannelModelsSettings(channelID string, ids []string,
 		return refreshChannelModelNames(tx, channelID, time.Now())
 	})
 	return updated, err
+}
+
+// UpdateChannelModelsBatchSettings atomically updates model fields and optional
+// cost visibility for every price tier belonging to the selected models.
+func (r *Repository) UpdateChannelModelsBatchSettings(channelID string, ids []string, updates map[string]any, updatesByModel map[string]map[string]any, costConfigured *bool, costMicrocredits *int64) (int64, error) {
+	ids = uniqueStrings(ids)
+	if len(ids) == 0 {
+		return 0, gorm.ErrRecordNotFound
+	}
+	var updated int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockSystemChannelForModelMutation(tx, channelID); err != nil {
+			return err
+		}
+		var existing int64
+		if err := tx.Model(&model.ChannelModel{}).Where("channel_id = ? AND id IN ?", channelID, ids).Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing != int64(len(ids)) {
+			return gorm.ErrRecordNotFound
+		}
+		if updatesByModel != nil {
+			for id, modelUpdates := range updatesByModel {
+				result := tx.Model(&model.ChannelModel{}).Where("channel_id = ? AND id = ?", channelID, id).Updates(modelUpdates)
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected != 1 {
+					return gorm.ErrRecordNotFound
+				}
+			}
+		} else if len(updates) > 1 {
+			result := tx.Model(&model.ChannelModel{}).Where("channel_id = ? AND id IN ?", channelID, ids).Updates(updates)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != int64(len(ids)) {
+				return gorm.ErrRecordNotFound
+			}
+		}
+		if costConfigured != nil {
+			costUpdates := map[string]any{"cost_configured": *costConfigured, "updated_at": time.Now()}
+			if *costConfigured && costMicrocredits != nil {
+				costUpdates["cost_unit_price_microcredits"] = *costMicrocredits
+				costUpdates["cost_input_token_price_microcredits"] = *costMicrocredits
+				costUpdates["cost_output_token_price_microcredits"] = *costMicrocredits
+				costUpdates["cost_cached_token_price_microcredits"] = *costMicrocredits
+			}
+			if err := tx.Model(&model.ChannelModelPriceTier{}).Where("channel_model_id IN ?", ids).Updates(costUpdates).Error; err != nil {
+				return err
+			}
+			if *costConfigured {
+				if err := r.ensureDefaultPriceTiersForBatchCost(tx, channelID, ids, costMicrocredits); err != nil {
+					return err
+				}
+			}
+		}
+		updated = int64(len(ids))
+		return refreshChannelModelNames(tx, channelID, time.Now())
+	})
+	return updated, err
+}
+
+// ensureDefaultPriceTiersForBatchCost materializes the legacy scalar pricing
+// fields as a real default tier when an admin configures cost for a model that
+// has no persisted price tiers yet. This keeps batch cost settings observable
+// without changing sale prices, availability, or model status.
+func (r *Repository) ensureDefaultPriceTiersForBatchCost(tx *gorm.DB, channelID string, ids []string, costMicrocredits *int64) error {
+	var items []model.ChannelModel
+	if err := tx.Where("channel_id = ? AND id IN ?", channelID, ids).Find(&items).Error; err != nil {
+		return err
+	}
+	var existing []model.ChannelModelPriceTier
+	if err := tx.Where("channel_model_id IN ?", ids).Find(&existing).Error; err != nil {
+		return err
+	}
+	hasTier := make(map[string]bool, len(existing))
+	for _, tier := range existing {
+		hasTier[tier.ChannelModelID] = true
+	}
+	for _, item := range items {
+		if hasTier[item.ID] {
+			continue
+		}
+		id, err := database.AllocatePrefixedID(tx, "PTIER")
+		if err != nil {
+			return err
+		}
+		billingMode := strings.TrimSpace(item.BillingMode)
+		if billingMode == "" {
+			billingMode = "fixed_request"
+		}
+		tier := model.ChannelModelPriceTier{
+			ID:                           id,
+			ChannelModelID:               item.ID,
+			SelectorKey:                  "{}",
+			SelectorJSON:                 "{}",
+			Resolution:                   "*",
+			ProviderModelKey:             item.ProviderModelKey,
+			BillingMode:                  billingMode,
+			UnitPriceMicrocredits:        item.UnitPriceMicrocredits,
+			InputTokenPriceMicrocredits:  item.InputTokenPriceMicrocredits,
+			OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits,
+			CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits,
+			PriceConfigured:              item.PriceConfigured,
+			Enabled:                      item.Enabled,
+			PriceVersion:                 maxInt64(item.PriceVersion, 1),
+			CostPricing: model.CreditCostPricing{
+				Configured:                   true,
+				UnitPriceMicrocredits:        valueOrZero(costMicrocredits),
+				InputTokenPriceMicrocredits:  valueOrZero(costMicrocredits),
+				OutputTokenPriceMicrocredits: valueOrZero(costMicrocredits),
+				CachedTokenPriceMicrocredits: valueOrZero(costMicrocredits),
+			},
+		}
+		if err := tx.Create(&tier).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func valueOrZero(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func maxInt64(value, fallback int64) int64 {
+	if value > fallback {
+		return value
+	}
+	return fallback
 }
 
 // UpdateChannelModelsSettingsPerModel applies model-specific settings

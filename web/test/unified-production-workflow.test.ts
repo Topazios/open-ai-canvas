@@ -47,7 +47,8 @@ test("separate plan asset groups preserve downstream outlines, prose, images and
     expect(JSON.stringify(outline.created[0].metadata?.shortDrama?.textBatch?.units)).toContain("CHR-0001");
     outline.created[0].metadata!.status = "success"; outline.created[0].metadata!.content = "第1集集纲";
     const body = createWorkflowDocuments({ ...f.request, step: "story.body", sourceNodeIds: [outline.created[0].id] }, outline.nodes, outline.connections, { x: 0, y: 0 });
-    expect(body.created[0].metadata?.prompt).toContain("固定灰色外套");
+    expect(body.created[0].metadata?.shortDrama?.bodyContextVersion).toBe(1);
+    expect(body.created[0].metadata?.prompt).not.toContain("固定灰色外套");
     const progress = deriveShortDramaProgress(f.result.nodes, f.result.connections);
     expect(progress.steps.find((step) => step.id === "story")?.tasks.find((task) => task.id === "story.plan")?.nodeId).toBe(f.frame.id);
 });
@@ -113,6 +114,6 @@ test("asset mentions resolve only supplied versions and reject missing identitie
 test("explicitly absent props do not demand fabricated reference images", () => {
     const f = unifiedPlan();
     const progress = deriveShortDramaProgress(f.result.nodes, f.result.connections);
-    const references = progress.steps.find((step) => step.id === "assets")!.tasks.find((task) => task.stepIds?.includes("assets.prop_references"));
+    const references = progress.steps.find((step) => step.id === "story")!.tasks.find((task) => task.stepIds?.includes("assets.prop_references"));
     expect(references?.progressLabel).toBe("1/3 项已产出");
 });

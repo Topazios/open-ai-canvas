@@ -538,6 +538,15 @@ func TestOpenAIImagesEditUsesJSONImageReferences(t *testing.T) {
 	if !ok {
 		t.Fatalf("body = %#v", spec.Body)
 	}
+	encodedBody, err := json.Marshal(spec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wireBody map[string]any
+	if err := json.Unmarshal(encodedBody, &wireBody); err != nil {
+		t.Fatal(err)
+	}
+	body = wireBody
 	images, ok := body["images"].([]any)
 	if !ok || len(images) != 2 {
 		t.Fatalf("images = %#v", body["images"])

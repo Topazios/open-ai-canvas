@@ -67,7 +67,7 @@ describe("direct workflow image generation", () => {
     test("scene and shot breakdown runs once; frames are selectable without producing all other frames", () => {
         const f = workflowImageFixture();
         expect(f.nodes.some((node) => nodeWorkflow(node)?.step === "direction.scenes")).toBe(false);
-        const shots = f.nodes.find((node) => nodeWorkflow(node)?.step === "direction.shots" && node.type === CanvasNodeType.Text)!;
+        const shots = f.nodes.find((node) => nodeWorkflow(node)?.step === "direction.shots" && node.type === CanvasNodeType.Script)!;
         expect(shots.metadata?.prompt).toContain("一次完成场次调度");
         for (const step of ["direction.boards", "direction.start_frame", "direction.end_frame", "direction.keyframes"] as const) {
             const request = { ...f.request, step, sourceNodeIds: defaultWorkflowSources(step, f.request.pipelineId, f.nodes).filter(Boolean), imagePrompt: "EP01-SH02: medium close-up, protagonist opens the door" };
@@ -77,7 +77,7 @@ describe("direct workflow image generation", () => {
             expect(result.created[0].metadata?.prompt?.startsWith(productionRuleBlock("storyboard", "image"))).toBe(true);
             expect(result.created[0].metadata?.prompt?.split("【制作执行规范 v")).toHaveLength(2);
             expect(nodeWorkflow(result.created[0])?.episodeNumber).toBe(1);
-            expect(nodeWorkflow(result.created[0])?.sourceSteps).toEqual(["direction.production"]);
+            expect(nodeWorkflow(result.created[0])?.sourceSteps).toEqual(["direction.shots"]);
             expect(() => createWorkflowImages({ ...request, imagePrompt: "", imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("镜头编号");
         }
     });
@@ -85,21 +85,18 @@ describe("direct workflow image generation", () => {
     test("guide retains optional actions and requires real images for all assets", () => {
         const f = workflowImageFixture();
         const progress = deriveShortDramaProgress(f.nodes, f.connections);
-        const assetTasks = progress.steps.find((step) => step.id === "assets")!.tasks;
-        expect(assetTasks).toHaveLength(2);
-        expect(assetTasks[0].ready).toBe(true);
-        expect(assetTasks[0].stepIds).toContain("assets.special");
-        expect(assetTasks[1].ready).toBe(false);
-        expect(assetTasks[1].stepIds).toContain("assets.special_references");
+        const task = progress.steps.find((step) => step.id === "story")!.tasks.find(task => task.id === "guide.assets.references")!;
+        expect(task.ready).toBe(false);
+        expect(task.stepIds).toEqual(["assets.character_references", "assets.environment_references", "assets.prop_references"]);
         const subjects = workflowImageSubjects(f.request, f.nodes);
         const partial = createWorkflowImages({ ...f.request, imageSubjectIds: [subjects[0].id] }, f.nodes, f.connections, { x: 0, y: 0 });
         partial.created[0].metadata!.status = "success"; partial.created[0].metadata!.storageKey = "resource:one";
-        const entry = deriveShortDramaProgress(partial.nodes, partial.connections).steps.find((step) => step.id === "assets")!.tasks[1];
+        const entry = deriveShortDramaProgress(partial.nodes, partial.connections).steps.find((step) => step.id === "story")!.tasks.find(task => task.id === "guide.assets.references")!;
         expect(entry.entryStepId).toBe("assets.character_references");
         expect(entry.ready).toBe(false);
         const all = createWorkflowImages({ ...f.request, imageSubjectIds: subjects.map((node) => node.id) }, f.nodes, f.connections, { x: 0, y: 0 });
         all.created.forEach((node) => { node.metadata!.status = "success"; node.metadata!.storageKey = `resource:${node.id}`; });
-        expect(deriveShortDramaProgress(all.nodes, all.connections).steps.find((step) => step.id === "assets")!.tasks[1].entryStepId).toBe("assets.environment_references");
+        expect(deriveShortDramaProgress(all.nodes, all.connections).steps.find((step) => step.id === "story")!.tasks.find(task => task.id === "guide.assets.references")!.entryStepId).toBe("assets.environment_references");
         const before = workflowSignature(all.created[0]); all.created[0].metadata!.storageKey = "resource:replacement";
         expect(workflowSignature(all.created[0])).not.toBe(before);
     });
@@ -124,11 +121,14 @@ describe("direct workflow image generation", () => {
         expect(shots.map((shot) => shot.id)).toEqual(["SH01", "SH02"]);
         const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imageShotId: "SH02" }, f.nodes, f.connections, { x: 0, y: 0 });
         const node = result.created[0];
-        expect(node.metadata?.prompt).toContain("SHOT_2_END"); expect(node.metadata?.prompt).not.toContain("SHOT_1_END");
+        expect(node.metadata?.prompt).toContain("SHOT_2_BOARD"); expect(node.metadata?.prompt).toContain("呈现本镜头动作终点"); expect(node.metadata?.prompt).not.toContain("SHOT_1_BOARD");
         expect(nodeWorkflow(node)?.mediaShotId).toBe("SH02");
-        expect(workflowImageShots(subject, "direction.keyframes")[1].id).toBe("SH02/K1");
+        expect(workflowImageShots(subject, "direction.keyframes")).toEqual([]);
+        const legacy = f.nodes.find(node => nodeWorkflow(node)?.step === "direction.production" && node.type === CanvasNodeType.Text)!;
+        expect(workflowImageShots(legacy, "direction.keyframes")[1].id).toBe("SH02/K1");
         expect(() => createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imageShotId: "missing" }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("所选镜头");
         subject.metadata!.content = "Legacy freeform production document";
+        subject.metadata!.storyboard = undefined;
         expect(workflowImageShots(subject, request.step)).toEqual([]);
     });
 

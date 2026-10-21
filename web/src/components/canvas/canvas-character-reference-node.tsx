@@ -3,8 +3,13 @@ import type { ReactNode } from "react";
 
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import type { CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeActionButton } from "./canvas-node-action-bar";
+import { canvasThemes } from "@/lib/canvas-theme";
+import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
+import { Info } from "lucide-react";
 
-export function CanvasCharacterReferenceNodeContent({ node }: { node: CanvasNodeData }) {
+export function CanvasCharacterReferenceNodeContent({ node, onInfo }: { node: CanvasNodeData; onInfo?: () => void }) {
+    const theme = canvasThemes[useActiveTheme()];
     const visualReady = node.metadata?.characterVisualStatus === "ready";
     const voiceReady = node.metadata?.characterVoiceStatus === "ready";
     return <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -18,6 +23,7 @@ export function CanvasCharacterReferenceNodeContent({ node }: { node: CanvasNode
                 <State icon={<ImageIcon className="size-3" />} ready={visualReady} label={visualReady ? "形象就绪" : "形象待完善"} />
                 <State icon={<Volume2 className="size-3" />} ready={voiceReady} label={voiceReady ? node.metadata?.characterVoiceName || "声音已绑定" : "声音未绑定"} />
             </div>
+            {onInfo ? <div className="mt-2 flex min-h-10 items-center justify-start border-t pt-1.5" style={{ borderColor: theme.node.stroke }} data-canvas-no-zoom><CanvasNodeActionButton theme={theme} label="详情" icon={<Info className="size-3.5" />} onClick={onInfo} /></div> : null}
         </div>
     </div>;
 }

@@ -333,6 +333,8 @@ export type ChannelModelBatchSettings = {
     protocols?: import("@/lib/model-protocols").ModelProtocolConfig;
     modelIds: string[];
     enabled?: boolean;
+    costConfigured?: boolean;
+    costMicrocredits?: number;
     displayName?: string;
     channelLabel?: string;
     description?: string;

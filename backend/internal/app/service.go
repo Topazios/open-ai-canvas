@@ -34,6 +34,10 @@ type Service struct {
 	storageMu                sync.Mutex
 	storageTestMu            sync.Mutex
 	workerRuntimeMu          sync.Mutex
+	runtimePolicyFallbackMu  sync.Mutex
+	runtimePolicyFallback    RuntimeTaskPolicy
+	runtimePolicyFallbackAt  time.Time
+	runtimePolicyFallbackSet bool
 	agentSchedulerMu         sync.Mutex
 	agentSchedulerWake       chan struct{}
 	taskDispatcherWake       chan struct{}

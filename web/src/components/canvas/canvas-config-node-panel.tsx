@@ -18,6 +18,7 @@ import { workflowProviderPluginEnabled } from "@/lib/plugins/builtin/workflows";
 import { usePluginStore } from "@/stores/use-plugin-store";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata, CanvasVideoEditOperation, CanvasWorkspaceMode } from "@/types/canvas";
 import { Select } from "@/components/ui/base/select";
+import { CanvasNodeActionButton } from "./canvas-node-action-bar";
 
 type CanvasConfigNodePanelProps = {
     node: CanvasNodeData;
@@ -151,7 +152,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const canGenerate = (hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput)) && !capabilityError;
 
     return (
-        <div className="canvas-config-node-panel thin-scrollbar flex h-full w-full cursor-move flex-col gap-3.5 overflow-y-auto px-4 pb-4 pt-8 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
+        <div className="flex h-full w-full cursor-move flex-col overflow-hidden text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
+            <div className="canvas-config-node-panel thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pb-3 pt-8" onWheel={(event) => event.stopPropagation()}>
             <div className="flex min-h-9 items-center justify-between gap-3">
                 <div className="shrink-0 text-sm font-semibold">{simpleMode ? "快速生成" : workflowProvider === "model" ? "生成配置" : "工作流生成"}</div>
                 {simpleMode ? <span className="rounded-md px-2 py-1 text-[var(--fs-tiny)]" style={{ background: theme.node.fill, color: theme.node.muted }}>自动配置</span> : <div className="cursor-default" data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
@@ -201,7 +203,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 {inputSummary.characterCount ? <InputChip label="角色卡" value={`${inputSummary.characterCount} 个`} style={chipStyle} /> : null}
             </div>
 
-            <button type="button" className="canvas-config-prompt-button group flex min-h-11 w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 text-left" style={{ background: theme.node.fill, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onComposerToggle}>
+            <div className="canvas-config-prompt-button flex min-h-11 w-full items-center gap-2.5 rounded-lg px-3 text-left" style={{ background: theme.node.fill, color: theme.node.text }}>
                 <span className="grid size-7 shrink-0 place-items-center rounded-md" style={{ background: theme.node.panel }}>
                     {simpleMode ? <MessageSquare className="size-3.5" /> : <Sparkles className="size-3.5" />}
                 </span>
@@ -209,8 +211,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                     <span className="block text-[var(--fs-label)] font-semibold">{simpleMode ? "编辑生成内容" : "组装提示词"}</span>
                     <span className="block truncate text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{hasComposerContent ? "已填写，可继续编辑或引用素材" : "输入提示词，或用 @ 引用连接素材"}</span>
                 </span>
-                <ChevronDown className="size-3.5 -rotate-90 opacity-45 transition-transform group-hover:translate-x-0.5" />
-            </button>
+                <ChevronDown className="size-3.5 -rotate-90 opacity-45" />
+            </div>
 
             {mode === "video" && !simpleMode ? (
                 <div className="cursor-default" data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
@@ -287,28 +289,11 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
 
             {capabilityError ? <div className="rounded-lg px-3 py-2 text-[var(--fs-tiny)]" style={{ background: theme.accent.danger + "18", color: theme.accent.danger }}>{capabilityError}</div> : null}
 
-            <Button
-                type="primary"
-                className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
-                disabled={isRunning || !canGenerate}
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => onGenerate(node.id)}
-            >
-                <span className="inline-flex items-center gap-1.5">
-                        {isRunning ? (
-                            <>
-                                <LoaderCircle className="size-4 animate-spin" />
-                                <span>生成中</span>
-                        </>
-                    ) : (
-                        <>
-                            <span>生成</span>
-                            <Play className="size-4" />
-                            <span>开始生成</span>
-                        </>
-                    )}
-                </span>
-            </Button>
+            </div>
+            <div className="flex min-h-10 shrink-0 items-center justify-start gap-1 border-t px-3 py-1.5" style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel }} data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                <CanvasNodeActionButton theme={theme} label="编辑提示词" icon={<MessageSquare className="size-3.5" />} onClick={onComposerToggle} />
+                <CanvasNodeActionButton theme={theme} label={isRunning ? "生成中" : "开始生成"} icon={isRunning ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />} primary disabled={isRunning || !canGenerate} onClick={() => onGenerate(node.id)} />
+            </div>
         </div>
     );
 }

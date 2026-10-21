@@ -3,6 +3,8 @@ package app
 import (
 	"fmt"
 	"strings"
+
+	"infinite-canvas/backend/internal/repository"
 )
 
 // 产出媒体文件的任务类型：这些任务成功后必须把结果回存为资源文件。
@@ -29,7 +31,16 @@ func (s *Service) requireStoredFileCapacityForTask(userID string, taskType strin
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
-	storedBytes, err := s.repo.UserStoredFileBytes(userID)
+	return s.requireStoredFileCapacityForTaskLocked(s.repo, userID, taskType, policy)
+}
+
+// The caller holds storageMu; use its transaction without acquiring the lock again.
+func (s *Service) requireStoredFileCapacityForTaskLocked(repo *repository.Repository, userID, taskType string, policy RuntimePolicySetting) error {
+	storedLimit := gigabytes(policy.Resource.StoredFileGB)
+	if !taskTypeProducesStoredFile(taskType) || storedLimit <= 0 {
+		return nil
+	}
+	storedBytes, err := repo.UserStoredFileBytes(userID)
 	if err != nil {
 		return err
 	}

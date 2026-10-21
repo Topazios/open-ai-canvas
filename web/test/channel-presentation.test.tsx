@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { systemChannelModelChannels } from "../src/lib/user-session";
 import { ChannelOrderDialog, moveOrderItem } from "../src/pages/admin/components/channel-order-dialog";
 import type { PublicChannelCatalog, PublicChannelModel } from "../src/services/api/logical-models";
-import { defaultConfig, normalizeConfigSnapshot, selectableModelsByCapability } from "../src/stores/use-config-store";
+import { defaultConfig, modelOptionsForPickerFromChannels, normalizeConfigSnapshot, selectableModelsByCapability } from "../src/stores/use-config-store";
 
 test("public channel order, alias and model order survive session normalization and capability filtering", () => {
     const model = (key: string, available = true): PublicChannelModel => ({
@@ -30,7 +30,8 @@ test("public channel order, alias and model order survive session normalization 
         ["z-channel", "前台精选", 1],
         ["a-channel", "默认名称", 20],
     ]);
-    expect(config.channels[0]!.models).toEqual(["z-model", "a-model"]);
+    expect(config.channels[0]!.models).toEqual(["z-model", "hidden", "a-model"]);
+    expect(modelOptionsForPickerFromChannels(config.channels)).toContain("z-channel::hidden");
     expect(selectableModelsByCapability(config, "image")).toEqual(["z-channel::z-model", "z-channel::a-model", "a-channel::b-model"]);
     expect(config.model).toBe("z-channel::a-model");
 });

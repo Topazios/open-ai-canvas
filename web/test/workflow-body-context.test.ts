@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { episodeOutlineContext } from "../src/lib/canvas/workflow-body-context";
+import { bodySourceRecords, episodeOutlineContext } from "../src/lib/canvas/workflow-body-context";
 import { workflowBodyBatch } from "../src/lib/canvas/workflow-text-batch";
 import { MAX_CANVAS_PAYLOAD_BYTES } from "../src/lib/canvas/generation-contract.generated";
 import { createWorkflowDocuments, nodeWorkflow, workflowBodyTaskInput, workflowSignature } from "../src/lib/canvas/canvas-short-drama-workflow";
@@ -13,6 +13,8 @@ import type { CanvasProject } from "../src/stores/canvas/use-canvas-store";
 import { retryWorkflowGeneration } from "../src/services/workflow-generation-retry";
 import { defaultConfig } from "../src/stores/use-config-store";
 import type { GenerationTask } from "../src/services/api/task-center";
+
+const requestText = (input: ReturnType<typeof workflowBodyTaskInput>) => `${input.prompt}\n${JSON.stringify(input.workflowBatch)}`;
 
 function fixture(count = 4) {
     const p = createShortDramaPipeline({ x: 0, y: 0 }, true); p.nodes[0].metadata!.content = "选定故事";
@@ -45,12 +47,12 @@ test("body nodes persist references and assemble only the relevant episode and a
     expect(body.metadata!.prompt).not.toContain("本集独有剧情");
     expect(body.metadata!.shortDrama!.textBatch).toBeUndefined();
     const input = workflowBodyTaskInput(body, bodies.nodes, bodies.connections);
-    expect(input.workflowBatch).toBeUndefined();
-    expect(input.prompt).toContain("本集独有剧情1");
-    expect(input.prompt).toContain("本集独有剧情2");
-    expect(input.prompt).not.toContain("本集独有剧情4");
-    expect(input.prompt).toContain("声音低沉");
-    expect(input.prompt).not.toContain("靠南入口");
+    expect(input.workflowBatch).toMatchObject({ version: 4, bodyWriting: { targetSeconds: 120 } });
+    expect(requestText(input)).toContain("本集独有剧情1");
+    expect(requestText(input)).toContain("本集独有剧情2");
+    expect(requestText(input)).not.toContain("本集独有剧情4");
+    expect(requestText(input)).toContain("声音低沉");
+    expect(requestText(input)).not.toContain("靠南入口");
     f.outline.metadata!.content += "\n改稿";
     expect(() => workflowBodyTaskInput(body, bodies.nodes)).toThrow("来源已变化");
 });
@@ -72,10 +74,31 @@ test("current outline codes override planned appearances, keep voice and drop im
     f.outline.metadata!.shortDrama!.sourceSignatures[character.id] = workflowSignature(character);
     const result = createWorkflowDocuments(f.bodyRequest, f.nodes, f.connections, { x: 0, y: 0 });
     const input = workflowBodyTaskInput(result.created[0], result.nodes, result.connections);
-    expect(input.prompt).toContain("低沉而克制");
-    expect(input.prompt).toContain("对母亲始终礼貌");
-    expect(input.prompt).toContain("靠南入口");
-    expect(input.prompt).not.toContain("三视图长篇参数");
+    expect(requestText(input)).toContain("低沉而克制");
+    expect(requestText(input)).toContain("对母亲始终礼貌");
+    expect(requestText(input)).toContain("靠南入口");
+    expect(requestText(input)).not.toContain("三视图长篇参数");
+});
+
+test("body references remove production-only chapters while retaining voice, causal rules and user edits", () => {
+    const f = fixture();
+    const character = f.plan.docs.find(node => node.metadata?.shortDrama?.planAsset?.kind === "character")!;
+    character.metadata!.content = [
+        "## 人物编码、别名、选题依据与预计出场\n选择论证与全季出场排期",
+        "## 人物身份与剧情功能\n保留身份与动机",
+        "## 人物声线设计与声音资产引用\n声音低沉 @AUD-0001",
+        "## 声线音色、质感与辨识点\n保留沙哑口吻",
+        "## 音域、音高与共鸣位置\n不需要录音频段参数\n### 技术子节\n技术细节",
+        "## 语言、口音与咬字习惯\n保留口音和措辞",
+        "## 人物跨集不变项与变化条件\n保留能力代价与关系边界",
+        "## 人物参考图生成提示词（新版）\n不需要三视图参数",
+        "## 用户新增事实\n保留最新手工事实\n```md\n## 生图参数\n代码示例不是新章节\n```",
+    ].join("\n");
+    const records = bodySourceRecords([f.outline, character], 1, "");
+    const text = records.find(record => record.id === character.id)!.content;
+    for (const fact of ["保留身份与动机", "声音低沉 @AUD-0001", "保留沙哑口吻", "保留口音和措辞", "保留能力代价与关系边界", "保留最新手工事实", "代码示例不是新章节"]) expect(text).toContain(fact);
+    for (const production of ["选择论证与全季出场排期", "不需要录音频段参数", "技术细节", "不需要三视图参数"]) expect(text).not.toContain(production);
+    expect(records.find(record => record.id === character.id)?.assetIdentity).toEqual(character.metadata!.shortDrama!.assetIdentity);
 });
 
 test("retry entry assembles reference-only body requests and keeps the existing task identity", async () => {
@@ -92,14 +115,14 @@ test("retry entry assembles reference-only body requests and keeps the existing 
         retry: async (id: string) => { calls.push(`retry:${id}`); return task; },
     };
     await retryWorkflowGeneration(body, undefined, "canvas", defaultConfig, api, result.nodes);
-    expect(input.prompt).toContain("本集独有剧情1");
-    expect(input.prompt).not.toContain("本集独有剧情4");
+    expect(requestText(input)).toContain("本集独有剧情1");
+    expect(requestText(input)).not.toContain("本集独有剧情4");
     expect(input.clientOperationId).toBe(body.metadata!.shortDrama!.operationId);
     await retryWorkflowGeneration(body, { ...task, status: "failed", operation: "short_drama_batch" }, "canvas", defaultConfig, api, result.nodes);
     expect(calls).toEqual(["create", "create"]);
     expect(input.retryOf).toBe("mock");
-    expect(input.prompt).toContain("本集独有剧情1");
-    expect(input.workflowBatch).toBeUndefined();
+    expect(requestText(input)).toContain("本集独有剧情1");
+    expect(input.workflowBatch).toMatchObject({ version: 4, bodyWriting: { targetSeconds: 120 } });
     await retryWorkflowGeneration(body, { ...task, status: "running" }, "canvas", defaultConfig, api, result.nodes);
     expect(calls).toHaveLength(2);
 });
@@ -118,7 +141,7 @@ test("recover old never-submitted bodies in place, preserving requests and histo
     expect(repaired.metadata!.shortDrama!.operationId).toBe(metadata.shortDrama!.operationId);
     expect(repaired.metadata!.shortDrama!.sourceSignatures).toEqual(metadata.shortDrama!.sourceSignatures);
     expect(repaired.metadata!.shortDrama!.textBatch).toBeUndefined();
-    expect(workflowBodyTaskInput(repaired, result.nodes).prompt).toContain("本集独有剧情1");
+    expect(requestText(workflowBodyTaskInput(repaired, result.nodes))).toContain("本集独有剧情1");
     metadata.shortDrama!.submission = "submitted"; metadata.taskId = "paid-task";
     expect(compactWorkflowNodes(result.nodes).find(node => node.id === old.id)).toBe(old);
     metadata.shortDrama!.submission = "planned"; delete metadata.taskId;

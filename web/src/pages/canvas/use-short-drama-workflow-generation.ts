@@ -16,6 +16,7 @@ import { ApiError } from "@/services/api/request";
 import { prepareProductionAgent, submitProductionAgent } from "@/services/production-agent";
 import { refreshCanvasAfterAgent } from "@/services/user-data-sync";
 import { withRuntimeConcurrency } from "@/services/runtime-limits";
+import { screenplayAuditState } from "@/lib/canvas/workflow-screenplay-audit";
 import { selectableModelsByCapability, type AiConfig } from "@/stores/use-config-store";
 import type { CanvasConnection, CanvasNodeData, Position } from "@/types/canvas";
 
@@ -31,6 +32,7 @@ type Options = {
 
 const workflowSubmitGapMs = 220;
 const workflowSubmitRetryDelaysMs = [500, 1_000, 2_000] as const;
+const activeTextSlotRetryDelaysMs = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000] as const;
 
 function waitWithWorkflowAbort(delay: number, signal: AbortSignal) {
     if (delay <= 0) return Promise.resolve();
@@ -55,19 +57,30 @@ function waitForWorkflowSubmitGap(lastSubmittedAt: number, signal: AbortSignal) 
     return waitWithWorkflowAbort(Math.max(0, remaining), signal);
 }
 
+function activeTextSlotError(error: unknown) {
+    const text = error instanceof ApiError
+        ? `${error.reason || ""} ${error.message}`
+        : error instanceof Error ? error.message : String(error);
+    return /同时排队或运行的任务最多|同类型同时进行的任务数已达上限|active.?task.?limit|active.?slot/i.test(text);
+}
+
 function retryableWorkflowSubmitError(error: unknown) {
+    if (activeTextSlotError(error)) return true;
     if (error instanceof ApiError) return error.retryable || /database is (?:locked|busy)|sqlite_busy|sqlite_locked/i.test(`${error.reason || ""} ${error.message}`);
     return /database is (?:locked|busy)|sqlite_busy|sqlite_locked/i.test(error instanceof Error ? error.message : String(error));
 }
 
-async function createWorkflowTaskWithBackoff(input: Parameters<typeof createGenerationTask>[0], signal: AbortSignal) {
+async function createWorkflowTaskWithBackoff(input: Parameters<typeof createGenerationTask>[0], signal: AbortSignal, onActiveSlotWait?: () => void) {
     for (let attempt = 0; ; attempt++) {
         try {
             return await createGenerationTask(input);
         } catch (error) {
-            if (!retryableWorkflowSubmitError(error) || attempt >= workflowSubmitRetryDelaysMs.length) throw error;
+            const waitingForActiveSlot = activeTextSlotError(error);
+            if (!retryableWorkflowSubmitError(error) || (!waitingForActiveSlot && attempt >= workflowSubmitRetryDelaysMs.length)) throw error;
+            if (waitingForActiveSlot) onActiveSlotWait?.();
             const retryAfter = error instanceof ApiError ? error.retryAfterMs : undefined;
-            const delay = Math.max(retryAfter || 0, workflowSubmitRetryDelaysMs[attempt]);
+            const delays = waitingForActiveSlot ? activeTextSlotRetryDelaysMs : workflowSubmitRetryDelaysMs;
+            const delay = Math.max(retryAfter || 0, delays[Math.min(attempt, delays.length - 1)]);
             await waitWithWorkflowAbort(delay, signal);
         }
     }
@@ -100,13 +113,43 @@ export function useShortDramaWorkflowGeneration(options: Options) {
             const node = context.nodesRef.current.find((entry) => entry.id === id);
             const data = node?.metadata?.shortDrama;
             if (!node || data?.submission !== "planned") continue;
+            if (data.step === "assets.reconcile") throw new Error("旧正文资产校核已停用，请改用正文质量审核");
+            const validateReviewSettings = () => {
+                if (!data.screenplayRepair) return;
+                const report = data.screenplayRepair.reportNodeId
+                    ? context.nodesRef.current.find(node => node.id === data.screenplayRepair!.reportNodeId)
+                    : node;
+                // Inline repair keeps the prior report on the正文节点. The
+                // pending repair itself changes the node status to idle/loading
+                // (and a failed repair leaves it error), but that status does not
+                // invalidate the report. Validate the pinned report as a
+                // successful review and still let content/settings signatures
+                // reject a genuinely stale repair.
+                const reviewNode = !data.screenplayRepair.reportNodeId && report
+                    ? { ...report, metadata: { ...report.metadata, status: "success" as const } }
+                    : report;
+                if (screenplayAuditState(reviewNode, context.nodesRef.current, useCanvasStore.getState().openProject(context.projectId)?.globalSettings).stale) throw new Error("诊断或全局设定已变化，请重新审核后修复");
+            };
+            validateReviewSettings();
             const sources = workflowGenerationSources(data, context.nodesRef.current, context.connectionsRef.current);
-            if (sources.some((source) => !workflowSignatureMatches(source, data.sourceSignatures[source.id] || ""))) throw new Error("前置内容已变化，未提交节点保留，请重新生成");
-            if (Object.entries(data.sourceSignatures).some(([sourceId, signature]) => {
-                const source = context.nodesRef.current.find((entry) => entry.id === sourceId);
-                return !source || !workflowSignatureMatches(source, signature);
-            })) throw new Error("前置内容已变化，未提交节点保留，请重新生成");
+            // Audits and repairs pin their own body/context signatures. Their
+            // sourceSignatures are inherited from the body node for lineage,
+            // so applying the generic generation guard here would reject a
+            // valid audit whenever an upstream outline was edited later.
+            const pinnedAudit = Boolean(data.screenplayAudit || data.screenplayRepair);
+            if (!pinnedAudit) {
+                if (sources.some((source) => !workflowSignatureMatches(source, data.sourceSignatures[source.id] || ""))) throw new Error("前置内容已变化，未提交节点保留，请重新生成");
+                if (Object.entries(data.sourceSignatures).some(([sourceId, signature]) => {
+                    const source = context.nodesRef.current.find((entry) => entry.id === sourceId);
+                    return !source || !workflowSignatureMatches(source, signature);
+                })) throw new Error("前置内容已变化，未提交节点保留，请重新生成");
+            }
             const validateAfterSave = async () => {
+                validateReviewSettings();
+                if (pinnedAudit) {
+                    workflowGenerationSources(data, context.nodesRef.current, context.connectionsRef.current);
+                    return;
+                }
                 let referencesCurrent = true;
                 if (data.mediaKind === "image" || data.assetRevision) {
                     try { workflowGenerationSources(data, context.nodesRef.current, context.connectionsRef.current); }
@@ -157,10 +200,12 @@ export function useShortDramaWorkflowGeneration(options: Options) {
                 if (problem) throw new Error(problem);
             }
             const textInput = workflowBodyTaskInput(node, context.nodesRef.current, context.connectionsRef.current);
-            const input = await prepareBackendGenerationTask({ projectId: context.projectId, mode, prompt: textInput.prompt, workflowBatch: mode === "text" ? textInput.workflowBatch : undefined,
+            const input = await prepareBackendGenerationTask({ projectId: context.projectId, mode, prompt: textInput.prompt, workflowBatch: mode === "text" ? textInput.workflowBatch : undefined, structuredOutput: mode === "text" ? textInput.structuredOutput : undefined,
                 config: { ...context.config, model: selectedModel, ...(mode === "image" ? { imageModel: selectedModel, size: node.metadata?.size || context.config.size, quality: node.metadata?.quality || context.config.quality, transparentBackground: node.metadata?.transparentBackground || "false", count: "1" } : {}) },
                 referenceImages, reasoningEffort: mode === "text" ? node.metadata!.reasoningEffort || "medium" : undefined, streamText: mode === "text" && !textInput.workflowBatch, clientOperationId: data.operationId,
-                metadata: { source: "canvas-short-drama-workflow", nodeId: id, pipelineId: data.pipelineId, workflowStage: data.stage, workflowStep: data.step, episodeNumber: data.episodeNumber } });
+                // 审核复用正文节点，节点内部 step 仍是 story.body；提交协议必须明确标记 story.audit，
+                // 否则后端会按普通正文任务执行，无法进入审核专用排队与重试路径。
+                metadata: { source: "canvas-short-drama-workflow", nodeId: id, pipelineId: data.pipelineId, workflowStage: data.stage, workflowStep: textInput.structuredOutput ? "story.audit" : data.step, episodeNumber: data.episodeNumber } });
             if (!valid() || !context.nodesRef.current.some((entry) => entry.id === id)) break;
             patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "loading", errorDetails: undefined, taskStage: "正在提交", taskClientOperationId: data.operationId, shortDrama: { ...data, submission: "submitting" } } }));
             // Persist the uncertain-submit marker before POST. A reload must never replay it.
@@ -172,7 +217,10 @@ export function useShortDramaWorkflowGeneration(options: Options) {
             if (!valid() || !context.nodesRef.current.some((entry) => entry.id === id)) break;
             try {
                 await waitForWorkflowSubmitGap(lastSubmittedAt, signal);
-                const task = await withRuntimeConcurrency(mode, () => createWorkflowTaskWithBackoff(input, signal), signal);
+                const task = await withRuntimeConcurrency(mode, () => createWorkflowTaskWithBackoff(input, signal, () => patch(id, (current) => ({
+                    ...current,
+                    metadata: { ...current.metadata, taskStage: "等待文本任务槽位" },
+                }))), signal);
                 lastSubmittedAt = Date.now();
                 if (!valid()) break;
                 if (!context.nodesRef.current.some((entry) => entry.id === id)) {
@@ -202,7 +250,7 @@ export function useShortDramaWorkflowGeneration(options: Options) {
         }
     };
 
-    const run = (request: WorkflowGenerationRequest) => {
+    const run = (request: WorkflowGenerationRequest): Promise<void> => {
         if (lock.current) throw new Error("上一批生成请求正在提交，请稍后再试");
         const context = ref.current;
         const signal = lifetime.current.signal;
@@ -234,7 +282,7 @@ export function useShortDramaWorkflowGeneration(options: Options) {
                 }
             } finally { lock.current = false; setSubmitting(false); }
         };
-        void execute();
+        return execute();
     };
     const resume = async (id: string) => {
         if (lock.current) return;

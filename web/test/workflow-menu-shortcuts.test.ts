@@ -7,8 +7,8 @@ test("story menus follow the immediate production path instead of all references
     expect(next(S.Topic)).toEqual([S.Plan]);
     expect(next(S.Plan)).toEqual([S.Episodes]);
     expect(next(S.Episodes)).toEqual([S.Body]);
-    expect(next(S.Body)).toEqual([S.Reconcile, S.Shots]);
-    expect(next(S.Shots)).toEqual([S.Production, S.Dialogue]);
+    expect(next(S.Body)).toEqual([S.Audit, S.Shots]);
+    expect(next(S.Shots)).toEqual([S.Boards, S.StartFrame, S.EndFrame, S.Keyframes, S.Previsualization, S.Dialogue]);
     expect(next(S.Verify)).toEqual([S.Promotion]);
 });
 

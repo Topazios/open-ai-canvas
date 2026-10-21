@@ -193,7 +193,7 @@ func compileCloudAgentPolicies(req CloudAgentRequest, skills []cloudAgentSkill, 
 		// the stable system prefix remains cacheable.
 		context["canvasSummary"] = canvasSummary
 	}
-	if len(anchors) > 0 {
+	if len(anchors) > 0 && req.Production == nil {
 		// User intent remains in user messages, never frozen into system context.
 		context["referenceCandidates"] = anchors[0].ReferenceAssets
 	}

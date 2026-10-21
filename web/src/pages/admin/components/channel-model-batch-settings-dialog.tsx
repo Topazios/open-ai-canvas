@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, App, Button, Checkbox, Input, Radio, Segmented } from "antd";
+import { Alert, App, Button, Checkbox, Input, InputNumber, Radio, Segmented, Switch } from "antd";
 import { AdminModal } from "@/pages/admin/ui/overlays";
 import { ModelIconPicker } from "@/components/model-logo";
 import { ModelProtocolBrowser } from "@/components/model-protocol-browser";
@@ -9,6 +9,7 @@ import { updateAdminChannelModelsSettings, type ChannelModel } from "@/services/
 
 type ApplyState = {
     enabled: boolean;
+    costConfigured: boolean;
     displayName: boolean;
     channelLabel: boolean;
     description: boolean;
@@ -36,8 +37,10 @@ export function ChannelModelBatchSettingsDialog({
     onSaved: () => Promise<void>;
 }) {
     const { message } = App.useApp();
-    const [apply, setApply] = useState<ApplyState>({ enabled: false, displayName: false, channelLabel: false, description: false, icon: false, contract: false });
+    const [apply, setApply] = useState<ApplyState>({ enabled: false, costConfigured: false, displayName: false, channelLabel: false, description: false, icon: false, contract: false });
     const [enabled, setEnabled] = useState<"enabled" | "disabled">("enabled");
+    const [costEnabled, setCostEnabled] = useState(true);
+    const [costAmount, setCostAmount] = useState<number>(0);
     const [displayName, setDisplayName] = useState("");
     const [channelLabel, setChannelLabel] = useState("");
     const [description, setDescription] = useState("");
@@ -65,6 +68,10 @@ export function ChannelModelBatchSettingsDialog({
             const result = await updateAdminChannelModelsSettings(channelId, {
                 modelIds: items.map((item) => item.id),
                 ...(apply.enabled ? { enabled: enabled === "enabled" } : {}),
+                ...(apply.costConfigured ? {
+                    costConfigured: costEnabled,
+                    ...(costEnabled ? { costMicrocredits: Math.round(costAmount * 1_000_000) } : {}),
+                } : {}),
                 ...(apply.displayName ? { displayName: displayName.trim() } : {}),
                 ...(apply.channelLabel ? { channelLabel: channelLabel.trim() } : {}),
                 ...(apply.description ? { description: description.trim() } : {}),
@@ -113,6 +120,32 @@ export function ChannelModelBatchSettingsDialog({
                                 { label: "停用", value: "disabled" },
                             ]}
                         />
+                    </BatchSettingRow>
+                    <BatchSettingRow checked={apply.costConfigured} onToggle={() => toggle("costConfigured")} label="积分成本">
+                        {apply.costConfigured ? (
+                            <div className="space-y-3">
+                                <div className="flex items-center gap-2">
+                                    <Switch checked={costEnabled} onChange={setCostEnabled} aria-label="启用积分成本配置" />
+                                    <span>配置成本</span>
+                                </div>
+                                {costEnabled ? (
+                                    <div className="max-w-xs">
+                                        <InputNumber
+                                            aria-label="统一积分成本"
+                                            className="w-full"
+                                            min={0}
+                                            max={1_000_000}
+                                            precision={6}
+                                            step={0.1}
+                                            value={costAmount}
+                                            onChange={(value) => setCostAmount(value ?? 0)}
+                                            addonAfter="积分"
+                                        />
+                                        <div className="mt-1 text-xs text-muted-foreground">统一应用到所选模型的所有价格档；Token 计费档会同步设置输入、输出和缓存成本。</div>
+                                    </div>
+                                ) : null}
+                            </div>
+                        ) : null}
                     </BatchSettingRow>
                     <BatchSettingRow checked={apply.contract} onToggle={() => toggle("contract")} label="能力与调用协议">
                         <div className="space-y-3">

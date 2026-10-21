@@ -49,16 +49,17 @@ describe("workflow save recovery and progress", () => {
         expect(() => workflowGenerationSources({ ...f.request, step: "direction.shots", sourceNodeIds: ids }, f.nodes)).not.toThrow();
     });
 
-    test("guide explains failed extraction and counts remaining reference subjects", () => {
+    test("guide retains failed legacy extraction nodes but counts images in preproduction", () => {
         const f = workflowImageFixture({ failedAssetSummaries: true });
         let progress = deriveShortDramaProgress(f.nodes, f.connections);
-        expect(progress.steps.find((step) => step.id === "assets")!.tasks.find((task) => task.id === "guide.assets.fixed")!.statusDetail).toContain("任务失败，提取未完成");
+        expect(progress.steps.some(step => step.id === "assets")).toBe(false);
+        expect(f.nodes.some(node => nodeWorkflow(node)?.assetKey === "$summary" && node.metadata?.status === "error")).toBe(true);
         const subjects = workflowImageSubjects(f.request, f.nodes);
         const result = createWorkflowImages({ ...f.request, imageSubjectIds: [subjects[0].id] }, f.nodes, f.connections, { x: 0, y: 0 });
         result.created[0].metadata!.status = "success";
         result.created[0].metadata!.storageKey = "resource:fixture-image";
         progress = deriveShortDramaProgress(result.nodes, result.connections);
-        const references = progress.steps.find((step) => step.id === "assets")!.tasks.find((task) => task.id === "guide.assets.references")!;
+        const references = progress.steps.find((step) => step.id === "story")!.tasks.find((task) => task.id === "guide.assets.references")!;
         expect(references.ready).toBe(false);
         expect(references.statusDetail).toContain("已完成 1/2 项参考图");
         expect(progress.steps.find((step) => step.id === "storyboard")!.tasks.find((task) => task.id === "guide.direction.breakdown")!.ready).toBe(true);

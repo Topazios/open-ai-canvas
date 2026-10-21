@@ -4,7 +4,7 @@ import { groupModelsByDisplayName, modelCompatibilityError, modelGroupReferenceL
 import { modelQuoteRequest, priceTiersForCurrentSelection, priceTierSummaryLabel } from "../src/lib/model-pricing";
 import { systemChannelModelChannels } from "../src/lib/user-session";
 import type { PublicChannelCatalog, PublicChannelModel } from "../src/services/api/logical-models";
-import { defaultConfig, normalizeConfigSnapshot, resolveModelRequestConfig, selectableModelsByCapability } from "../src/stores/use-config-store";
+import { defaultConfig, modelOptionsForPickerFromChannels, normalizeConfigSnapshot, resolveModelRequestConfig, selectableModelsByCapability } from "../src/stores/use-config-store";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 import { buildGenerationConfig } from "../src/lib/canvas/canvas-project-generation";
 import { CanvasNodeType } from "../src/types/canvas";
@@ -38,6 +38,21 @@ test("same model display name groups all channels and preserves their prices", (
         ["Seedance 2.0", "product", [["正常渠道", ["a::seedance-2.0"]], ["优惠渠道-993", ["b::seedance-2.0"]], ["特惠渠道-730", ["c::seedance-2.0"]]]],
     ]);
     expect(config.channels.map((channel) => priceTierSummaryLabel(priceTiersForCurrentSelection(channel.modelCosts![0].logicalPriceTiers!, "video", config)))).toEqual(["0.3 积分/秒", "0.3 积分/秒", "0.2 积分/秒"]);
+});
+
+test("enabled models without prices remain visible in the picker but cannot be selected", () => {
+    const unpriced = { ...model("待配置价格", 0, "unpriced-model"), available: false, priceLabel: "未配置", priceTiers: [] };
+    const channels = systemChannelModelChannels([{ id: "catalog", name: "平台模型", displayName: "平台模型", models: [unpriced] }]);
+    const config = normalizeConfigSnapshot({ config: { ...defaultConfig, channels } }).config;
+    const visible = modelOptionsForPickerFromChannels(config.channels);
+
+    expect(visible).toContain("catalog::unpriced-model");
+    expect(selectableModelsByCapability(config, "video")).not.toContain("catalog::unpriced-model");
+    expect(groupModelsForPicker(config, visible)[0]?.models[0]?.models).toEqual(["catalog::unpriced-model"]);
+
+    const priced = { ...unpriced, available: true, priceTiers: model("已配置价格", 100_000, "unpriced-model").priceTiers };
+    const pricedConfig = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: systemChannelModelChannels([{ id: "catalog", name: "平台模型", displayName: "平台模型", models: [priced] }]) } }).config;
+    expect(selectableModelsByCapability(pricedConfig, "video")).toContain("catalog::unpriced-model");
 });
 
 test("grouping uses display name even when model keys differ, without merging channel options", () => {

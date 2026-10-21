@@ -62,7 +62,7 @@ export type StoryboardShotDuration = "auto" | "5" | "10" | "15" | "30";
 export type StoryboardShotCount = "auto" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10";
 export type StoryboardVideoInputMode = "direct" | "keyframe";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
-export type CanvasGenerationBatchMode = "storyboard_image" | "storyboard_video" | "action_board" | "batch_image";
+export type CanvasGenerationBatchMode = "storyboard_image" | "storyboard_video" | "storyboard_keyframes" | "action_board" | "batch_image";
 export type CanvasGenerationBatchStatus = "queued" | "running" | "partial_failed" | "completed" | "cancelled";
 export type CanvasGenerationBatchItemStatus = "waiting" | "submitting" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type CanvasImageGenerationType = "generation" | "edit";
@@ -109,8 +109,21 @@ export type StoryboardCharacterReference = {
 
 export type StoryboardRow = {
     id: string;
+    detailStatus?: "planned" | "queued" | "retrying" | "error" | "ready";
+    detailError?: string;
+    detailTaskId?: string;
+    plannedGoal?: string;
+    detailDependencies?: string[];
+    shotCode?: string;
+    assetKeys?: string[];
+    framePlanNodeId?: string;
+    frames?: StoryboardFrame[];
+    startFrameMode?: StoryboardStartFrameMode;
     shotNumber: number;
     durationSeconds: number;
+    timingException?: "scene_tail";
+    sceneDurationSeconds?: number;
+    sceneId?: string;
     plotDescription: string;
     dialogue: string;
     characters: StoryboardCharacterReference[];
@@ -144,10 +157,15 @@ export type StoryboardRow = {
 };
 
 export type StoryboardData = {
+	executionMode?: "episode";
     rows: StoryboardRow[];
     visibleColumns: StoryboardColumn[];
     referenceNodeIds: string[];
 };
+
+export enum StoryboardFrameKind { Start = "start", End = "end", Key = "key" }
+export enum StoryboardStartFrameMode { Auto = "auto", ReusePrevious = "reuse_previous", Independent = "independent" }
+export type StoryboardFrame = { id: string; kind: StoryboardFrameKind; prompt: string; timeSeconds: number; sourcePromptHash: string; imageNodeId?: string; sharedFrom?: { rowId: string; sourcePromptHash: string } };
 
 export type CanvasGenerationBatchItem = {
     id: string;
@@ -162,6 +180,7 @@ export type CanvasGenerationBatchItem = {
 
 export type CanvasGenerationBatch = {
     id: string;
+    paused?: boolean;
     projectId: string;
     sourceNodeId: string;
     mode: CanvasGenerationBatchMode;
@@ -245,6 +264,9 @@ export type StoryDevelopmentData = {
 };
 
 export type CanvasNodeMetadata = {
+    storyboardFramePlan?: { scriptId: string; rowId: string; sourcePromptHash: string };
+    storyboardFrame?: { scriptId: string; rowId: string; frameId: string; sourcePromptHash: string; continuityReference?: { nodeId: string; signature: string } };
+    storyboardFramesGroup?: { scriptId: string; pipelineId?: string; episodeNumber?: number };
     reasoningEffort?: ReasoningEffort;
     /** Credential-free editable generation contract; submitted recipes live with tasks. */
     generationSpec?: GenerationSpec;

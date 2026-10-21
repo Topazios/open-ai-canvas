@@ -30,11 +30,30 @@ func (s *Service) cloudAgentPiModel(ctx context.Context, userID, runID string, p
 	if len(request.Messages) == 0 {
 		return nil, fmt.Errorf("no messages")
 	}
+	if err := s.prepareStoryboardEpisode(ctx, userID, runID); err != nil {
+		return nil, err
+	}
 	if handled, err := s.runProductionParallel(ctx, userID, runID); handled || err != nil {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"text": "本批独立文稿已保存，继续检查下一阶段。", "toolCalls": []map[string]any{{"id": generateID(), "name": "production_status", "arguments": map[string]any{}}}}, nil
+		run, err := s.repo.CloudAgent(userID, runID)
+		if err != nil {
+			return nil, err
+		}
+		state, err := cloudAgentDecode(run)
+		if err != nil {
+			return nil, err
+		}
+		_, manifest, _, err := productionLoad(s.repo, run, &state)
+		if err != nil {
+			return nil, err
+		}
+		nextTool := "production_status"
+		if manifest.Storyboard != nil {
+			nextTool = "production_storyboard_context"
+		}
+		return map[string]any{"text": "本批独立内容已保存，继续检查下一阶段。", "toolCalls": []map[string]any{{"id": generateID(), "name": nextTool, "arguments": map[string]any{}}}}, nil
 	}
 
 	// 上游临时故障（5xx、429、超时、连接错误、空回复）自动重试，首次失败后最多再试 3 次，
@@ -229,6 +248,7 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			canonical.Messages = append(append([]map[string]any(nil), canonical.Messages...), correction...)
 		}
 		requiredProductionTool := productionConstrainFinalPlan(productionWork, &canonical)
+		productionConstrainStoryboard(productionWork, &canonical)
 		input := map[string]any{
 			"mode":          "text",
 			"prompt":        state.Request.Prompt,

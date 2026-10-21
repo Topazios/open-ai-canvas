@@ -28,13 +28,14 @@ type TaskExecutionStep struct {
 }
 
 type TaskExecutionDetails struct {
-	Task           *model.Task          `json:"task"`
-	Steps          []TaskExecutionStep  `json:"steps"`
-	UnitCount      int                  `json:"unitCount"`
-	Truncated      bool                 `json:"truncated"`
-	Parameters     map[string]string    `json:"parameters"`
-	Events         []TaskExecutionEvent `json:"events"`
-	FirstStartedAt *time.Time           `json:"firstStartedAt,omitempty"`
+	Task            *model.Task          `json:"task"`
+	Steps           []TaskExecutionStep  `json:"steps"`
+	UnitCount       int                  `json:"unitCount"`
+	Truncated       bool                 `json:"truncated"`
+	Parameters      map[string]string    `json:"parameters"`
+	Events          []TaskExecutionEvent `json:"events"`
+	FirstStartedAt  *time.Time           `json:"firstStartedAt,omitempty"`
+	QualityWarnings []string             `json:"qualityWarnings,omitempty"`
 }
 
 type TaskExecutionEvent struct {
@@ -55,6 +56,11 @@ func (s *Service) TaskExecutionDetails(userID, id string) (*TaskExecutionDetails
 		return nil, err
 	}
 	result := &TaskExecutionDetails{Task: taskForOutput(*parent), Steps: []TaskExecutionStep{}, Parameters: map[string]string{}, Events: []TaskExecutionEvent{}}
+	var quality struct {
+		Warnings []string `json:"qualityWarnings"`
+	}
+	_ = json.Unmarshal([]byte(parent.ResultJSON), &quality)
+	result.QualityWarnings = quality.Warnings
 	events, err := s.repo.TaskExecutionEvents(userID, id, []string{"任务已重新入队", "任务取消请求已保存", "文本流持久化已降级", "文本回放草稿归并失败", "积分结算失败，已进入待核对", "用户确认重新生成，原调用费用保留待核对，新调用独立记账", "已核实本轮未提交上游，补齐提交记录并继续原任务，未新增预扣"}, 101)
 	if err != nil {
 		return nil, err
@@ -175,6 +181,8 @@ func (s *Service) TaskExecutionDetails(userID, id string) (*TaskExecutionDetails
 			label = "锁定全剧分集主线"
 		} else if key == "body-final" {
 			label = "扩写本集正文"
+		} else if key == "body-expand" {
+			label = "修订正文节奏与展开（一次）"
 		} else if strings.HasPrefix(key, "body-reference-") {
 			label = "整理本集引用资产"
 		} else if strings.HasPrefix(key, "outline-context-") {

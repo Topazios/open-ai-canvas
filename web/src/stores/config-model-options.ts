@@ -74,6 +74,16 @@ export function modelOptionsFromChannels(channels: ModelChannel[]) {
     );
 }
 
+// 选择器展示完整的启用目录；可执行列表仍由 modelOptionsFromChannels 按有效价格过滤。
+export function modelOptionsForPickerFromChannels(channels: ModelChannel[]) {
+    return uniqueModelOptions(channels.flatMap((channel) =>
+        channel.models
+            .map(normalizeRawModelName)
+            .filter(Boolean)
+            .map((model) => encodeChannelModel(channel.id, model)),
+    ));
+}
+
 export function hasSystemModelPrice(channel: ModelChannel, model: string) {
     if (channel.scope !== "system") return true;
     // 价格字段已由后端按“非负数”校验；0 表示免费模型，不能在目录重建时被过滤。
@@ -81,6 +91,7 @@ export function hasSystemModelPrice(channel: ModelChannel, model: string) {
     return (
         channel.modelCosts?.some((item) => {
             if (item.model !== model) return false;
+            if (item.available === false) return false;
             const tiers = item.logicalPriceTiers || [];
             if (tiers.length) {
                 return tiers.some((tier) => (tier.billingMode === "token" ? [tier.inputTokenPriceMicrocredits, tier.outputTokenPriceMicrocredits, tier.cachedTokenPriceMicrocredits].every(configured) : configured(tier.unitPriceMicrocredits)));

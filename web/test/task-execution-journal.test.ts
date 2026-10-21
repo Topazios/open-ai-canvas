@@ -34,3 +34,12 @@ test("workflow retries keep initial queue separate from elapsed workflow time", 
     expect(rows[0].detail).toBe("排队等待 1秒");
     expect(rows.find((row) => row.id === "parent:current")?.detail).toContain("流程历时（含重试间隔） 55分9秒");
 });
+
+test("quality review remains visible in individual and shared group journals", () => {
+    const rows = taskExecutionRows({ ...detail, qualityWarnings: ["戏剧正文展开不足", "节拍时长待核对"] });
+    const quality = rows.find(row => row.id === "parent:quality")!;
+    expect(quality.title).toBe("正文完成度需复核");
+    expect(quality.detail).toContain("戏剧正文展开不足");
+    expect(quality.detail).toContain("节拍时长待核对");
+    expect(quality.failed).toBe(false);
+});

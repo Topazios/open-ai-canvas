@@ -4,4 +4,4 @@
 
 完整接口见 [docs/interface.md](docs/interface.md)。
 
-图片编辑的 JSON 请求支持公开图片 URL 和 Base64 data URL。本地角色卡参考图由后端在归属校验后读取为内嵌数据，不要求配置公开存储地址；不会因此将本地服务暴露到公网。
+图片编辑的 JSON 请求支持公开图片 URL 和 Base64 data URL。本地角色卡参考图由后端在归属校验后读取为内嵌数据，不要求配置公开存储地址；不会因此将本地服务暴露到公网。按 OpenAI Images 官方协议，编辑请求中 `images` 是对象数组，每项使用 `image_url` 或 `file_id`，`mask` 也是同样的对象结构；本地内嵌图片使用 `image_url` 携带 data URL。

@@ -12,6 +12,27 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestScreenplayAuditCanWaitForTextSlot(t *testing.T) {
+	tests := []struct {
+		name     string
+		taskType string
+		metadata map[string]any
+		want     bool
+	}{
+		{name: "audit workflow", taskType: "canvas_text", metadata: map[string]any{"source": "canvas-short-drama-workflow", "workflowStep": "story.audit"}, want: true},
+		{name: "body workflow", taskType: "canvas_text", metadata: map[string]any{"source": "canvas-short-drama-workflow", "workflowStep": "story.body"}, want: false},
+		{name: "other source", taskType: "canvas_text", metadata: map[string]any{"source": "other", "workflowStep": "story.audit"}, want: false},
+		{name: "image task", taskType: "canvas_image", metadata: map[string]any{"source": "canvas-short-drama-workflow", "workflowStep": "story.audit"}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := screenplayAuditCanWaitForTextSlot(test.taskType, test.metadata); got != test.want {
+				t.Fatalf("screenplayAuditCanWaitForTextSlot() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestTaskInputUsesWorkflowProvider(t *testing.T) {
 	tests := []struct {
 		name  string

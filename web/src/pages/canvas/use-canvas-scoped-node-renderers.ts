@@ -6,6 +6,7 @@ import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { reconcileCanvasArray, sameCanvasShallowValue } from "@/lib/canvas/canvas-render-reconciliation";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { resolveDirectorActiveShot } from "@/lib/canvas/director/director-preview";
+import { episodeStoryboardImages, episodeStoryboardSources } from "@/lib/canvas/workflow-episode-storyboard";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 import type { DirectorScene } from "@/types/director";
 
@@ -44,11 +45,24 @@ export function buildCanvasCustomNodeScopes(options: Options): Map<string, Canva
         if (outEdges) outEdges.push(connection); else outgoing.set(connection.fromNodeId, [connection]);
     }
     const scopes = new Map<string, CanvasCustomNodeScope>();
+    const auditByBody = new Map<string, CanvasNodeData[]>();
+    for (const node of nodes) {
+        const bodyId = node.metadata?.shortDrama?.screenplayAudit?.bodyNodeId;
+        if (bodyId) auditByBody.set(bodyId, [...(auditByBody.get(bodyId) || []), node]);
+    }
     for (const node of visibleNodes) {
         if (!hasCanvasCustomNodeContent(node)) continue;
         const ids = new Set<string>();
         const add = (id?: string) => { if (id) ids.add(id); };
         let edges: CanvasConnection[] = [];
+        if (["story.body", "story.audit"].includes(node.metadata?.shortDrama?.step || "")) {
+            add(node.id);
+            const reports = node.metadata?.shortDrama?.screenplayAudit ? [node] : auditByBody.get(node.id) || [];
+            for (const report of reports) {
+                add(report.id);
+                Object.keys(report.metadata?.shortDrama?.sourceSignatures || {}).forEach(add);
+            }
+        }
         if (node.type === CanvasNodeType.BatchTable) {
             for (const row of node.metadata?.batchTable?.rows || []) {
                 row.inputNodeIds.forEach(add);
@@ -58,8 +72,18 @@ export function buildCanvasCustomNodeScopes(options: Options): Map<string, Canva
             edges = incoming.get(node.id) || [];
         }
         if (node.type === CanvasNodeType.Script) {
+            if (node.metadata?.shortDrama?.step === "direction.shots") {
+                add(node.id);
+                episodeStoryboardImages(node, nodes).forEach(image => add(image.id));
+                for (const source of episodeStoryboardSources(node, nodes)) {
+                    add(source.id);
+                    source.metadata?.shortDrama?.assetProfile?.references.forEach(ref => add(ref.nodeId));
+                }
+            }
             const videoIds = new Set<string>();
             for (const row of node.metadata?.storyboard?.rows || []) {
+                add(row.framePlanNodeId);
+                row.frames?.forEach(frame => add(frame.imageNodeId));
                 add(row.imageNodeId); add(row.videoNodeId);
                 row.assetBindings?.forEach((binding) => add(binding.nodeId));
                 if (row.videoNodeId && nodeById.get(row.videoNodeId)?.type === CanvasNodeType.Video) videoIds.add(row.videoNodeId);

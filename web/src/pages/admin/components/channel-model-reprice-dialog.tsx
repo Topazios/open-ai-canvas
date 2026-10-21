@@ -25,13 +25,16 @@ export function ChannelModelRepriceDialog({ channelId, channelName, items, onClo
     const [calculationError, setCalculationError] = useState("");
     const [saving, setSaving] = useState(false);
     let validationError = "";
-    try {
-        modelRepricePayloadWithModes(items, preview, rows);
-    } catch (cause) {
-        validationError = cause instanceof Error ? cause.message : "销售价无效";
-    }
     const changed = modelRepriceChanges(items, rows);
+    if (changed > 0) {
+        try {
+            modelRepricePayloadWithModes(items, preview, rows);
+        } catch (cause) {
+            validationError = cause instanceof Error ? cause.message : "销售价无效";
+        }
+    }
     const busy = saving || loading;
+    const canSave = changed > 0 && !busy && !validationError && !calculationError;
     const recalculate = (next = { mode, margin, multiplier, decimalPlaces, creditsPerUSD, useDefaults, defaults }) => {
         try {
             if (next.mode === ModelRepriceMode.Multiplier && next.useDefaults && !next.defaults) throw new Error("请先读取官方定价");
@@ -72,7 +75,7 @@ export function ChannelModelRepriceDialog({ channelId, channelName, items, onClo
         }
     };
     const save = async () => {
-        if (validationError || calculationError || !changed || busy) return;
+        if (!canSave) return;
         setSaving(true);
         try {
             const result = await repriceAdminChannelModels(channelId, modelRepricePayloadWithModes(items, preview, rows));
@@ -104,7 +107,7 @@ export function ChannelModelRepriceDialog({ channelId, channelName, items, onClo
             keyboard={!saving}
             confirmLoading={saving}
             cancelButtonProps={{ disabled: saving }}
-            okButtonProps={{ disabled: busy || Boolean(validationError || calculationError) || !changed }}
+            okButtonProps={{ disabled: !canSave }}
             okText={`保存销售价${changed ? `（${changed} 项）` : ""}`}
             onOk={() => void save()}
         >
@@ -244,7 +247,7 @@ export function ChannelModelRepriceDialog({ channelId, channelName, items, onClo
                     onSaleChange={(key, value) => setRows((current) => current.map((entry) => (entry.key === key ? { ...entry, sale: value, manual: true } : entry)))}
                 />
                 {calculationError || validationError ? <Alert type="warning" showIcon title={calculationError || validationError} /> : null}
-                <p className="admin-model-reprice-note">官方价为核验后的目录快照，不是实时价格接口。适用条件见各项来源，不代表渠道实际成本；保存不修改成本和模型启停状态。</p>
+                <p className="admin-model-reprice-note">官方价为核验后的目录快照，不是实时价格接口。适用条件见各项来源，不代表渠道实际成本；调价不修改成本或模型启停状态。</p>
             </div>
         </AdminModal>
     );

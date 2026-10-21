@@ -865,7 +865,7 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 500 }
       responses:
         "200":
-          description: 信封 data.run（含 events 与 eventSeqBase / eventCount / latestSeq / eventsTruncated）
+          description: 信封 data.run（含 events 与 eventSeqBase / eventCount / latestSeq / eventsTruncated）。分镜 run.production 中 artifactCount 表示已补全镜头数、shotTotal 表示规划镜头总数、concurrencyLimit 表示全局 Agent 并发。新版 executionMode=episode 表示按集并发，episodeTaskStatus 为本集当前模型调用的真实状态（queued/running/succeeded/failed/cancelled/preparing/unknown），currentItem 为当前批次范围；集内单通道按场批量提交1至8镜。历史 concurrentItems/parallelItems 保留逐镜在途回执及状态，先结算再升级；不包含模型输入或输出。全镜详情完成仍须整集审查通过才 validated。
         "400":
           description: sinceSeq 或 eventLimit 不是整数或超出范围
         "404":
@@ -1328,6 +1328,7 @@ paths:
       summary: 批量设置系统渠道模型参数
       description: |
         仅管理员可用。批量修改模型启停状态、能力、调用协议、展示名、渠道展示名、描述、Logo 和标签；
+        可独立通过 costConfigured 批量设置所选模型价格档是否配置积分成本；可同时传入 costMicrocredits，将统一成本写入所选模型所有价格档的适用成本字段，不修改模型启停状态或对用户展示的价格。
         未提交的字段保持原值。模型产品标识、上游模型 ID 和价格不会被修改；能力和调用协议必须同时提交。
         设置能力与协议时，各模型的能力参数将按上游模型 ID 分别重置为协议默认值；价格档不会自动转换，应单独核对。
         模型 ID 必须属于当前系统渠道，单批 1–100 个模型，校验失败时整批拒绝。
@@ -1350,6 +1351,14 @@ paths:
                   maxItems: 100
                   items: { type: string, minLength: 1 }
                 enabled: { type: boolean }
+                costConfigured:
+                  type: boolean
+                  description: 独立批量设置所选模型价格档是否配置积分成本
+                costMicrocredits:
+                  type: integer
+                  minimum: 0
+                  maximum: 1000000000000
+                  description: 统一积分成本，单位为微积分（1000000 微积分 = 1 积分）；仅 costConfigured=true 时接受
                 displayName: { type: string, maxLength: 160 }
                 channelLabel: { type: string, maxLength: 80 }
                 description: { type: string, maxLength: 500 }
@@ -1588,6 +1597,10 @@ paths:
       description: |
         普通文本任务可携带 input.workflowBatch: {version: 1, units: [{label, text}]}。
         资产步骤使用 version: 2，并增加 scope（流程范围）、category（bible/characters/environments/props/special）和 context（辅助约束单元）。
+        正文使用 version: 4，context 为本集集纲，units 为相关参考；可带 bodyWriting: {version: 2, minSeconds: 60, maxSeconds: 120, targetSeconds: 90, language: zh-CN}。
+        bodyWriting 版本2增加逐段口播过密和稀疏长停顿筛查，无单段最短时长；版本1在途请求沿用原检查和修订标识。
+        bodyWriting 仅用于正文，目标须在10至3600秒内的时长范围中；初稿明显不足最多定向扩写一次，不循环调用。
+        正文与执行详情可返回 qualityWarnings 字符串数组，表示文稿已保存但需人工复核；每次实际调用继续正常计费。
         version 2 的 units 只含正文；同用户、项目、流程、模型配置和正文单元复用持久化事实解析，辅助约束不作为正文解析。
         context 最多 512 单元，其字符数与正文一起计入总容量；每个输出独立归并，缓存命中不重复创建模型调用。
         每单元最多 24000 Unicode 字符，最多 512 单元，总计 400 万字符。

@@ -52,7 +52,7 @@ export function CanvasGenerationTaskDetails({ node, onRetry, onCancel }: {
     return <section className="canvas-node-inspector-section production-agent-details" aria-label="任务执行记录" data-canvas-no-zoom data-canvas-wheel-scroll>
         <div className="production-agent-overview">
             <div className="production-agent-heading"><strong>{node.title}</strong><span className="production-agent-status" role="status">{task ? generationTaskStatusLabel(task) : error ? "状态读取失败" : "正在核对后台状态"}</span></div>
-            <div className="production-agent-note">{task ? generationTaskStageLabel(task) : node.metadata?.taskStage}</div>
+            <div className="production-agent-note">{task ? node.metadata?.shortDrama?.screenplayRepair ? "正在修复正文" : node.metadata?.shortDrama?.step === "story.audit" ? "正在诊断正文" : generationTaskStageLabel(task) : node.metadata?.taskStage}</div>
             {task && <div className="production-agent-note">首次排队 {taskElapsed(task.createdAt,startedAt || endedAt)}{startedAt ? ` · ${task.operation === "short_drama_batch" ? "流程历时（含重试间隔）" : "执行"} ${taskElapsed(startedAt,endedAt)}` : ""}{task.operation === "short_drama_batch" && current ? ` · ${current.truncated ? "当前记录中" : ""}已保存 ${current.steps.filter((step) => step.status === "succeeded").length} 次调用结果` : ""}</div>}
         </div>
         {error && <div className="production-agent-error" role="alert">{error}{current ? "，已保留上次读取的记录。" : "，正在重新读取后台状态。"}</div>}

@@ -24,11 +24,22 @@ try {
     }, nodes, canvas.connections, { x: 0, y: 0 });
     const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
     const inputs = generated.created.map(node => workflowBodyTaskInput(node, generated.nodes, generated.connections));
+    const requestChars = inputs.map(input => input.prompt.length + JSON.stringify(input.workflowBatch || {}).length).sort((a, b) => a - b);
+    const referenceCondensationNeeded = (input: typeof inputs[number]) => {
+        const batch = input.workflowBatch;
+        if (batch?.version !== 4) return false;
+        const chars = (text: string) => Array.from(text).length;
+        const context = batch.context.map(unit => `\n\n${unit.label}\n${unit.text}`).join("");
+        const references = batch.units.reduce((size, unit) => size + chars(`${unit.label}\n${unit.text}`) + 2, 0);
+        return references > 48000 - chars(input.prompt) - chars(context) - 1000;
+    };
     console.log(JSON.stringify({ originalBytes: bytes(canvas), generatedCount: generated.created.length,
         directEpisodeRequests: inputs.filter(input => !input.workflowBatch).length,
-        referenceCondensationRequests: inputs.filter(input => input.workflowBatch?.version === 4).length,
-        largestDirectPromptChars: Math.max(...inputs.filter(input => !input.workflowBatch).map(input => input.prompt.length)),
+        bodyQualityCheckedRequests: inputs.filter(input => input.workflowBatch?.version === 4 && input.workflowBatch.bodyWriting).length,
+        referenceCondensationRequests: inputs.filter(referenceCondensationNeeded).length,
+        largestDirectPromptChars: Math.max(0, ...inputs.filter(input => !input.workflowBatch).map(input => input.prompt.length)),
         firstRequestChars: inputs[0].prompt.length,
+        assembledRequestChars: { min: requestChars[0], median: requestChars[Math.floor(requestChars.length / 2)], max: requestChars.at(-1) },
         requestBytes: bytes({ project: { ...canvas, nodes: compactWorkflowNodes(generated.nodes), connections: generated.connections } }),
         firstNodeBytes: bytes(generated.created[0]), firstBatchUnits: nodeWorkflow(generated.created[0])?.textBatch?.units.length || 0,
         firstPromptChars: generated.created[0].metadata?.prompt?.length,

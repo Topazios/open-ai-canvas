@@ -34,10 +34,34 @@ func TestLegacyTierSwitchesDoNotGateCatalogRoutingOrBilling(t *testing.T) {
 	if err != nil || order.AmountMicrocredits != 9 || order.UnitPriceMicrocredits != 9 || order.PriceTierID != "tier-a" {
 		t.Fatalf("billing amount changed: order=%+v err=%v", order, err)
 	}
-	if err := db.Model(&model.ChannelModel{}).Where("id = ?", "a").Update("enabled", false).Error; err != nil {
+	if err := db.Model(&model.ChannelModelPriceTier{}).Where("id = ?", "tier-a").Update("unit_price_microcredits", -1).Error; err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := svc.publicSystemChannelCatalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listedWithoutPrice bool
+	for _, channel := range catalog {
+		for _, item := range channel.Models {
+			if item.ID == "a" {
+				listedWithoutPrice = true
+				if item.Available || len(item.PriceTiers) != 0 {
+					t.Fatalf("model without a valid price must remain visible but unavailable: %+v", item)
+				}
+			}
+		}
+	}
+	if !listedWithoutPrice {
+		t.Fatal("enabled model without a valid price disappeared from the catalog")
+	}
+	if err := db.Model(&model.ChannelModelPriceTier{}).Where("id = ?", "tier-a").Update("unit_price_microcredits", 9).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.ChannelModel{}).Where("id = ?", "a").Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	catalog, err = svc.publicSystemChannelCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

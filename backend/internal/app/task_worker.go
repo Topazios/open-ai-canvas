@@ -21,6 +21,7 @@ type taskWorkerCoordinator struct {
 }
 
 const workerSlotLeaseDuration = time.Minute
+const runtimePolicyFallbackTTL = 2 * time.Minute
 
 func newTaskWorkerCoordinator(service *Service) *taskWorkerCoordinator {
 	return &taskWorkerCoordinator{service: service}
@@ -32,6 +33,33 @@ func (s *Service) taskWorker() *taskWorkerCoordinator {
 	}
 	// 部分单元测试直接构造 Service 字面量；延迟创建保持这些测试和内部工具兼容。
 	return newTaskWorkerCoordinator(s)
+}
+
+// taskWorkerConcurrencySetting keeps an already validated worker policy
+// available during a short database/cache read outage. Admission, billing and
+// model validation still read the authoritative policy; this fallback only
+// prevents the dispatcher from abandoning durable queued work on a transient
+// read timeout.
+func (s *Service) taskWorkerConcurrencySetting() (platform.RuntimeTaskPolicy, error) {
+	setting, err := s.runtimeConcurrencySetting()
+	if err == nil {
+		s.runtimePolicyFallbackMu.Lock()
+		s.runtimePolicyFallback = setting
+		s.runtimePolicyFallbackAt = time.Now()
+		s.runtimePolicyFallbackSet = true
+		s.runtimePolicyFallbackMu.Unlock()
+		return setting, nil
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, platform.ErrReadCacheBusy) {
+		return platform.RuntimeTaskPolicy{}, err
+	}
+	s.runtimePolicyFallbackMu.Lock()
+	defer s.runtimePolicyFallbackMu.Unlock()
+	if s.runtimePolicyFallbackSet && time.Since(s.runtimePolicyFallbackAt) <= runtimePolicyFallbackTTL {
+		log.Printf("task dispatch using last valid runtime policy after read failure: worker_id=%s error=%v", s.workerID, err)
+		return s.runtimePolicyFallback, nil
+	}
+	return platform.RuntimeTaskPolicy{}, err
 }
 
 // wakeTaskDispatcher lets newly persisted work enter execution immediately;
@@ -62,7 +90,7 @@ func (w *taskWorkerCoordinator) start(ctx context.Context) {
 			if ctx.Err() != nil || s.IsDraining() {
 				return
 			}
-			setting, err := s.runtimeConcurrencySetting()
+			setting, err := s.taskWorkerConcurrencySetting()
 			if err != nil {
 				log.Printf("task dispatch paused: stage=runtime_policy worker_id=%s error=%v", s.workerID, err)
 				return

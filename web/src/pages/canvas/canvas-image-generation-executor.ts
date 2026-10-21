@@ -12,6 +12,7 @@ import { commitProducedModel } from "@/lib/canvas/produced-model";
 import { CONTENT_MODERATION_ERROR_CODE, generationFailureMetadata, type GenerationFailureMetadata } from "@/lib/generation-error";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { storyboardContinuitySnapshot } from "@/lib/canvas/storyboard-frame-continuity";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
 
@@ -72,7 +73,7 @@ export async function executeImageGeneration({
     // auto 图生图沿用来源节点尺寸；用户明确选择比例时必须以目标比例创建节点。
     const referenceNode = referenceImages.length === 1 ? canvasNodes.find((node) => node.id === referenceImages[0].id && node.type === CanvasNodeType.Image) : undefined;
     const imageSizeSource = requestedImageSize ? undefined : isExistingImageNode ? sourceNode : referenceNode;
-    const outputNodeSize = imageSizeSource ? { width: imageSizeSource.width, height: imageSizeSource.height } : imageConfig;
+    const outputNodeSize = sourceNode?.metadata?.storyboardFrame ? { width: sourceNode.width, height: sourceNode.height } : imageSizeSource ? { width: imageSizeSource.width, height: imageSizeSource.height } : imageConfig;
     const parentPosition = sourceNode?.position || { x: 0, y: 0 };
     const parentWidth = sourceNode?.width || parentConfig.width;
     const parentHeight = sourceNode?.height || parentConfig.height;
@@ -91,12 +92,13 @@ export async function executeImageGeneration({
     const rootNode: CanvasNodeData = {
         id: rootId,
         type: CanvasNodeType.Image,
-        title: buildImageGenerationNodeTitle(effectivePrompt, sourceNode),
+        title: sourceNode?.metadata?.storyboardFrame ? sourceNode.title : buildImageGenerationNodeTitle(effectivePrompt, sourceNode),
         position: rootPosition,
         width: rootWidth,
         height: rootHeight,
         metadata: {
             ...resetGenerationTaskMetadata(reuseSourceNode ? sourceNode?.metadata : undefined, NODE_STATUS_LOADING),
+            ...(sourceNode?.metadata?.storyboardFrame ? { storyboardFrame: { ...sourceNode.metadata.storyboardFrame, continuityReference: storyboardContinuitySnapshot(sourceNode, canvasNodes) } } : {}),
             ...canvasGenerationPromptMetadata(prompt, effectivePrompt),
             status: NODE_STATUS_LOADING,
             size: generationConfig.size,
@@ -144,33 +146,38 @@ export async function executeImageGeneration({
         ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: rootId, toNodeId: childId })),
     ];
 
-    const nextNodes: CanvasNodeData[] = [
-        ...workingNodes.map((node) => {
-            if (node.id !== nodeId) return node;
-            if (isConfigNode) return { ...node, metadata: { ...node.metadata, ...canvasGenerationPromptMetadata(prompt, effectivePrompt), status: NODE_STATUS_LOADING, errorDetails: undefined } };
-            if (reuseSourceNode) return { ...node, position: rootNode.position, width: rootNode.width, height: rootNode.height, title: rootNode.title, metadata: rootNode.metadata };
-            if (isImageNode) return node;
-            return {
-                ...node,
-                type: CanvasNodeType.Text,
-                title: prompt.slice(0, 32) || "Prompt",
-                width: parentConfig.width,
-                height: parentConfig.height,
-                metadata: { ...node.metadata, content: prompt, richText: undefined, prompt, composerContent: prompt, status: NODE_STATUS_SUCCESS, fontSize: 14, errorDetails: undefined },
-            };
-        }),
-        ...(reuseSourceNode ? [] : [rootNode]),
-        ...childNodes,
-    ];
+    setNodes((current) => {
+        const currentSource = current.find(node => node.id === nodeId);
+        if (!currentSource) return current;
+        const currentRetired = reuseSourceNode ? retireImageBatchChildren(currentSource, current, []) : { nodes: current, removedIds: [] as string[] };
+        const nextNodes: CanvasNodeData[] = [
+            ...currentRetired.nodes.map((node) => {
+                if (node.id !== nodeId) return node;
+                if (isConfigNode) return { ...node, metadata: { ...node.metadata, ...canvasGenerationPromptMetadata(prompt, effectivePrompt), status: NODE_STATUS_LOADING, errorDetails: undefined } };
+                if (reuseSourceNode) return { ...node, position: rootNode.position, width: rootNode.width, height: rootNode.height, title: rootNode.title, metadata: rootNode.metadata };
+                if (isImageNode) return node;
+                return {
+                    ...node,
+                    type: CanvasNodeType.Text,
+                    title: prompt.slice(0, 32) || "Prompt",
+                    width: parentConfig.width,
+                    height: parentConfig.height,
+                    metadata: { ...node.metadata, content: prompt, richText: undefined, prompt, composerContent: prompt, status: NODE_STATUS_SUCCESS, fontSize: 14, errorDetails: undefined },
+                };
+            }),
+            ...(reuseSourceNode ? [] : [rootNode]),
+            ...childNodes,
+        ];
 
-    setNodes(nextNodes);
-    setConnections((current) => {
-        const removed = new Set(retired.removedIds);
-        const nextConnections = [...current.filter((connection) => !removed.has(connection.fromNodeId) && !removed.has(connection.toNodeId)), ...batchConnections];
-        if (projectId) {
-            useCanvasStore.getState().updateProject(projectId, { nodes: nextNodes, connections: nextConnections });
-        }
-        return nextConnections;
+        setConnections((current) => {
+            const removed = new Set(currentRetired.removedIds);
+            const nextConnections = [...current.filter((connection) => !removed.has(connection.fromNodeId) && !removed.has(connection.toNodeId)), ...batchConnections];
+            if (projectId) {
+                useCanvasStore.getState().updateProject(projectId, { nodes: nextNodes, connections: nextConnections });
+            }
+            return nextConnections;
+        });
+        return nextNodes;
     });
     setSelectedNodeIds(new Set([nodeId]));
     setSelectedConnectionId(null);

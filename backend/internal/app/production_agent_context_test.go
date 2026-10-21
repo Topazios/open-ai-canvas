@@ -49,3 +49,35 @@ func TestProductionContextKeepsPlanIndexWithoutAccumulatingDesignBodies(t *testi
 		t.Fatal(string(encoded))
 	}
 }
+
+func TestStoryboardProviderToolsFollowCheckpointWithoutInvalidatingRestoredCalls(t *testing.T) {
+	manifest := productionManifest{Storyboard: &productionStoryboard{}}
+	for _, tc := range []struct {
+		phase, next string
+		names       []string
+	}{
+		{"brief", "production_storyboard_brief", []string{"production_storyboard_brief"}},
+		{"plan", "production_storyboard_plan", []string{"production_storyboard_plan"}},
+		{"layout", "production_storyboard_layout", []string{"production_storyboard_layout"}},
+		{"expand", "production_storyboard_expand", []string{"production_storyboard_expand"}},
+		{"scene", "production_storyboard_submit", []string{"production_storyboard_submit", "production_storyboard_read", "production_storyboard_reset"}},
+		{"review", "production_storyboard_review", []string{"production_storyboard_review", "production_storyboard_read"}},
+	} {
+		t.Run(tc.phase, func(t *testing.T) {
+			work := map[string]any{"phase": tc.phase, "nextTool": tc.next}
+			durable := productionRuntimeTools(manifest, work)
+			request := canonicalAgentRequest{Tools: durable, ToolChoice: "auto"}
+			productionConstrainStoryboard(work, &request)
+			productionRuntimeAssertTools(t, request.Tools, tc.names)
+			if request.ToolChoice != "required" {
+				t.Fatal("checkpoint must require work instead of an introductory response")
+			}
+			call := cloudAgentCall{}
+			call.Function.Name = "production_storyboard_context"
+			if productionRuntimeUnknownCall(durable, []cloudAgentCall{call}) {
+				t.Fatal("a previously authorized in-flight status read cannot be invalidated")
+			}
+			productionRuntimeAssertTools(t, durable, productionRuntimeStoryboardNames)
+		})
+	}
+}

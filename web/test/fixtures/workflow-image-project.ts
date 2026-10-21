@@ -4,6 +4,7 @@ import { commitCanvasGenerationResult } from "../../src/lib/canvas/canvas-genera
 import { shortDramaStep, type ShortDramaStepId } from "../../src/lib/short-drama-steps";
 import { bibleOutput, assetItem } from "./workflow-asset-output";
 import { completeWorkflowPlan } from "./workflow-plan";
+import { createStoryboardRow } from "../../src/lib/canvas/canvas-project-domain";
 
 export function workflowImageFixture(options: { failedAssetSummaries?: boolean } = {}) {
     const pipeline = createShortDramaPipeline({ x: 0, y: 0 }, true);
@@ -22,7 +23,11 @@ export function workflowImageFixture(options: { failedAssetSummaries?: boolean }
                 ? JSON.stringify({ summary: "Fixture coverage", items: [assetItem(`${step} A`, `${step} A: fixed features and voice`, 1), assetItem(`${step} B`, `${step} B: different features and voice`, 2)] })
                 : step === "direction.production" ? JSON.stringify({ shots: [1, 2].map((number) => ({ id: `SH0${number}`, title: `Shot ${number}`, assetKeys: [], prompt: `SHOT_${number}_BOARD`, startFramePrompt: `SHOT_${number}_START`, endFramePrompt: `SHOT_${number}_END`, keyframes: [{ id: "K1", time: "2s", prompt: `SHOT_${number}_KEY` }], negativePrompt: "No costume changes", continuity: "Preserve eyeline" })) })
                 : `${step} episode ${nodeWorkflow(node)?.episodeNumber || "all"}: scene goals, blocking, shots, continuity, dialogue and timing`;
-            nodes = commitCanvasGenerationResult(nodes, node, { ...node, metadata: { ...node.metadata, content, status: "success" } }, `fixture-${node.id}`);
+            const storyboard = step === "direction.shots" ? { rows: [1, 2].map(number => createStoryboardRow(number, {
+                id: `${node.id}:SH0${number}`, shotCode: `SH0${number}`, durationSeconds: 5,
+                plotDescription: `SHOT_${number}_BOARD`, imageGenerationPrompt: `SHOT_${number}_BOARD`, videoMotionPrompt: `SHOT_${number}_VIDEO`, assetKeys: [],
+            })), visibleColumns: ["shotNumber" as const, "videoMotionPrompt" as const, "assets" as const], referenceNodeIds: [] } : node.metadata?.storyboard;
+            nodes = commitCanvasGenerationResult(nodes, node, { ...node, metadata: { ...node.metadata, storyboard, content, status: "success" } }, `fixture-${node.id}`);
             if (options.failedAssetSummaries && step !== "assets.bible" && shortDramaStep(step)?.output === "asset-group") {
                 const manifest = nodes.find((entry) => entry.id === node.id)!;
                 Object.assign(manifest.metadata!, { content: "", status: "error" });

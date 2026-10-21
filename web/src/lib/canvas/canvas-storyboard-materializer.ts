@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { storyboardAssetRoleForNode } from "@/lib/canvas/canvas-storyboard-assets";
 import { buildOrderedCanvasResourceReferences, canvasResourceMentionToken } from "@/lib/canvas/canvas-resource-references";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type StoryboardAssetBinding, type StoryboardRow } from "@/types/canvas";
+import { resolveEpisodeShotAssets, episodeShotBoundaryImages } from "./workflow-episode-storyboard";
 
 export function storyboardRowReferenceNodeIds(
     scriptNode: CanvasNodeData,
@@ -12,6 +13,12 @@ export function storyboardRowReferenceNodeIds(
     includeFirstFrame: boolean,
     targetNodeId?: string,
 ) {
+    if (scriptNode.metadata?.shortDrama?.step === "direction.shots") {
+        const resolved = resolveEpisodeShotAssets(scriptNode, row, nodes);
+        const frames = includeFirstFrame ? episodeShotBoundaryImages(row, nodes) : [];
+        if (frames.length) return [...new Set([...resolved.nodes.map(node => node.id), ...frames.map(frame => frame.node.id)])];
+        return [...new Set([...resolved.referenceNodeIds, ...(includeFirstFrame && row.imageNodeId ? [row.imageNodeId] : [])])];
+    }
     const characterAssetIds = new Set((row.characters || []).map((character) => character.characterAssetId).filter((assetId): assetId is string => Boolean(assetId)));
     const characterNodeIds = nodes
         .filter((node) => node.metadata?.workflowKind === "character" && Boolean(node.metadata.characterAssetId) && characterAssetIds.has(node.metadata.characterAssetId!))

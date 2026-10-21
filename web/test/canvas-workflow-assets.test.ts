@@ -211,14 +211,14 @@ describe("production guidelines and reusable asset outputs", () => {
     test("asset extraction and reference image actions preserve the body source and special assets remain optional downstream", () => {
         const f = bodyFixture();
         const steps = activeShortDramaSteps.filter((step) => step.stage === "assets");
-        expect(steps.filter((step) => !step.optional).map((step) => step.label)).toEqual(["正文资产校核与补充", "人物参考图生成", "场景参考图生成", "道具参考图生成"]);
-        expect(steps).toHaveLength(5);
-        expect(steps.filter((step) => !step.mediaOutput)).toHaveLength(1);
-        expect(nextShortDramaSteps("story.body").filter((step) => step.stage === "assets").map((step) => step.id)).toEqual(["assets.reconcile"]);
+        expect(steps.filter((step) => !step.optional).map((step) => step.label)).toEqual(["人物参考图生成", "场景参考图生成", "道具参考图生成"]);
+        expect(steps).toHaveLength(3);
+        expect(steps.filter((step) => !step.mediaOutput)).toHaveLength(0);
+        expect(nextShortDramaSteps("story.body").filter((step) => step.stage === "assets").map((step) => step.id)).toEqual([]);
         expect(nextShortDramaSteps("assets.characters").map((step) => step.id)).toContain("assets.character_references");
         expect(nextShortDramaSteps("assets.environments").map((step) => step.id)).toContain("assets.environment_references");
         expect(nextShortDramaSteps("assets.props").map((step) => step.id)).toContain("assets.prop_references");
-        expect(nextShortDramaSteps("assets.special").map((step) => step.id)).toContain("assets.special_references");
+        expect(nextShortDramaSteps("assets.special").map((step) => step.id)).toEqual([]);
         for (const step of steps.filter((entry) => !entry.mediaOutput)) {
             const generated = createWorkflowDocuments({ ...f.request, step: step.id, sourceNodeIds: step.id === "assets.bible" ? [f.body.id] : [f.body.id, f.bible.id] }, f.nodes, f.connections, center);
             expect(generated.created).toHaveLength(1);

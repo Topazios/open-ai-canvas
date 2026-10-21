@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button, Modal } from "antd";
 import { XCircle } from "lucide-react";
 
@@ -12,6 +12,7 @@ import { AppModal } from "@/components/ui/product/app-modal";
 import { modelDisplayName, useEffectiveConfig } from "@/stores/use-config-store";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { resourceStorageKeyFromURL } from "@/services/api/resources";
+import { getFrameChildren, isFrameNode } from "@/lib/canvas/canvas-frame";
 
 type CanvasProjectStatusDialogsProps = {
     theme: { node: { stroke: string; panel: string; muted: string; fill: string } };
@@ -23,14 +24,16 @@ type CanvasProjectStatusDialogsProps = {
     superResolveNode: CanvasNodeData | null;
     onCloseSuperResolve: () => void;
     previewNode: CanvasNodeData | null;
+    nodes: CanvasNodeData[];
     onClosePreview: () => void;
     clearConfirmOpen: boolean;
     onCancelClear: () => void;
     onConfirmClear: () => void;
 };
 
-export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading, superResolveNode, previewNode, clearConfirmOpen, onCloseTask, onCancelTask, onCloseSuperResolve, onClosePreview, onCancelClear, onConfirmClear }: CanvasProjectStatusDialogsProps) {
+export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading, superResolveNode, previewNode, nodes, clearConfirmOpen, onCloseTask, onCancelTask, onCloseSuperResolve, onClosePreview, onCancelClear, onConfirmClear }: CanvasProjectStatusDialogsProps) {
     const config = useEffectiveConfig();
+    const previewItems = useMemo(() => canvasImagePreviewGroup(previewNode, nodes), [nodes, previewNode]);
     return (
         <>
             <Modal title="任务详情" open={Boolean(task)} footer={null} width="min(920px, calc(100vw - 32px))" onCancel={onCloseTask}>
@@ -98,6 +101,8 @@ export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading,
                     src={previewNode.metadata.content}
                     storageKey={previewNode.metadata.storageKey}
                     alt={previewNode.title || "图片"}
+                    items={previewItems}
+                    index={Math.max(0, previewItems.findIndex(item => item.src === previewNode.metadata?.content && item.storageKey === previewNode.metadata?.storageKey && item.alt === (previewNode.title || "图片")))}
                     onClose={onClosePreview}
                 />
             ) : null}
@@ -120,6 +125,30 @@ export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading,
             </Modal>
         </>
     );
+}
+
+function canvasImagePreviewGroup(node: CanvasNodeData | null, nodes: CanvasNodeData[]) {
+    if (!node || node.type !== CanvasNodeType.Image) return [];
+    let group = [node];
+    const parent = node.parentId ? nodes.find(item => item.id === node.parentId) : undefined;
+    if (parent && isFrameNode(parent)) {
+        group = getFrameChildren(parent.id, nodes)
+            .filter(item => item.type === CanvasNodeType.Image)
+            .sort((left, right) => left.position.y - right.position.y || left.position.x - right.position.x || left.id.localeCompare(right.id));
+    } else {
+        const batchRootId = node.metadata?.batchRootId || (node.metadata?.isBatchRoot ? node.id : undefined);
+        if (batchRootId) {
+            const root = nodes.find(item => item.id === batchRootId);
+            const childIds = root?.metadata?.batchChildIds || [];
+            const childOrder = new Map(childIds.map((id, index) => [id, index]));
+            group = nodes
+                .filter(item => item.type === CanvasNodeType.Image && (item.id === batchRootId || item.metadata?.batchRootId === batchRootId))
+                .sort((left, right) => (childOrder.get(left.id) ?? -1) - (childOrder.get(right.id) ?? -1));
+        }
+    }
+    return group
+        .filter(item => item.metadata?.content || item.metadata?.storageKey)
+        .map(item => ({ src: item.metadata?.content, storageKey: item.metadata?.storageKey, alt: item.title || "图片" }));
 }
 
 function ResolvedCanvasVideoPreview({ node }: { node: CanvasNodeData }) {

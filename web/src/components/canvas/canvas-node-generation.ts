@@ -1,4 +1,5 @@
 import type { AiTextMessage } from "@/services/api/image";
+import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { seedanceReferenceLabel } from "@/lib/seedance-video";
 import type { ReferenceImage } from "@/types/image";
@@ -16,6 +17,11 @@ import { isCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import { audioFileExtension } from "@/lib/character-voice-formats";
 import type { ModelReferenceLimits } from "@/lib/model-selection";
 import type { Asset } from "@/stores/use-asset-store";
+import { assetSheetSubjectMaterial } from "@/lib/asset-sheet-material";
+import { AssetSheetKind } from "@/lib/asset-reference-sheet";
+import { resolveEpisodeShotAssets, storyboardFrameHash } from "@/lib/canvas/workflow-episode-storyboard";
+import { applyStoryboardFrameComposition } from "@/lib/canvas/storyboard-frame-composition";
+import { storyboardContinuityReference, storyboardContinuityPrompt } from "@/lib/canvas/storyboard-frame-continuity";
 
 export type CharacterGenerationReference = {
     nodeId: string;
@@ -65,6 +71,42 @@ export type NodeGenerationInput = {
 };
 
 export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string, assets: Asset[], promptOnly = false): NodeGenerationContext {
+    const sourceNode = nodes.find((node) => node.id === nodeId);
+    const frame = sourceNode?.metadata?.storyboardFrame;
+    if (frame) {
+        const script = nodes.find(node => node.id === frame.scriptId);
+        const row = script?.metadata?.storyboard?.rows.find(row => row.id === frame.rowId);
+        if (!script || !row || storyboardFrameHash(row) !== frame.sourcePromptHash) throw new Error("分镜已修改，请生成当前版本的画面");
+        const savedFrame = row.frames?.find(item => item.id === frame.frameId && item.imageNodeId === nodeId);
+        if (savedFrame) prompt = applyStoryboardFrameComposition(prompt, row, savedFrame);
+        const references = resolveEpisodeShotAssets(script, row, nodes);
+        const continuity = storyboardContinuityReference(sourceNode!, nodes);
+        if (continuity) {
+            prompt += `\n\n${storyboardContinuityPrompt(continuity)}`;
+            if (!connections.some(edge => edge.toNodeId === nodeId && edge.fromNodeId === continuity.id)) {
+                connections = [...connections, { id: `continuity:${nodeId}`, fromNodeId: continuity.id, toNodeId: nodeId, relation: "storyboard-asset-reference", storyboardRowId: row.id }];
+            }
+        }
+        const imageRoles = references.media.flatMap(image => {
+            const owners = references.nodes.filter(subject => image.metadata?.shortDrama?.mediaSubjectId === subject.id || subject.metadata?.shortDrama?.assetProfile?.references.some(ref => ref.selected && ref.nodeId === image.id));
+            return owners.length ? [`@[node:${image.id}]：${owners.map(subject => [subject.metadata?.shortDrama?.assetIdentity?.code, subject.title].filter(Boolean).join(" ")).join("、")}的外观参考`] : [];
+        });
+        if (imageRoles.length) prompt += `\n\n参考图与资产对应（只取外观，不采用参考图构图）：\n${imageRoles.join("\n")}`;
+        const subjects = new Set(references.nodes.map(node => node.id));
+        const allowed = new Set(references.referenceNodeIds);
+        if (continuity) allowed.add(continuity.id);
+        connections = connections.filter(connection => connection.toNodeId !== nodeId || allowed.has(connection.fromNodeId));
+        // Frame images need appearance and spatial design, not an asset's full story/voice dossier.
+        nodes = nodes.map(node => {
+            if (!subjects.has(node.id)) return node;
+            const identity = node.metadata?.shortDrama?.assetIdentity;
+            const kind = identity?.kind || node.metadata?.shortDrama?.planAsset?.kind;
+            const visualKind = Object.values(AssetSheetKind).find(value => value === kind);
+            const content = visualKind ? assetSheetSubjectMaterial(node.metadata?.content || "", visualKind) : "";
+            const variants = node.metadata?.shortDrama?.assetProfile?.variants.filter(variant => variant.code && references.codes.includes(variant.code)).map(variant => `${variant.code} ${variant.name}：${variant.description}`) || [];
+            return { ...node, metadata: { ...node.metadata, content: [identity?.code, node.title, content, ...variants].filter(Boolean).join("\n"), richText: undefined } };
+        });
+    }
     const pendingConversion = findPendingMediaConversionInput(nodeId, nodes, connections);
     if (pendingConversion) {
         const status = pendingConversion.metadata?.mediaConversion?.status;
@@ -72,7 +114,6 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         throw new Error(`转换节点「${pendingConversion.title || pendingConversion.id}」${reason}，完成后才能执行下游生成`);
     }
     const connectedInputs = withArkAssetReferenceInputs(buildNodeGenerationInputs(nodeId, nodes, connections), nodes, assets);
-    const sourceNode = nodes.find((node) => node.id === nodeId);
     const portraitTextureInput = sourceNode?.type === CanvasNodeType.Image && sourceNode.metadata?.content && sourceNode.metadata?.portraitTexture
         ? (() => {
               const image = readReferenceImage(sourceNode, nodes, connections);
@@ -484,18 +525,21 @@ export function buildNodeResponseMessages(context: NodeGenerationContext): AiTex
 }
 
 export async function hydrateNodeGenerationContext(context: NodeGenerationContext, projectId: string, domainProjectId?: string, mode?: CanvasGenerationMode, includeCharacterVoiceSamples = false, includeCharacterPrompt = true, referenceLimits?: ModelReferenceLimits) {
-    const { imageToDataUrl } = await import("@/services/image-storage");
-    let referenceImages = await Promise.all(
-        context.referenceImages.map(async (image) => {
-            if (image.source?.kind === "drawing") return resolveCanvasDrawingReference(projectId, image);
-            if (image.source?.kind === "colorgrade") return resolveCanvasColorGradeReference(image);
-            return { ...image, dataUrl: await imageToDataUrl(image) };
-        }),
-    );
+    const hydrateImage = async (image: ReferenceImage) => {
+        if (image.source?.kind === "drawing") return resolveCanvasDrawingReference(projectId, image);
+        if (image.source?.kind === "colorgrade") return resolveCanvasColorGradeReference(image);
+        // 媒体任务由后端读取原资源；不要先在浏览器下载并编码随后被丢弃的副本。
+        if ((mode === "image" || mode === "video") && (resourceIdFromStorageKey(image.storageKey) || /^https?:\/\//i.test(image.url || image.dataUrl))) {
+            return image;
+        }
+        const { imageToDataUrl } = await import("@/services/image-storage");
+        return { ...image, dataUrl: await imageToDataUrl(image) };
+    };
+    let referenceImages = await Promise.all(context.referenceImages.map(hydrateImage));
     if (!context.characterReferences.length) return { ...context, referenceImages };
     if (!domainProjectId) throw new Error("角色引用未关联短剧项目，无法解析角色版本");
     const { getProjectCharacter } = await import("@/services/api/projects");
-    const { getResource, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } = await import("@/services/api/resources");
+    const { getResource, resourceFileUrl, resourceStorageKey } = await import("@/services/api/resources");
     const details = await Promise.all(context.characterReferences.map((reference) => getProjectCharacter(domainProjectId, reference.assetId)));
     const remainingBudget = Math.max(0, (referenceLimits?.maxImages ?? 9) - referenceImages.length);
     const selected = details.flatMap((detail) => {
@@ -516,7 +560,7 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
         dataUrl: "",
         storageKey: resourceStorageKey(representation.resourceId),
     } satisfies ReferenceImage));
-    const hydratedCharacterImages = await Promise.all(characterImages.map(async (image) => ({ ...image, dataUrl: await imageToDataUrl(image) })));
+    const hydratedCharacterImages = await Promise.all(characterImages.map(hydrateImage));
     referenceImages = [...referenceImages, ...hydratedCharacterImages];
     const characterBlocks = details.map((detail) => compileCharacterReferencePrompt(detail.asset.title, detail.character.definition));
     const resolvedCharacterVersions = details.map((detail) => ({ assetId: detail.asset.id, versionId: detail.character.versionId }));

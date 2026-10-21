@@ -322,7 +322,7 @@ func CloudAgentSupportedToolNames() []string {
 	// 平台支持的工具全集：含只在特定条件下暴露的工具（看图需要渠道模型声明图片输入能力）。
 	req := CloudAgentRequest{PermissionMode: "auto", ContextScope: []string{"canvas"}, SkillIDs: []string{"capability-list"}, VisionEnabled: true}
 	req.Budget.MaxGenerationTasks = 1
-	tools := cloudAgentTools(req)
+	tools := append(cloudAgentTools(req), productionAgentTools()...)
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		function, _ := tool["function"].(map[string]any)

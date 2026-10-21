@@ -39,4 +39,4 @@
 .canvas-image-preview-tools button:focus-visible { outline: 2px solid currentColor; }
 .canvas-image-preview-tools button:disabled { opacity: 0.4; cursor: default; }
 .canvas-image-preview-tools output { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; }
-.canvas-image-preview-title { position: absolute; top: 20px; left: 24px; max-width: calc(100vw - 104px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--foreground); background: var(--workspace-surface-strong); padding: 8px 12px; border-radius: var(--r-sm); }
+.canvas-image-preview-title { position: absolute; top: 20px; left: 24px; max-width: calc(100vw - 104px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--foreground); background: var(--workspace-surface-strong); padding: 8px 12px; border-radius: var(--r-sm); pointer-events: none; }

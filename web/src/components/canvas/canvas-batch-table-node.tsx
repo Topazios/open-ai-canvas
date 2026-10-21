@@ -3,6 +3,7 @@ import { Button, Switch, Tooltip } from "antd";
 import { Film, Image as ImageIcon, LoaderCircle, Minus, Play, Plus, Rows3, Trash2, Upload } from "lucide-react";
 
 import { CachedResourceImage } from "@/components/cached-resource-image";
+import { CanvasNodeActionButton } from "@/components/canvas/canvas-node-action-bar";
 import { CanvasResourceMentionTextarea } from "@/components/canvas/canvas-resource-mention-textarea";
 import {
     BATCH_REFERENCE_HANDLE_GAP,
@@ -153,39 +154,8 @@ export function CanvasBatchTableNodeContent({ node, nodes, connections, batch, t
 
             <div className="shrink-0 overflow-hidden rounded-t-[inherit] border-b" style={{ borderColor: theme.node.stroke, background: subtleSurface }}>
                 <div data-canvas-batch-drag className="flex h-11 cursor-grab items-center gap-2 px-3 active:cursor-grabbing">
-                    <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden" onPointerDown={(event) => event.stopPropagation()}>
-                        <BatchChoiceGroup ariaLabel="批量任务类型" theme={theme} disabled={readOnly} options={OPERATION_OPTIONS} value={table.operation} onChange={(operation) => onPatchTable({ operation: operation as CanvasBatchOperation })} />
-                        <div className="flex h-8 shrink-0 items-center gap-0.5 rounded-lg px-2" style={{ background: theme.node.panel, color: theme.node.muted }}>
-                            <span className="pr-1">{referenceColumns.length}/{MAX_BATCH_REFERENCE_COLUMNS} 组参考</span>
-                            {!readOnly ? (
-                                <>
-                                    <Tooltip title={referenceColumns.length <= MIN_BATCH_REFERENCE_COLUMNS ? "至少保留 1 组参考图" : "减少一组参考图"}>
-                                        <button type="button" aria-label="减少一组参考图" className="grid size-5 place-items-center rounded-md transition-colors hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10" style={{ color: theme.node.text }} disabled={referenceColumns.length <= MIN_BATCH_REFERENCE_COLUMNS} onClick={onRemoveReferenceColumn}>
-                                            <Minus className="size-3.5" />
-                                        </button>
-                                    </Tooltip>
-                                    <Tooltip title={referenceColumns.length >= MAX_BATCH_REFERENCE_COLUMNS ? `最多支持 ${MAX_BATCH_REFERENCE_COLUMNS} 组参考图` : `新增参考图 ${referenceColumns.length + 1}`}>
-                                        <button type="button" aria-label={`新增参考图 ${referenceColumns.length + 1}`} className="grid size-5 place-items-center rounded-md transition-colors hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10" style={{ color: theme.node.text }} disabled={referenceColumns.length >= MAX_BATCH_REFERENCE_COLUMNS} onClick={onAddReferenceColumn}>
-                                            <Plus className="size-3.5" />
-                                        </button>
-                                    </Tooltip>
-                                </>
-                            ) : null}
-                        </div>
-                        <span className="shrink-0 tabular-nums" style={{ color: theme.node.muted }}>已连 {connectedImageCount} · 完成 {completed}/{table.rows.length}</span>
-                    </div>
-                    {!readOnly ? (
-                        <div className="ml-auto flex shrink-0 items-center gap-1.5" onPointerDown={(event) => event.stopPropagation()}>
-                            <Tooltip title="增量同步画布连线，不会删除已有任务行">
-                                <Button size="small" type="text" icon={<Rows3 className="size-3.5" />} onClick={onFillRows}>同步连线</Button>
-                            </Tooltip>
-                            <Button size="small" type="text" icon={<Plus className="size-3.5" />} onClick={onAddRow}>添加任务</Button>
-                            {table.contentKind === "storyboard" && onCreateStoryboard ? <Button size="small" icon={<Film className="size-3.5" />} onClick={onCreateStoryboard}>创建视频脚本</Button> : null}
-                            <Button size="small" type="primary" icon={<Play className="size-3.5" />} disabled={!unfinishedReadyCount} onClick={() => onGenerate()}>
-                                生成未完成项{unfinishedReadyCount ? ` · ${unfinishedReadyCount}` : ""}
-                            </Button>
-                        </div>
-                    ) : null}
+                    <span className="shrink-0 text-[var(--fs-label)] font-semibold">{OPERATION_OPTIONS.find((option) => option.value === table.operation)?.label || "批量任务"}</span>
+                    <span className="min-w-0 flex-1 truncate tabular-nums" style={{ color: theme.node.muted }}>已连 {connectedImageCount} · 完成 {completed}/{table.rows.length} · {referenceColumns.length}/{MAX_BATCH_REFERENCE_COLUMNS} 组参考</span>
                 </div>
                 <div className="flex h-9 items-center gap-2 border-t px-3" style={{ borderColor: theme.node.stroke }} onPointerDown={(event) => event.stopPropagation()}>
                     <span className="shrink-0 font-medium" style={{ color: theme.node.muted }}>全局提示词</span>
@@ -320,6 +290,17 @@ export function CanvasBatchTableNodeContent({ node, nodes, connections, batch, t
                     </div>
                 )}
             </div>
+            {!readOnly ? (
+                <div className="flex min-h-10 shrink-0 flex-wrap items-center justify-start gap-1 border-t px-2 py-1.5" style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel }} data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                    <BatchChoiceGroup ariaLabel="批量任务类型" theme={theme} disabled={readOnly} options={OPERATION_OPTIONS} value={table.operation} onChange={(operation) => onPatchTable({ operation: operation as CanvasBatchOperation })} compact />
+                    <CanvasNodeActionButton theme={theme} label="减少参考组" icon={<Minus className="size-3.5" />} disabled={referenceColumns.length <= MIN_BATCH_REFERENCE_COLUMNS || !onRemoveReferenceColumn} onClick={() => onRemoveReferenceColumn?.()} />
+                    <CanvasNodeActionButton theme={theme} label="增加参考组" icon={<Plus className="size-3.5" />} disabled={referenceColumns.length >= MAX_BATCH_REFERENCE_COLUMNS} onClick={onAddReferenceColumn} />
+                    <CanvasNodeActionButton theme={theme} label="同步连线" icon={<Rows3 className="size-3.5" />} onClick={onFillRows} />
+                    <CanvasNodeActionButton theme={theme} label="添加任务" icon={<Plus className="size-3.5" />} onClick={onAddRow} />
+                    {table.contentKind === "storyboard" && onCreateStoryboard ? <CanvasNodeActionButton theme={theme} label="创建视频脚本" icon={<Film className="size-3.5" />} onClick={() => onCreateStoryboard()} /> : null}
+                    <CanvasNodeActionButton theme={theme} label={`生成未完成项${unfinishedReadyCount ? ` · ${unfinishedReadyCount}` : ""}`} icon={<Play className="size-3.5" />} primary disabled={!unfinishedReadyCount} onClick={() => onGenerate()} />
+                </div>
+            ) : null}
         </div>
     );
 }

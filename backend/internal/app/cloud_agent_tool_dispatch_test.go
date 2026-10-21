@@ -60,7 +60,7 @@ func TestCloudAgentToolTableMatchesRuntimeDispatch(t *testing.T) {
 	}
 }
 
-// cloudAgentRegisteredToolNames 收集 compileCloudAgentTools 里所有 add("name", …) 的名字全集。
+// cloudAgentRegisteredToolNames 收集 add("name", …) 注册及制作方案的独立 schema。
 func cloudAgentRegisteredToolNames(t *testing.T) []string {
 	t.Helper()
 	file := parseCloudAgentFile(t, "cloud_agent_tools.go")
@@ -79,6 +79,12 @@ func cloudAgentRegisteredToolNames(t *testing.T) []string {
 		}
 		return true
 	})
+	for _, tool := range productionPlanTools() {
+		function, _ := tool["function"].(map[string]any)
+		if name, ok := function["name"].(string); ok {
+			names[name] = true
+		}
+	}
 	if len(names) == 0 {
 		t.Fatal("没有从 cloud_agent_tools.go 解析到任何 add(...) 工具注册")
 	}
@@ -105,7 +111,7 @@ func cloudAgentWriteToolNames(t *testing.T) []string {
 	return sortedKeys(names)
 }
 
-// cloudAgentDispatchedToolNames 收集运行期两条分派路径覆盖的工具名：
+// cloudAgentDispatchedToolNames 收集普通 Agent 与制作任务的分派路径覆盖的工具名：
 // advanceCloudAgentTool（含审批预演、主执行 switch 与媒体/看图等特例分支）与
 // cloudAgentReadTool（默认读取分派）。
 func cloudAgentDispatchedToolNames(t *testing.T) []string {
@@ -117,6 +123,8 @@ func cloudAgentDispatchedToolNames(t *testing.T) []string {
 	}{
 		{"app 包", "advanceCloudAgentTool"},
 		{"app 包", "cloudAgentReadTool"},
+		{"app 包", "productionAgentTool"},
+		{"app 包", "productionStoryboardTool"},
 	} {
 		file := parseCloudAgentFile(t, target.file)
 		found := false

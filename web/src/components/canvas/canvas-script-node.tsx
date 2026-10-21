@@ -8,6 +8,7 @@ import type { ColumnsType } from "antd/es/table";
 import { ChevronDown, ChevronUp, Clapperboard, Copy, Expand, Film, Grid3X3, Image as ImageIcon, ListTree, Merge, MoreHorizontal, Plus, RefreshCw, Send, Square, Trash2, Video } from "lucide-react";
 
 import { CanvasResourceMentionTextarea } from "@/components/canvas/canvas-resource-mention-textarea";
+import { CanvasNodeActionButton } from "@/components/canvas/canvas-node-action-bar";
 import { StoryboardAssetsCell } from "@/components/canvas/storyboard-assets-cell";
 import { ModelPicker } from "@/components/model-picker";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-project-generation";
@@ -251,38 +252,6 @@ export function CanvasScriptNodeContent({
                 <span className="text-[var(--fs-caption)] font-semibold tabular-nums" style={{ color: theme.node.muted }}>
                     {rows.length} 镜 · {totalDuration}s
                 </span>
-                <Tooltip title="全屏编辑">
-                    <button
-                        type="button"
-                        className="grid size-7 place-items-center rounded outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10"
-                        style={{ "--tw-ring-color": theme.node.muted } as CSSProperties}
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            onOpen();
-                        }}
-                        aria-label="全屏编辑"
-                    >
-                        <Expand className="size-3.5" />
-                    </button>
-                </Tooltip>
-                <Dropdown open={moreMenuOpen} onOpenChange={setMoreMenuOpen} menu={{ items: moreMenuItems, onClick: () => setMoreMenuOpen(false) }} trigger={["click"]} placement="bottomRight">
-                    <button
-                        type="button"
-                        className="grid size-7 place-items-center rounded outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10"
-                        style={{ "--tw-ring-color": theme.node.muted } as CSSProperties}
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            setMoreMenuOpen(true);
-                        }}
-                        aria-label="更多操作"
-                    >
-                        <MoreHorizontal className="size-3.5" />
-                    </button>
-                </Dropdown>
             </div>
             {batch ? (
                 <Modal title="批次详情" open={batchDetailsOpen} onCancel={() => setBatchDetailsOpen(false)} footer={null} width={560} centered destroyOnHidden>
@@ -368,21 +337,6 @@ export function CanvasScriptNodeContent({
                     </button>
                 )}
             </div>
-            <div className="flex h-9 shrink-0 items-center justify-center border-b" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
-                <button
-                    type="button"
-                    className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs font-medium outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/10"
-                    style={{ "--tw-ring-color": theme.node.muted } as CSSProperties}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                        event.stopPropagation();
-                        onAddRow();
-                    }}
-                >
-                    <Plus className="size-3.5" />
-                    添加行
-                </button>
-            </div>
             <div className="relative grid shrink-0 grid-rows-[minmax(0,1fr)_28px] gap-1.5 rounded-b-[17px] p-2.5" style={{ height: composerHeight, background: theme.node.panel }}>
                 <CanvasResourceMentionTextarea
                     rows={1}
@@ -467,6 +421,16 @@ export function CanvasScriptNodeContent({
                     />
                 </div>
                 <RowHandle side="left" top={composerHeight / 2} scale={scale} tone="idle" theme={theme} title="连接文本节点作为项目设定" onPointerDown={(event) => onConnectStart(event, "context", "target")} />
+            </div>
+            <div className="flex min-h-10 shrink-0 items-center justify-start gap-1 border-t px-2 py-1.5" style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel }} data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                <CanvasNodeActionButton theme={theme} label="添加镜头" icon={<Plus className="size-3.5" />} onClick={onAddRow} />
+                <CanvasNodeActionButton theme={theme} label="全屏编辑" icon={<Expand className="size-3.5" />} primary onClick={onOpen} />
+                <Dropdown open={moreMenuOpen} onOpenChange={setMoreMenuOpen} menu={{ items: moreMenuItems, onClick: () => setMoreMenuOpen(false) }} trigger={["click"]} placement="topRight">
+                    <button type="button" data-canvas-no-zoom className="inline-flex h-7 min-w-fit shrink-0 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[var(--fs-tiny)] font-medium transition-colors hover:bg-black/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/8" style={{ color: theme.node.text, outlineColor: theme.accent.primary }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setMoreMenuOpen(true); }} aria-label="更多操作" title="更多操作">
+                        <MoreHorizontal className="size-3.5" />
+                        <span>更多</span>
+                    </button>
+                </Dropdown>
             </div>
             {rows.map((row, index) => {
                 const top = STORYBOARD_HEADER_HEIGHT + index * STORYBOARD_ROW_HEIGHT + STORYBOARD_ROW_HEIGHT / 2 - scrollTop;

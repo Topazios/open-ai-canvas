@@ -3,12 +3,13 @@ import { nanoid } from "nanoid";
 import { createCanvasNode } from "@/lib/canvas/canvas-project-domain";
 import { scopedLocalStorage } from "@/lib/user-scope";
 import { createStoryDevelopmentChain, storyDevelopmentStages, storySourceState } from "@/lib/canvas/canvas-story-development";
-import { shortDramaStages, type ShortDramaStageId } from "@/lib/short-drama-stages";
+import type { ShortDramaStageId } from "@/lib/short-drama-stages";
 import { shortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
 import { nodeWorkflow, workflowAncestors, workflowEpisodeProgress, episodeProgressLabel, productionBibleReady } from "./canvas-short-drama-workflow";
 import { workflowImageSubjects, workflowImageShots } from "./canvas-workflow-images";
 import { workflowAssetKind } from "./canvas-production-sources";
 import type { PlannedAssetKind } from "../production-plan";
+import { latestBodyAudit, screenplayAuditState } from "./workflow-screenplay-audit";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
 
 const SHORT_DRAMA_GUIDE_STORAGE_KEY = "canvas-short-drama-guide-v2";
@@ -52,14 +53,27 @@ type ShortDramaGuideGroup = {
     stepIds: ShortDramaStepId[];
 };
 
+type CanvasGuideStage = {
+    key: CanvasShortDramaStepId;
+    label: string;
+    sourceStages: ShortDramaStageId[];
+};
+
+const visibleShortDramaStages: readonly CanvasGuideStage[] = [
+    { key: "story", label: "剧情与章节", sourceStages: ["story"] },
+    { key: "storyboard", label: "分镜与视频草样", sourceStages: ["storyboard", "video"] },
+    { key: "voice", label: "配音与声音", sourceStages: ["voice"] },
+    { key: "edit", label: "剪辑与后期", sourceStages: ["edit"] },
+    { key: "review", label: "成片质检", sourceStages: ["review"] },
+    { key: "delivery", label: "导出交付", sourceStages: ["delivery"] },
+];
+
 const shortDramaGuideGroups: Record<"assets" | "storyboard", ShortDramaGuideGroup[]> = {
     assets: [
-        { id: "guide.assets.fixed", label: "正文资产校核与补充", stepIds: ["assets.reconcile"] },
-        { id: "guide.assets.references", label: "参考资产生成", stepIds: ["assets.character_references", "assets.environment_references", "assets.prop_references", "assets.special_references"] },
+        { id: "guide.assets.references", label: "资产参考图生成", stepIds: ["assets.character_references", "assets.environment_references", "assets.prop_references"] },
     ],
     storyboard: [
         { id: "guide.direction.breakdown", label: "场次与镜头拆解", stepIds: ["direction.shots"] },
-        { id: "guide.direction.prompting", label: "资产绑定与镜头提示词", stepIds: ["direction.production"] },
         { id: "guide.direction.frames", label: "分镜图与关键帧生成", stepIds: ["direction.boards", "direction.start_frame", "direction.end_frame", "direction.keyframes"] },
         { id: "guide.direction.previsualization", label: "动作预演与连续性检查", stepIds: ["direction.previsualization"] },
     ],
@@ -104,7 +118,7 @@ export function createShortDramaPipeline(center: Position, documentsOnDemand = f
     return { nodes: [styleNode, ...storyChain.nodes, scriptNode], connections, styleNodeId: styleNode.id, storyNodeId: storyNode.id, scriptNodeId: scriptNode.id };
 }
 
-export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: CanvasConnection[]): CanvasShortDramaProgress {
+export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: CanvasConnection[], settings?: import("../short-drama-settings").ShortDramaGlobalSettings): CanvasShortDramaProgress {
     const storyInputNode = nodes.find((node) => node.metadata?.workflowKind === "story_input");
     const storyboardScripts = nodes.filter((node) => node.type === CanvasNodeType.Script && (node.metadata?.workflowKind === "storyboard" || Boolean(storyInputNode)));
     const agentScriptNode = nodes.find((node) => node.type === CanvasNodeType.Text && node.metadata?.workflowKind === "script");
@@ -154,8 +168,6 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
         const ready = stage.id === "body" ? Boolean(progress && progress.complete === progress.total) : Boolean(node && data && nodeReady(node));
         return { id: `story.${stage.id}`, label: stage.label, ready, action: "develop", actionLabel: node ? "编辑" : "创建节点", nodeId: stage.id === "body" ? outline?.id : node?.id, progressLabel: progress ? episodeProgressLabel(progress) : undefined };
     });
-    const done = [storyTasks.every((task) => task.ready), false, storyboardDone, false, videoDone, false, false, false];
-    const firstIncomplete = done.findIndex((value) => !value);
     const firstShotNode = shotNodes[0];
     const storyboardNodeId = scriptNode?.id || firstShotNode?.id;
     const mediaNode = completedShotVideos[0] || finalNode || nodes.find((node) =>
@@ -164,10 +176,11 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
     const storyboardTask = (id: string, label: string, ready = false): CanvasShortDramaTask => ({ id, label, ready, action: "storyboard", actionLabel: "打开分镜", nodeId: storyboardNodeId, unavailableReason: storyboardNodeId ? undefined : "请先添加分镜脚本" });
     const timelineTask = (id: string, label: string): CanvasShortDramaTask => ({ id, label, action: "edit", actionLabel: "打开剪辑", nodeId: mediaNode?.id, unavailableReason: mediaNode ? undefined : "请先生成或导入音视频素材" });
     const tasks: Record<ShortDramaStageId, CanvasShortDramaTask[]> = {
-        story: storyTasks,
-        assets: [
-            ...shortDramaGuideGroups.assets.map((group) => ({ ...group, stepIds: [...group.stepIds] })),
+        story: [
+            ...storyTasks.flatMap(task => task.id === "story.plan" ? [task, ...shortDramaGuideGroups.assets.map(group => ({ ...group, stepIds: [...group.stepIds] }))] : [task]),
+            { id: "story.audit", label: "正文质量审核" },
         ],
+        assets: [],
         storyboard: shortDramaGuideGroups.storyboard.map((group) => ({ ...group, stepIds: [...group.stepIds], nodeId: storyboardNodeId })),
         voice: [
             storyboardTask("voice.dialogue", "台词、旁白、说话人与情绪", meaningfulRows.some((row) => Boolean(row.dialogue?.trim() || row.audioEffects?.trim()))),
@@ -176,46 +189,52 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
             timelineTask("voice.timing", "实际时长、音画对齐与混音"),
         ],
         video: [
-            storyboardTask("video.sample", "代表性镜头样片验证"),
-            storyboardTask("video.generate", "镜头视频生成、导入与重试", videoDone),
-            storyboardTask("video.performance", "口型与表演处理"),
-            storyboardTask("video.approve", "候选对比、选用与问题回退"),
+            storyboardTask("video.sample", "代表性镜头样片验证（可选）"),
+            storyboardTask("video.generate", "简单视频生成、导入与重试", videoDone),
         ],
         edit: [
+            { id: "video.finish", label: "视频表现、候选确认与问题回退", stepIds: ["video.performance", "video.approve"], entryStepId: "video.performance" },
             timelineTask("edit.rough", "镜头排序、入出点与粗剪"),
             timelineTask("edit.picture", "画面调整、转场与包装"),
             timelineTask("edit.sound", "对白、音乐、音效与环境声"),
             timelineTask("edit.subtitles", "字幕、转写与样式校对"),
         ],
         review: [
-            { id: "review.automatic", label: "资源、版本、时长与字幕边界检查", unavailableReason: "自由画布待接入自动质检；现有入口位于短剧项目成片质检" },
-            { id: "review.screening", label: "成片画面、声音与字幕审片", action: "preview", actionLabel: "播放成片", nodeId: finalNode?.id, unavailableReason: finalNode ? undefined : "请先完成成片合成" },
+            { id: "review.audit", label: "成片画面、声音与字幕质检", stepIds: ["review.automatic", "review.screening"], entryStepId: "review.automatic", nodeId: finalNode?.id },
             timelineTask("review.revision", "问题修订、重新渲染与复查"),
         ],
         delivery: [
-            { ...timelineTask("delivery.render", "成片 MP4 渲染与导出"), actionLabel: "打开导出" },
-            { id: "delivery.package", label: "成片、字幕、分镜与资产资料包", unavailableReason: "资料包归档待接入" },
-            { id: "delivery.verify", label: "交付文件与版本核验", unavailableReason: "待审片确认与交付记录接入" },
+            { id: "delivery.output", label: "渲染、资料包与交付核验", stepIds: ["delivery.render", "delivery.package", "delivery.verify"], entryStepId: "delivery.render" },
             { id: "delivery.promotion", label: "封面、预告、切片与发布文案", unavailableReason: "宣传物料作为独立可选任务待接入" },
         ],
+    } as Record<ShortDramaStageId, CanvasShortDramaTask[]>;
+    const visibleTasks: Partial<Record<CanvasShortDramaStepId, CanvasShortDramaTask[]>> = {
+        story: tasks.story,
+        storyboard: [...tasks.storyboard, ...tasks.video],
+        voice: tasks.voice,
+        edit: tasks.edit,
+        review: tasks.review,
+        delivery: tasks.delivery,
     };
     const pipelineId = nodeWorkflow(nodes.find((node) => nodeWorkflow(node)?.step === "story.topic"))?.pipelineId || nodes.map(nodeWorkflow).find(Boolean)?.pipelineId;
-    const steps = shortDramaStages.map((step, index): CanvasShortDramaStep => ({
-        id: step.key,
-        label: step.label,
-        nodeId: tasks[step.key].find((task) => task.nodeId)?.nodeId,
-        tasks: tasks[step.key].map((task) => {
+    const steps = visibleShortDramaStages.map((stage): CanvasShortDramaStep => ({
+        id: stage.key,
+        label: stage.label,
+        nodeId: stage.sourceStages.flatMap((sourceStage) => tasks[sourceStage] || []).find((task) => task.nodeId)?.nodeId,
+        tasks: (visibleTasks[stage.key] || []).map((task) => {
             let memberIds = task.stepIds || (shortDramaStep(task.id) ? [task.id as ShortDramaStepId] : []);
-            if (pipelineId && task.id === "guide.assets.fixed" && !nodes.some((node) => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === "assets.reconcile")) {
-                const legacy: ShortDramaStepId[] = ["assets.characters", "assets.environments", "assets.props", "assets.special"];
-                if (nodes.some((node) => nodeWorkflow(node)?.pipelineId === pipelineId && legacy.includes(nodeWorkflow(node)!.step))) memberIds = legacy;
-            }
             if (!memberIds.length || task.id === "story.topic") return task;
             const memberState = memberIds.map((memberId) => {
                 const definition = shortDramaStep(memberId)!;
                 const documents = nodes.filter((node) => nodeWorkflow(node)?.step === definition.id && nodeWorkflow(node)?.pipelineId === pipelineId && !nodeWorkflow(node)?.mediaGroup && !nodeWorkflow(node)?.planGroup);
                 let statusDetail = "";
                 const validDocument = (node: CanvasNodeData) => {
+                    if (definition.id === "story.audit" && nodeWorkflow(node)?.role !== "collection") {
+                        const state = screenplayAuditState(node, nodes, settings);
+                        if (!state.report || state.stale) { statusDetail = state.report ? "正文已变化 · 待复检" : node.metadata?.errorDetails || node.metadata?.taskStage || "审核待完成"; return false; }
+                        statusDetail = `质量：${state.report.quality} · 分镜可用性：${state.report.usability} · ${state.report.findings.length} 项问题`;
+                        return true;
+                    }
                     if (node.metadata?.status === "loading" || node.metadata?.status === "error") {
                         statusDetail = node.metadata.taskStage || (node.metadata.status === "loading" ? "生成中" : "生成失败");
                         return false;
@@ -238,6 +257,14 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
                 };
                 const latest = documents.filter((node) => definition.output !== "asset-group" || nodeWorkflow(node)?.role === "collection" || (definition.id === "story.plan" && !nodeWorkflow(node)?.assetKey)).at(-1);
                 let outputReady = Boolean(latest && validDocument(latest));
+                if (definition.id === "story.audit") {
+                    const bodies = nodes.filter(node => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === "story.body" && nodeWorkflow(node)?.role === "document" && node.metadata?.content?.trim());
+                    const latestBodies = new Map<number, CanvasNodeData>();
+                    for (const body of bodies) if ((nodeWorkflow(latestBodies.get(nodeWorkflow(body)!.episodeNumber!))?.version || 0) <= (nodeWorkflow(body)?.version || 1)) latestBodies.set(nodeWorkflow(body)!.episodeNumber!, body);
+                    const checked = [...latestBodies.values()].filter(body => { const state = screenplayAuditState(latestBodyAudit(body, documents), nodes, settings); return !!state.report && !state.stale; }).length;
+                    outputReady = latestBodies.size > 0 && checked === latestBodies.size;
+                    statusDetail = `已审核 ${checked}/${latestBodies.size} 份正文 · 仅表示诊断完成，不代表作者确认`;
+                }
                 if (definition.mediaOutput && definition.stage === "assets" && latest) {
                     const sourceNodeIds = nodeWorkflow(latest)!.sourceNodeIds;
                     const subjects = workflowImageSubjects({ step: definition.id, sourceNodeIds }, nodes);
@@ -273,8 +300,8 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
                         });
                     });
                 }
-                const ready = definition.stage === "story" ? Boolean(task.ready) : definition.production && !definition.mediaOutput ? Boolean(task.ready) : outputReady;
-                if (outputReady) statusDetail = ready ? "" : "文稿已产出 · 实际执行待验收";
+                const ready = definition.stage === "story" && definition.id !== "story.audit" ? Boolean(task.ready) : definition.production && !definition.mediaOutput ? Boolean(task.ready) : outputReady;
+                if (outputReady && definition.id !== "story.audit") statusDetail = ready ? "" : "文稿已产出 · 实际执行待验收";
                 return { definition, outputReady, ready, nodeId: latest?.id, statusDetail };
             });
             const next = memberState.find((member) => !member.outputReady && !member.definition.optional) || memberState.find((member) => !member.outputReady && member.nodeId);
@@ -285,23 +312,24 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
                 stepIds: memberIds,
                 entryStepId: next?.definition.id || memberState[0]?.definition.id,
                 action: "develop",
-                actionLabel: "生成",
+                actionLabel: task.id === "story.audit" ? "审核" : "生成",
                 unavailableReason: undefined,
                 nodeId: next?.nodeId || memberState.findLast((member) => member.nodeId)?.nodeId || task.nodeId,
                 progressLabel: task.progressLabel || (memberIds.length > 1 ? `${memberState.filter((member) => member.outputReady && !member.definition.optional).length}/${memberState.filter((member) => !member.definition.optional).length} 项已产出` : undefined),
                 statusDetail: memberState.filter((member) => !member.definition.optional && member.statusDetail).map((member) => `${member.definition.label}：${member.statusDetail}`).join("；"),
+                optional: memberState.every((member) => member.definition.optional),
                 ready,
             };
         }),
-        status: done[index] ? "completed" : index === firstIncomplete ? "current" : "pending",
+        status: "pending",
     }));
-    done[1] = steps.find((step) => step.id === "assets")!.tasks.every((task) => task.ready);
-    const current = done.findIndex((value) => !value);
-    steps.forEach((step, index) => { step.status = done[index] ? "completed" : index === current ? "current" : "pending"; });
+    const stageDone = steps.map((step) => step.tasks.filter((task) => !task.optional).every((task) => task.ready));
+    const current = stageDone.findIndex(value => !value);
+    steps.forEach((step, index) => { step.status = stageDone[index] ? "completed" : index === current ? "current" : "pending"; });
     return {
         active,
-        completed: done.every(Boolean),
-        completedCount: done.filter(Boolean).length,
+        completed: stageDone.every(Boolean),
+        completedCount: stageDone.filter(Boolean).length,
         steps,
     };
 }

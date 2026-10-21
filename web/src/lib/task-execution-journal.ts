@@ -27,6 +27,7 @@ export function taskExecutionRows(detail: TaskExecutionDetails, now = Date.now()
                 step.error, step.outputPreview ? `已保存 ${step.outputChars} 字\n${step.outputPreview}${step.outputChars > Array.from(step.outputPreview).length ? "\n（内容较长，此处显示摘要）" : ""}` : pending ? "尚未收到可展示的正文，正在等待模型响应。" : ""].filter(Boolean).join("\n") });
     }
     for (const event of detail.events || []) rows.push({ id: event.id, kind: "status", title: event.title, detail: "", time: event.createdAt, failed: event.failed });
+    if (detail.qualityWarnings?.length) rows.push({ id: `${task.id}:quality`, kind: "status", title: "正文完成度需复核", detail: detail.qualityWarnings.join("\n"), time: task.completedAt || task.updatedAt, failed: false });
     if (!terminal && task.status === "running") rows.push({ id: `${task.id}:current`, kind: "model", title: generationTaskStageLabel(task), detail: `${task.operation === "short_drama_batch" ? "流程历时（含重试间隔）" : "执行耗时"} ${taskElapsed(startedAt, undefined, now)}${task.textDraft ? `\n已接收 ${Array.from(task.textDraft).length} 字` : "\n尚未收到最终结果，后台任务仍在执行。"}`, time: task.updatedAt, failed: false, pending: true });
     if (task.completedAt || ["succeeded", "failed", "cancelled"].includes(task.status)) rows.push({ id: `${task.id}:terminal`, kind: "status", title: generationTaskStatusLabel(task), detail: task.error || task.stage || "", time: task.completedAt || task.updatedAt, failed: task.status === "failed" });
     return rows.sort((a,b) => Date.parse(a.time) - Date.parse(b.time) || String(a.id).localeCompare(String(b.id)));

@@ -62,14 +62,16 @@ export function groupExecutionRows(members: CanvasNodeData[], snapshots: Record<
         if (!snapshot) continue;
         const eventMembers = new Map<number, CanvasNodeData>();
         const events = snapshot.kind === "agent" ? (snapshot.run.events || []).filter(event => {
+            if (event.runId !== target.id) return false;
             if (!target.scoped) return true;
             const payload = event.payload;
             const result = payload.result as Record<string, unknown> | undefined;
             const member = members.find(node => node.id === payload.nodeId || node.id === result?.nodeId ||
                 [node.title, node.metadata?.shortDrama?.planAsset?.name, node.metadata?.shortDrama?.assetIdentity?.code].some(name => name && name === payload.itemName));
             if (member) eventMembers.set(event.seq, member);
-            return !!member || (target.coordinator === true && !payload.itemName && !payload.nodeId && !result?.nodeId &&
-                ["production_control", "run_failed", "run_completed", "run_cancelled"].includes(event.type));
+            // The owning group shows the whole execution, including model calls
+            // before the first artifact. Derived groups remain member-scoped.
+            return target.coordinator === true || !!member;
         }) : [];
         const records = snapshot.kind === "task" ? taskExecutionRows(snapshot.detail) : productionJournalRows(events, target.id);
         for (const row of records) {
@@ -78,4 +80,11 @@ export function groupExecutionRows(members: CanvasNodeData[], snapshots: Record<
         }
     }
     return rows.sort((a, b) => (Date.parse(a.time) - Date.parse(b.time) || String(a.id).localeCompare(String(b.id))) * (order === "asc" ? 1 : -1));
+}
+
+export function groupSessionHasEarlier(targets: GroupSessionTarget[], snapshots: Record<string, GroupSessionSnapshot>) {
+    return targets.some(target => {
+        const snapshot = snapshots[target.key];
+        return target.kind === "agent" && snapshot?.kind === "agent" && (snapshot.run.events?.[0]?.seq || 0) > 1;
+    });
 }

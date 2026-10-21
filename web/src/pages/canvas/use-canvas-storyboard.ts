@@ -8,6 +8,7 @@ import {
     buildGenerationConfig,
     generationTaskMetadata,
     resetGenerationTaskMetadata,
+    createGenerationRetryContext,
     logicalModelIDForConfig,
 } from "@/lib/canvas/canvas-project-generation";
 import {
@@ -23,7 +24,9 @@ import { buildNodeMentionReferences } from "@/lib/canvas/canvas-resource-referen
 import { buildStoryboardAssetCatalog } from "@/lib/canvas/canvas-storyboard-assets";
 import { resolveStoryboardGenerationContext } from "@/lib/canvas/canvas-storyboard-context";
 import { reconcileStoryboardTargetConnections, storyboardComposerContent, storyboardRowReferenceNodeIds } from "@/lib/canvas/canvas-storyboard-materializer";
+import { episodeShotBoundaryImages, storyboardRowIsReady } from "@/lib/canvas/workflow-episode-storyboard";
 import { generationErrorMessage } from "@/lib/generation-error";
+import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import type { Skill } from "@/services/api/skills";
 import { createGenerationTask, waitForGenerationTask } from "@/services/api/task-center";
@@ -356,7 +359,7 @@ export function useCanvasStoryboard({
             const prompt = (row.videoMotionPrompt || row.plotDescription).trim();
             const existingIndex = row.videoNodeId ? nextNodes.findIndex((node) => node.id === row.videoNodeId && node.type === CanvasNodeType.Video) : -1;
             const existing = existingIndex >= 0 ? nextNodes[existingIndex] : undefined;
-            const referenceIds = storyboardRowReferenceNodeIds(scriptNode, row, nextNodes, nextConnections, false, existing?.id);
+            const referenceIds = storyboardRowReferenceNodeIds(scriptNode, row, nextNodes, nextConnections, scriptNode.metadata?.shortDrama?.step === "direction.shots", existing?.id);
             const composerContent = storyboardComposerContent(prompt, referenceIds, nextNodes);
             if (existingIndex >= 0) {
                 const existing = nextNodes[existingIndex];
@@ -393,6 +396,11 @@ export function useCanvasStoryboard({
     }, [connectionsRef, effectiveConfig, message, nodesRef, setConnections, setNodes]);
 
     const createAndGenerateScriptVideos = useCallback(async (nodeId: string, rowIds?: string[]) => {
+        if (storyboardRequests.current.has(nodeId)) return;
+        const signal = storyboardLifetime.current.signal;
+        const scope = getActiveUserScope();
+        storyboardRequests.current.add(nodeId);
+        try {
         const videoModel = effectiveConfig.videoModel || effectiveConfig.model;
         if (!isAiConfigReady(effectiveConfig, videoModel)) {
             navigateToSettings({ continueCreation: true });
@@ -401,11 +409,11 @@ export function useCanvasStoryboard({
         let scriptNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Script);
         const allRows = scriptNode?.metadata?.storyboard?.rows || [];
         const rows = rowIds?.length ? allRows.filter((row) => rowIds.includes(row.id)) : allRows;
-        const describedRows = rows.filter((row) => Boolean((row.videoMotionPrompt || row.plotDescription).trim()));
+        const describedRows = rows.filter(storyboardRowIsReady);
         const activeNodeIds = scriptNode ? activeGenerationBatchNodeIds(scriptNode, "storyboard_video") : new Set<string>();
         const targetRows = describedRows.filter((row) => {
             const videoNode = row.videoNodeId ? nodesRef.current.find((node) => node.id === row.videoNodeId && node.type === CanvasNodeType.Video) : undefined;
-            return !videoNode?.metadata?.content && (!videoNode || !activeNodeIds.has(videoNode.id));
+            return !videoNode?.metadata?.content && !videoNode?.metadata?.storageKey && !isCanvasNodeGenerating(videoNode) && (!videoNode || !activeNodeIds.has(videoNode.id));
         });
         if (!targetRows.length) {
             if (describedRows.some((row) => row.videoNodeId && nodesRef.current.some((node) => node.id === row.videoNodeId && Boolean(node.metadata?.content)))) message.info("镜头视频已存在");
@@ -413,6 +421,21 @@ export function useCanvasStoryboard({
             return;
         }
         if (!await confirmGenerationSubmission(targetRows.length, videoModel, "视频生成")) return;
+        signal.throwIfAborted();
+        if (scope !== getActiveUserScope()) return;
+        const latest = nodesRef.current.find(node => node.id === nodeId);
+        if (!latest || targetRows.some(row => {
+            const current = latest.metadata?.storyboard?.rows.find(item => item.id === row.id);
+            const video = current?.videoNodeId ? nodesRef.current.find(item => item.id === current.videoNodeId) : undefined;
+            return !current || JSON.stringify(current) !== JSON.stringify(row) || isCanvasNodeGenerating(video) || Boolean(video?.metadata?.content || video?.metadata?.storageKey);
+        })) { message.warning("镜头或任务状态已变化，请重新选择生成"); return; }
+        const retryContexts = new Map<string, Awaited<ReturnType<typeof createGenerationRetryContext>>>();
+        for (const row of targetRows) {
+            const video = nodesRef.current.find(node => node.id === row.videoNodeId);
+            if (video?.metadata?.taskId) retryContexts.set(row.id, await createGenerationRetryContext(video.metadata.taskId, video.metadata.attemptGroupId));
+        }
+        signal.throwIfAborted();
+        if (scope !== getActiveUserScope() || !nodesRef.current.some(node => node.id === nodeId)) return;
         createScriptVideoNodes(nodeId, true, targetRows.map((row) => row.id));
         scriptNode = nodesRef.current.find((node) => node.id === nodeId && node.type === CanvasNodeType.Script);
         const targetRowIds = new Set(targetRows.map((row) => row.id));
@@ -428,15 +451,20 @@ export function useCanvasStoryboard({
         const targetById = new Map(targets.map((target) => [target.videoNode.id, target]));
         const nextNodes = nodesRef.current.map((node) => {
             const target = targetById.get(node.id);
-            return target ? { ...node, metadata: { ...node.metadata, prompt: target.prompt, composerContent: target.videoNode.metadata?.composerContent || target.prompt, model: videoModel, ...storyboardPromptTemplateMetadata(target.row, "video"), generationMode: "video" as const, videoEditOperation: "text_to_video" as const, videoStartFrameNodeId: undefined } } : node;
+            const retry = target ? retryContexts.get(target.row.id) : undefined;
+            const frames = target ? episodeShotBoundaryImages(target.row, nodesRef.current) : [];
+            return target ? { ...node, metadata: { ...node.metadata, ...(retry ? { retryOf: retry.retryOf, attemptGroupId: retry.attemptGroupId, taskClientOperationId: retry.clientOperationId } : {}), prompt: target.prompt, composerContent: target.videoNode.metadata?.composerContent || target.prompt, model: videoModel, ...storyboardPromptTemplateMetadata(target.row, "video"), generationMode: "video" as const, videoEditOperation: frames.length ? "image_to_video" as const : "text_to_video" as const, videoStartFrameNodeId: frames.find(frame => frame.kind === "start")?.node.id, videoEndFrameNodeId: frames.find(frame => frame.kind === "end")?.node.id } } : node;
         });
         const nextConnections = connectionsRef.current;
         nodesRef.current = nextNodes;
         connectionsRef.current = nextConnections;
         setNodes(nextNodes);
         setConnections(nextConnections);
-        setSelectedNodeIds(new Set(targets.map((target) => target.videoNode.id)));
+        setSelectedNodeIds(new Set([nodeId]));
         if (enqueueGenerationBatch(nodeId, "storyboard_video", targets.map((target) => ({ rowId: target.row.id, nodeId: target.videoNode.id })))) message.success("镜头视频已加入生成队列");
+        } catch (error) {
+            if (!signal.aborted && scope === getActiveUserScope()) message.error(generationErrorMessage(error));
+        } finally { storyboardRequests.current.delete(nodeId); }
     }, [connectionsRef, confirmGenerationSubmission, createScriptVideoNodes, effectiveConfig, enqueueGenerationBatch, isAiConfigReady, message, nodesRef, setConnections, setNodes, setSelectedNodeIds]);
 
     const createScriptActionBoards = useCallback(async (nodeId: string) => {
@@ -568,7 +596,7 @@ function invalidateEditedPromptVariables(previous: StoryboardRow | undefined, ne
 
 function activeGenerationBatchNodeIds(node: CanvasNodeData, mode: CanvasGenerationBatchMode) {
     return new Set((node.metadata?.generationBatches || [])
-        .filter((batch) => batch.mode === mode)
+        .filter((batch) => batch.mode === mode && !batch.paused)
         .flatMap((batch) => batch.items
             .filter((item) => item.status === "waiting" || item.status === "submitting" || item.status === "queued" || item.status === "running")
             .map((item) => item.nodeId)));

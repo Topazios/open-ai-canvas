@@ -40,8 +40,8 @@
 | `create.contentType` | `"application/json"` |
 | `create.body.model` | `{"$ref":"request.model"}` |
 | `create.body.prompt` | `{"$ref":"request.prompt"}` |
-| `create.body.images` | `{"$omitEmpty":{"$if":{"condition":{"$gt":[{"$len":{"$ref":"request.images"}},0]},"then":{"$map":{"from":{"$filter":{"from":{"$sortByOrder":{"$ref":"request.images"}},"as":"media","where":{"$ne":[{"$ref":"media.role"},"mask"]}}},"as":"media","in":{"image_url":{"$ref":"media.value"}}}},"else":null}}}` |
-| `create.body.mask` | `{"$omitEmpty":{"$if":{"condition":{"$gt":[{"$len":{"$filter":{"from":{"$ref":"request.images"},"as":"media","where":{"$eq":[{"$ref":"media.role"},"mask"]}}}},0]},"then":{"image_url":{"$first":{"$map":{"from":{"$filter":{"from":{"$sortByOrder":{"$ref":"request.images"}},"as":"media","where":{"$eq":[{"$ref":"media.role"},"mask"]}}},"as":"media","in":{"$ref":"media.value"}}}}},"else":null}}}` |
+| `create.body.images` | `{"$omitEmpty":{"$if":{"condition":{"$gt":[{"$len":{"$ref":"request.images"}},0]},"then":{"$map":{"from":{"$filter":{"from":{"$sortByOrder":{"$ref":"request.images"}},"as":"media","where":{"$ne":[{"$ref":"media.role"},"mask"]}}},"as":"media","in":{"$ref":"media.value"}}},"else":null}}}` |
+| `create.body.mask` | `{"$omitEmpty":{"$if":{"condition":{"$gt":[{"$len":{"$filter":{"from":{"$ref":"request.images"},"as":"media","where":{"$eq":[{"$ref":"media.role"},"mask"]}}}},0]},"then":{"$first":{"$map":{"from":{"$filter":{"from":{"$sortByOrder":{"$ref":"request.images"}},"as":"media","where":{"$eq":[{"$ref":"media.role"},"mask"]}}},"as":"media","in":{"$ref":"media.value"}}}},"else":null}}}` |
 | `create.body.n` | `{"$omitEmpty":{"$if":{"condition":{"$gt":[{"$ref":"request.imageCount"},0]},"then":{"$ref":"request.imageCount"},"else":1}}}` |
 | `create.body.size` | `{"$omitEmpty":{"$if":{"condition":{"$in":[{"$lower":{"$trim":{"$ref":"request.aspectRatio"}}},["","auto"]]},"then":null,"else":{"$ref":"request.aspectRatio"}}}}` |
 | `create.body.quality` | `{"$omitEmpty":{"$switch":{"cases":[{"when":{"$in":[{"$lower":{"$trim":{"$ref":"request.quality"}}},["1k"]]},"then":"low"},{"when":{"$in":[{"$lower":{"$trim":{"$ref":"request.quality"}}},["2k"]]},"then":"medium"},{"when":{"$in":[{"$lower":{"$trim":{"$ref":"request.quality"}}},["4k"]]},"then":"high"},{"when":{"$in":[{"$lower":{"$trim":{"$ref":"request.quality"}}},["","auto"]]},"then":null}],"default":{"$ref":"request.quality"}}}}` |
@@ -81,7 +81,7 @@
 
 ## 兼容边界
 
-无参考图走 JSON generations；有参考图或蒙版走 JSON edits，并按官方 images 数组传入多张 image_url。quality 的 1k/2k/4k 映射为 OpenAI low/medium/high。
+无参考图走 JSON generations；有参考图或蒙版走 JSON edits。按 OpenAI Images 官方协议，`images` 必须为对象数组，每项使用 `image_url` 或 `file_id`；`mask` 也必须使用对象结构。本地内嵌图片通过 `image_url` 携带 data URL。quality 的 1k/2k/4k 映射为 OpenAI low/medium/high。
 
 <!-- YINGCE_MANIFEST_CONTRACT_START -->
 ## Manifest 完整接口定义

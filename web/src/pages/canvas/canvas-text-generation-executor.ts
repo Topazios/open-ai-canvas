@@ -6,6 +6,7 @@ import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-s
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
+import { storyboardKeyframeOutput } from "@/lib/canvas/episode-storyboard-frames";
 
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
@@ -93,6 +94,7 @@ export async function executeTextGeneration({
                     nodeId: targetNodeId,
                     ...retryContext,
                     mode: "text",
+                    ...(sourceNode?.metadata?.storyboardFramePlan ? { structuredOutput: storyboardKeyframeOutput } : {}),
                     prompt: effectivePrompt,
                     config: generationConfig,
                     referenceImages: generationContext.referenceImages,

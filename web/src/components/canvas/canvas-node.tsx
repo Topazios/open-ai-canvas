@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, Lock, Maximize2, Music2, Pencil, RefreshCw, ScanSearch, Settings2, Star, Trash2, Type, Video, WandSparkles } from "lucide-react";
+import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, Lock, Music2, Pencil, ScanSearch, Settings2, Star, Trash2, Type, Video, WandSparkles } from "lucide-react";
 
 import { useCanvasNodeActions } from "./canvas-node-action-context";
 import { recordCanvasRender } from "@/lib/canvas/canvas-performance-diagnostics";
@@ -15,10 +15,12 @@ import { CanvasNodeType, type CanvasNodeData, type CanvasNodeTypeId, type Positi
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { ART_CRITIQUE_NODE_TYPE } from "@/lib/art-critique/contracts";
 import { getNodeDefinition, getNodeMinSize, shouldKeepAspectRatio } from "@/lib/canvas/node-registry";
+import { hasCanvasCustomNodeContent } from "@/lib/canvas/canvas-custom-node-content";
 import { CanvasNodeContent, CanvasNodeImageInfo, CanvasNodeProducedModel } from "./canvas-node-content";
+import { CanvasNodeActionBar } from "./canvas-node-action-bar";
 import { CanvasShotProjection } from "./canvas-shot-projection";
 import type { CanvasShotBinding } from "@/lib/canvas/canvas-shot-projection";
-import { GripVertical, ZoomIn } from "lucide-react";
+import { GripVertical } from "lucide-react";
 import "./canvas-image-preview.css";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -67,7 +69,9 @@ type CanvasNodeProps = {
     onSetBatchPrimary?: (node: CanvasNodeData) => void;
     onRetry?: (node: CanvasNodeData, options?: import("@/types/canvas").CanvasNodeRetryOptions) => void;
     onReloadResource?: (node: CanvasNodeData) => void;
+    onOpenInfo?: (node: CanvasNodeData) => void;
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
+    onCancelTask?: (node: CanvasNodeData) => void;
     onOpenVersions?: (node: CanvasNodeData) => void;
     onViewImage?: (node: CanvasNodeData) => void;
     onReplaceMedia?: (node: CanvasNodeData) => void;
@@ -121,7 +125,9 @@ export const CanvasNode = React.memo(function CanvasNode({
     onSetBatchPrimary,
     onRetry,
     onReloadResource,
+    onOpenInfo,
     onOpenTaskDetails,
+    onCancelTask,
     onOpenVersions,
     onViewImage,
     onOpenTextEditor,
@@ -155,6 +161,16 @@ export const CanvasNode = React.memo(function CanvasNode({
     const nodeState = isFocusRelated ? "focus" : isConnectionTarget ? "target" : isSelected ? "selected" : isRelated && !isBatchChild ? "related" : "idle";
     const showOutputConnection = getNodeDefinition(data.type)?.showOutputConnection !== false;
     const automaticWorkflowConnections = Boolean(data.metadata?.storyDevelopment || data.metadata?.shortDrama);
+    const batchChildDeleteAction = isBatchChild && data.metadata?.status === "error"
+        ? [{ label: "删除", icon: <Trash2 className="size-3.5" />, onClick: () => deleteNode?.(data), danger: true }]
+        : [];
+    const embeddedNodeActions = data.type === CanvasNodeType.Config || data.type === CanvasNodeType.Script || data.type === CanvasNodeType.BatchTable ||
+        data.metadata?.workflowKind === "story_input" ||
+        data.metadata?.workflowKind === "character" ||
+        data.metadata?.workflowKind === "styleboard" ||
+        Boolean(data.metadata?.directorSceneId) ||
+        (Boolean(data.metadata?.content?.trim()) && ["story.body", "story.audit"].includes(data.metadata?.shortDrama?.step || "") &&
+            hasCanvasCustomNodeContent(data, isEditingContent) && Boolean(renderNodeContent));
     const assetTags = data.metadata?.assetTags?.filter((tag) => tag.trim()) || [];
     const scriptMinHeight = data.type === CanvasNodeType.Script ? storyboardMinNodeHeight(data.metadata?.storyboardComposerHeight) : null;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -330,7 +346,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 onCancel={() => { setTitleDraft(data.title); setIsEditingTitle(false); }}
             /> : null}
             <div
-                className="canvas-node-shell relative h-full w-full overflow-visible rounded-[var(--node-radius)]"
+                className="canvas-node-shell relative box-border flex h-full w-full flex-col overflow-visible rounded-[var(--node-radius)]"
                 data-node-state={nodeState}
                 data-connection-tilt={connectionTilt ? "true" : undefined}
                 data-state={data.metadata?.status || (isActive ? "active" : isRelated ? "related" : "idle")}
@@ -377,7 +393,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onOpenTextEditor?.(data);
                         return;
                     }
-                    if (!readOnly && data.metadata?.storyDevelopment) {
+                    if (!readOnly && (data.metadata?.storyDevelopment || data.metadata?.shortDrama?.screenplayAudit || data.metadata?.shortDrama?.step === "story.body")) {
                         event.stopPropagation();
                         onOpenTextEditor?.(data);
                         return;
@@ -388,7 +404,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 }}
             >
                 <div
-                    className={`relative flex h-full w-full ${shotBinding ? "flex-col" : ""} items-center justify-center rounded-[inherit] ${isBatchRoot || data.type === CanvasNodeType.Script || data.type === CanvasNodeType.BatchTable || isComposerNode ? "overflow-visible" : "overflow-hidden"}`}
+                    className={`relative flex min-h-0 min-w-0 flex-1 ${shotBinding ? "flex-col" : ""} items-center justify-center rounded-[inherit] ${isBatchRoot || data.type === CanvasNodeType.Script || data.type === CanvasNodeType.BatchTable || isComposerNode ? "overflow-visible" : "overflow-hidden"}`}
                     style={
                         {
                             background: hasImageContent || hasVideoContent || hasAudioContent ? "transparent" : theme.node.fill,
@@ -435,7 +451,9 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onStopEditing={() => setIsEditingContent(false)}
                         onRetry={onRetry}
                         onReloadResource={onReloadResource}
+                        onOpenInfo={onOpenInfo}
                         onOpenTaskDetails={onOpenTaskDetails}
+                        onCancelTask={onCancelTask}
                         onToggleBatch={() => onToggleBatch?.(data.id)}
                         reduceMediaEffects={reduceMediaEffects}
                         mediaActive={mediaActive}
@@ -443,23 +461,30 @@ export const CanvasNode = React.memo(function CanvasNode({
                     />}
                 </div>
 
-                {showChrome && !projectView && data.type === CanvasNodeType.Text && data.metadata?.workflowKind !== "character" && data.metadata?.workflowKind !== "story_input" && data.metadata?.status !== "loading" && data.metadata?.status !== "error" && !readOnly ? (
-                    <div
-                        className={`absolute bottom-[10%] left-1/2 z-[var(--node-z-overlay)] -translate-x-1/2 motion-safe:transition motion-safe:duration-200 ${isSelected ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-3 opacity-0"}`}
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => event.stopPropagation()}
-                    >
-                        <button
-                            type="button"
-                            className="canvas-node-inline-action inline-flex h-9 items-center gap-2 px-3 text-xs font-medium backdrop-blur-xl transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
-                            style={{ outlineColor: theme.accent.primary }}
-                            onClick={(event) => { event.stopPropagation(); onOpenTextEditor?.(data); }}
-                            aria-label="放大编辑文本"
-                        >
-                            <Maximize2 className="size-3.5" />
-                            放大编辑
-                        </button>
-                    </div>
+                {showChrome && !projectView && !readOnly && !embeddedNodeActions && data.metadata?.status !== "error" ? (
+                    <CanvasNodeActionBar
+                        node={data}
+                        theme={theme}
+                        onOpenInfo={onOpenInfo}
+                        onOpenTaskDetails={onOpenTaskDetails}
+                        onOpenTextEditor={onOpenTextEditor}
+                        onOpenDrawing={onOpenDrawing}
+                        onViewImage={onViewImage}
+                        onMediaPlayRequest={onMediaPlayRequest}
+                        onRetry={onRetry}
+                        onReloadResource={onReloadResource}
+                        onInlineEdit={() => setIsEditingContent(true)}
+                        additionalActions={[
+                            ...(isBatchRoot ? [{ label: batchExpanded ? "收起图片组" : "展开图片组", icon: <ChevronRight className={`size-3.5 ${batchExpanded ? "rotate-90" : ""}`} />, onClick: () => onToggleBatch?.(data.id) }] : []),
+                            ...(isBatchRoot && hasImageContent ? [{ label: "下载主图", icon: <Download className="size-3.5" />, onClick: () => downloadNode?.(data) }] : []),
+                            ...(isBatchChild && hasImageContent ? [
+                                { label: "下载图片", icon: <Download className="size-3.5" />, onClick: () => downloadNode?.(data) },
+                                { label: "创建副本", icon: <Copy className="size-3.5" />, onClick: () => duplicateNode?.(data) },
+                                { label: batchPrimary ? "当前主图" : "设为主图", icon: <Star className={`size-3.5 ${batchPrimary ? "fill-current" : ""}`} style={{ color: theme.accent.primary }} />, onClick: () => onSetBatchPrimary?.(data) },
+                            ] : []),
+                            ...batchChildDeleteAction,
+                        ]}
+                    />
                 ) : null}
 
                 {showChrome && !projectView && data.metadata?.versionLabel ? (
@@ -484,44 +509,10 @@ export const CanvasNode = React.memo(function CanvasNode({
                     <div className={`absolute right-3 top-3 z-[var(--node-z-overlay)] flex min-w-0 items-center justify-end gap-1 ${data.metadata?.versionLabel ? "max-w-[calc(100%-104px)]" : "max-w-[calc(100%-24px)]"}`}>
                         {resourceLabel && data.type !== CanvasNodeType.Image ? <ResourceLabelBadge reference={resourceLabel} theme={theme} /> : null}
                         {hasMediaContent && !readOnly ? <ResourceStorageBadge storageKey={data.metadata?.storageKey} active={isActive} theme={theme} /> : null}
-                        {isBatchRoot ? <BatchToggleBadge count={batchCount} expanded={batchExpanded} theme={theme} onToggle={() => onToggleBatch?.(data.id)} /> : null}
-                        {isBatchChild && !readOnly ? <BatchPrimaryBadge visible={batchPrimary || hovered || isSelected} selected={batchPrimary} theme={theme} onSelect={() => onSetBatchPrimary?.(data)} /> : null}
                         {data.metadata?.locked ? <NodeLockBadge theme={theme} /> : null}
                     </div>
                 ) : null}
-                {/* 批次子图操作条：成功子项提供下载/副本/设为主图，失败子项提供重试/删除 */}
-                {!projectView && hasImageContent && onViewImage && effectiveRenderLOD !== "shell" ? <button
-                    type="button" className="canvas-image-preview-trigger" data-canvas-no-zoom
-                    aria-label={`预览图片：${data.title}`} title="预览图片"
-                    style={{ background: theme.toolbar.panel, color: theme.node.text, borderColor: theme.toolbar.border, width: Math.min(80, 36 / scale), height: Math.min(80, 36 / scale) }}
-                    onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()}
-                    onDoubleClick={(event) => event.stopPropagation()}
-                    onClick={(event) => { event.stopPropagation(); onViewImage(data); }}
-                ><ZoomIn style={{ width: "55%", height: "55%" }} /></button> : null}
-                {showChrome && !projectView && isBatchChild && !readOnly && (hasImageContent || data.metadata?.status === "error") && (hovered || isSelected) ? (
-                    <div
-                        className="absolute inset-x-0 bottom-2 z-[var(--node-z-overlay)] flex justify-center"
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => event.stopPropagation()}
-                    >
-                        <div className="flex items-center gap-0.5 rounded-[var(--r-md)] border px-1 py-1 backdrop-blur-xl" style={{ background: `${theme.toolbar.panel}e6`, borderColor: theme.toolbar.border }}>
-                            {hasImageContent ? <BatchChildActionButton theme={theme} label="下载图片" icon={<Download className="size-3.5" />} onClick={() => downloadNode?.(data)} /> : null}
-                            {hasImageContent ? <BatchChildActionButton theme={theme} label="创建副本" icon={<Copy className="size-3.5" />} onClick={() => duplicateNode?.(data)} /> : null}
-                            {hasImageContent ? (
-                                <BatchChildActionButton theme={theme} label={batchPrimary ? "当前主图" : "设为主图"} icon={<Star className={`size-3.5 ${batchPrimary ? "fill-current" : ""}`} style={{ color: theme.accent.primary }} />} onClick={() => onSetBatchPrimary?.(data)} />
-                            ) : null}
-                            {data.metadata?.status === "error" && data.metadata.resourceReloadAvailable ? <BatchChildActionButton theme={theme} label="重新加载资源" icon={<Download className="size-3.5" />} onClick={() => onReloadResource?.(data)} /> : null}
-                            {data.metadata?.status === "error" ? <BatchChildActionButton theme={theme} label={data.metadata?.taskCanRecoverMedia ? "重试保存" : "重新生成"} icon={<RefreshCw className="size-3.5" />} onClick={() => onRetry?.(data)} /> : null}
-                            {data.metadata?.status === "error" ? <BatchChildActionButton theme={theme} label="删除" icon={<Trash2 className="size-3.5" />} danger onClick={() => deleteNode?.(data)} /> : null}
-                        </div>
-                    </div>
-                ) : null}
-                {/* 批次主图位（折叠根节点封面）常驻下载按钮 */}
-                {showChrome && !projectView && isBatchRoot && hasImageContent && !readOnly ? (
-                    <div className="absolute bottom-2 right-2 z-[var(--node-z-overlay)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
-                        <BatchChildActionButton theme={theme} label="下载主图" icon={<Download className="size-3.5" />} onClick={() => downloadNode?.(data)} />
-                    </div>
-                ) : null}
+                {/* 图片预览统一由底部操作栏提供，避免与批次图片上的放大入口重复。 */}
                 {showChrome && !projectView && (assetTags.length || showProducedModel || (showImageInfo && hasImageContent)) ? (
                     <div className={`pointer-events-none absolute inset-x-3 z-[var(--node-z-overlay)] flex items-end justify-between gap-2 ${mediaActive && hasVideoContent ? "bottom-16" : "bottom-3"}`}>
                         <div className="flex min-w-0 items-end gap-1">
@@ -597,6 +588,7 @@ function areCanvasNodePropsEqual(previous: CanvasNodeProps, next: CanvasNodeProp
         previous.onRetry === next.onRetry &&
         previous.onReloadResource === next.onReloadResource &&
         previous.onOpenTaskDetails === next.onOpenTaskDetails &&
+        previous.onCancelTask === next.onCancelTask &&
         previous.onOpenVersions === next.onOpenVersions &&
         previous.onViewImage === next.onViewImage &&
         previous.onReplaceMedia === next.onReplaceMedia &&
@@ -627,42 +619,6 @@ function ResourceStorageBadge({ storageKey, active, theme }: { storageKey?: stri
 
 function NodeLockBadge({ theme }: { theme: CanvasTheme }) {
     return <span className="pointer-events-none grid size-7 shrink-0 place-items-center rounded-md border backdrop-blur" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.muted }} title="节点已锁定"><Lock className="size-3.5" /></span>;
-}
-
-function BatchToggleBadge({ count, expanded, theme, onToggle }: { count: number; expanded: boolean; theme: CanvasTheme; onToggle: () => void }) {
-    return (
-        <button type="button" className="canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-semibold backdrop-blur-md" style={{ background: `${theme.toolbar.panel}d9`, borderColor: `${theme.toolbar.border}cc`, color: theme.node.text }} aria-expanded={expanded} aria-label={expanded ? "收起图片组" : "展开图片组"} onClick={(event) => { event.stopPropagation(); onToggle(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
-            <span className="leading-none" style={{ color: theme.accent.primary }}>{count}</span>
-            <ChevronRight className={`size-3 opacity-55 transition-transform ${expanded ? "rotate-90" : ""}`} />
-        </button>
-    );
-}
-
-function BatchPrimaryBadge({ visible, selected, theme, onSelect }: { visible: boolean; selected: boolean; theme: CanvasTheme; onSelect: () => void }) {
-    return (
-        <button type="button" className={`canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-medium backdrop-blur-md transition-opacity ${visible ? "opacity-100" : "pointer-events-none opacity-0"}`} style={{ background: theme.toolbar.panel, borderColor: selected ? theme.accent.primary : theme.toolbar.border, color: selected ? theme.accent.primary : theme.node.text }} aria-label={selected ? "当前主图" : "设置为主图"} aria-pressed={selected} onClick={(event) => { event.stopPropagation(); onSelect(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
-            <Star className={`size-3 ${selected ? "fill-current" : ""}`} style={{ color: theme.accent.primary }} />
-            {selected ? "当前主图" : "主图"}
-        </button>
-    );
-}
-
-function BatchChildActionButton({ theme, label, icon, onClick, danger = false }: { theme: CanvasTheme; label: string; icon: ReactNode; onClick: () => void; danger?: boolean }) {
-    return (
-        <button
-            type="button"
-            data-canvas-no-zoom
-            className="canvas-node-inline-action grid size-8 place-items-center rounded-[var(--r-sm)] p-0 backdrop-blur-xl transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
-            style={{ color: danger ? theme.accent.danger : theme.node.text, outlineColor: theme.accent.primary }}
-            title={label}
-            aria-label={label}
-            onClick={(event) => { event.stopPropagation(); onClick(); }}
-            onMouseDown={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
-        >
-            {icon}
-        </button>
-    );
 }
 
 function AssetTagBadges({ tags, theme }: { tags: string[]; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {

@@ -70,6 +70,7 @@ type CanvasNodeToolbarProps = {
     workspaceMode?: CanvasWorkspaceMode;
     scaleWithNode?: boolean;
     panelOpen?: boolean;
+    hideInlineActions?: boolean;
 };
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
@@ -139,6 +140,7 @@ export function CanvasNodeToolbar({
     workspaceMode = "professional",
     scaleWithNode = false,
     panelOpen = false,
+    hideInlineActions = false,
 }: CanvasNodeToolbarProps) {
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
     const [containerWidth, setContainerWidth] = useState(1000);
@@ -353,7 +355,7 @@ export function CanvasNodeToolbar({
     };
 
     // 注册表统一提供动作合同、适用性和节点 Dock 层级。
-    const registryTools = resolveToolbarTools("node-hover", nodeHoverCtx, null);
+    const registryTools = resolveToolbarTools("node-hover", nodeHoverCtx, null).filter((tool) => !hideInlineActions || (tool.id !== "info" && tool.id !== "editText"));
     const registryToolbarTools: ToolbarTool[] = registryTools.map((tool) => {
         const placement = resolveNodeToolbarPlacement(tool, nodeHoverCtx);
         return {

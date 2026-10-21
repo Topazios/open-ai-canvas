@@ -9,7 +9,7 @@ import { formatPriceRange, modelQuoteDescription, modelQuoteRequest, normalizeTi
 import { compatibleModelInGroup, configuredModelDisplayName, modelCompatibilityError, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
 import { groupModelsForPicker, isDirectSystemModel, modelChannelLabel } from "@/lib/model-picker-groups";
 import { cn } from "@/lib/utils";
-import { modelDisplayName, modelIcon, modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { filterModelsByCapability, hasSystemModelPrice, modelDisplayName, modelIcon, modelOptionName, modelOptionsForPickerFromChannels, resolveModelChannel, selectableModelsByCapability, useConfigStore, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { ModelLogo } from "@/components/model-logo";
@@ -59,7 +59,8 @@ export function ModelPicker({
     const menuRef = useRef<HTMLDivElement>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const options = useMemo(() => Array.from(new Set(selectableModelsByCapability(config, capability).filter(Boolean))), [capability, config]);
-    const optionGroups = useMemo(() => groupModelsForPicker(config, options), [config, options]);
+    const visibleOptions = useMemo(() => filterModelsByCapability(modelOptionsForPickerFromChannels(config.channels), capability, config.channels), [capability, config.channels]);
+    const optionGroups = useMemo(() => groupModelsForPicker(config, visibleOptions), [config, visibleOptions]);
     const storedCurrent = value?.trim() || "";
     // 参数档位会在选中模型后由调用方归一到其能力配置，不能因为旧模型留下的参数而禁止切换。
     const selectionRequirements = requirements ? { ...requirements, videoSeconds: undefined, imageSize: undefined, options: undefined } : undefined;
@@ -108,7 +109,7 @@ export function ModelPicker({
     }, [open]);
 
     const setPickerOpen = (nextOpen: boolean) => {
-        if (nextOpen && !options.length) onMissingConfig?.();
+        if (nextOpen && !visibleOptions.length) onMissingConfig?.();
         if (nextOpen) window.dispatchEvent(new CustomEvent("model-picker-open", { detail: pickerId }));
         if (nextOpen) {
             setActiveGroupKey(optionGroups.find((group) => group.models.some((item) => item.models.includes(current)))?.key ?? null);
@@ -198,9 +199,12 @@ export function ModelPicker({
                         <div className="canvas-model-picker-options grid min-w-0 gap-1" data-model-picker-region data-canvas-wheel-scroll>
                             {group.models.map((modelGroup) => {
                                 const selected = modelGroup.models.includes(current);
-                                const model = compatibleModelInGroup(config, modelGroup.models, selectionRequirements, selected ? current : undefined);
+                                const usableModels = modelGroup.models.filter((item) => options.includes(item));
+                                const model = compatibleModelInGroup(config, usableModels, selectionRequirements, selected ? current : undefined);
                                 const displayModel = model || (selected ? current : modelGroup.models[0]);
-                                const disabledReason = model ? "" : modelCompatibilityError(config, modelGroup.models[0], selectionRequirements) || "当前输入不符合该模型能力";
+                                const channel = resolveModelChannel(config, displayModel);
+                                const unavailableForPricing = channel.scope === "system" && !hasSystemModelPrice(channel, modelOptionName(displayModel));
+                                const disabledReason = unavailableForPricing ? "未配置有效价格，暂不可用；请联系管理员补充价格" : model ? "" : modelCompatibilityError(config, modelGroup.models[0], selectionRequirements) || "当前输入不符合该模型能力";
                                 return (
                                     <button
                                         key={modelGroup.key}

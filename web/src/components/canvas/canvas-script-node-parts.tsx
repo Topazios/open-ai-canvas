@@ -99,7 +99,7 @@ export function GenerationBatchDetails({ batch, rows, onRetryItem }: { batch: Ca
 }
 
 export function generationBatchModeLabel(batch: CanvasGenerationBatch) {
-    return batch.mode === "storyboard_video" ? "视频生成" : batch.mode === "storyboard_image" ? "分镜图生成" : "动作板生成";
+    return batch.mode === "storyboard_video" ? "视频生成" : batch.mode === "storyboard_keyframes" ? "关键帧提取" : batch.mode === "storyboard_image" ? "分镜图生成" : "动作板生成";
 }
 
 export function generationBatchSummary(batch: CanvasGenerationBatch) {

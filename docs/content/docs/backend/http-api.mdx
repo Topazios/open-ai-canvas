@@ -13,6 +13,10 @@ description: 信封、错误码与 OpenAPI
 
 画布详情在任务活动期间每 3 秒刷新，关闭或切换节点取消查询，读取失败保留最近快照并重试。读取详情不会创建任务、扣费或写入节点内容；结果落盘仍由原生成恢复流程处理。
 
+正文生成的 `resultJson` 和执行详情可额外返回 `qualityWarnings: string[]`，表示文稿已交付但完成度仍需人工复核；它不改变正常任务和账务终态。前端在原执行记录中显示警告，不把它插入正文或资产引用。
+
+正文 `input.workflowBatch` 使用 `version: 4`，`context` 保留本集集纲，`units` 只放本集相关参考资料。新请求附带 `bodyWriting: {version: 2, minSeconds, maxSeconds, targetSeconds, language}`；时长范围为 10–3600 秒，目标在范围内，语言沿用全局正文语言。服务端检查有效性，仅对带此合同的正文做节拍/体量启发式检查，版本 2 追加逐段口播过密和内容稀少却长停顿的筛查，不设置单段最短秒数，也不把少量台词加有效行动的 7 秒段落一律判错。机器速率只是保守粗估，不替代配音实测或戏剧判断；版本 1 在途输入保持原检查和修订请求标识。初稿需要修订时最多一次，不增加独立模型审查；失败或没有改善保留初稿并返回警告。不反向修改旧在途请求。父任务不计费，每次实际模型调用正常计费。
+
 ## 分类任务并发策略
 
 运行时策略 `task` 增加 `imageConcurrency`、`textConcurrency`、`agentConcurrency`、`videoConcurrency`、`audioConcurrency`，均为 1–999 整数，默认 6、3、3、2、3。`workerConcurrency` 仅控制其他后台任务。旧持久策略缺少字段时由服务端补默认值；管理端保存完整策略。
@@ -61,7 +65,7 @@ Responses 普通生成与 Agent 统一处理 `input_text/input_image`、`text.fo
 
 资产五步骤及 `direction.shots` 的新任务调用 `POST /agent/runs`，传入 `production: { targetNodeId }`、`permissionMode: "auto"`、模型和幂等键；不要求设置 `maxCredits` 或 `maxSteps`。制作任务以来源处理、产物保存和覆盖校验作为完成条件，不应用历史请求中的累计调用次数和任务积分上限。正常模型计费、单次报价授权、账户余额、权限与数据配额继续生效；普通 Agent 的预算规则不变。后端核验当前用户画布、目标容器和同流程正文来源，冻结版本；不由浏览器上传拼接后的全文。关闭页面不停止任务。
 
-分镜运行的 `run.production.workKind` 为 `storyboard`，此时 `processedPages/totalPages` 表示已完成/计划场次，`artifactCount` 表示已保存镜头数。场次计划、镜头批次和审查哈希使用既有制作清单持久化；每集保持原文本节点，容器不额外生成内部调度节点。`production_model_completed` 可包含 `queueMs/executionMs`，均取自任务真实时间戳，不能把排队时间称为模型执行时间。
+分镜运行的 `run.production.workKind` 为 `storyboard`，此时 `processedPages/totalPages` 表示已完成/计划场次，`artifactCount` 表示已保存镜头详情数，`shotTotal` 表示规划镜头总数。新版 `executionMode=episode` 按集并发，`episodeTaskStatus` 表示本集当前模型调用的真实状态，`currentItem` 表示批次范围，`concurrencyLimit` 为全局 Agent 上限。先铺完整镜头清单，再在每集单一通道内按场连续批量补全，单批 1–8 镜原子保存；全部详情完成后仍须整集审查通过。旧版 `concurrentItems/parallelItems` 保留逐镜在途回执，先结算再升级，不新增逐镜任务。场次、清单、回执和审查哈希沿用制作清单持久化，每集原节点原位转为分镜列表，不额外生成调度节点。`production_model_completed` 可包含 `queueMs/executionMs`，均取真实时间戳，不能把排队称为模型执行时间。
 
 前置制作方案的 `workKind=plan`，`phase` 为 `input/story/inventory/standards/assets/generation/validation`；`phaseLabel` 和可选 `currentItem` 用于详情展示。`inventoryComplete` 表示当前版本资产清单及索引已完成，之前不把 `totalPages` 当成最终总数。`processedPages` 仅统计通过模板及依赖版本检查的文稿，`artifactCount` 是原始回执数量。四份共用文稿之外，系统自动生成一份资产总表，各资产分别保存为文本节点。
 
@@ -83,7 +87,7 @@ v2 方案调用 `production_plan_inventory` 分批登记，参数包含 `storyHa
 
 制作步骤来源签名使用带 `v2:` 标识的规范 JSON 哈希，不受后端对象字段排序影响；已有未带版本签名按原写入字段顺序验证。此修复不忽略正文变化、前置缺失、移出容器或断开连线等真实失效条件。
 
-资产制作运行使用 `production_status/read/facts/query/submit/check` 工具，每份正文按整集保存，不再按固定字符数拆正文页。目录每页最多 24 条；事实查询每页最多 64 条且受约 24KB 响应大小限制。分镜运行使用 `production_storyboard_context/brief/plan/submit/read/review/reset`，按场次增量写入，每批最多 8 镜。`production_submit` 使用稳定 key、结构化 document、有效 factIds 和可选 design（variants/sounds/conflicts）；document 包含 facts/design/variants/sound/prompt/negativePrompt/continuity/uncertainties，服务端按类别统一生成 Markdown。人物必须包含角色声音文稿，并同步到 sounds 索引；规范 settings 只需 facts/design/continuity/uncertainties，style 不需要 variants。缺字段返回可修正工具错误，不将残缺文稿写成完整资产。修订需 expectedHash，最多 256 条新增事实引用，旧引用由后端累积保留；未提供的变体和冲突索引沿用旧值。人工修改、删除、移出及来源变化仍拒绝旧写入。
+资产制作运行使用 `production_status/read/facts/query/submit/check` 工具，每份正文按整集保存，不再按固定字符数拆正文页。目录每页最多 24 条；事实查询每页最多 64 条且受约 24KB 响应大小限制。分镜新版使用 `production_storyboard_context/brief/plan/layout/submit/read/review/reset`，`layout` 先确定全部镜头占位，`submit` 按检查点的 offset、expectedHash、plannedShots 顺序提交当前场 1–8 镜。上下文只含当前集及当前批次所需内容；审查直接提供整集全文与全部镜头。`expand` 仅用于结算历史逐镜响应。`production_submit` 使用稳定 key、结构化 document、有效 factIds 和可选 design（variants/sounds/conflicts）；document 包含 facts/design/variants/sound/prompt/negativePrompt/continuity/uncertainties，服务端按类别统一生成 Markdown。人物必须包含角色声音文稿，并同步到 sounds 索引；规范 settings 只需 facts/design/continuity/uncertainties，style 不需要 variants。缺字段返回可修正工具错误，不将残缺文稿写成完整资产。修订需 expectedHash，最多 256 条新增事实引用，旧引用由后端累积保留；未提供的变体和冲突索引沿用旧值。人工修改、删除、移出及来源变化仍拒绝旧写入。
 
 `production_query` 可用 assetKey 读取单个已保存资产的全文与 expectedHash；增量修订保留已处理批次的内容。查询和覆盖检查的 pendingWork 返回一批遗漏事实、一个待补文稿及缺失字段，旧任务续跑也使用当前工具与制作规则。取消“连续三次模型未调用工具就失败”的旧判断；未完成时继续补齐，持续无进展保护仍保留。机器校验覆盖事实引用及必需文稿章节，不证明语义质量或声线建议已经获用户认可。
 

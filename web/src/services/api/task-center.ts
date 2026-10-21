@@ -217,7 +217,7 @@ export function queryGenerationTask(id: string, options?: { signal?: AbortSignal
 }
 
 export type TaskExecutionStep = Pick<GenerationTask, "id" | "status" | "stage" | "error" | "createdAt" | "startedAt" | "completedAt"> & { label: string; outputPreview?: string; outputChars: number };
-export type TaskExecutionDetails = { task: GenerationTask; firstStartedAt?: string; steps: TaskExecutionStep[]; unitCount: number; truncated: boolean; parameters: Record<string, string>; events: { id: string; title: string; failed: boolean; createdAt: string }[] };
+export type TaskExecutionDetails = { task: GenerationTask; firstStartedAt?: string; qualityWarnings?: string[]; steps: TaskExecutionStep[]; unitCount: number; truncated: boolean; parameters: Record<string, string>; events: { id: string; title: string; failed: boolean; createdAt: string }[] };
 export function queryTaskExecutionDetails(id: string, signal?: AbortSignal) {
     return http.get<TaskExecutionDetails>(`/tasks/${encodeURIComponent(id)}/execution`, { signal });
 }

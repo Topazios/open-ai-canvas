@@ -500,6 +500,131 @@ func TestUpdateAdminChannelModelsSettingsKeepsPerModelDefaults(t *testing.T) {
 	}
 }
 
+func TestUpdateAdminChannelModelsSettingsCanBatchConfigureCostWithoutChangingModelAvailability(t *testing.T) {
+	svc, db := newChannelModelTestService(t)
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-batch-cost", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: "https://example.com/v1", APIKey: "key", APIFormat: "openai"}
+	items := []model.ChannelModel{
+		{ID: "cost-a", ChannelID: channel.ID, ModelKey: "cost-a", ProviderModelKey: "provider-a", Capability: "image", Protocol: model.ChannelInterfaceOpenAIImage, Enabled: false},
+		{ID: "cost-b", ChannelID: channel.ID, ModelKey: "cost-b", ProviderModelKey: "provider-b", Capability: "image", Protocol: model.ChannelInterfaceOpenAIImage, Enabled: true},
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&items).Error; err != nil {
+		t.Fatal(err)
+	}
+	priceTiers := []model.ChannelModelPriceTier{
+		{ID: "cost-tier-a", ChannelModelID: "cost-a", SelectorKey: "{}", SelectorJSON: "{}", Resolution: "*", BillingMode: "fixed_request", UnitPriceMicrocredits: 10, CostPricing: model.CreditCostPricing{Configured: false, UnitPriceMicrocredits: 5}},
+		{ID: "cost-tier-b", ChannelModelID: "cost-b", SelectorKey: "{}", SelectorJSON: "{}", Resolution: "*", BillingMode: "fixed_request", UnitPriceMicrocredits: 20, CostPricing: model.CreditCostPricing{Configured: false, UnitPriceMicrocredits: 7}},
+	}
+	if err := db.Create(&priceTiers).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	configured := true
+	updated, err := svc.UpdateAdminChannelModelsSettings(admin, channel.ID, AdminChannelModelBatchSettingsRequest{ModelIDs: []string{"cost-a", "cost-b"}, CostConfigured: &configured})
+	if err != nil || updated != 2 {
+		t.Fatalf("batch cost settings updated=%d err=%v", updated, err)
+	}
+	for _, want := range []struct {
+		modelID, tierID string
+		modelEnabled    bool
+		cost            int64
+	}{{"cost-a", "cost-tier-a", false, 5}, {"cost-b", "cost-tier-b", true, 7}} {
+		var storedModel model.ChannelModel
+		if err := db.First(&storedModel, "id = ?", want.modelID).Error; err != nil {
+			t.Fatal(err)
+		}
+		var storedTier model.ChannelModelPriceTier
+		if err := db.First(&storedTier, "id = ?", want.tierID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if storedModel.Enabled != want.modelEnabled || !storedTier.CostPricing.Configured || storedTier.CostPricing.UnitPriceMicrocredits != want.cost {
+			t.Fatalf("batch cost update changed unrelated fields: model=%#v tier=%#v", storedModel, storedTier)
+		}
+	}
+}
+
+func TestUpdateAdminChannelModelsSettingsCanBatchSetCostAmount(t *testing.T) {
+	svc, db := newChannelModelTestService(t)
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-batch-cost-amount", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: "https://example.com/v1", APIKey: "key", APIFormat: "openai"}
+	items := []model.ChannelModel{
+		{ID: "cost-amount-a", ChannelID: channel.ID, ModelKey: "cost-amount-a", ProviderModelKey: "provider-a", Capability: "text", Protocol: model.ChannelInterfaceOpenAIResponse, Enabled: false},
+		{ID: "cost-amount-b", ChannelID: channel.ID, ModelKey: "cost-amount-b", ProviderModelKey: "provider-b", Capability: "text", Protocol: model.ChannelInterfaceOpenAIResponse, Enabled: true},
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&items).Error; err != nil {
+		t.Fatal(err)
+	}
+	priceTiers := []model.ChannelModelPriceTier{
+		{ID: "cost-amount-tier-a", ChannelModelID: "cost-amount-a", SelectorKey: "{}", SelectorJSON: "{}", Resolution: "*", BillingMode: "fixed_request", UnitPriceMicrocredits: 50},
+		{ID: "cost-amount-tier-b", ChannelModelID: "cost-amount-b", SelectorKey: "{}", SelectorJSON: "{}", Resolution: "*", BillingMode: "token", InputTokenPriceMicrocredits: 60, OutputTokenPriceMicrocredits: 70, CachedTokenPriceMicrocredits: 80},
+	}
+	if err := db.Create(&priceTiers).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	configured, amount := true, int64(1_250_000)
+	updated, err := svc.UpdateAdminChannelModelsSettings(admin, channel.ID, AdminChannelModelBatchSettingsRequest{
+		ModelIDs: []string{"cost-amount-a", "cost-amount-b"}, CostConfigured: &configured, CostMicrocredits: &amount,
+	})
+	if err != nil || updated != 2 {
+		t.Fatalf("batch cost amount updated=%d err=%v", updated, err)
+	}
+	for _, tierID := range []string{"cost-amount-tier-a", "cost-amount-tier-b"} {
+		var tier model.ChannelModelPriceTier
+		if err := db.First(&tier, "id = ?", tierID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if !tier.CostPricing.Configured || tier.CostPricing.UnitPriceMicrocredits != amount || tier.CostPricing.InputTokenPriceMicrocredits != amount || tier.CostPricing.OutputTokenPriceMicrocredits != amount || tier.CostPricing.CachedTokenPriceMicrocredits != amount {
+			t.Fatalf("batch cost amount not applied to all cost fields for %s: %#v", tierID, tier.CostPricing)
+		}
+	}
+}
+
+func TestUpdateAdminChannelModelsSettingsCreatesDefaultTierForModelWithoutPriceTiers(t *testing.T) {
+	svc, db := newChannelModelTestService(t)
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-batch-cost-default", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: "https://example.com/v1", APIKey: "key", APIFormat: "openai"}
+	item := model.ChannelModel{
+		ID:                    "cost-default",
+		ChannelID:             channel.ID,
+		ModelKey:              "cost-default",
+		ProviderModelKey:      "provider-default",
+		Capability:            "image",
+		Protocol:              model.ChannelInterfaceOpenAIImage,
+		BillingMode:           "fixed_request",
+		UnitPriceMicrocredits: 250_000,
+		PriceConfigured:       false,
+		Enabled:               true,
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	configured, amount := true, int64(0)
+	updated, err := svc.UpdateAdminChannelModelsSettings(admin, channel.ID, AdminChannelModelBatchSettingsRequest{
+		ModelIDs: []string{item.ID}, CostConfigured: &configured, CostMicrocredits: &amount,
+	})
+	if err != nil || updated != 1 {
+		t.Fatalf("batch cost settings updated=%d err=%v", updated, err)
+	}
+	var tier model.ChannelModelPriceTier
+	if err := db.First(&tier, "channel_model_id = ?", item.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if tier.SelectorKey != "{}" || tier.ProviderModelKey != item.ProviderModelKey || !tier.CostPricing.Configured || tier.CostPricing.UnitPriceMicrocredits != amount || tier.UnitPriceMicrocredits != item.UnitPriceMicrocredits || tier.PriceConfigured {
+		t.Fatalf("default tier was not materialized without changing sale availability: %#v", tier)
+	}
+}
+
 func TestDeleteAdminChannelModelsRejectsWholeSelectionWhenOneModelIsInUse(t *testing.T) {
 	svc, db := newChannelModelTestService(t)
 	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}

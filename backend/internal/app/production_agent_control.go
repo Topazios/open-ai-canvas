@@ -12,26 +12,37 @@ import (
 )
 
 type ProductionAgentProgress struct {
-	ConcurrentItems       []string `json:"concurrentItems,omitempty"`
-	ConcurrencyLimit      int      `json:"concurrencyLimit,omitempty"`
-	DocumentCount         int      `json:"documentCount,omitempty"`
-	DocumentTotal         int      `json:"documentTotal,omitempty"`
-	AssetCount            int      `json:"assetCount,omitempty"`
-	AssetTotal            int      `json:"assetTotal,omitempty"`
-	Phase                 string   `json:"phase,omitempty"`
-	PhaseLabel            string   `json:"phaseLabel,omitempty"`
-	CurrentItem           string   `json:"currentItem,omitempty"`
-	InventoryComplete     bool     `json:"inventoryComplete,omitempty"`
-	WorkKind              string   `json:"workKind,omitempty"`
-	MaxSteps              int      `json:"maxSteps"`
-	TargetNodeID          string   `json:"targetNodeId"`
-	Paused                bool     `json:"paused"`
-	WaitingForBoundary    bool     `json:"waitingForBoundary"`
-	ProcessedPages        int      `json:"processedPages"`
-	TotalPages            int      `json:"totalPages"`
-	ArtifactCount         int      `json:"artifactCount"`
-	Validated             bool     `json:"validated"`
-	WaitingForSharedFacts bool     `json:"waitingForSharedFacts"`
+	ExecutionMode         string                       `json:"executionMode,omitempty"`
+	EpisodeTaskStatus     string                       `json:"episodeTaskStatus,omitempty"`
+	ParallelItems         []ProductionParallelProgress `json:"parallelItems,omitempty"`
+	ConcurrentItems       []string                     `json:"concurrentItems,omitempty"`
+	ConcurrencyLimit      int                          `json:"concurrencyLimit,omitempty"`
+	DocumentCount         int                          `json:"documentCount,omitempty"`
+	DocumentTotal         int                          `json:"documentTotal,omitempty"`
+	AssetCount            int                          `json:"assetCount,omitempty"`
+	AssetTotal            int                          `json:"assetTotal,omitempty"`
+	Phase                 string                       `json:"phase,omitempty"`
+	PhaseLabel            string                       `json:"phaseLabel,omitempty"`
+	CurrentItem           string                       `json:"currentItem,omitempty"`
+	InventoryComplete     bool                         `json:"inventoryComplete,omitempty"`
+	WorkKind              string                       `json:"workKind,omitempty"`
+	MaxSteps              int                          `json:"maxSteps"`
+	TargetNodeID          string                       `json:"targetNodeId"`
+	Paused                bool                         `json:"paused"`
+	WaitingForBoundary    bool                         `json:"waitingForBoundary"`
+	ProcessedPages        int                          `json:"processedPages"`
+	TotalPages            int                          `json:"totalPages"`
+	ArtifactCount         int                          `json:"artifactCount"`
+	ShotTotal             int                          `json:"shotTotal,omitempty"`
+	Validated             bool                         `json:"validated"`
+	WaitingForSharedFacts bool                         `json:"waitingForSharedFacts"`
+}
+
+type ProductionParallelProgress struct {
+	Key    string `json:"key"`
+	Name   string `json:"name"`
+	TaskID string `json:"taskId,omitempty"`
+	Status string `json:"status"`
 }
 
 func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgentRuntime) *ProductionAgentProgress {
@@ -39,8 +50,33 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 		return nil
 	}
 	view := &ProductionAgentProgress{MaxSteps: productionStepLimit(state), TargetNodeID: state.Request.Production.TargetNodeID, Paused: state.ProductionPaused, WaitingForBoundary: state.ProductionPaused && state.ActiveTaskID != ""}
+	ids := []string{}
+	if state.ActiveTaskID != "" {
+		ids = append(ids, state.ActiveTaskID)
+	}
+	for _, work := range state.ProductionParallel {
+		if work.TaskID != "" {
+			ids = append(ids, work.TaskID)
+		}
+	}
+	taskStates := map[string]model.TaskStatus{}
+	if tasks, err := s.repo.TaskStatesForUser(userID, ids); err == nil {
+		for _, task := range tasks {
+			taskStates[task.ID] = task.Status
+		}
+	}
 	for _, key := range productionParallelKeys(state.ProductionParallel) {
 		work := state.ProductionParallel[key]
+		status := "retrying"
+		if work.Error != "" {
+			status = "error"
+		} else if work.TaskID != "" {
+			status = string(taskStates[work.TaskID])
+			if status == "" {
+				status = "unknown"
+			}
+		}
+		view.ParallelItems = append(view.ParallelItems, ProductionParallelProgress{Key: key, Name: work.Name, TaskID: work.TaskID, Status: status})
 		if work.Error == "" {
 			view.ConcurrentItems = append(view.ConcurrentItems, work.Name)
 			view.WaitingForBoundary = view.WaitingForBoundary || (state.ProductionPaused && work.TaskID != "")
@@ -55,13 +91,43 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 		return view
 	}
 	if m.Storyboard != nil {
+		if policy, err := s.runtimeConcurrencySetting(); err == nil {
+			view.ConcurrencyLimit = policy.ConcurrencyFor(model.TaskConcurrencyAgent)
+		}
 		view.WorkKind = "storyboard"
+		if m.Storyboard.Version == storyboardEpisodeVersion {
+			view.ExecutionMode = "episode"
+			view.EpisodeTaskStatus = string(taskStates[state.ActiveTaskID])
+			if view.EpisodeTaskStatus == "" {
+				view.EpisodeTaskStatus = "preparing"
+			}
+			view.PhaseLabel = "规划本集场次"
+			if len(m.Storyboard.Scenes) > 0 {
+				view.PhaseLabel = "规划镜头列表"
+				if storyboardHasLayout(m.Storyboard) {
+					view.PhaseLabel = "校验本集完整分镜"
+					for _, scene := range m.Storyboard.Scenes {
+						if scene.Complete {
+							continue
+						}
+						_, plans := storyboardEpisodeBatch(scene)
+						view.PhaseLabel = "连续补全镜头"
+						view.CurrentItem = scene.Title
+						if len(plans) > 0 {
+							view.CurrentItem = plans[0].ID + " ~ " + plans[len(plans)-1].ID
+						}
+						break
+					}
+				}
+			}
+		}
 		view.TotalPages = len(m.Storyboard.Scenes)
 		for _, scene := range m.Storyboard.Scenes {
 			if scene.Complete {
 				view.ProcessedPages++
 			}
 			view.ArtifactCount += len(scene.Shots)
+			view.ShotTotal += max(len(scene.Layout), len(scene.Shots))
 		}
 		view.Validated = job.Validated
 		view.WaitingForSharedFacts, _ = s.productionSharedPredecessor(userID, runID, state.Request.CanvasID)
@@ -295,6 +361,15 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 					if task.Status != model.TaskStatusSucceeded {
 						if err := s.taskBilling().CheckRetryEligibility(task.BillingOrderID); err != nil {
 							return err
+						}
+					}
+					if task.Status == model.TaskStatusSucceeded && work.Error == rejectedStoryboardToolMessage {
+						_, manifest, _, err := productionLoad(s.repo, run, &state)
+						if err != nil {
+							return err
+						}
+						if manifest.Storyboard != nil {
+							continue
 						}
 					}
 					if work.Error == "" && task.Status == model.TaskStatusSucceeded {

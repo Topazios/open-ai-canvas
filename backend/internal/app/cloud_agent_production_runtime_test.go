@@ -17,7 +17,7 @@ import (
 
 var productionRuntimePlanNames = []string{"production_status", "production_read", "production_query", "production_submit", "production_check", "production_plan_inventory"}
 var productionRuntimeAssetNames = []string{"production_status", "production_read", "production_query", "production_submit", "production_check", "production_facts"}
-var productionRuntimeStoryboardNames = []string{"production_storyboard_context", "production_storyboard_brief", "production_storyboard_plan", "production_storyboard_submit", "production_storyboard_reset", "production_storyboard_review", "production_storyboard_read"}
+var productionRuntimeStoryboardNames = []string{"production_storyboard_context", "production_storyboard_brief", "production_storyboard_plan", "production_storyboard_layout", "production_storyboard_expand", "production_storyboard_submit", "production_storyboard_reset", "production_storyboard_review", "production_storyboard_read"}
 
 func productionRuntimeAssertTools(t *testing.T, tools []map[string]any, expected []string) {
 	t.Helper()
@@ -160,6 +160,11 @@ func TestProductionRuntimeCanonicalToolsFollowManifest(t *testing.T) {
 		for _, mode := range []string{"new task", "active task", "receipt replay"} {
 			t.Run(fixture.name+"/"+mode, func(t *testing.T) {
 				s, db, run := fixture.fixture(t)
+				if fixture.name == "storyboard" {
+					if err := s.prepareStoryboardEpisode(context.Background(), "user", run.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
 				messages := []map[string]any{{"role": "user", "content": "continue production"}}
 				call := productionRuntimeCall(fixture.call)
 				key := productionRuntimeTestModelKey(t, s, run.ID, messages)
@@ -190,7 +195,11 @@ func TestProductionRuntimeCanonicalToolsFollowManifest(t *testing.T) {
 						t.Fatal(err)
 					}
 					canonical := stateCanonicalFromInput(input)
-					productionRuntimeAssertTools(t, canonical.Tools, fixture.tools)
+					expected := fixture.tools
+					if fixture.name == "storyboard" {
+						expected = []string{"production_storyboard_plan"}
+					}
+					productionRuntimeAssertTools(t, canonical.Tools, expected)
 					if got := productionRuntimeFinish(t, db, task.ID, done, call); got.err != nil {
 						t.Fatal(got.err)
 					}

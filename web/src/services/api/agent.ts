@@ -65,12 +65,15 @@ export type AgentApproval = {
 
 export type AgentRun = {
     production?: {
+		executionMode?: "episode";
+		episodeTaskStatus?: string;
         targetNodeId: string;
         workKind?: "storyboard" | "plan";
         phase?: `${ProductionPlanPhase}`;
         phaseLabel?: string;
         currentItem?: string;
         concurrentItems?: string[];
+		parallelItems?: Array<{ key: string; name: string; taskId?: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "retrying" | "error" | "unknown" }>;
         concurrencyLimit?: number;
         documentCount?: number;
         documentTotal?: number;
@@ -83,6 +86,7 @@ export type AgentRun = {
         processedPages: number;
         totalPages: number;
         artifactCount: number;
+        shotTotal?: number;
         validated: boolean;
         maxSteps?: number;
     };

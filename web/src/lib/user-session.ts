@@ -178,7 +178,7 @@ function modelCatalogChannels(catalog: ModelCatalogResponse): ModelChannel[] {
 // 系统渠道模型转换为前端配置格式
 export function systemChannelModelChannels(channels: PublicChannelCatalog[]): ModelChannel[] {
     return channels.map((channel) => {
-        const availableModels = channel.models.filter((m) => m.available);
+        const catalogModels = channel.models;
         return {
             id: channel.id,
             name: channel.displayName,
@@ -190,9 +190,10 @@ export function systemChannelModelChannels(channels: PublicChannelCatalog[]): Mo
             apiFormat: "openai",
             scope: "system" as const,
             enabled: true,
-            models: availableModels.map((m) => m.modelKey),
+            // 已启用模型全部进入前台目录；无价格模型仍会显示，但保持不可选。
+            models: catalogModels.map((m) => m.modelKey),
             modelAliases: {},
-            modelCosts: availableModels.map((model) => {
+            modelCosts: catalogModels.map((model) => {
                 // 标量价格仅用于旧配置兼容；创作端按完整 SKU 档位展示和匹配价格。
                 const firstTier = model.priceTiers?.[0];
                 const unitPrice = firstTier?.unitPriceMicrocredits || 0;
@@ -213,6 +214,7 @@ export function systemChannelModelChannels(channels: PublicChannelCatalog[]): Mo
 
                 return {
                     model: model.modelKey,
+                    available: model.available,
                     displayName: model.displayName,
                     channelLabel: model.channelLabel,
                     tags: model.tags || [],

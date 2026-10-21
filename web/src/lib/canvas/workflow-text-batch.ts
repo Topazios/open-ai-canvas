@@ -1,5 +1,7 @@
+import type { BodyWritingSpec } from "./workflow-body-writing";
+
 export type WorkflowTextUnit = { label: string; text: string };
-export type WorkflowTextBatch = { version: 1; units: WorkflowTextUnit[] } | { version: 4; units: WorkflowTextUnit[]; context: WorkflowTextUnit[] } | { version: 3; units: WorkflowTextUnit[]; episodeCount: number } | {
+export type WorkflowTextBatch = { version: 1; units: WorkflowTextUnit[] } | { version: 4; units: WorkflowTextUnit[]; context: WorkflowTextUnit[]; bodyWriting?: BodyWritingSpec } | { version: 3; units: WorkflowTextUnit[]; episodeCount: number } | {
     version: 2; units: WorkflowTextUnit[]; context: WorkflowTextUnit[]; scope: string;
     category: "bible" | "characters" | "environments" | "props" | "special";
 };
@@ -28,10 +30,10 @@ export function splitWorkflowText(text: string, limit = WORKFLOW_UNIT_LIMIT): st
 
 type WorkflowSource = { title?: string; episodeNumber?: number; [key: string]: unknown };
 
-export function workflowBodyBatch(sources: WorkflowSource[], instructionLength: number): WorkflowTextBatch | undefined {
-    if (JSON.stringify(sources).length + instructionLength <= WORKFLOW_CONTEXT_LIMIT) return;
+export function workflowBodyBatch(sources: WorkflowSource[], instructionLength: number, bodyWriting?: BodyWritingSpec): WorkflowTextBatch | undefined {
+    if (!bodyWriting && JSON.stringify(sources).length + instructionLength <= WORKFLOW_CONTEXT_LIMIT) return;
     return { version: 4, units: workflowSourceUnits(sources.filter(source => source.step !== "story.episodes")),
-        context: workflowSourceUnits(sources.filter(source => source.step === "story.episodes")) };
+        context: workflowSourceUnits(sources.filter(source => source.step === "story.episodes")), ...(bodyWriting ? { bodyWriting } : {}) };
 }
 
 // Episode ranges share a single story spine and are concatenated, never reduced

@@ -10,6 +10,7 @@ import { assetSheetKind, assetSheetImageSettings, assetSheetRatio, assetSheetPro
 import { assetSheetReferenceContent, workflowAssetSheetContext } from "./canvas-asset-sheet-context";
 import { ShortDramaStep, shortDramaStep } from "../short-drama-steps";
 import { createCanvasNode } from "./canvas-project-domain";
+import { episodeStoryboardRows } from "./workflow-episode-storyboard";
 import { groupWorkflowImages } from "./canvas-workflow-image-group";
 import { assetAppliesToEpisode, assetContentSignature, assetMediaSignature, isAssetReference } from "./canvas-workflow-asset-profile";
 import { nodeWorkflow, workflowGenerationSources, workflowParameters, workflowSignature, type WorkflowGenerationRequest } from "./canvas-short-drama-workflow";
@@ -17,6 +18,15 @@ import { nodeWorkflow, workflowGenerationSources, workflowParameters, workflowSi
 export type WorkflowImageShot = { id: string; title: string; prompt: string; assetKeys: string[] };
 
 export function workflowImageShots(source: CanvasNodeData | undefined, stepId: string): WorkflowImageShot[] {
+    if (source?.metadata?.shortDrama?.step === ShortDramaStep.Shots) {
+        if (stepId === ShortDramaStep.Keyframes) return [];
+        return episodeStoryboardRows(source).map(row => ({
+            id: row.shotCode || String(row.shotNumber), title: `镜头 ${row.shotCode || row.shotNumber}`,
+            prompt: [row.imageGenerationPrompt || row.plotDescription, row.continuityOut ? `连续性：${row.continuityOut}` : "",
+                stepId === ShortDramaStep.StartFrame ? "呈现本镜头动作起点" : stepId === ShortDramaStep.EndFrame ? "呈现本镜头动作终点" : ""].filter(Boolean).join("\n"),
+            assetKeys: row.assetKeys || [],
+        }));
+    }
     if (!source?.metadata?.content) return [];
     try {
         const raw = JSON.parse(source.metadata.content.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, "$1"));
@@ -49,7 +59,7 @@ export function workflowImageSubjects(request: Pick<WorkflowGenerationRequest, "
     const data = nodeWorkflow(source)!;
     const groups = nodes.filter((node) => node.id === source.id || Object.values(data.planGroups || {}).includes(node.id));
     const subjects = data.role === "collection" ? nodes.filter((node) => groups.some((group) => nodeWorkflow(group)?.sourceNodeIds.includes(node.id) && node.parentId === group.id)) : [source];
-    return subjects.filter((node) => node.type === CanvasNodeType.Text && nodeWorkflow(node)?.assetKey !== "$summary" &&
+    return subjects.filter((node) => (node.type === CanvasNodeType.Text || (node.type === CanvasNodeType.Script && nodeWorkflow(node)?.step === ShortDramaStep.Shots)) && nodeWorkflow(node)?.assetKey !== "$summary" &&
         (!workflowAssetKind[step.requires[0]] || nodeWorkflow(source)?.step === step.requires[0] || (nodeWorkflow(node)?.assetIdentity?.kind || nodeWorkflow(node)?.planAsset?.kind) === workflowAssetKind[step.requires[0]]) &&
         !nodeWorkflow(node)?.assetOutput && Boolean(node.metadata?.content?.trim()) && node.metadata?.status !== "loading" && node.metadata?.status !== "error");
 }

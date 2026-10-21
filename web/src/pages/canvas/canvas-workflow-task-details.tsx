@@ -32,6 +32,7 @@ export function CanvasWorkflowTaskDetails({ node, nodes, submitting, onResume, o
                 <div className="canvas-node-inspector-section-heading" style={{ flexWrap: "wrap" }}><span style={{ overflowWrap: "anywhere" }}>{member.title}</span><em>{state}</em></div>
                 {metadata?.taskStage && metadata.taskStage !== state ? <p>{metadata.taskStage}</p> : null}
                 {metadata?.errorDetails ? <p role="alert" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{metadata.errorDetails}</p> : null}
+                {metadata?.prompt ? <details className="production-agent-parameters"><summary>运行参数</summary><dl><div><dt>模型</dt><dd>{metadata.model || "未记录"}</dd></div><div><dt>推理强度</dt><dd>{metadata.reasoningEffort || "medium"}</dd></div><div className="production-agent-prompt"><dt>提示词</dt><dd style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{metadata.prompt}</dd></div></dl></details> : null}
                 {metadata?.taskId || workflow?.productionAgent?.runId ? <Button size="small" icon={<Info size={14} />} onClick={() => onOpenTask(member)}>执行记录</Button> : planned ? <p className="canvas-node-inspector-help">节点已保留。保存到云端后继续提交，当前尚未调用模型。</p> : null}
             </section>;
         })}
