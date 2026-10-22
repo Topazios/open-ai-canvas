@@ -38,25 +38,35 @@ export const ConnectionPath = React.memo(function ConnectionPath({
     const showVisual = !hideVisual && visualMode === "full";
     const showEmphasis = !hideVisual && emphasized;
     const gradientId = `canvas-flow-${connection.id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+    const markerId = `${gradientId}-target`;
+    const animationDelay = connectionAnimationDelay(connection.id);
+    const flowStyle = {
+        pointerEvents: "none",
+        "--canvas-connection-delay": `${animationDelay}ms`,
+    } as React.CSSProperties;
+    const cometStyle = {
+        pointerEvents: "none",
+        "--canvas-connection-delay": `${animationDelay - 180}ms`,
+    } as React.CSSProperties;
 
     return (
         <g>
-            {showEmphasis ? <defs>
+            {showVisual ? <defs>
                 <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1={startX} y1={startY} x2={endX} y2={endY}>
                     <stop offset="0%" stopColor={theme.node.muted} stopOpacity={0.18} />
                     <stop offset="48%" stopColor={theme.accent.primary} stopOpacity={0.58} />
                     <stop offset="100%" stopColor={theme.accent.primary} stopOpacity={0.34} />
                 </linearGradient>
-                {/* 流光头部的软化渐变：两端透明、中间亮，避免短划线看起来是硬色块 */}
-                <linearGradient id={`${gradientId}-comet`} x1="0" y1="0" x2="1" y2="0">
+                <linearGradient id={`${gradientId}-comet`} gradientUnits="userSpaceOnUse" x1={startX} y1={startY} x2={endX} y2={endY}>
                     <stop offset="0%" stopColor={theme.accent.primary} stopOpacity={0} />
                     <stop offset="45%" stopColor={theme.accent.primary} stopOpacity={0.95} />
                     <stop offset="100%" stopColor={theme.accent.primary} stopOpacity={0} />
                 </linearGradient>
+                <marker id={markerId} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+                    <path d="M 0 0 L 8 4 L 0 8 Z" fill={theme.accent.primary} fillOpacity={0.95} />
+                </marker>
             </defs> : null}
-            {/* 光晕：只在强调态渲染。blur 是 filter，成本随线条数量线性上升，
-                常态几十条线全开会明显掉帧，所以刻意只给悬停/选中的那一条。
-                垫在底衬描边之下，不改动常态可读性那几层。 */}
+            {/* 选中或悬停时增加光晕，常态使用持续流动和终点箭头表达方向。 */}
             {showEmphasis ? <path
                 d={pathD}
                 stroke={theme.accent.primary}
@@ -107,41 +117,50 @@ export const ConnectionPath = React.memo(function ConnectionPath({
                 fill="none"
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                markerEnd={showVisual ? `url(#${markerId})` : undefined}
                 style={{ pointerEvents: "none" }}
             /> : null}
             {showVisual ? <>
-                <circle cx={startX} cy={startY} r={emphasized ? 3.5 : 2.5} fill={emphasized ? theme.accent.primary : theme.node.muted} fillOpacity={emphasized ? 0.9 : 0.72} vectorEffect="non-scaling-stroke" style={{ pointerEvents: "none" }} />
-                <circle cx={endX} cy={endY} r={emphasized ? 3.5 : 2.5} fill={emphasized ? theme.accent.primary : theme.node.muted} fillOpacity={emphasized ? 0.9 : 0.72} vectorEffect="non-scaling-stroke" style={{ pointerEvents: "none" }} />
+                <circle cx={startX} cy={startY} r={emphasized ? 3.5 : 2.5} fill={theme.node.muted} fillOpacity={emphasized ? 0.78 : 0.58} vectorEffect="non-scaling-stroke" style={{ pointerEvents: "none" }} />
+                <circle className="canvas-connection-target" cx={endX} cy={endY} r={emphasized ? 5 : 4} fill={theme.accent.primary} fillOpacity={0.96} vectorEffect="non-scaling-stroke" style={{ pointerEvents: "none" }} />
             </> : null}
-            {showVisual && emphasized ? <path
+            {showVisual ? <path
                 className="canvas-connection-flow"
                 d={pathD}
                 stroke={`url(#${gradientId})`}
-                strokeWidth="2.2"
+                strokeWidth={emphasized ? "3.2" : "2.8"}
                 vectorEffect="non-scaling-stroke"
-                strokeOpacity="0.84"
-                strokeDasharray="18 26"
+                strokeOpacity={emphasized ? "0.98" : "0.9"}
+                strokeDasharray="10 26"
                 fill="none"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                style={{ pointerEvents: "none" }}
+                style={flowStyle}
             /> : null}
-            {/* 流光：一小段高亮沿路径跑。周期与虚线流动刻意不同（2.1s vs 1.25s），
-                两者错拍才像有光在走；同频会锁成一条整体平移的虚线。 */}
-            {showEmphasis && visualMode === "full" ? <path
+            {showVisual ? <path
                 className="canvas-connection-comet"
                 d={pathD}
                 stroke={`url(#${gradientId}-comet)`}
-                strokeWidth="2.6"
+                strokeWidth={emphasized ? "5.2" : "4.4"}
                 vectorEffect="non-scaling-stroke"
-                strokeDasharray="16 118"
+                strokeDasharray="20 124"
+                strokeOpacity={emphasized ? "1" : "0.94"}
                 fill="none"
                 strokeLinecap="round"
-                style={{ pointerEvents: "none" }}
+                strokeLinejoin="round"
+                style={cometStyle}
             /> : null}
         </g>
     );
 }, (previous, next) => previous.connection === next.connection && previous.from === next.from && previous.to === next.to && previous.active === next.active && previous.visualMode === next.visualMode && previous.hideVisual === next.hideVisual && previous.fromScrollTop === next.fromScrollTop && previous.toScrollTop === next.toScrollTop);
+
+function connectionAnimationDelay(connectionId: string) {
+    let hash = 0;
+    for (let index = 0; index < connectionId.length; index += 1) {
+        hash = (hash * 31 + connectionId.charCodeAt(index)) >>> 0;
+    }
+    return -(hash % 900);
+}
 
 export function canvasConnectionPath(connection: CanvasConnection, from: CanvasNodeData, to: CanvasNodeData, fromScrollTop = 0, toScrollTop = 0) {
     const fixedStart = connection.fromHandleId && from.id === connection.fromNodeId ? { x: from.position.x + from.width, y: connectionHandleY(from, connection.fromHandleId, fromScrollTop) } : undefined;

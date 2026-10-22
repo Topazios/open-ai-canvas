@@ -351,6 +351,13 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 		}
 		if readErr != nil {
 			readErr = providerConnectionError(readErr)
+			// Some gateways write a complete JSON result and keep the upstream
+			// connection open without sending EOF. Once the payload is complete,
+			// the generated result is usable and must not be reclassified as a
+			// timeout merely because connection shutdown is delayed.
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 && providerResponseBodyComplete(resp, mimeType, buffered.Bytes()) {
+				break
+			}
 			recordProviderRequest(req, startedAt, resp.StatusCode, buffered.Bytes(), readErr)
 			return nil, "", readErr
 		}
@@ -374,6 +381,16 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 		_ = runtimeService.RecordChannelResult(req.Context(), channelID, false)
 	}
 	return data, mimeType, nil
+}
+
+func providerResponseBodyComplete(resp *http.Response, mimeType string, data []byte) bool {
+	if resp == nil || len(data) == 0 {
+		return false
+	}
+	if resp.ContentLength >= 0 && int64(len(data)) >= resp.ContentLength {
+		return true
+	}
+	return strings.Contains(strings.ToLower(mimeType), "json") && json.Valid(data)
 }
 
 func metadataCapability(ctx context.Context) string {

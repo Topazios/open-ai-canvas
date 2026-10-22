@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { getMediaBlob } from "@/services/file-storage";
 import { normalizeReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-effort";
 import { getImageBlob } from "@/services/image-storage";
@@ -17,6 +18,7 @@ import { assertAgentExchangeBudget } from "@/lib/canvas/agent-context-budget";
 export { logicalModelIDForConfig };
 
 export type BackendGenerationMode = "text" | "image" | "video" | "audio";
+export type GenerationModelRouting = "logical" | "channel";
 
 export type BackendGenerationResult = {
     mode?: BackendGenerationMode;
@@ -56,6 +58,8 @@ type BackendGenerationTaskOptions = {
     retryOf?: string;
     retryContextsByBatchIndex?: Array<{ retryOf: string; attemptGroupId: string; clientOperationId: string }>;
     attemptGroupId?: string;
+    // 视频任务必须使用当前选中的具体渠道，避免逻辑模型路由改派到其他渠道。
+    modelRouting?: GenerationModelRouting;
 };
 
 export type GenerationTaskDependencies = {
@@ -67,7 +71,7 @@ export type GenerationTaskDependencies = {
 const defaultDependencies: GenerationTaskDependencies = {
     createTask: createGenerationTask,
     waitTask: waitForGenerationTask,
-    createId: () => crypto.randomUUID(),
+    createId: () => createClientId(),
 };
 
 type PreparedGenerationReferences = {
@@ -101,6 +105,7 @@ export async function runBackendGenerationTask(
         retryOf,
         attemptGroupId,
         workflowBatch,
+        modelRouting,
     }: BackendGenerationTaskOptions,
     dependencies: GenerationTaskDependencies = defaultDependencies,
 ) {
@@ -109,7 +114,7 @@ export async function runBackendGenerationTask(
     assertBackendRuntimeConfigured(config, mode);
     const prepared = await prepareGenerationReferences({ config, mode, referenceImages, referenceVideos, referenceAudios, mask });
     throwIfAborted(signal);
-    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate, onTextDelta, streamText, reasoningEffort, maxOutputTokens, structuredOutput, clientOperationId, retryOf, attemptGroupId, workflowBatch }, prepared, dependencies);
+    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate, onTextDelta, streamText, reasoningEffort, maxOutputTokens, structuredOutput, clientOperationId, retryOf, attemptGroupId, workflowBatch, modelRouting }, prepared, dependencies);
 }
 
 // 分镜等后台生产流程只需要可靠提交任务；任务状态与产物由项目工作区轮询和
@@ -298,7 +303,8 @@ function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepa
     const { projectId, mode, prompt, config, metadata } = options;
     const videoOperation = generationOperation(options);
     const workflow = resolveGenerationWorkflowExecution(config, mode);
-    const logicalModelId = workflow ? "" : logicalModelIDForConfig(config);
+    const modelRouting = options.modelRouting || (mode === "video" ? "channel" : "logical");
+    const logicalModelId = workflow || modelRouting === "channel" ? "" : logicalModelIDForConfig(config);
     return {
         ...(projectId ? { projectId } : {}),
         type: `canvas_${mode}`,
@@ -312,7 +318,7 @@ function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepa
             prompt,
             ...(options.workflowBatch ? { workflowBatch: options.workflowBatch } : {}),
             ...(workflow ? { execution: workflowPublicExecution(workflow) } : {}),
-            config: backendProviderConfig(config, mode),
+            config: backendProviderConfig(config, mode, modelRouting),
             capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
             textHistory: options.textHistory,
             ...(mode === "text"
@@ -429,7 +435,7 @@ function backendMediaReference<T extends ReferenceVideo | ReferenceAudio>(media:
     } as T;
 }
 
-export function backendProviderConfig(config: AiConfig, mode: BackendGenerationMode = "image") {
+export function backendProviderConfig(config: AiConfig, mode: BackendGenerationMode = "image", modelRouting: GenerationModelRouting = mode === "video" ? "channel" : "logical") {
     const requestConfig = resolveModelRequestConfig(config, config.model);
     const workflow = resolveGenerationWorkflowExecution(config, mode);
     if (workflow) return workflowProviderConfig(config, requestConfig, workflow);
@@ -449,9 +455,10 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
         audioInstructions: config.audioInstructions,
         systemPrompt: config.systemPrompt,
     };
-    if (logicalModelIDForConfig(config)) return generationOptions;
+    if (modelRouting === "logical" && logicalModelIDForConfig(config)) return generationOptions;
     return {
         channelId: requestConfig.channelId,
+        ...(requestConfig.channelId ? { channelModelKey: requestConfig.model } : {}),
         apiFormat: requestConfig.apiFormat,
         interfaceType: requestConfig.interfaceType,
         baseUrl: requestConfig.baseUrl,

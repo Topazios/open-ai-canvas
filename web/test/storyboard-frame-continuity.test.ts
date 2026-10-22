@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createCanvasNode, createStoryboardRow } from "@/lib/canvas/canvas-project-domain";
 import { failedStoryboardBoundaryImages, materializeStoryboardFrames, storyboardBoundaryFrames } from "@/lib/canvas/episode-storyboard-frames";
 import { storyboardFramePrerequisite, storyboardContinuitySnapshot } from "@/lib/canvas/storyboard-frame-continuity";
-import { ensureStoryboardFramesGroup, reconcileStoryboardFramesGroups } from "@/lib/canvas/storyboard-frame-groups";
+import { reconcileStoryboardFramesGroups } from "@/lib/canvas/storyboard-frame-groups";
 import { storyboardFrameIsCurrent } from "@/lib/canvas/workflow-episode-storyboard";
 import { buildNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { generationBatchCandidates, generationBatchRetryItems, reconcileGenerationBatches } from "@/lib/canvas/canvas-generation-batch";
@@ -207,21 +207,15 @@ test("continuity snapshots survive URL refresh and reject a changed or removed a
     expect(storyboardFrameIsCurrent(row, frame, nodes.filter(node => node.id !== snapshot.nodeId))).toBe(false);
 });
 
-test("one episode reuses a stable group across storyboard versions without reusing their images", () => {
+test("storyboard versions keep their own frame records without creating containers", () => {
     const f = fixture();
     const nextScript = { ...f.script, id: "new-script", metadata: { ...f.script.metadata, storyboard: { ...f.script.metadata!.storyboard!, rows: f.script.metadata!.storyboard!.rows.map(row => ({ ...row, id: `new-${row.id}`, frames: undefined })) } } };
     const next = materializeStoryboardFrames(nextScript, nextScript.metadata.storyboard.rows.map(row => ({ row, frames: storyboardBoundaryFrames(row) })), [...f.nodes, nextScript], f.connections, "image", { size: "9:16", quality: "standard", transparentBackground: "false" });
-    expect(next.nodes.filter(node => node.metadata?.storyboardFramesGroup)).toHaveLength(1);
+    expect(next.nodes.filter(node => node.metadata?.storyboardFramesGroup)).toHaveLength(0);
     expect(next.targets.every(target => !f.targets.some(old => old.nodeId === target.nodeId))).toBe(true);
-    expect(next.connections.some(edge => edge.fromNodeId === nextScript.id && edge.toNodeId === cleanGroupId(f.nodes))).toBe(true);
+    expect(next.connections).toEqual([]);
     expect(storyboardFramePrerequisite(next.nodes.find(node => node.id === next.targets[1].nodeId)!, complete(next.nodes, f.targets[0].nodeId)).ready).toBe(false);
-    const clean = ensureStoryboardFramesGroup(f.script, [], []);
-    expect(ensureStoryboardFramesGroup(f.script, [], []).group.id).toBe(clean.group.id);
-    const other = { ...f.script, metadata: { ...f.script.metadata, shortDrama: { ...f.script.metadata!.shortDrama!, pipelineId: "other" } } };
-    expect(ensureStoryboardFramesGroup(other, f.nodes, []).group.id).not.toBe(clean.group.id);
 });
-
-const cleanGroupId = (nodes: CanvasNodeData[]) => nodes.find(node => node.metadata?.storyboardFramesGroup)!.id;
 
 test("keyframes share their own start anchor and become parallel after it succeeds", () => {
     installRuntimeLimits({ image: 6, text: 3, video: 2 }, 0);
@@ -254,14 +248,14 @@ test("changing a completed anchor preserves old outputs but makes every downstre
     expect(f.targets.every(target => next.nodes.some(node => node.id === target.nodeId && node.metadata?.content))).toBe(true);
 });
 
-test("loading duplicate episode groups preserves media IDs, tasks and version owners and reconnects their edges", () => {
+test("loading old frame containers retires presentation only, preserving media and task identities", () => {
     const f = fixture();
-    const group = f.nodes.find(node => node.metadata?.storyboardFramesGroup)!;
+    const group = createCanvasNode(CanvasNodeType.Frame, { x: 500, y: 500 }, { storyboardFramesGroup: { scriptId: f.script.id } });
     const duplicate = { ...group, id: "duplicate-group", metadata: { ...group.metadata, storyboardFramesGroup: { scriptId: "deleted-old-script" } } };
     const old = { ...f.nodes.find(node => node.id === f.targets[0].nodeId)!, id: "old-image", parentId: duplicate.id, metadata: { ...f.nodes.find(node => node.id === f.targets[0].nodeId)!.metadata, taskId: "paid-old-task", storyboardFrame: { ...f.nodes.find(node => node.id === f.targets[0].nodeId)!.metadata!.storyboardFrame!, scriptId: "deleted-old-script" } } };
-    const fixed = reconcileStoryboardFramesGroups([...f.nodes, duplicate, old], [...f.connections, { id: "duplicate-edge", fromNodeId: f.script.id, toNodeId: duplicate.id }]);
-    expect(fixed.nodes.filter(node => node.metadata?.storyboardFramesGroup)).toHaveLength(1);
-    expect(fixed.nodes.find(node => node.id === old.id)).toEqual({ ...old, parentId: group.id });
+    const fixed = reconcileStoryboardFramesGroups([...f.nodes, group, duplicate, old], [...f.connections, { id: "duplicate-edge", fromNodeId: f.script.id, toNodeId: duplicate.id }]);
+    expect(fixed.nodes.filter(node => node.metadata?.storyboardFramesGroup)).toHaveLength(0);
+    expect(fixed.nodes.find(node => node.id === old.id)).toEqual({ ...old, parentId: undefined });
     expect(fixed.connections.some(edge => edge.toNodeId === duplicate.id)).toBe(false);
     expect(reconcileStoryboardFramesGroups(fixed.nodes, fixed.connections).nodes).toBe(fixed.nodes);
 });

@@ -48,7 +48,7 @@ export function CanvasGenerationTaskDetails({ node, onRetry, onCancel }: {
     const startedAt = current?.firstStartedAt || task?.startedAt;
     const endedAt = task?.completedAt || (task && !["queued", "running"].includes(task.status) ? task.updatedAt : undefined);
     const rows = useMemo(() => { const rows = current ? taskExecutionRows(current) : []; return order === "desc" ? rows.reverse() : rows; }, [current, order]);
-    const names: Record<string,string> = { size:"尺寸 / 比例",quality:"质量",vquality:"分辨率",videoSeconds:"时长（秒）",audioVoice:"音色",audioFormat:"音频格式",audioSpeed:"语速",reasoningEffort:"推理强度",count:"数量" };
+    const names: Record<string,string> = { interfaceType:"实际协议",apiFormat:"请求格式",channelModelKey:"渠道模型",providerModelKey:"上游模型",size:"尺寸 / 比例",quality:"质量",vquality:"分辨率",videoSeconds:"时长（秒）",audioVoice:"音色",audioFormat:"音频格式",audioSpeed:"语速",reasoningEffort:"推理强度",count:"数量" };
     return <section className="canvas-node-inspector-section production-agent-details" aria-label="任务执行记录" data-canvas-no-zoom data-canvas-wheel-scroll>
         <div className="production-agent-overview">
             <div className="production-agent-heading"><strong>{node.title}</strong><span className="production-agent-status" role="status">{task ? generationTaskStatusLabel(task) : error ? "状态读取失败" : "正在核对后台状态"}</span></div>

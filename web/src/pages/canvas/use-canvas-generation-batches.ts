@@ -2,14 +2,15 @@ import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } fr
 import { App } from "antd";
 import { nanoid } from "nanoid";
 
-import { generationBatchCandidates, generationBatchKind, generationBatchReservations, generationBatchRetryItems, generationBatchStatus, pauseNodeGenerationBatches, reconcileGenerationBatches } from "@/lib/canvas/canvas-generation-batch";
+import { generationBatchCandidates, generationBatchKind, generationBatchReservations, generationBatchRetryItems, generationBatchStatus, generationBatchTargetKey, pauseNodeGenerationBatches, reconcileGenerationBatches } from "@/lib/canvas/canvas-generation-batch";
 import { buildGenerationConfig, createGenerationRetryContext, generationTaskMetadata, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
+import { storyboardFrameNodeSelection } from "@/lib/canvas/storyboard-frame-model";
 import { unchangedModeratedPrompt } from "@/lib/generation-error";
 import { cancelGenerationTask, listGenerationTasks, type GenerationTask } from "@/services/api/task-center";
 import { readRuntimeLimits } from "@/services/runtime-limits";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { getActiveUserScope } from "@/lib/user-scope";
-import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchMode, CanvasNodeData } from "@/types/canvas";
+import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchMode, CanvasNodeData, StoryboardVideoGeneration } from "@/types/canvas";
 
 import type { CanvasNodeGenerationOptions } from "./use-canvas-generation-executor";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
@@ -17,7 +18,7 @@ import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-p
 const SCHEDULER_INTERVAL_MS = 2_000;
 const MAX_BATCH_HISTORY = 20;
 
-type BatchTarget = Pick<CanvasGenerationBatchItem, "rowId" | "nodeId">;
+type BatchTarget = Pick<CanvasGenerationBatchItem, "rowId" | "nodeId" | "targetKind">;
 
 type UseCanvasGenerationBatchesOptions = {
     projectId: string;
@@ -41,10 +42,11 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
     const owner = useRef({ projectId, scope: getActiveUserScope() });
     owner.current = { projectId, scope: getActiveUserScope() };
 
-    const cancelPausedTask = useCallback(async (sourceNodeId: string, batchId: string, nodeId: string, task: GenerationTask) => {
+    const cancelPausedTask = useCallback(async (sourceNodeId: string, batchId: string, nodeId: string, task: GenerationTask, target?: Pick<CanvasGenerationBatchItem, "rowId" | "targetKind">) => {
         const batch = findBatch(nodesRef.current, sourceNodeId, batchId);
         const source = nodesRef.current.find(node => node.id === sourceNodeId);
-        const latest = source?.metadata?.generationBatches?.findLast(batch => batch.items.some(item => item.nodeId === nodeId));
+        const targetKey = generationBatchTargetKey({ nodeId, rowId: target?.rowId || "", targetKind: target?.targetKind });
+        const latest = source?.metadata?.generationBatches?.findLast(batch => batch.items.some(item => generationBatchTargetKey(item) === targetKey));
         if (!batch?.paused || latest?.id !== batchId || batch.projectId !== projectId || !["queued", "running"].includes(task.status) || cancellingRef.current.has(task.id) || cancellationAttempts.current.has(task.id)) return;
         const scope = getActiveUserScope();
         cancellingRef.current.add(task.id);
@@ -52,9 +54,13 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
         try {
             const cancelled = await cancelGenerationTask(task.id);
             if (owner.current.projectId !== projectId || getActiveUserScope() !== scope) return;
-            setNodes(current => current.map(node => node.id === nodeId && node.metadata?.taskId === task.id ? {
-                ...node, metadata: { ...node.metadata, ...generationTaskMetadata(cancelled), status: cancelled.status === "cancelled" ? "idle" : node.metadata.status },
-            } : node));
+        setNodes(current => current.map(node => {
+            if (node.id !== nodeId) return node;
+            if (target?.targetKind === "storyboard_video" && target.rowId) {
+                return { ...node, metadata: { ...node.metadata, storyboard: { ...node.metadata?.storyboard!, rows: (node.metadata?.storyboard?.rows || []).map(row => row.id === target.rowId ? { ...row, videoGeneration: { ...row.videoGeneration, ...generationTaskMetadata(cancelled) } } : row) } } };
+            }
+            return { ...node, metadata: { ...node.metadata, ...generationTaskMetadata(cancelled), status: cancelled.status === "cancelled" ? "idle" : node.metadata?.status } };
+        }));
         } catch (error) {
             if (owner.current.projectId === projectId && getActiveUserScope() === scope) message.error(error instanceof Error ? error.message : "部分视频暂停失败，请在详情重试取消");
         } finally { cancellingRef.current.delete(task.id); }
@@ -68,15 +74,17 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
             message.error(error instanceof Error ? `暂停状态同步失败：${error.message}` : "暂停状态同步失败，请保存后再关闭画布");
         });
         const source = next.find(node => node.id === sourceNodeId);
-        const tasks = new Map<string, { batchId: string; nodeId: string }>();
+        const tasks = new Map<string, { batchId: string; nodeId: string; target: Pick<CanvasGenerationBatchItem, "rowId" | "targetKind"> }>();
         for (const batch of source?.metadata?.generationBatches || []) for (const item of batch.items) {
             const node = next.find(node => node.id === item.nodeId);
-            if (node?.metadata?.taskId && ["queued", "running"].includes(node.metadata.taskStatus || "")) tasks.set(node.metadata.taskId, { batchId: batch.id, nodeId: node.id });
+            const taskId = item.targetKind === "storyboard_video" ? node?.metadata?.storyboard?.rows.find(row => row.id === item.rowId)?.videoGeneration?.taskId : node?.metadata?.taskId;
+            const taskStatus = item.targetKind === "storyboard_video" ? node?.metadata?.storyboard?.rows.find(row => row.id === item.rowId)?.videoGeneration?.taskStatus : node?.metadata?.taskStatus;
+            if (taskId && ["queued", "running"].includes(taskStatus || "")) tasks.set(taskId, { batchId: batch.id, nodeId: node!.id, target: { rowId: item.rowId, targetKind: item.targetKind } });
         }
         // Cancel sequentially to avoid another request burst during a pause.
         for (const [id, entry] of tasks) {
             cancellationAttempts.current.delete(id);
-            await cancelPausedTask(sourceNodeId, entry.batchId, entry.nodeId, { id, status: "running" } as GenerationTask);
+            await cancelPausedTask(sourceNodeId, entry.batchId, entry.nodeId, { id, status: "running" } as GenerationTask, entry.target);
         }
         await persistence;
     }, [cancelPausedTask, message, nodesRef, persistBatches, setNodes]);
@@ -105,8 +113,8 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
         (sourceNodeId: string, mode: CanvasGenerationBatchMode, targets: BatchTarget[]) => {
             const sourceNode = nodesRef.current.find((node) => node.id === sourceNodeId);
             if (!sourceNode || !targets.length) return;
-            const activeNodeIds = new Set((sourceNode.metadata?.generationBatches || []).filter(batch => !batch.paused).flatMap((batch) => batch.items.filter((item) => ["waiting", "submitting", "queued", "running"].includes(item.status)).map((item) => item.nodeId)));
-            const availableTargets = targets.filter((target) => !activeNodeIds.has(target.nodeId));
+            const activeNodeIds = new Set((sourceNode.metadata?.generationBatches || []).filter(batch => !batch.paused).flatMap((batch) => batch.items.filter((item) => ["waiting", "submitting", "queued", "running"].includes(item.status)).map((item) => generationBatchTargetKey(item))));
+            const availableTargets = targets.filter((target) => !activeNodeIds.has(generationBatchTargetKey(target)));
             if (!availableTargets.length) {
                 message.info("所选镜头已在生成批次中");
                 return;
@@ -129,6 +137,18 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                               ...node,
                               metadata: {
                                   ...node.metadata,
+                                  ...(mode === "storyboard_video"
+                                      ? {
+                                            storyboard: {
+                                                ...node.metadata?.storyboard!,
+                                                rows: (node.metadata?.storyboard?.rows || []).map((row) =>
+                                                    availableTargets.some((target) => target.targetKind === "storyboard_video" && target.rowId === row.id)
+                                                        ? { ...row, videoGeneration: resetInlineStoryboardVideoGeneration(row.videoGeneration) }
+                                                        : row,
+                                                ),
+                                            },
+                                        }
+                                      : {}),
                                   generationBatches: [...(node.metadata?.generationBatches || []).filter((entry, index, history) => !["completed", "cancelled", "partial_failed"].includes(entry.status) || index >= history.length - MAX_BATCH_HISTORY), batch],
                               },
                           }
@@ -171,12 +191,14 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                 const key = batchItemKey(batch.id, item.id);
                 if (controllersRef.current.has(key) || findBatch(nodesRef.current, batch.sourceNodeId, batch.id)?.paused) continue;
                 const generationMode: CanvasNodeGenerationMode = generationBatchKind(batch.mode);
-                const generationConfig = buildGenerationConfig(effectiveConfig, node, generationMode);
+                const selectedNode = generationMode === "image" ? storyboardFrameNodeSelection(effectiveConfig, node, nodesRef.current) : node;
+                const generationConfig = buildGenerationConfig(effectiveConfig, selectedNode, generationMode);
                 if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                     updateBatch(batch.sourceNodeId, batch.id, (current) => withUpdatedItem(current, item.id, { status: "failed", errorDetails: "生成模型未配置，请完成配置后重试" }));
                     continue;
                 }
-                const prompt = (node.metadata?.composerContent || node.metadata?.prompt || "").trim();
+                const row = item.targetKind === "storyboard_video" ? node.metadata?.storyboard?.rows.find(candidate => candidate.id === item.rowId) : undefined;
+                const prompt = (row?.videoMotionPrompt || row?.plotDescription || node.metadata?.composerContent || node.metadata?.prompt || "").trim();
                 if (!prompt) {
                     updateBatch(batch.sourceNodeId, batch.id, (current) => withUpdatedItem(current, item.id, { status: "failed", errorDetails: "生成提示词为空" }));
                     continue;
@@ -186,9 +208,11 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                 updateBatch(batch.sourceNodeId, batch.id, (current) => withUpdatedItem(current, item.id, { status: "submitting", errorDetails: undefined }));
                 void handleGenerateNode(node.id, generationMode, prompt, {
                     controller,
+                    storyboardRowId: item.targetKind === "storyboard_video" ? item.rowId : undefined,
+                    batchTargetKind: item.targetKind,
                     waitForTaskCapacity: true,
                     skipDuplicateConfirmation: true,
-                    onTaskUpdate: (task) => { void cancelPausedTask(batch.sourceNodeId, batch.id, node.id, task); },
+                    onTaskUpdate: (task) => { void cancelPausedTask(batch.sourceNodeId, batch.id, node.id, task, { rowId: item.rowId, targetKind: item.targetKind }); },
                     retryContext:
                         node.metadata?.retryOf && node.metadata.attemptGroupId && node.metadata.taskClientOperationId
                             ? { retryOf: node.metadata.retryOf, attemptGroupId: node.metadata.attemptGroupId, clientOperationId: node.metadata.taskClientOperationId }
@@ -252,10 +276,20 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                         }
                         if (!retryNodeIds.has(node.id)) return node;
                         const retryContext = retryContexts.get(node.id);
+                        const retryItemByRowId = new Map(retryableItems.filter((item) => item.targetKind === "storyboard_video").map((item) => [item.rowId, item]));
+                        const storyboard = node.metadata?.storyboard;
                         return {
                             ...node,
                             metadata: {
                                 ...resetGenerationTaskMetadata(node.metadata),
+                                ...(storyboard
+                                    ? {
+                                          storyboard: {
+                                              ...storyboard,
+                                              rows: storyboard.rows.map((row) => retryItemByRowId.has(row.id) ? { ...row, videoGeneration: resetInlineStoryboardVideoGeneration(row.videoGeneration) } : row),
+                                          },
+                                      }
+                                    : {}),
                                 ...(retryContext
                                     ? {
                                           retryOf: retryContext.retryOf,
@@ -323,8 +357,10 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
             if (!batch.paused || batch.projectId !== projectId) continue;
             for (const item of batch.items) {
                 const target = nodes.find(node => node.id === item.nodeId);
-                if (target?.metadata?.taskId && ["queued", "running"].includes(target.metadata.taskStatus || "")) {
-                    void cancelPausedTask(source.id, batch.id, target.id, { id: target.metadata.taskId, status: "running" } as GenerationTask);
+                const taskId = item.targetKind === "storyboard_video" ? target?.metadata?.storyboard?.rows.find(row => row.id === item.rowId)?.videoGeneration?.taskId : target?.metadata?.taskId;
+                const taskStatus = item.targetKind === "storyboard_video" ? target?.metadata?.storyboard?.rows.find(row => row.id === item.rowId)?.videoGeneration?.taskStatus : target?.metadata?.taskStatus;
+                if (target && taskId && ["queued", "running"].includes(taskStatus || "")) {
+                    void cancelPausedTask(source.id, batch.id, target.id, { id: taskId, status: "running" } as GenerationTask, { rowId: item.rowId, targetKind: item.targetKind });
                 }
             }
         }
@@ -360,4 +396,22 @@ function withUpdatedItem(batch: CanvasGenerationBatch, itemId: string, patch: Pa
 
 function findBatch(nodes: CanvasNodeData[], sourceNodeId: string, batchId: string) {
     return nodes.find((node) => node.id === sourceNodeId)?.metadata?.generationBatches?.find((batch) => batch.id === batchId);
+}
+
+function resetInlineStoryboardVideoGeneration(video: StoryboardVideoGeneration | undefined) {
+    if (!video) return undefined;
+    const next = { ...video };
+    delete next.taskId;
+    delete next.taskStatus;
+    delete next.taskProgress;
+    delete next.taskStage;
+    delete next.taskProvider;
+    delete next.taskErrorCode;
+    delete next.taskCreatedAt;
+    delete next.taskStartedAt;
+    delete next.taskCompletedAt;
+    delete next.taskDurationMs;
+    delete next.errorDetails;
+    delete next.providerRequestId;
+    return next;
 }

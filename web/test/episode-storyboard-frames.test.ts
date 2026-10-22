@@ -50,15 +50,15 @@ test("keyframes accept multiple chronological static moments and reject invalid 
     expect(storyboardKeyframePrompt(row)).toContain(row.videoMotionPrompt);
 });
 
-test("batch frames persist in one ordered grid and only include the individual shot context", () => {
+test("batch frames persist in storyboard rows without canvas groups or connections", () => {
     const f = fixture();
     const result = materializeStoryboardFrames(f.script, boundaries(f), f.nodes, [], "image-model", settings);
     expect(result.targets).toHaveLength(3);
-    const group = result.nodes.find(node => node.metadata?.storyboardFramesGroup)!;
-    const images = result.nodes.filter(node => node.parentId === group.id);
+    expect(result.nodes.some(node => node.metadata?.storyboardFramesGroup)).toBe(false);
+    expect(result.connections).toEqual([]);
+    const images = result.nodes.filter(node => node.metadata?.storyboardFrame);
     expect(images).toHaveLength(3); expect(images.every(node => node.width === 280 && node.height === 280)).toBe(true);
-    expect(images[0].position.y).toBe(images[1].position.y);
-    expect(images[0].position.x).toBeLessThan(images[1].position.x);
+    expect(images.every(node => !node.parentId)).toBe(true);
     for (const image of images) {
         const ready = result.nodes.map(node => node.metadata?.storyboardFrame ? { ...node, metadata: { ...node.metadata, content: "data:image/png;base64,AA==", status: "success" as const } } : node);
         const context = buildNodeGenerationContext(image.id, ready, result.connections, image.metadata!.composerContent!, []);
@@ -70,7 +70,7 @@ test("batch frames persist in one ordered grid and only include the individual s
     const script = persisted.find(node => node.id === f.script.id)!;
     expect(script.metadata!.storyboard!.rows.every(row => row.frames?.length === 2)).toBe(true);
     const resumed = materializeStoryboardFrames(script, boundaries(f), persisted, result.connections, "image-model", settings);
-    expect(resumed.nodes.filter(node => node.metadata?.storyboardFramesGroup)).toHaveLength(1);
+    expect(resumed.nodes.filter(node => node.metadata?.storyboardFramesGroup)).toHaveLength(0);
     expect(resumed.targets.map(target => target.nodeId)).toEqual(result.targets.map(target => target.nodeId));
 });
 
@@ -81,7 +81,7 @@ test("completed, failed and waiting frames are never silently billed again; edit
     const ids = result.targets.map(target => target.nodeId);
     const nodes = result.nodes.map(node => node.id === ids[0] ? { ...node, metadata: { ...node.metadata, status: "success" as const, content: "data:image/png;base64,AA==" } } : node.id === ids[1] ? { ...node, metadata: { ...node.metadata, status: "error" as const, taskId: "failed-paid-task", taskStatus: "failed" as const } } : node);
     script.metadata!.generationBatches = [{ id: "queued", mode: "storyboard_image", projectId: "p", sourceNodeId: script.id, status: "queued", createdAt: "", updatedAt: "", items: ids.slice(2).map(nodeId => ({ id: nodeId, nodeId, rowId: "shot-2", status: "waiting", retryCount: 0 })) }];
-    expect(materializeStoryboardFrames(script, boundaries(f), nodes, result.connections, "another-model", settings).targets).toHaveLength(0);
+    expect(materializeStoryboardFrames(script, boundaries(f), nodes, result.connections, "another-model", settings).targets.map(target => target.nodeId)).toEqual([ids[1]]);
     const edited = { ...f.rows[0], videoMotionPrompt: "改为窗前拿起相机" };
     const changed = materializeStoryboardFrames(script, [{ row: edited, frames: storyboardBoundaryFrames(edited) }], nodes, result.connections, "image-model", settings);
     expect(changed.targets).toHaveLength(2);
@@ -107,11 +107,11 @@ test("explicit boundary retry deduplicates shared failures and preserves success
     const nodes = first.nodes.map(node => node.id === done.nodeId ? { ...node, metadata: { ...node.metadata, status: "success" as const, content: "saved-image", taskId: "done", taskStatus: "succeeded" as const } } : node.id === failed.nodeId ? { ...node, metadata: { ...node.metadata, status: "error" as const, taskId: "failed", taskStatus: "failed" as const, errorDetails: "模型服务响应超时，请稍后重试" } } : node.id === running.nodeId ? { ...node, metadata: { ...node.metadata, status: "loading" as const, taskId: "running", taskStatus: "running" as const } } : node);
     const script = nodes.find(node => node.id === f.script.id)!;
     expect(failedStoryboardBoundaryImages(script, nodes).map(node => node.id)).toEqual([failed.nodeId]);
-    const retried = materializeStoryboardFrames(script, boundaries(f), nodes, first.connections, "retry-model", settings, { failedOnly: true });
+    const retried = materializeStoryboardFrames(script, boundaries(f), nodes, first.connections, "retry-channel::retry-model", settings, { failedOnly: true });
     expect(retried.targets.map(target => target.nodeId)).toEqual([failed.nodeId]);
     expect(retried.nodes.filter(node => node.metadata?.storyboardFrame)).toHaveLength(3);
     for (const id of [done.nodeId, running.nodeId]) expect(retried.nodes.find(node => node.id === id)).toEqual(nodes.find(node => node.id === id));
-    expect(retried.nodes.find(node => node.id === failed.nodeId)?.metadata).toMatchObject({ model: "retry-model", status: "idle" });
+    expect(retried.nodes.find(node => node.id === failed.nodeId)?.metadata).toMatchObject({ model: "retry-channel::retry-model", status: "idle" });
     expect(retried.nodes.find(node => node.id === failed.nodeId)?.metadata?.taskId).toBeUndefined();
     const rows = retried.nodes.find(node => node.id === script.id)!.metadata!.storyboard!.rows;
     expect(rows[1].frames?.find(frame => frame.kind === "start")?.imageNodeId).toBe(failed.nodeId);
@@ -177,7 +177,7 @@ test("frame requests project visual asset sections without carrying story or voi
     }
 });
 
-test("prompt upgrades preserve completed and in-flight legacy boundary nodes and retry failures in place", () => {
+test("prompt upgrades preserve completed and in-flight legacy boundary nodes and surface failures for confirmation", () => {
     const f = fixture();
     const first = materializeStoryboardFrames(f.script, boundaries(f), f.nodes, [], "image-model", settings);
     const [done, failed, running] = first.targets;
@@ -188,7 +188,7 @@ test("prompt upgrades preserve completed and in-flight legacy boundary nodes and
     });
     const script = nodes.find(node => node.id === f.script.id)!;
     const unchanged = materializeStoryboardFrames(script, boundaries(f), nodes, first.connections, "image-model", settings);
-    expect(unchanged.targets).toHaveLength(0);
+    expect(unchanged.targets.map(item => item.nodeId)).toEqual([failed.nodeId]);
     const retried = materializeStoryboardFrames(script, boundaries(f), nodes, first.connections, "image-model", settings, { failedOnly: true });
     expect(retried.targets.map(item => item.nodeId)).toEqual([failed.nodeId]);
     expect(retried.nodes.filter(node => node.metadata?.storyboardFrame)).toHaveLength(3);
@@ -231,14 +231,14 @@ test("stale keyframe extraction cannot feed image tasks and current first/end au
     expect(episodeShotBoundaryImages({ ...currentRow, durationSeconds: 12 }, nodes)).toEqual([]);
 });
 
-test("paused frames remain resumable in place while failed frames need explicit retry", () => {
+test("paused frames remain resumable in place while failed frames enter the confirmation queue", () => {
     const f = fixture(), result = materializeStoryboardFrames(f.script, boundaries(f), f.nodes, [], "image-model", settings);
     const script = result.nodes.find(node => node.id === f.script.id)!;
     const [paused, failed] = result.targets;
     const nodes = result.nodes.map(node => node.id === paused.nodeId ? { ...node, metadata: { ...node.metadata, taskId: "cancelled", taskStatus: "cancelled" as const, status: "idle" as const } } : node.id === failed.nodeId ? { ...node, metadata: { ...node.metadata, taskId: "failed", taskStatus: "failed" as const, status: "error" as const } } : node);
     const resumed = materializeStoryboardFrames(script, boundaries(f), nodes, result.connections, "image-model", settings);
     expect(resumed.targets.some(target => target.nodeId === paused.nodeId)).toBe(true);
-    expect(resumed.targets.some(target => target.nodeId === failed.nodeId)).toBe(false);
+    expect(resumed.targets.some(target => target.nodeId === failed.nodeId)).toBe(true);
     expect(resumed.nodes.filter(node => node.metadata?.storyboardFrame)).toHaveLength(3);
 });
 
@@ -255,7 +255,7 @@ test("adjacent boundaries share one image and task, including failure and cancel
     for (const taskStatus of ["failed", "cancelled"] as const) {
         const nodes = complete.map(node => node.id === end.imageNodeId ? { ...node, metadata: { ...node.metadata, content: undefined, taskStatus, status: "error" as const, taskId: "shared-task" } } : node);
         const resumed = materializeStoryboardFrames(script, boundaries(f), nodes, result.connections, "image-model", settings);
-        expect(resumed.targets.map(target => target.nodeId)).toEqual(taskStatus === "cancelled" ? [end.imageNodeId!] : []);
+        expect(resumed.targets.map(target => target.nodeId)).toEqual([end.imageNodeId!]);
     }
 });
 

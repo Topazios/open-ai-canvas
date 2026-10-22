@@ -1,6 +1,7 @@
 import { useEffect, type Dispatch, type SetStateAction } from "react";
 
 import type { CanvasNodeData, ContextMenuState } from "@/types/canvas";
+import { isStoryboardFrameRecord } from "@/lib/canvas/storyboard-frame-records";
 
 const CANVAS_KEYBOARD_OVERLAY_SELECTOR = ".canvas-node-toolbar, .canvas-node-toolbar-menu, .ant-modal-wrap, .ant-drawer, .ant-dropdown, .ant-popover, .ant-select-dropdown, .ant-picker-dropdown, [role='dialog'], [role='menu']";
 
@@ -166,7 +167,7 @@ export function useCanvasKeyboard({
             }
             if (isModifierShortcut && !event.altKey && key === "a") {
                 event.preventDefault();
-                setSelectedNodeIds(new Set(nodesRef.current.map((node) => node.id)));
+                setSelectedNodeIds(new Set(nodesRef.current.filter(node => !isStoryboardFrameRecord(node)).map((node) => node.id)));
                 setSelectedConnectionId(null);
                 setContextMenu(null);
                 cancelSelectionBox();

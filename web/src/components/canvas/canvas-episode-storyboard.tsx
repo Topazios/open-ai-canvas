@@ -1,5 +1,5 @@
-import { lazy, Suspense, useMemo, useState, type SyntheticEvent } from "react";
-import { Button, Input } from "antd";
+import { lazy, Suspense, useCallback, useMemo, useState, type SyntheticEvent } from "react";
+import { App, Button, Input } from "antd";
 import { Images, Info, Pause, PencilLine, Play, RefreshCw, ScanSearch } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { ModelPicker } from "@/components/model-picker";
@@ -7,6 +7,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useEffectiveConfig } from "@/stores/use-config-store";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-project-generation";
+import { storyboardFrameGenerationConfig } from "@/lib/canvas/storyboard-frame-model";
 import { episodeStoryboardPromptPatch, episodeStoryboardTiming, resolveEpisodeShotAssets, storyboardRowIsReady } from "@/lib/canvas/workflow-episode-storyboard";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { CanvasNodeType, type CanvasNodeData, type StoryboardRow } from "@/types/canvas";
@@ -42,9 +43,10 @@ export function CanvasEpisodeStoryboard({ node, nodes, progress, onGenerate, onP
     onFrameModelChange: (kind: "text" | "image", model: string) => void;
 }) {
     const theme = canvasThemes[useActiveTheme()];
+    const { modal } = App.useApp();
     const config = useEffectiveConfig();
     const videoConfig = buildGenerationConfig(config, undefined, "video");
-    const imageConfig = buildGenerationConfig(config, undefined, "image");
+    const imageConfig = storyboardFrameGenerationConfig(config, node, "image");
     const [frameRowId, setFrameRowId] = useState<string>();
     const [preparingFrames, setPreparingFrames] = useState<{ rowId?: string; failedOnly: boolean }>();
     const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -52,6 +54,19 @@ export function CanvasEpisodeStoryboard({ node, nodes, progress, onGenerate, onP
     const [preview, setPreview] = useState<{ items: CanvasNodeData[]; index: number }>();
     const [submitting, setSubmitting] = useState(false);
     const [pausing, setPausing] = useState(false);
+    const confirmRegeneration = useCallback((label: string) => new Promise<boolean>(resolve => {
+        modal.confirm({
+            title: `确认重新生成${label}`,
+            content: `将重新提交${label}任务，可能再次产生费用。已生成的结果会保留，确认后才开始新的生成。`,
+            okText: "确认重新生成",
+            cancelText: "取消",
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+        });
+    }), [modal]);
+    const retryVideo = useCallback(async (video: CanvasNodeData) => {
+        if (await confirmRegeneration("视频")) onRetry(video);
+    }, [confirmRegeneration, onRetry]);
     const rows = node.metadata?.storyboard?.rows || [];
     const detailStates = new Map(progress?.parallelItems?.map(item => [item.key, item]));
     const detailLabel = (row: StoryboardRow) => {
@@ -75,19 +90,52 @@ export function CanvasEpisodeStoryboard({ node, nodes, progress, onGenerate, onP
     };
     const items = useMemo(() => rows.map(row => {
         const detailReady = storyboardRowIsReady(row);
-        const video = row.videoNodeId ? byId.get(row.videoNodeId) : undefined;
+        const legacyVideo = row.videoNodeId ? byId.get(row.videoNodeId) : undefined;
+        const inline = row.videoGeneration;
+        const video = legacyVideo || (inline ? ({
+            id: `storyboard-video:${node.id}:${row.id}`,
+            type: CanvasNodeType.Video,
+            title: `镜头 ${row.shotNumber} · 视频`,
+            position: node.position,
+            width: 640,
+            height: 360,
+            metadata: {
+                ...node.metadata,
+                content: inline.content,
+                storageKey: inline.storageKey,
+                mimeType: inline.mimeType,
+                bytes: inline.bytes,
+                naturalWidth: inline.width,
+                naturalHeight: inline.height,
+                durationMs: inline.durationMs,
+                taskId: inline.taskId,
+                taskStatus: inline.taskStatus,
+                taskProgress: inline.taskProgress,
+                taskStage: inline.taskStage,
+                taskProvider: inline.taskProvider,
+                taskErrorCode: inline.taskErrorCode,
+                taskCreatedAt: inline.taskCreatedAt,
+                taskStartedAt: inline.taskStartedAt,
+                taskCompletedAt: inline.taskCompletedAt,
+                taskDurationMs: inline.taskDurationMs,
+                errorDetails: inline.errorDetails,
+                prompt: inline.prompt,
+                model: inline.model,
+                status: inline.taskStatus === "succeeded" ? "success" : inline.taskStatus === "failed" ? "error" : inline.taskStatus === "cancelled" ? "idle" : inline.taskStatus ? "loading" : "idle",
+            },
+        } as CanvasNodeData) : undefined);
         const batches = (node.metadata?.generationBatches || []).filter(batch => batch.mode === "storyboard_video").flatMap(batch => batch.items.map(item => ({ batch, item })));
         const current = batches.filter(entry => entry.item.rowId === row.id).at(-1);
-        const active = isCanvasNodeGenerating(video) || Boolean(current && !current.batch.paused && ["waiting", "submitting", "queued", "running"].includes(current.item.status));
-        const ready = Boolean(video?.metadata?.content || video?.metadata?.storageKey);
-        const failed = !ready && !active && (video?.metadata?.status === "error" && video.metadata.taskStatus !== "cancelled" || current?.item.status === "failed");
+        const active = Boolean(inline && ["queued", "running"].includes(inline.taskStatus || "")) || isCanvasNodeGenerating(legacyVideo) || Boolean(current && !current.batch.paused && ["waiting", "submitting", "queued", "running"].includes(current.item.status));
+        const ready = Boolean(inline?.content || inline?.storageKey || legacyVideo?.metadata?.content || legacyVideo?.metadata?.storageKey);
+        const failed = !ready && !active && (inline?.taskStatus === "failed" || legacyVideo?.metadata?.status === "error" && legacyVideo.metadata.taskStatus !== "cancelled" || current?.item.status === "failed");
         let assets: ReturnType<typeof resolveEpisodeShotAssets> | undefined;
         let assetError = "";
         if (detailReady) try { assets = resolveEpisodeShotAssets(node, row, nodes); } catch (error) { assetError = error instanceof Error ? error.message : "资产解析失败"; }
         return { row, video, active, failed, ready, detailReady, assets, assetError, paused: current?.batch.paused };
     }), [rows, node, nodes, byId]);
     const selected = items.find(item => item.row.id === selectedId);
-    const playing = playingId ? byId.get(playingId) : undefined;
+    const playing = playingId ? byId.get(playingId) || items.find(item => item.video?.id === playingId)?.video : undefined;
     const { url, loading } = useVideoPlaybackUrl(playing || node, Boolean(playing));
     const generating = node.metadata?.status === "loading";
     const remaining = items.filter(item => item.detailReady && !item.ready && !item.active && !item.failed && !item.assetError);
@@ -154,7 +202,7 @@ export function CanvasEpisodeStoryboard({ node, nodes, progress, onGenerate, onP
                         {detailReady && ready && video ? <button type="button" className="relative block aspect-video w-full overflow-hidden rounded" aria-label={`播放镜头 ${row.shotCode || row.shotNumber}`} onClick={() => setPlayingId(video.id)}><CanvasVideoPreviewImage node={video} className="size-full object-cover" fallback={<span className="block size-full" style={{ background: theme.node.panel }} />} /><Play className="absolute left-1/2 top-1/2 size-6 -translate-x-1/2 -translate-y-1/2" /></button> : <div className="canvas-episode-storyboard-video-status" role="status" style={{ color: failed ? theme.accent.danger : theme.node.muted }}>{detailReady ? (active ? video?.metadata?.taskStage || "排队中" : failed ? "生成失败" : paused || video?.metadata?.taskStatus === "cancelled" ? "已暂停" : "待生成") : "等待分镜详情"}</div>}
                     </div>
                     <div className="canvas-episode-storyboard-actions">
-                        {!detailReady ? <CanvasNodeActionButton theme={theme} label="执行详情" icon={<Info size={14} />} onClick={onDetails} /> : <>{!ready && !failed ? <CanvasNodeActionButton theme={theme} label="生成" icon={<Play size={14} />} disabled={active || submitting || pausing || Boolean(assetError)} onClick={() => void generate([row.id])} primary /> : null}<CanvasNodeActionButton theme={theme} label="详情" icon={<Info size={14} />} onClick={() => setSelectedId(row.id)} /><CanvasNodeActionButton theme={theme} label="首尾帧" icon={<Images size={14} />} disabled={Boolean(preparingFrames) || pausing} onClick={() => void generateFrames(row.id)} /><CanvasNodeActionButton theme={theme} label="关键帧" icon={<ScanSearch size={14} />} onClick={() => setFrameRowId(row.id)} />{failed ? <CanvasNodeActionButton theme={theme} label="重试" icon={<RefreshCw size={14} />} disabled={active || Boolean(assetError)} onClick={() => video ? onRetry(video) : void generate([row.id])} /> : null}</>}
+                        {!detailReady ? <CanvasNodeActionButton theme={theme} label="执行详情" icon={<Info size={14} />} onClick={onDetails} /> : <>{!ready && !failed ? <CanvasNodeActionButton theme={theme} label="生成" icon={<Play size={14} />} disabled={active || submitting || pausing || Boolean(assetError)} onClick={() => void generate([row.id])} primary /> : null}<CanvasNodeActionButton theme={theme} label="详情" icon={<Info size={14} />} onClick={() => setSelectedId(row.id)} /><CanvasNodeActionButton theme={theme} label="首尾帧" icon={<Images size={14} />} disabled={Boolean(preparingFrames) || pausing} onClick={() => void generateFrames(row.id)} /><CanvasNodeActionButton theme={theme} label="关键帧" icon={<ScanSearch size={14} />} onClick={() => setFrameRowId(row.id)} />{failed ? <CanvasNodeActionButton theme={theme} label="重试" icon={<RefreshCw size={14} />} disabled={active || Boolean(assetError)} onClick={() => row.videoGeneration ? void generate([row.id]) : video ? void retryVideo(video) : void generate([row.id])} /> : null}</>}
                     </div>
                 </article>)}
             </div>
@@ -168,10 +216,10 @@ export function CanvasEpisodeStoryboard({ node, nodes, progress, onGenerate, onP
                 <p className="my-3 text-xs">引用素材：{selected.assets?.nodes.map(item => `${item.metadata?.shortDrama?.assetIdentity?.code} ${item.title}`).join("、") || selected.assetError || "无固定资产引用"}</p>
                 <CanvasEpisodeAssetReferences assets={selected.assets} onPreview={onPreviewFrame} large />
                 <CanvasEpisodeFrameGallery row={selected.row} nodes={nodes} onPreview={onPreviewFrame} onManage={() => { setSelectedId(null); setFrameRowId(selected.row.id); }} />
-                {selected.video?.metadata?.taskId ? <CanvasGenerationTaskDetails key={selected.video.id} node={selected.video} onRetry={onRetry} onCancel={onCancel} /> : <p className="py-3 text-sm">尚未提交视频任务</p>}
+                {selected.video?.metadata?.taskId ? <CanvasGenerationTaskDetails key={selected.video.id} node={selected.video} onRetry={node => selected.row.videoGeneration ? void generate([selected.row.id]) : void retryVideo(node)} onCancel={onCancel} /> : selected.active ? <p role="status" className="py-3 text-sm">已加入视频生成队列，正在等待调度；任务提交后这里会显示模型、阶段和实时进度。</p> : <p className="py-3 text-sm">尚未提交视频任务</p>}
             </div>
         </AppModal> : null}
-        {rows.find(row => row.id === frameRowId) ? <CanvasEpisodeShotFrames key={frameRowId} row={rows.find(row => row.id === frameRowId)!} rows={rows} nodes={nodes} previewOpen={Boolean(previewImage)} onUpdate={patch => onUpdate(frameRowId!, patch)} onClose={() => setFrameRowId(undefined)} onExtract={() => onExtractKeyframes(frameRowId!)} onGenerate={() => onGenerateFrames(frameRowId, "keyframes")} onRetry={onRetryFrame} onCancel={onCancel} onPreview={onPreviewFrame} onModelChange={onFrameModelChange} /> : null}
+        {rows.find(row => row.id === frameRowId) ? <CanvasEpisodeShotFrames key={frameRowId} script={node} row={rows.find(row => row.id === frameRowId)!} rows={rows} nodes={nodes} previewOpen={Boolean(previewImage)} onUpdate={patch => onUpdate(frameRowId!, patch)} onClose={() => setFrameRowId(undefined)} onExtract={() => onExtractKeyframes(frameRowId!)} onGenerate={() => onGenerateFrames(frameRowId, "keyframes")} onRetry={onRetryFrame} onCancel={onCancel} onPreview={onPreviewFrame} onModelChange={onFrameModelChange} /> : null}
         {previewImage ? <CanvasImagePreview items={previewItems} index={preview!.index} onNavigate={index => setPreview(current => current && { ...current, index })} onClose={() => setPreview(undefined)} /> : null}
         {playing ? <AppModal open title={playing.title} footer={null} width="min(1000px, calc(100vw - 24px))" onCancel={() => setPlayingId(null)} destroyOnHidden><div className="aspect-video" data-canvas-no-zoom onPointerDown={stop} onWheel={stop}>{url ? <Suspense fallback={<span>加载播放器</span>}><VideoPlayer src={url} title={playing.title} autoPlay preload="metadata" className="size-full" /></Suspense> : <span>{loading ? "加载视频中" : "视频暂不可用"}</span>}</div></AppModal> : null}
     </section>;

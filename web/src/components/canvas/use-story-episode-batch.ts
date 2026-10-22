@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { useEffect, useRef, useState } from "react";
 import { buildStoryDevelopmentPrompt, storyDocumentSignature, storySourceState } from "@/lib/canvas/canvas-story-development";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -106,7 +107,7 @@ export function useStoryEpisodeBatch(options: Options) {
                 const prepared = await ref.current.onPrepare(start, count, excluded);
                 if (!prepared.targets.length) throw new Error("所选集已有正文、草稿或运行中的任务，无需重复生成");
                 fallback = prepared.nodes;
-                batch = { id: crypto.randomUUID(), items: prepared.targets.map((node) => ({ nodeId: node.id, episodeNumber: node.metadata!.storyDevelopment!.episodeNumber!, operationId: crypto.randomUUID() })), skipped: prepared.skipped };
+                batch = { id: createClientId(), items: prepared.targets.map((node) => ({ nodeId: node.id, episodeNumber: node.metadata!.storyDevelopment!.episodeNumber!, operationId: createClientId() })), skipped: prepared.skipped };
                 await ref.current.update({ episodeBatch: batch, batchStart: start, batchCount: count });
             }
             if (batch && !batch.stopped) await dispatch(batch, fallback);

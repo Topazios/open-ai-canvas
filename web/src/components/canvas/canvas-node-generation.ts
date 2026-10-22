@@ -19,7 +19,7 @@ import type { ModelReferenceLimits } from "@/lib/model-selection";
 import type { Asset } from "@/stores/use-asset-store";
 import { assetSheetSubjectMaterial } from "@/lib/asset-sheet-material";
 import { AssetSheetKind } from "@/lib/asset-reference-sheet";
-import { resolveEpisodeShotAssets, storyboardFrameHash } from "@/lib/canvas/workflow-episode-storyboard";
+import { episodeShotBoundaryImages, resolveEpisodeShotAssets, storyboardFrameHash } from "@/lib/canvas/workflow-episode-storyboard";
 import { applyStoryboardFrameComposition } from "@/lib/canvas/storyboard-frame-composition";
 import { storyboardContinuityReference, storyboardContinuityPrompt } from "@/lib/canvas/storyboard-frame-continuity";
 
@@ -54,6 +54,9 @@ export type NodeGenerationContext = {
     imageCount: number;
     videoCount: number;
     audioCount: number;
+    /** 分镜视频协议需要保留首尾帧的语义，不能只按图片顺序猜测。 */
+    videoStartFrameNodeId?: string;
+    videoEndFrameNodeId?: string;
 };
 
 export type NodeGenerationInput = {
@@ -70,8 +73,34 @@ export type NodeGenerationInput = {
     character?: CharacterGenerationReference;
 };
 
-export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string, assets: Asset[], promptOnly = false): NodeGenerationContext {
+export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string, assets: Asset[], promptOnly = false, storyboardRowId?: string): NodeGenerationContext {
     const sourceNode = nodes.find((node) => node.id === nodeId);
+    if (sourceNode?.type === CanvasNodeType.Script && storyboardRowId) {
+        const row = sourceNode.metadata?.storyboard?.rows.find(item => item.id === storyboardRowId);
+        if (!row) throw new Error("当前分镜不存在，请刷新后重试");
+        const resolved = resolveEpisodeShotAssets(sourceNode, row, nodes);
+        const boundaryImages = episodeShotBoundaryImages(row, nodes);
+        const start = boundaryImages.find(item => item.kind === "start");
+        const end = boundaryImages.find(item => item.kind === "end");
+        const frameReferences = [start?.node, end?.node].filter((item): item is CanvasNodeData => Boolean(item)).map(nodeReferenceImage).filter((item): item is ReferenceImage => Boolean(item));
+        const assetReferences = resolved.media.map(nodeReferenceImage).filter((item): item is ReferenceImage => Boolean(item));
+        const referenceImages = [...new Map((frameReferences.length ? frameReferences : assetReferences).map(image => [image.id, image])).values()];
+        return {
+            prompt,
+            referenceImages,
+            referenceVideos: [],
+            referenceAudios: [],
+            characterReferences: [],
+            resolvedCharacterVersions: [],
+            resolvedCharacterVoices: [],
+            textCount: 0,
+            imageCount: referenceImages.length,
+            videoCount: 0,
+            audioCount: 0,
+            videoStartFrameNodeId: frameReferences.length ? start?.node.id : undefined,
+            videoEndFrameNodeId: frameReferences.length > 1 ? end?.node.id : undefined,
+        };
+    }
     const frame = sourceNode?.metadata?.storyboardFrame;
     if (frame) {
         const script = nodes.find(node => node.id === frame.scriptId);
@@ -80,6 +109,11 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         const savedFrame = row.frames?.find(item => item.id === frame.frameId && item.imageNodeId === nodeId);
         if (savedFrame) prompt = applyStoryboardFrameComposition(prompt, row, savedFrame);
         const references = resolveEpisodeShotAssets(script, row, nodes);
+        // Execution-only inputs: frame media lives in storyboard rows, without canvas edges.
+        connections = [...connections.filter(edge => edge.toNodeId !== nodeId), ...references.referenceNodeIds.map(fromNodeId => ({
+            id: `frame-input:${nodeId}:${fromNodeId}`, fromNodeId, toNodeId: nodeId,
+            relation: "storyboard-asset-reference" as const, storyboardRowId: row.id,
+        }))];
         const continuity = storyboardContinuityReference(sourceNode!, nodes);
         if (continuity) {
             prompt += `\n\n${storyboardContinuityPrompt(continuity)}`;

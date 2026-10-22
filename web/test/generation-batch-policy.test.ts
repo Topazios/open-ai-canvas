@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { generationBatchCandidates, generationBatchReservations, pauseNodeGenerationBatches } from "../src/lib/canvas/canvas-generation-batch";
+import { createCanvasNode, createStoryboardRow } from "@/lib/canvas/canvas-project-domain";
+import { generationBatchCandidates, generationBatchReservations, pauseNodeGenerationBatches, reconcileGenerationBatches } from "../src/lib/canvas/canvas-generation-batch";
 import { CanvasNodeType, type CanvasNodeData, type CanvasGenerationBatch } from "../src/types/canvas";
 import { freshRuntimeLimits } from "../src/services/runtime-limits";
 import { installRuntimeLimits } from "./fixtures/runtime-limits";
@@ -17,6 +18,65 @@ test("legacy table/batch overrides never cap or expand system image/video capaci
         expect(selected.filter((item) => item.batch.mode === "batch_image")).toHaveLength(3);
         expect(selected.filter((item) => item.batch.mode === "storyboard_video")).toHaveLength(2);
     }
+});
+
+test("inline storyboard video ignores the script node's unrelated storyboard task", () => {
+    installRuntimeLimits({ video: 2 }, 0);
+    const script = createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, {
+        taskId: "storyboard-task",
+        taskStatus: "succeeded",
+        storyboard: {
+            rows: [createStoryboardRow(1, { id: "shot-1", shotCode: "S1-001", videoMotionPrompt: "人物推门进入房间", durationSeconds: 8 })],
+            visibleColumns: [],
+            referenceNodeIds: [],
+        },
+    });
+    const row = script.metadata!.storyboard!.rows[0];
+    script.metadata!.generationBatches = [{
+        id: "video-batch",
+        projectId: "project",
+        sourceNodeId: script.id,
+        mode: "storyboard_video",
+        status: "queued",
+        createdAt: "",
+        updatedAt: "",
+        items: [{ id: "video-item", rowId: row.id, nodeId: script.id, targetKind: "storyboard_video", status: "waiting", retryCount: 0 }],
+    }];
+
+    const candidates = generationBatchCandidates([script], "project", freshRuntimeLimits()!, [], { image: 0, video: 0, text: 0 });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].item.targetKind).toBe("storyboard_video");
+    expect(generationBatchReservations([script], "project", [{ id: "storyboard-task" }], new Set(["video-batch:video-item"]), new Set())).toEqual({ image: 0, video: 1, text: 0 });
+});
+
+test("retrying an inline failed video is eligible even when the old row receipt remains", () => {
+    installRuntimeLimits({ video: 1 }, 0);
+    const script = createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, {
+        storyboard: {
+            rows: [createStoryboardRow(1, {
+                id: "shot-failed",
+                videoMotionPrompt: "人物转身离开",
+                videoGeneration: { taskId: "old-failed-task", taskStatus: "failed", errorDetails: "上一次超时" },
+            })],
+            visibleColumns: [],
+            referenceNodeIds: [],
+        },
+    });
+    const row = script.metadata!.storyboard!.rows[0];
+    script.metadata!.generationBatches = [{
+        id: "retry-batch",
+        projectId: "project",
+        sourceNodeId: script.id,
+        mode: "storyboard_video",
+        status: "queued",
+        createdAt: "",
+        updatedAt: "",
+        items: [{ id: "retry-item", rowId: row.id, nodeId: script.id, targetKind: "storyboard_video", status: "waiting", retryCount: 1 }],
+    }];
+
+    expect(generationBatchCandidates([script], "project", freshRuntimeLimits()!, [], { image: 0, video: 0, text: 0 })).toHaveLength(1);
+    const reconciled = reconcileGenerationBatches([script], "project", new Set());
+    expect(reconciled[0].metadata!.generationBatches![0].items[0].status).toBe("waiting");
 });
 
 test("admission, account-wide category counts and pending reservations still apply", () => {

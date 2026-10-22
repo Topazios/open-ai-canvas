@@ -2,7 +2,7 @@ import { dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const appVersion = process.env.CANVAS_BUILD_VERSION?.trim() || readFileSync(resolve(webDir, "../VERSION"), "utf8").trim();
@@ -23,66 +23,75 @@ const apiProxy = {
     },
 };
 
-export default defineConfig({
-    plugins: [react()],
-    define: {
-        __APP_VERSION__: JSON.stringify(appVersion),
-        __APP_CHANGELOG__: JSON.stringify(appChangelog),
-        "import.meta.env.VITE_APP_VERSION": JSON.stringify(appVersion),
-        "import.meta.env.VITE_BUILD_COMMIT": JSON.stringify(buildCommit),
-        "import.meta.env.VITE_BUILD_TIME": JSON.stringify(buildTime),
-    },
-    server: {
-        proxy: apiProxy,
-    },
-    preview: {
-        proxy: apiProxy,
-    },
-    resolve: {
-        alias: {
-            "@": resolve(webDir, "src"),
+export default defineConfig(({ mode }) => {
+    const env = loadEnv(mode, webDir, "CANVAS_DEV_");
+    const allowedHosts = (env.CANVAS_DEV_ALLOWED_HOSTS || "")
+        .split(",")
+        .map((host) => host.trim())
+        .filter(Boolean);
+    return {
+        plugins: [react()],
+        define: {
+            __APP_VERSION__: JSON.stringify(appVersion),
+            __APP_CHANGELOG__: JSON.stringify(appChangelog),
+            "import.meta.env.VITE_APP_VERSION": JSON.stringify(appVersion),
+            "import.meta.env.VITE_BUILD_COMMIT": JSON.stringify(buildCommit),
+            "import.meta.env.VITE_BUILD_TIME": JSON.stringify(buildTime),
         },
-    },
-    build: {
-        rolldownOptions: {
-            output: {
-                strictExecutionOrder: true,
-                codeSplitting: {
-                    // Keep route-level lazy imports isolated. Recursively merging dependencies
-                    // pulls unrelated pages into the initial modulepreload graph.
-                    includeDependenciesRecursively: false,
-                    minSize: 40 * 1024,
-                    groups: [
-                        {
-                            // Shared interop helpers must not be emitted into a route entry:
-                            // AntD would import that entry back and execute its bootstrap early.
-                            name: "vendor-babel-runtime",
-                            minSize: 0,
-                            test: /node_modules[\\/]@babel[\\/]runtime[\\/]/,
-                            priority: 40,
-                        },
-                        {
-                            name: "vendor-react",
-                            test: /node_modules[\\/](?:react(?:-dom|-router|-router-dom)?|scheduler|zustand|use-sync-external-store|@tanstack[\\/](?:query-core|react-query))[\\/]/,
-                            priority: 30,
-                        },
-                        {
-                            name: "vendor-icons",
-                            test: /node_modules[\\/](?:lucide-react|@ant-design[\\/]icons)[\\/]/,
-                            priority: 20,
-                            entriesAware: true,
-                            entriesAwareMergeThreshold: 48 * 1024,
-                        },
-                        {
-                            name: "vendor-antd",
-                            test: /node_modules[\\/](?:antd|@ant-design|@rc-component|rc-[^\\/]+|dayjs)[\\/]/,
-                            priority: 10,
-                            entriesAware: true,
-                            entriesAwareMergeThreshold: 80 * 1024,
-                        },
-                    ],
+        server: {
+            allowedHosts,
+            proxy: apiProxy,
+        },
+        preview: {
+            allowedHosts,
+            proxy: apiProxy,
+        },
+        resolve: {
+            alias: {
+                "@": resolve(webDir, "src"),
+            },
+        },
+        build: {
+            rolldownOptions: {
+                output: {
+                    strictExecutionOrder: true,
+                    codeSplitting: {
+                        // Keep route-level lazy imports isolated. Recursively merging dependencies
+                        // pulls unrelated pages into the initial modulepreload graph.
+                        includeDependenciesRecursively: false,
+                        minSize: 40 * 1024,
+                        groups: [
+                            {
+                                // Shared interop helpers must not be emitted into a route entry:
+                                // AntD would import that entry back and execute its bootstrap early.
+                                name: "vendor-babel-runtime",
+                                minSize: 0,
+                                test: /node_modules[\\/]@babel[\\/]runtime[\\/]/,
+                                priority: 40,
+                            },
+                            {
+                                name: "vendor-react",
+                                test: /node_modules[\\/](?:react(?:-dom|-router|-router-dom)?|scheduler|zustand|use-sync-external-store|@tanstack[\\/](?:query-core|react-query))[\\/]/,
+                                priority: 30,
+                            },
+                            {
+                                name: "vendor-icons",
+                                test: /node_modules[\\/](?:lucide-react|@ant-design[\\/]icons)[\\/]/,
+                                priority: 20,
+                                entriesAware: true,
+                                entriesAwareMergeThreshold: 48 * 1024,
+                            },
+                            {
+                                name: "vendor-antd",
+                                test: /node_modules[\\/](?:antd|@ant-design|@rc-component|rc-[^\\/]+|dayjs)[\\/]/,
+                                priority: 10,
+                                entriesAware: true,
+                                entriesAwareMergeThreshold: 80 * 1024,
+                            },
+                        ],
+                    },
                 },
             },
         },
-    },
+    };
 });

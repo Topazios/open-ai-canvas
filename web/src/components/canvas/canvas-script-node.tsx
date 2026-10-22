@@ -83,7 +83,6 @@ export function CanvasScriptNodeContent({
     mentionReferences,
     onOpen,
     onCreateImageNodes,
-    onCreateVideoNodes,
     onGenerateImages,
     onGenerateVideos,
     onVideoInputModeChange,
@@ -113,7 +112,6 @@ export function CanvasScriptNodeContent({
     mentionReferences: CanvasResourceReference[];
     onOpen: () => void;
     onCreateImageNodes: () => void;
-    onCreateVideoNodes: () => void;
     onGenerateImages: (rowIds: string[]) => void;
     onGenerateVideos: (rowIds: string[]) => void;
     onVideoInputModeChange: (mode: StoryboardVideoInputMode) => void;
@@ -205,7 +203,6 @@ export function CanvasScriptNodeContent({
             ? [
                   { type: "divider" as const },
                   { key: "create-image-nodes", icon: <Grid3X3 className="size-3.5" />, label: missingImages ? `创建 ${missingImages} 个图片节点` : "图片节点已创建", disabled: pipelineDisabled || missingImages === 0, onClick: () => onCreateImageNodes() },
-                  { key: "create-video-nodes", icon: <Film className="size-3.5" />, label: missingVideos ? `创建 ${missingVideos} 个视频节点` : "视频节点已创建", disabled: pipelineDisabled || missingVideos === 0, onClick: () => onCreateVideoNodes() },
                   { key: "action-boards", icon: <Grid3X3 className="size-3.5" />, label: "生成动作拆分 12 宫格", disabled: !rows.length || hasActiveBatchItems, onClick: () => onCreateActionBoards() },
               ]
             : []),

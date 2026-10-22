@@ -82,6 +82,15 @@ describe("canvas render reconciliation", () => {
         const fresh = scopes(changed, edges).get("script")!;
         expect(deriveStoryboardPipelineProgress(script, fresh.nodes, fresh.connections)).toEqual(deriveStoryboardPipelineProgress(script, changed, edges));
     });
+    test("inline storyboard videos count as pipeline results without a video canvas node", () => {
+        const script = node("script", CanvasNodeType.Script, { storyboard: { visibleColumns: [], referenceNodeIds: [], rows: [createStoryboardRow(1, {
+            id: "row", videoGeneration: { taskId: "task-1", taskStatus: "succeeded", content: "video" },
+        })] } });
+        const progress = deriveStoryboardPipelineProgress(script, [script], []);
+        expect(progress.videos).toMatchObject({ total: 1, created: 1, success: 1, failed: 0, incomplete: 0 });
+        expect(progress.rows[0]?.videoNode).toBeUndefined();
+        expect(progress.successfulVideoNodeIds).toEqual([]);
+    });
     test("director scope includes both preview fallbacks and only the selected scene", () => {
         const scene = createDirectorScene();
         scene.shots[0].previewNodeId = "shot-preview";

@@ -5,10 +5,14 @@ import { createCanvasNode } from "./canvas-project-domain";
 import { nodeWorkflow, workflowAncestors, workflowSignature, workflowSourceSignaturesMatch } from "./canvas-short-drama-workflow";
 import { layoutWorkflowImageGroups } from "./canvas-workflow-image-layout";
 import { placeNewWorkflowGroup } from "./canvas-workflow-placement";
+import { isStoryboardFrameStep } from "../short-drama-steps";
 
 export function groupWorkflowImages(nodes: CanvasNodeData[], connections: CanvasConnection[], created: CanvasNodeData[]) {
     if (!created.length) return { nodes, connections, created };
     const first = nodeWorkflow(created[0])!;
+    if (first.stage === "storyboard" && isStoryboardFrameStep(first.step)) {
+        throw new Error("首帧、尾帧和关键帧请在分镜列表中生成，不能创建额外的镜头帧容器");
+    }
     const sourceNodeId = first.stage === "assets" ? first.sourceNodeIds[0] : first.mediaSubjectId!;
     const source = nodes.find((node) => node.id === sourceNodeId)!;
     const signatures = first.assetImageSourceIds ? { ...first.assetSheet!.styleSignatures } : Object.fromEntries(workflowAncestors([sourceNodeId], nodes, first.pipelineId, connections).map((node) => [node.id, workflowSignature(node)]));

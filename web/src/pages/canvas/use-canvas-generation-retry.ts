@@ -6,6 +6,8 @@ import { useConfirmedTaskRetry } from "@/components/use-confirmed-task-retry";
 import { buildNodeGenerationContext, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { isEpisodeStoryboardVideo } from "@/lib/canvas/workflow-episode-storyboard";
 import { storyboardFrameHash } from "@/lib/canvas/episode-storyboard-frames";
+import { storyboardFrameNodeSelection } from "@/lib/canvas/storyboard-frame-model";
+import { synchronizeGenerationSpec } from "@/lib/canvas/generation-contract";
 import { producedModelCandidateForGeneration } from "@/lib/canvas/produced-model";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { buildEmotionImageArtifacts, emotionGenerationSize, emotionProviderMask, normalizeEmotionPromptForProvider, resolveEmotionEditPlan } from "@/lib/canvas/canvas-emotion";
@@ -209,6 +211,11 @@ export function useCanvasGenerationRetry({
                 return;
             }
             if (!frameIsCurrent()) { message.warning("分镜已修改，请生成当前版本画面"); return; }
+            if (frame) {
+                node = storyboardFrameNodeSelection(effectiveConfig, node, nodesRef.current);
+                const selected = node.metadata?.model;
+                setNodes(current => current.map(item => item.id === node.id ? synchronizeGenerationSpec(item, { model: selected }) : item));
+            }
             const sourceNode = frame ? node : findRetrySourceNode(node.id, nodesRef.current, connectionsRef.current) || node;
             const batchRoot = node.metadata?.batchRootId ? nodesRef.current.find((item) => item.id === node.metadata?.batchRootId) : null;
             const savedImageMetadata = node.type === CanvasNodeType.Image ? { ...batchRoot?.metadata, ...node.metadata } : undefined;
@@ -259,7 +266,12 @@ export function useCanvasGenerationRetry({
             let context = rawContext;
             if (rawContext) {
                 try {
-                    const skillExecution = await skillRuntime.prepare({ profile: "canvas", prompt: rawContext.prompt, skills: addedSkills, selectedSkillIds: node.metadata?.skillIds });
+                    const skillExecution = await skillRuntime.prepare({
+                        profile: "canvas",
+                        prompt: rawContext.prompt,
+                        skills: addedSkills,
+                        selectedSkillIds: isEpisodeStoryboardVideo(sourceNode.id, nodesRef.current, connectionsRef.current) ? undefined : node.metadata?.skillIds,
+                    });
                     context = { ...rawContext, prompt: skillExecution.prompt };
                     skillMetadata = skillExecution.metadata;
                 } catch (error) {

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } fr
 import { App } from "antd";
 import { CanvasNodeType, type CanvasConnection, type CanvasGenerationBatchMode, type CanvasNodeData } from "@/types/canvas";
 import { createCanvasNode } from "@/lib/canvas/canvas-project-domain";
-import { buildGenerationConfig, createGenerationRetryContext, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
-import { ensureStoryboardFramesGroup, materializeStoryboardFrames, shotKeyframes, storyboardBoundaryFrames, storyboardFrameHash, storyboardKeyframePrompt, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
-import { layoutCanvasGridGroups } from "@/lib/canvas/canvas-group-grid";
+import { createGenerationRetryContext, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
+import { materializeStoryboardFrames, shotKeyframes, storyboardBoundaryFrames, storyboardFrameHash, storyboardKeyframePrompt, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
+import { reconcileStoryboardFramesGroups } from "@/lib/canvas/storyboard-frame-groups";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { useEffectiveConfig, useConfigStore } from "@/stores/use-config-store";
@@ -14,6 +14,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { ShortDramaStep } from "@/lib/short-drama-steps";
 import { queryGenerationTask } from "@/services/api/task-center";
 import { storyboardRowIsReady } from "@/lib/canvas/workflow-episode-storyboard";
+import { selectStoryboardFrameModel, storyboardFrameGenerationConfig } from "@/lib/canvas/storyboard-frame-model";
 
 type Options = {
     projectId: string; nodesRef: { current: CanvasNodeData[] }; connectionsRef: { current: CanvasConnection[] };
@@ -25,6 +26,10 @@ type Options = {
 export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef, setNodes, setConnections, retry: retryGeneration, enqueue, save }: Options) {
     const config = useEffectiveConfig(), { message, modal } = App.useApp();
     const locks = useRef(new Set<string>());
+    const selectModel = useCallback((scriptId: string, kind: "text" | "image", model: string) => {
+        useConfigStore.getState().rememberModel(kind, model);
+        setNodes(current => selectStoryboardFrameModel(current, scriptId, kind, model));
+    }, [setNodes]);
     const lifetime = useRef(new AbortController());
     useEffect(() => { const controller = new AbortController(); lifetime.current = controller; return () => controller.abort(); }, [projectId]);
     const confirm = useCallback((count: number, label: string, retry = false) => new Promise<boolean>(resolve => {
@@ -43,7 +48,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
             const existing = nodesRef.current.find(node => node.id === row.framePlanNodeId);
             if (isCanvasNodeGenerating(existing)) return;
             if ((script.metadata?.generationBatches || []).some(batch => !batch.paused && batch.items.some(item => item.nodeId === existing?.id && ["waiting", "submitting", "queued", "running"].includes(item.status)))) { message.info("关键帧提取已在队列中"); return; }
-            const textConfig = buildGenerationConfig(config, undefined, "text");
+            const textConfig = storyboardFrameGenerationConfig(config, script, "text");
             if (!useConfigStore.getState().isAiConfigReady(textConfig, textConfig.model)) throw new Error("请选择可用文本模型提取关键帧");
             if (!await confirm(1, "关键帧提取")) return;
             const current = nodesRef.current.find(node => node.id === scriptId)?.metadata?.storyboard?.rows.find(row => row.id === rowId);
@@ -56,19 +61,18 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
             const latest = nodesRef.current.find(node => node.id === scriptId);
             const latestRow = latest?.metadata?.storyboard?.rows.find(item => item.id === rowId);
             if (!latest || !latestRow || storyboardFrameHash(latestRow) !== storyboardFrameHash(row) || latestRow.framePlanNodeId !== row.framePlanNodeId) throw new Error("分镜或提取任务已变化，请重新提取");
-            const grouped = ensureStoryboardFramesGroup(script, nodesRef.current, connectionsRef.current);
-            const base = existing || createCanvasNode(CanvasNodeType.Text, grouped.group.position);
+            const reconciled = reconcileStoryboardFramesGroups(nodesRef.current, connectionsRef.current);
+            const base = existing || createCanvasNode(CanvasNodeType.Text, script.position);
             const prompt = storyboardKeyframePrompt(row);
-            const plan = { ...base, parentId: grouped.group.id, width: 280, height: 280, title: `${row.shotCode || row.shotNumber} · 关键帧提取`, metadata: {
+            const plan = { ...base, parentId: undefined, width: 280, height: 280, title: `${row.shotCode || row.shotNumber} · 关键帧提取`, metadata: {
                 ...resetGenerationTaskMetadata(base.metadata), content: undefined, richText: undefined, prompt, composerContent: prompt, model: textConfig.model, textCount: 1, status: "idle" as const,
                 ...(retry ? { retryOf: retry.retryOf, attemptGroupId: retry.attemptGroupId, taskClientOperationId: retry.clientOperationId } : {}),
                 storyboardFramePlan: { scriptId, rowId, sourcePromptHash: storyboardFrameHash(row) },
                 shortDrama: { stage: "storyboard" as const, step: ShortDramaStep.Keyframes, pipelineId: script.metadata!.shortDrama!.pipelineId, role: "document" as const, sourceNodeIds: [scriptId], sourceSignatures: {}, episodeNumber: script.metadata?.shortDrama?.episodeNumber },
             } };
-            let next = grouped.nodes.map(node => node.id === scriptId ? { ...node, metadata: { ...node.metadata, storyboard: { ...node.metadata!.storyboard!, rows: node.metadata!.storyboard!.rows.map(row => row.id === rowId ? { ...row, framePlanNodeId: plan.id } : row) } } } : node.id === plan.id ? plan : node);
+            let next = reconciled.nodes.map(node => node.id === scriptId ? { ...node, metadata: { ...node.metadata, storyboard: { ...node.metadata!.storyboard!, rows: node.metadata!.storyboard!.rows.map(row => row.id === rowId ? { ...row, framePlanNodeId: plan.id } : row) } } } : node.id === plan.id ? plan : node);
             if (!existing) next = [...next, plan];
-            next = layoutCanvasGridGroups(next, new Set([grouped.group.id]));
-            setNodes(next); setConnections(grouped.connections);
+            setNodes(next); setConnections(reconciled.connections);
             if (!await save()) throw new Error("关键帧提取节点已保留，保存失败后可再次提取");
             if (!signal.aborted && scope === getActiveUserScope()) {
                 enqueue(scriptId, "storyboard_keyframes", [{ rowId, nodeId: plan.id }]);
@@ -85,7 +89,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
             const prepare = () => {
                 const script = nodesRef.current.find(node => node.id === scriptId);
                 if (!script) throw new Error("分镜列表已删除");
-                const imageConfig = buildGenerationConfig(config, undefined, "image");
+                const imageConfig = storyboardFrameGenerationConfig(config, script, "image");
                 if (!useConfigStore.getState().isAiConfigReady(imageConfig, imageConfig.model)) throw new Error("请先选择可用的生图模型");
                 const settings = normalizeImageValue(mergedImageCapabilityConfig(imageConfig, imageConfig.model), { size: useCanvasStore.getState().openProject(projectId)?.globalSettings?.aspectRatio || config.size, quality: config.quality, transparentBackground: "false", count: "1" });
                 const rows = script.metadata!.storyboard!.rows.filter(row => (!rowId || row.id === rowId) && storyboardRowIsReady(row));
@@ -97,7 +101,8 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                     if (kind === "keyframes" && !keyframes?.frames.length) throw new Error("请先提取当前镜头关键帧");
                     return { row, frames: keyframes?.frames || storyboardBoundaryFrames(row) };
                 });
-                return materializeStoryboardFrames(script, requests, nodesRef.current, connectionsRef.current, imageConfig.model, settings, options);
+                const selectedNodes = selectStoryboardFrameModel(nodesRef.current, scriptId, "image", imageConfig.model);
+                return materializeStoryboardFrames(script, requests, selectedNodes, connectionsRef.current, imageConfig.model, settings, options);
             };
             const preview = prepare();
             const currentSnapshot = () => JSON.stringify(nodesRef.current.find(node => node.id === scriptId)?.metadata?.storyboard?.rows.map(row => [row.id, storyboardFrameHash(row), row.framePlanNodeId, row.startFrameMode]));
@@ -119,7 +124,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                 const image = nodesRef.current.find(node => node.id === target.nodeId);
                 if (!image?.metadata?.taskId) continue;
                 const task = await queryGenerationTask(image.metadata.taskId);
-                if (task.status !== "cancelled" && !(options.failedOnly && task.status === "failed")) throw new Error("原画面任务状态已变化，请查看详情后重新生成");
+                if (task.status !== "cancelled" && task.status !== "failed") throw new Error("原画面任务状态已变化，请查看详情后重新生成");
                 retries.set(image.id, await createGenerationRetryContext(task.id, image.metadata.attemptGroupId));
             }
             if (signal.aborted || scope !== getActiveUserScope()) return;
@@ -149,8 +154,10 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
             const row = nodesRef.current.find(node => node.id === binding.scriptId)?.metadata?.storyboard?.rows.find(row => row.id === binding.rowId);
             if (!row || binding.sourcePromptHash !== storyboardFrameHash(row)) throw new Error("分镜已修改，请生成当前版本的画面");
             if (isCanvasNodeGenerating(node) || node.metadata?.content || node.metadata?.storageKey) return;
+            if (!await confirm(1, "首尾帧重试", true)) return;
+            if (signal.aborted || scope !== getActiveUserScope()) return;
             await retryGeneration(node);
         } catch (error) { if (!signal.aborted && scope === getActiveUserScope()) message.error(error instanceof Error ? error.message : "画面重试失败"); }
-    }, [message, nodesRef, retryGeneration]);
-    return { extractStoryboardKeyframes: extract, generateStoryboardFrames: generateFrames, retryStoryboardFrame: retryFrame };
+    }, [confirm, message, nodesRef, retryGeneration]);
+    return { extractStoryboardKeyframes: extract, generateStoryboardFrames: generateFrames, retryStoryboardFrame: retryFrame, selectStoryboardFrameModel: selectModel };
 }

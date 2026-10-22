@@ -1,3 +1,5 @@
+import { sha256Hex } from "@/lib/content-digest";
+
 // 用户数据同步前的媒体上行：把本地存储键、内联 data URL 上传成资源引用，再写入远端。
 //
 // 同一份内联数据按内容摘要去重上传；上传失败时整批同步失败并进入重试，不写入半成品。
@@ -102,8 +104,7 @@ export async function uploadInlineDataUrl(dataUrl: string, identity: string) {
 }
 
 export async function inlineMediaUploadIdentity(dataUrl: string) {
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(dataUrl));
-    return `inline:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    return `inline:${await sha256Hex(new TextEncoder().encode(dataUrl))}`;
 }
 
 export async function uploadLocalStorageKey(storageKey: string, payload: Record<string, unknown>) {

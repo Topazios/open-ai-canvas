@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { nanoid } from "nanoid";
 import { globalSettingsPrompt, storyBriefFromSettings, type ShortDramaGlobalSettings } from "../short-drama-settings";
 import { applyProductionRules } from "../production-rules";
@@ -7,7 +8,7 @@ import { canonicalize } from "json-canonicalize";
 import { sharedWorkflowTextBatch, workflowTextBatch, workflowOutlineBatch, workflowBodyBatch, type WorkflowTextBatch } from "./workflow-text-batch";
 import { createCanvasNode } from "./canvas-project-domain";
 import { defaultStoryBrief, storyDevelopmentStages, storySourceState } from "./canvas-story-development";
-import { shortDramaStep, ShortDramaStep, type ShortDramaStepId, type ShortDramaWorkflowData } from "../short-drama-steps";
+import { isStoryboardFrameStep, shortDramaStep, ShortDramaStep, type ShortDramaStepId, type ShortDramaWorkflowData } from "../short-drama-steps";
 import { CanvasNodeType, type CanvasNodeData, type CanvasConnection, type StoryDevelopmentStage, type Position } from "@/types/canvas";
 import { assetGroupOutputInstruction } from "./canvas-workflow-assets";
 import { plannedAssetReuseInstruction, productionPlanSections, unifiedProductionPlanInstruction } from "../production-plan";
@@ -538,6 +539,7 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
     request = { ...request, sourceNodeIds: [...new Set(request.sourceNodeIds)] };
     const step = shortDramaStep(request.step);
     if (!step || step.id === ShortDramaStep.Topic) throw new Error("选题请使用选题编辑器");
+    if (isStoryboardFrameStep(step.id)) throw new Error("首帧、尾帧和关键帧请在分镜列表中生成，不能创建额外的镜头帧容器");
     if (!request.model) throw new Error("请选择文本模型");
     const sources = workflowGenerationSources(request, nodes, connections);
     const mentionedAssets = resolveProductionAssetReferences(request.instruction, sources);
@@ -579,7 +581,7 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
                 ...(step.id === ShortDramaStep.Shots ? { shotDurationSeconds: request.shotDurationSeconds ?? 10, shotDurationToleranceSeconds: request.shotDurationToleranceSeconds ?? 3 } : {}),
                 ...(brief.globalSettings ? { globalSettings: { ...brief.globalSettings } } : {}) },
             ...(request.aggregate ? { aggregate: true } : {}),
-            operationId: crypto.randomUUID(), submission: "planned",
+            operationId: createClientId(), submission: "planned",
         };
         const storyStage = step.stage === "story" ? step.id.slice(6) as StoryDevelopmentStage : undefined;
         const requirement = storyDevelopmentStages.find((entry) => entry.id === storyStage)?.requirement || step.requirement;
@@ -741,8 +743,8 @@ function createScreenplayReviewDocuments(request: WorkflowGenerationRequest, nod
         const episodeNumber = currentData.episodeNumber!;
         const auditedBodySignature = workflowSignature({ ...body, metadata: { ...body.metadata, shortDrama: { ...currentData, parameters } } });
         const nextData: ShortDramaWorkflowData = repairing
-            ? { ...currentData, parameters, operationId: crypto.randomUUID(), submission: "planned", screenplayRepair: { bodyNodeId: body.id, ...(reportNode ? { reportNodeId: reportNode.id } : {}), reportSignature: reportNode ? workflowSignature(reportNode) : currentData.screenplayAudit?.reportSignature || currentData.screenplayAudit?.bodySignature || workflowSignature(body), contextNodeIds: context.map(node => node.id), previousContent: body.metadata?.content, previousRichText: body.metadata?.richText, previousVersion: currentData.version } }
-            : { ...currentData, parameters, operationId: crypto.randomUUID(), submission: "planned", materializedTaskId: undefined, screenplayAudit: { bodyNodeId: body.id, contextNodeIds: context.map(node => node.id), contextSignatures: Object.fromEntries(context.map(node => [node.id, workflowSignature(node)])), selectedEpisodes: selected!.selectedEpisodes, omittedEpisodes: selected!.omittedEpisodes, bodySignature: auditedBodySignature, report: undefined, rawResult: undefined, reportMarkdown: undefined }, screenplayRepair: undefined };
+            ? { ...currentData, parameters, operationId: createClientId(), submission: "planned", screenplayRepair: { bodyNodeId: body.id, ...(reportNode ? { reportNodeId: reportNode.id } : {}), reportSignature: reportNode ? workflowSignature(reportNode) : currentData.screenplayAudit?.reportSignature || currentData.screenplayAudit?.bodySignature || workflowSignature(body), contextNodeIds: context.map(node => node.id), previousContent: body.metadata?.content, previousRichText: body.metadata?.richText, previousVersion: currentData.version } }
+            : { ...currentData, parameters, operationId: createClientId(), submission: "planned", materializedTaskId: undefined, screenplayAudit: { bodyNodeId: body.id, contextNodeIds: context.map(node => node.id), contextSignatures: Object.fromEntries(context.map(node => [node.id, workflowSignature(node)])), selectedEpisodes: selected!.selectedEpisodes, omittedEpisodes: selected!.omittedEpisodes, bodySignature: auditedBodySignature, report: undefined, rawResult: undefined, reportMarkdown: undefined }, screenplayRepair: undefined };
         const nextNode: CanvasNodeData = { ...body, metadata: { ...resetGenerationTaskMetadata(body.metadata, "idle"), shortDrama: nextData, taskStage: "等待保存并提交", generationMode: "text", model: request.model, reasoningEffort: normalizeReasoningEffort(request.reasoningEffort), prompt: repairing ? "依据诊断修复本集正文，保留修复前版本" : "只审核本集正文，不修改正文" } };
         workflowBodyTaskInput(nextNode, nodes);
         return nextNode;

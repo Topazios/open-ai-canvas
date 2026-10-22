@@ -129,6 +129,9 @@ export function useCanvasProjectLifecycle({
                 updatedAt: targetProject.updatedAt,
             });
             const frames = reconcileStoryboardFramesGroups(initialNodes, targetProject.connections);
+            if (frames.nodes !== initialNodes || frames.connections !== targetProject.connections) {
+                updateProject(projectId, { nodes: frames.nodes, connections: frames.connections });
+            }
             const snapshot: CanvasHistorySnapshot = {
                 nodes: layoutCanvasGridGroups(layoutWorkflowImageGroups(frames.nodes)),
                 connections: frames.connections,
@@ -217,7 +220,7 @@ export function useCanvasProjectLifecycle({
         return () => {
             cancelled = true;
         };
-    }, [hydrated, sessionHydrated, loadAttempt, message, navigate, openProject, projectId, resetHistory, setActiveChatId, setBackgroundMode, setCanvasAppearance, setChatSessions, setConnections, setNodes, setShowImageInfo, setViewport]);
+    }, [hydrated, sessionHydrated, loadAttempt, message, navigate, openProject, projectId, resetHistory, setActiveChatId, setBackgroundMode, setCanvasAppearance, setChatSessions, setConnections, setNodes, setShowImageInfo, setViewport, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded) return;
@@ -238,13 +241,19 @@ export function useCanvasProjectLifecycle({
         if (!projectLoaded || project.id !== projectId) return;
         // Merge only server-changed fields so dragging/editing other nodes can
         // continue while Agent media tasks complete. Same-field conflicts fail.
-        const merged = previous ? mergeAgentCanvasEditor(previous, project, nodesRef.current, connectionsRef.current) : project;
+        const mergedRaw = previous ? mergeAgentCanvasEditor(previous, project, nodesRef.current, connectionsRef.current) : project;
+        const mergedFrames = reconcileStoryboardFramesGroups(mergedRaw.nodes, mergedRaw.connections);
+        const merged = { ...mergedRaw, nodes: mergedFrames.nodes, connections: mergedFrames.connections };
+        if (merged.nodes !== mergedRaw.nodes || merged.connections !== mergedRaw.connections) {
+            updateProject(projectId, { nodes: merged.nodes, connections: merged.connections });
+        }
         if (observedContentRef.current) {
             const observed = observedContentRef.current;
             // Advance only the observed server fields; edits in live refs still
             // differ from this baseline and must be persisted by the effect below.
-            const baseline = previous ? mergeAgentCanvasEditor(previous, project, observed.nodes, observed.connections) : project;
-            observedContentRef.current = { ...observed, nodes: baseline.nodes, connections: baseline.connections };
+            const baselineRaw = previous ? mergeAgentCanvasEditor(previous, project, observed.nodes, observed.connections) : project;
+            const baselineFrames = reconcileStoryboardFramesGroups(baselineRaw.nodes, baselineRaw.connections);
+            observedContentRef.current = { ...observed, nodes: baselineFrames.nodes, connections: baselineFrames.connections };
         }
         nodesRef.current = merged.nodes;
         connectionsRef.current = merged.connections;
@@ -253,7 +262,7 @@ export function useCanvasProjectLifecycle({
         const previousIds = new Set(previous?.nodes.map((node) => node.id));
         const created = project.nodes.filter((node) => !previousIds.has(node.id));
         if (created.length) setAgentCreatedNodes({ projectId: project.id, nodes: created });
-    }), [projectId, projectLoaded, nodesRef, connectionsRef, setNodes, setConnections]);
+    }), [projectId, projectLoaded, nodesRef, connectionsRef, setNodes, setConnections, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded || historyPausedRef.current) return;

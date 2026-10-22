@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, type Dispatch, type MouseEvent, type Se
 
 import { isNodeHiddenByCollapsedFrame } from "@/lib/canvas/canvas-frame";
 import { isHiddenBatchChild } from "@/lib/canvas/canvas-project-domain";
+import { isStoryboardFrameRecord } from "@/lib/canvas/storyboard-frame-records";
 import { applyCanvasLiveViewport, setCanvasViewportInteracting } from "@/lib/canvas/canvas-live-viewport";
 import { getCanvasNodesBounds, viewportAtScale, viewportForBounds, type CanvasViewportSize } from "@/lib/canvas/canvas-viewport";
 import { CanvasNodeType, type CanvasNodeData, type ContextMenuState, type Position, type ViewportTransform } from "@/types/canvas";
@@ -93,7 +94,7 @@ export function useCanvasViewportController({
     }, [containerRef, screenToCanvas, size.height, size.width]);
 
     const focusNodesInView = useCallback((targetNodes: CanvasNodeData[], maxScale = 1) => {
-        const bounds = getCanvasNodesBounds(targetNodes);
+        const bounds = getCanvasNodesBounds(targetNodes.filter(node => !isStoryboardFrameRecord(node)));
         if (!bounds) return false;
         transitionViewportTo(viewportForBounds(bounds, size, { padding: 88, maxScale }));
         setContextMenu(null);

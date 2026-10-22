@@ -340,6 +340,7 @@
 @media (prefers-reduced-motion: reduce) {
     .canvas-connection-flow,
     .canvas-connection-comet,
+    .canvas-connection-target,
     .canvas-connection-draft,
     .canvas-task-progress-shimmer,
     .ai-title-aurora,
@@ -352,6 +353,7 @@
 }
 .no-motion .canvas-connection-flow,
 .no-motion .canvas-connection-comet,
+.no-motion .canvas-connection-target,
 .no-motion .canvas-connection-draft,
 .no-motion .canvas-task-progress-shimmer,
 .no-motion .ai-title-aurora,
@@ -10462,13 +10464,23 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
     }
 
     .canvas-connection-flow {
-        animation: canvas-connection-flow 1.25s var(--motion-ease-linear) infinite;
+        animation: canvas-connection-flow 0.74s var(--motion-ease-linear) infinite;
+        animation-delay: var(--canvas-connection-delay, 0ms);
+        will-change: stroke-dashoffset;
     }
 
-    /* 流光：一小段高亮沿连线跑。周期与上面的虚线流动刻意错开，两者同频会锁成
-       一条整体平移的虚线、看不出「有光在走」。只在悬停/选中态渲染（见 canvas-connections.tsx）。 */
+    /* 一小段高亮沿起点到终点运行，用于在深色画布上明确表达因果方向。 */
     .canvas-connection-comet {
-        animation: canvas-connection-comet 2.1s var(--motion-ease-linear) infinite;
+        animation: canvas-connection-comet 1.15s var(--motion-ease-linear) infinite;
+        animation-delay: var(--canvas-connection-delay, 0ms);
+        will-change: stroke-dashoffset;
+    }
+
+    .canvas-connection-target {
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: canvas-connection-target-pulse 1.15s var(--motion-ease-in-out) infinite;
+        animation-delay: var(--canvas-connection-delay, 0ms);
     }
 
     .canvas-connection-draft {
@@ -10497,15 +10509,26 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
     }
 
     @keyframes canvas-connection-flow {
+        from {
+            stroke-dashoffset: 0;
+        }
         to {
-            stroke-dashoffset: -44;
+            stroke-dashoffset: -36;
         }
     }
 
-    /* 位移量必须等于 dasharray 之和（16 + 118），否则循环处会跳一下 */
+    @keyframes canvas-connection-target-pulse {
+        0%, 100% { opacity: .72; transform: scale(.88); }
+        50% { opacity: 1; transform: scale(1.16); }
+    }
+
+    /* 位移量必须等于 dasharray 之和（20 + 124），否则循环处会跳一下。 */
     @keyframes canvas-connection-comet {
+        from {
+            stroke-dashoffset: 0;
+        }
         to {
-            stroke-dashoffset: -134;
+            stroke-dashoffset: -144;
         }
     }
 
@@ -10627,6 +10650,8 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
     }
 
     .canvas-connection-flow,
+    .canvas-connection-comet,
+    .canvas-connection-target,
     .canvas-connection-draft {
         animation: none;
     }

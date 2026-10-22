@@ -1,3 +1,4 @@
+import { sha256Hex } from "@/lib/content-digest";
 import { type GenerationTask } from "@/services/api/task-center";
 import { backendProviderConfig, logicalModelIDForConfig, runBackendGenerationTask, type GenerationTaskDependencies } from "@/services/api/generation-task";
 import { configuredModelMatchesCapability, defaultConfig, normalizeModelOptionValue, normalizeRunningHubCapability, resolveModelRequestConfig, type AiConfig, type WorkflowFieldMapping } from "@/stores/use-config-store";
@@ -143,8 +144,7 @@ export type GenerationRetryContext = {
 
 export async function createGenerationRetryContext(retryOf: string, attemptGroupId = retryOf): Promise<GenerationRetryContext> {
     const bytes = new TextEncoder().encode(`generation-retry\0${attemptGroupId}\0${retryOf}`);
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-    const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const hex = await sha256Hex(bytes);
     return { retryOf, attemptGroupId, clientOperationId: `retry:${hex}` };
 }
 
@@ -305,6 +305,8 @@ function resolveVideoEditOperation(
         referenceImages: ReferenceImage[];
         referenceVideos: ReferenceVideo[];
         referenceAudios: ReferenceAudio[];
+        videoStartFrameNodeId?: string;
+        videoEndFrameNodeId?: string;
     },
 ): CanvasVideoEditOperation {
     const storedOperation = node?.metadata?.videoEditOperation;
@@ -324,6 +326,8 @@ export function buildVideoGenerationMetadata(
         referenceImages: ReferenceImage[];
         referenceVideos: ReferenceVideo[];
         referenceAudios: ReferenceAudio[];
+        videoStartFrameNodeId?: string;
+        videoEndFrameNodeId?: string;
     },
     config?: AiConfig,
 ): CanvasNodeMetadata {
@@ -332,8 +336,8 @@ export function buildVideoGenerationMetadata(
     // 工作流视频把已连接媒体交给字段映射处理，不再把历史首尾帧选择当成硬约束。
     // 工作流视频把已连接媒体交给字段映射处理，不再把历史首尾帧选择当成硬约束。
     const workflowVideo = node?.type === CanvasNodeType.Config && (config?.taskWorkflowProvider === "runninghub" || isCanvasWorkflowProvider(metadata));
-    const startFrame = workflowVideo ? undefined : requireConnectedVideoFrame(metadata?.videoStartFrameNodeId, "首帧", referenceImageIds);
-    const endFrame = workflowVideo ? undefined : requireConnectedVideoFrame(metadata?.videoEndFrameNodeId, "尾帧", referenceImageIds);
+    const startFrame = workflowVideo ? undefined : requireConnectedVideoFrame(metadata?.videoStartFrameNodeId || context?.videoStartFrameNodeId, "首帧", referenceImageIds);
+    const endFrame = workflowVideo ? undefined : requireConnectedVideoFrame(metadata?.videoEndFrameNodeId || context?.videoEndFrameNodeId, "尾帧", referenceImageIds);
     return {
         ...(config ? generationWorkflowMetadata(config) : {}),
         videoEditOperation: resolveVideoEditOperation(node, context),

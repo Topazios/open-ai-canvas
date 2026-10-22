@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { useEffect, useRef, useState } from "react";
 import { getAgentRun, controlProductionAgent, cancelAgentRun, reconcileCanvasNodeTasks, type AgentRun } from "@/services/api/agent";
 import { prepareProductionAgent, submitProductionAgent } from "@/services/production-agent";
@@ -30,7 +31,7 @@ export function rebaseStoryboardAgentNode(node: CanvasNodeData, nodes: CanvasNod
     const nextData = {
         ...data,
         sourceSignatures,
-        operationId: crypto.randomUUID(),
+        operationId: createClientId(),
         productionAgent: {},
         submission: "planned" as const,
     };

@@ -47,6 +47,7 @@ type UnderlayScene = LeaferScene & {
 type ConnectionSceneEntry = {
     path: Path;
     flow: Path;
+    target: Path;
     connection: CanvasDisplayConnection["connection"];
     from: CanvasNodeData;
     to: CanvasNodeData;
@@ -143,8 +144,8 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
             for (const entry of underlay.connectionEntries.values()) {
                 if (entry.flow.visible !== enabled) entry.flow.visible = enabled;
                 if (enabled) {
-                    if (entry.flow.dashPattern?.[0] !== 18 / scale) entry.flow.dashPattern = [18 / scale, 54 / scale];
-                    entry.flow.dashOffset = -((time * 0.06) % 72) / scale;
+                    if (entry.flow.dashPattern?.[0] !== 14 / scale) entry.flow.dashPattern = [14 / scale, 30 / scale];
+                    entry.flow.dashOffset = -((time * 0.07) % 44) / scale;
                 }
             }
         };
@@ -254,6 +255,7 @@ function rebuildConnections(scene: UnderlayScene, props: CanvasLeaferGraphicsLay
         if (nextIds.has(connectionId)) continue;
         entry.path.remove();
         entry.flow.remove();
+        entry.target.remove();
         scene.connectionEntries.delete(connectionId);
     }
 
@@ -266,9 +268,11 @@ function rebuildConnections(scene: UnderlayScene, props: CanvasLeaferGraphicsLay
         if (!entry) {
             const path = new Path({ hittable: false });
             const flow = new Path({ hittable: false, visible: scene.host.dataset.connectionFlow !== "paused" });
+            const target = new Path({ hittable: false });
             scene.connections.add(path);
             scene.connections.add(flow);
-            entry = { path, flow, connection, from, to, signature: "" };
+            scene.connections.add(target);
+            entry = { path, flow, target, connection, from, to, signature: "" };
             scene.connectionEntries.set(connection.id, entry);
         }
         entry.connection = connection;
@@ -317,19 +321,46 @@ function syncConnectionPath(entry: ConnectionSceneEntry, props: CanvasLeaferGrap
     const from = translatePreviewNode(entry.from, previewIds, preview);
     const to = translatePreviewNode(entry.to, previewIds, preview);
     const emphasized = props.selectedConnectionId === entry.connection.id || props.relatedConnectionIds.has(entry.connection.id);
+    const geometry = canvasConnectionPath(entry.connection, from, to, props.scriptScrollTopById[entry.from.id] || 0, props.scriptScrollTopById[entry.to.id] || 0);
     entry.path.set({
-        path: canvasConnectionPath(entry.connection, from, to, props.scriptScrollTopById[entry.from.id] || 0, props.scriptScrollTopById[entry.to.id] || 0).pathD,
+        path: geometry.pathD,
         stroke: emphasized ? props.theme.accent.primary : props.theme.node.muted,
-        strokeWidth: emphasized ? 3.4 : 2.6,
+        strokeWidth: emphasized ? 4.2 : 3.2,
         strokeScaleFixed: true,
         strokeCap: "round",
-        opacity: emphasized ? 0.38 : 0.55,
+        opacity: emphasized ? 0.44 : 0.68,
         hittable: false,
     });
     entry.flow.set({
-        path: entry.path.path, stroke: props.theme.accent.primary, strokeWidth: emphasized ? 3.4 : 2.6,
-        strokeScaleFixed: true, strokeCap: "round", dashPattern: [18, 54], opacity: 1, hittable: false,
+        path: geometry.pathD, stroke: props.theme.accent.primary, strokeWidth: emphasized ? 4.2 : 3.6,
+        strokeScaleFixed: true, strokeCap: "round", dashPattern: [14, 30], opacity: emphasized ? 1 : 0.92, hittable: false,
     });
+    entry.target.set({
+        path: connectionTargetArrowPath(geometry.startX, geometry.startY, geometry.endX, geometry.endY, to),
+        fill: props.theme.accent.primary,
+        opacity: emphasized ? 1 : 0.92,
+        hittable: false,
+    });
+}
+
+function connectionTargetArrowPath(startX: number, startY: number, endX: number, endY: number, target: CanvasNodeData) {
+    const sides = [
+        { distance: Math.abs(endX - target.position.x), ux: 1, uy: 0 },
+        { distance: Math.abs(endX - target.position.x - target.width), ux: -1, uy: 0 },
+        { distance: Math.abs(endY - target.position.y), ux: 0, uy: 1 },
+        { distance: Math.abs(endY - target.position.y - target.height), ux: 0, uy: -1 },
+    ].sort((a, b) => a.distance - b.distance);
+    const side = sides[0];
+    const length = Math.hypot(endX - startX, endY - startY) || 1;
+    const ux = side.distance <= 2 ? side.ux : (endX - startX) / length;
+    const uy = side.distance <= 2 ? side.uy : (endY - startY) / length;
+    const px = -uy;
+    const py = ux;
+    const size = Math.min(14, Math.max(9, length * 0.08));
+    const width = size * 0.62;
+    const baseX = endX - ux * size;
+    const baseY = endY - uy * size;
+    return `M ${endX} ${endY} L ${baseX + px * width} ${baseY + py * width} L ${baseX - px * width} ${baseY - py * width} Z`;
 }
 
 function translatePreviewNode(node: CanvasNodeData, previewIds: ReadonlySet<string> | null, preview: CanvasNodeDragPreview | null) {

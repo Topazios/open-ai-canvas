@@ -40,6 +40,16 @@ function Test-ListeningPort([int]$Port) {
     }
 }
 
+function Show-CanvasAddresses {
+    Write-Host '本机访问：http://localhost:3000' -ForegroundColor Cyan
+    $addresses = Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.IPAddress -notlike '169.254.*' -and $_.SkipAsSource -eq $false } |
+        Select-Object -ExpandProperty IPAddress -Unique
+    foreach ($address in $addresses) {
+        Write-Host "局域网访问：http://$($address):3000" -ForegroundColor Cyan
+    }
+}
+
 $webAlreadyRunning = Test-ListeningPort 3000
 if ($webAlreadyRunning) {
     $webListener = Get-NetTCPConnection -LocalPort 3000 -State Listen | Select-Object -First 1
@@ -51,7 +61,8 @@ if ($webAlreadyRunning) {
 
 & (Join-Path $PSScriptRoot 'backend-local.ps1') start
 if ($webAlreadyRunning) {
-    Write-Host '影策前后端已在运行：http://localhost:3000'
+    Write-Host '影策前后端已在运行。'
+    Show-CanvasAddresses
     return
 }
 
@@ -81,4 +92,5 @@ $encodedWebCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes
 $webProcess = Start-Process -FilePath $powerShellPath -WindowStyle Hidden -WorkingDirectory $webDir -PassThru -RedirectStandardOutput (Join-Path $logsDir 'web.stdout.log') -RedirectStandardError (Join-Path $logsDir 'web.stderr.log') -ArgumentList @("-NoLogo", "-NoProfile", "-EncodedCommand", $encodedWebCommand)
 
 Write-Host "前后端已在后台启动，前端启动进程 PID: $($webProcess.Id)" -ForegroundColor Green
-Write-Host "访问 http://localhost:3000；日志位于 .local/logs。后端启停使用 scripts/backend-local.ps1。"
+Show-CanvasAddresses
+Write-Host "日志位于 .local/logs。后端启停使用 scripts/backend-local.ps1。"

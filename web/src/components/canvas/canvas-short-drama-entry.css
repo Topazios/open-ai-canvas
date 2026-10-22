@@ -10,8 +10,8 @@
     top: var(--space-2);
     left: var(--space-4);
     z-index: var(--z-toolbar);
-    width: min(360px, calc(100% - 16px));
-    max-height: min(520px, calc(100% - var(--space-4)));
+    width: min(680px, calc(100% - 16px));
+    max-height: min(620px, calc(100% - var(--space-4)));
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -70,6 +70,119 @@
     background: var(--drama-panel);
     color: var(--drama-text);
     padding-inline: var(--space-2);
+}
+.canvas-drama-guide-summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(96px, 160px) auto;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3) var(--space-3);
+    border-top: var(--stroke-1) solid var(--drama-border);
+}
+.canvas-drama-guide-summary-copy {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+.canvas-drama-guide-summary-copy > span,
+.canvas-drama-guide-summary-copy > small {
+    color: var(--drama-muted);
+    font-size: var(--fs-micro);
+}
+.canvas-drama-guide-summary-copy > strong {
+    overflow: hidden;
+    font-size: var(--fs-label);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.canvas-drama-guide-summary-meter {
+    height: 5px;
+    overflow: hidden;
+    border-radius: var(--r-full);
+    background: color-mix(in srgb, var(--drama-text) 12%, transparent);
+}
+.canvas-drama-guide-summary-meter span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--drama-accent);
+    transition: width 180ms ease-out;
+}
+.canvas-drama-guide-summary-count {
+    color: var(--drama-accent);
+    font-size: var(--fs-label);
+    font-variant-numeric: tabular-nums;
+}
+.canvas-drama-workflow {
+    display: grid;
+    grid-template-columns: minmax(190px, 0.38fr) minmax(0, 0.62fr);
+    min-height: 0;
+    border-top: var(--stroke-1) solid var(--drama-border);
+}
+.canvas-drama-stage-list {
+    min-width: 0;
+    border-right: var(--stroke-1) solid var(--drama-border);
+    padding: var(--space-2);
+}
+.canvas-drama-stage-list ol {
+    display: grid;
+    gap: var(--space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.canvas-drama-stage-list li {
+    min-width: 0;
+    color: var(--drama-muted);
+}
+.canvas-drama-stage-list li[data-status="current"] {
+    color: var(--drama-accent);
+}
+.canvas-drama-stage-list li[data-selected="true"] {
+    color: var(--drama-text);
+}
+.canvas-drama-stage-select {
+    display: grid;
+    grid-template-columns: var(--space-6) minmax(0, 1fr) var(--space-4);
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    min-height: var(--space-10);
+    padding: var(--space-1-half) var(--space-2);
+    text-align: left;
+}
+.canvas-drama-stage-list li[data-selected="true"] .canvas-drama-stage-select {
+    background: var(--drama-hover);
+}
+.canvas-drama-stage-list li[data-status="current"] .canvas-drama-step-index {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--drama-accent) 18%, transparent);
+}
+.canvas-drama-stage-select-copy {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+.canvas-drama-stage-select-copy strong {
+    overflow: hidden;
+    font-size: var(--fs-label);
+    font-weight: 620;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.canvas-drama-stage-select-copy small {
+    overflow: hidden;
+    color: var(--drama-muted);
+    font-size: var(--fs-micro);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.canvas-drama-stage-select-arrow {
+    color: var(--drama-muted);
+    opacity: 0.65;
+}
+.canvas-drama-stage-list li[data-selected="true"] .canvas-drama-stage-select-arrow {
+    color: var(--drama-accent);
+    opacity: 1;
 }
 .canvas-drama-guide .canvas-drama-guide-drag {
     display: grid;
@@ -178,8 +291,11 @@
     color: var(--drama-muted);
 }
 .canvas-drama-tasks {
-    border-top: var(--stroke-1) solid var(--drama-border);
-    padding: var(--space-2) var(--space-3);
+    min-width: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-top: 0;
+    padding: var(--space-3);
 }
 .canvas-drama-tasks header {
     display: flex;
@@ -192,6 +308,26 @@
 .canvas-drama-tasks header > span {
     color: var(--drama-muted);
     font-size: var(--fs-label);
+}
+.canvas-drama-tasks-heading {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+.canvas-drama-tasks-heading span {
+    color: var(--drama-muted);
+    font-size: var(--fs-micro);
+}
+.canvas-drama-tasks-heading strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.canvas-drama-tasks-hint {
+    margin: var(--space-2) 0;
+    color: var(--drama-muted);
+    font-size: var(--fs-micro);
+    line-height: 1.5;
 }
 .canvas-drama-tasks ul {
     margin: 0;
@@ -231,6 +367,7 @@
 .canvas-drama-task-pending {
     color: var(--drama-muted);
     font-size: var(--fs-label);
+    line-height: 1.45;
 }
 .canvas-drama-task-action {
     display: inline-flex;
@@ -379,6 +516,23 @@
     }
     .canvas-drama-task-action svg {
         flex: none;
+    }
+    .canvas-drama-guide-summary {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .canvas-drama-guide-summary-meter {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+    .canvas-drama-workflow {
+        grid-template-columns: 1fr;
+    }
+    .canvas-drama-stage-list {
+        border-right: 0;
+        border-bottom: var(--stroke-1) solid var(--drama-border);
+    }
+    .canvas-drama-stage-list ol {
+        grid-template-columns: 1fr;
     }
 }
 

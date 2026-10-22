@@ -5,9 +5,10 @@ import { canGenerateMediaInPlace } from "@/lib/canvas/canvas-generation-layout";
 import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { nextCanvasVersionLabel } from "@/lib/canvas/canvas-layout";
 import { buildAudioGenerationMetadata, buildVideoGenerationMetadata, generationReferenceUrls, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
+import { buildStoryboardVideoGeneration } from "@/lib/canvas/canvas-generation-task-sync";
 import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-submission";
 import { producedModelCandidateForGeneration } from "@/lib/canvas/produced-model";
-import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasVideoEditOperation } from "@/types/canvas";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
 
@@ -36,6 +37,71 @@ export async function executeVideoGeneration({
     taskContext,
     retryContext,
 }: CanvasGenerationExecution) {
+    const storyboardRowId = taskContext?.storyboardRowId;
+    const inlineStoryboardVideo = sourceNode?.type === CanvasNodeType.Script && taskContext?.batchTargetKind === "storyboard_video" && Boolean(storyboardRowId);
+    const inlineVideoSourceNode = inlineStoryboardVideo && sourceNode
+        ? {
+              ...sourceNode,
+              metadata: {
+                  ...sourceNode.metadata,
+                  videoEditOperation: (generationContext.videoStartFrameNodeId ? "image_to_video" : generationContext.referenceImages.length ? "reference_to_video" : "text_to_video") as CanvasVideoEditOperation,
+              },
+          }
+        : sourceNode;
+    const inlineVideoGenerationMetadata = inlineStoryboardVideo && sourceNode
+        ? buildVideoGenerationMetadata(inlineVideoSourceNode, generationContext, generationConfig)
+        : undefined;
+    if (inlineStoryboardVideo && sourceNode && storyboardRowId) {
+        setNodes(current => current.map(node => node.id !== sourceNode.id ? node : {
+            ...node,
+            metadata: {
+                ...node.metadata,
+                storyboard: {
+                    ...node.metadata?.storyboard!,
+                    rows: (node.metadata?.storyboard?.rows || []).map(row => row.id !== storyboardRowId ? row : {
+                        ...row,
+                        videoGeneration: { ...row.videoGeneration, taskStatus: "running", prompt: effectivePrompt, model: generationConfig.model, errorDetails: undefined },
+                    }),
+                },
+            },
+        }));
+        try {
+            await runCanvasGenerationTaskToConsumer(
+                {
+                    projectId,
+                    nodeId,
+                    ...retryContext,
+                    mode: "video",
+                    prompt: effectivePrompt,
+                    config: generationConfig,
+                    referenceImages: generationContext.referenceImages,
+                    referenceVideos: generationContext.referenceVideos,
+                    referenceAudios: generationContext.referenceAudios,
+                    signal: controller.signal,
+                    metadata: { sourceNodeId: nodeId, ...taskContext, ...inlineVideoGenerationMetadata, ...styleMetadata, ...skillMetadata },
+                },
+                {
+                    bindTask: (task) => bindGenerationTask(nodeId, task),
+                    consumeTask: async (task) => {
+                        const result = await buildStoryboardVideoGeneration(sourceNode, task);
+                        setNodes(current => current.map(node => node.id !== sourceNode.id ? node : {
+                            ...node,
+                            metadata: {
+                                ...node.metadata,
+                                storyboard: {
+                                    ...node.metadata?.storyboard!,
+                                    rows: (node.metadata?.storyboard?.rows || []).map(row => row.id !== storyboardRowId ? row : { ...row, videoGeneration: result }),
+                                },
+                            },
+                        }));
+                    },
+                },
+            );
+        } finally {
+            // 行内任务不占用脚本节点的全局生成锁，也不会创建视频节点。
+        }
+        return;
+    }
     const spec = nodeSizeFromRatio(generationConfig.size, NODE_DEFAULT_SIZE[CanvasNodeType.Video].width, NODE_DEFAULT_SIZE[CanvasNodeType.Video].height) || NODE_DEFAULT_SIZE[CanvasNodeType.Video];
     const reuseSourceNode = canGenerateMediaInPlace(sourceNode, CanvasNodeType.Video);
     const isExistingVideoNode = sourceNode?.type === CanvasNodeType.Video && Boolean(sourceNode.metadata?.content) && !reuseSourceNode;

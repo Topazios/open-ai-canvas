@@ -4,7 +4,7 @@ import { Images, Info, RefreshCw, ScanSearch } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { useEffectiveConfig } from "@/stores/use-config-store";
-import { buildGenerationConfig } from "@/lib/canvas/canvas-project-generation";
+import { storyboardFrameGenerationConfig } from "@/lib/canvas/storyboard-frame-model";
 import { shotKeyframes, storyboardDisplayFrames, storyboardFrameLabels } from "@/lib/canvas/episode-storyboard-frames";
 import { storyboardPreviousFrameSource } from "@/lib/canvas/workflow-episode-storyboard";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
@@ -16,7 +16,8 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { CanvasStoryboardImageStack, type StoryboardImagePreview } from "./canvas-storyboard-image-stack";
 
-export function CanvasEpisodeShotFrames({ row, rows, nodes, previewOpen = false, onUpdate, onClose, onExtract, onGenerate, onRetry, onCancel, onPreview, onModelChange }: {
+export function CanvasEpisodeShotFrames({ script, row, rows, nodes, previewOpen = false, onUpdate, onClose, onExtract, onGenerate, onRetry, onCancel, onPreview, onModelChange }: {
+    script?: CanvasNodeData;
     previewOpen?: boolean;
     rows: StoryboardRow[]; onUpdate: (patch: Partial<StoryboardRow>) => void;
     row: StoryboardRow; nodes: CanvasNodeData[]; onClose: () => void;
@@ -25,7 +26,7 @@ export function CanvasEpisodeShotFrames({ row, rows, nodes, previewOpen = false,
     onPreview: StoryboardImagePreview; onModelChange: (kind: "text" | "image", model: string) => void;
 }) {
     const theme = canvasThemes[useActiveTheme()];
-    const config = useEffectiveConfig(), textConfig = buildGenerationConfig(config, undefined, "text"), imageConfig = buildGenerationConfig(config, undefined, "image");
+    const config = useEffectiveConfig(), textConfig = storyboardFrameGenerationConfig(config, script, "text"), imageConfig = storyboardFrameGenerationConfig(config, script, "image");
     const [preparing, setPreparing] = useState(false), [detailsId, setDetailsId] = useState<string>();
     const { frames: extracted, plan, error } = shotKeyframes(row, nodes);
     const previous = storyboardPreviousFrameSource(row, rows);

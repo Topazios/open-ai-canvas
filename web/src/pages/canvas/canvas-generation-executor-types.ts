@@ -34,7 +34,7 @@ export type CanvasGenerationExecution = CanvasGenerationExecutorDependencies & {
     editingTextNode: boolean;
     styleMetadata: { styleProfileJson?: string; styleExecutionPlan?: StyleExecutionPlan };
     skillMetadata: SkillRuntimeMetadata;
-    taskContext?: { conversationId?: string; messageId?: string };
+    taskContext?: { conversationId?: string; messageId?: string; storyboardRowId?: string; batchTargetKind?: "node" | "storyboard_video" };
     retryContext?: { retryOf: string; attemptGroupId: string; clientOperationId: string };
     registerPendingNodeIds: (nodeIds: string[]) => void;
 };

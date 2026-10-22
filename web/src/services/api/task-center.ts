@@ -571,7 +571,7 @@ function delay(ms: number, signal?: AbortSignal) {
     });
 }
 
-function notifyCanvasTaskCreated(task: GenerationTask) {
+export function notifyCanvasTaskCreated(task: GenerationTask) {
     if (typeof window === "undefined" || !task.projectId) return;
     window.dispatchEvent(new CustomEvent("canvas:task-created", { detail: { task } }));
 }

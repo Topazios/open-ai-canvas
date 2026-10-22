@@ -1,18 +1,16 @@
 import { CanvasNodeType, StoryboardFrameKind, type CanvasConnection, type CanvasNodeData, type StoryboardFrame, type StoryboardRow } from "@/types/canvas";
 import { createCanvasNode } from "./canvas-project-domain";
-import { layoutCanvasGridGroups } from "./canvas-group-grid";
+import { storyboardComposerContent } from "./canvas-storyboard-materializer";
 import { resolveEpisodeShotAssets, episodeStoryboardCodes, storyboardFrameHash, storyboardPreviousFrameSource, storyboardFrameIsCurrent, storyboardReferenceSignature, storyboardRowIsReady } from "./workflow-episode-storyboard";
 export { storyboardFrameHash } from "./workflow-episode-storyboard";
-import { storyboardComposerContent } from "./canvas-storyboard-materializer";
 import { ShortDramaStep } from "../short-drama-steps";
 import { globalSettingsPrompt } from "../short-drama-settings";
-import { placeNewWorkflowGroup } from "./canvas-workflow-placement";
 import { isCanvasNodeGenerating } from "./canvas-node-task-state";
+import { synchronizeGenerationSpec } from "./generation-contract";
 import { storyboardCompositionRule, storyboardFrameBoundaryPrompt } from "./storyboard-frame-composition";
-import { ensureStoryboardFramesGroup } from "./storyboard-frame-groups";
+import { reconcileStoryboardFramesGroups } from "./storyboard-frame-groups";
 import { resetGenerationTaskMetadata } from "./canvas-task-state";
 import { storyboardFrameWaitingReason } from "./storyboard-frame-continuity";
-export { ensureStoryboardFramesGroup } from "./storyboard-frame-groups";
 
 export type StoryboardFrameGenerationOptions = { failedOnly?: boolean };
 
@@ -94,8 +92,8 @@ export function failedStoryboardBoundaryImageCount(script: CanvasNodeData, nodes
     return failed.size;
 }
 export function materializeStoryboardFrames(script: CanvasNodeData, requests: { row: StoryboardRow; frames: StoryboardFrame[] }[], nodes: CanvasNodeData[], connections: CanvasConnection[], model: string, settings: { size: string; quality: string; transparentBackground: string }, options: StoryboardFrameGenerationOptions = {}) {
-    const grouped = ensureStoryboardFramesGroup(script, nodes, connections);
-    let next = [...grouped.nodes], edges = [...grouped.connections];
+    const reconciled = reconcileStoryboardFramesGroups(nodes, connections);
+    let next = [...reconciled.nodes];
     const targets: { rowId: string; nodeId: string }[] = [];
     const { active, cancelled } = storyboardFrameQueue(script);
     const rowPatches = new Map<string, StoryboardFrame[]>();
@@ -167,11 +165,21 @@ export function materializeStoryboardFrames(script: CanvasNodeData, requests: { 
             }
             if (failedIds && (!existing || !failedIds.has(existing.id) && !pendingDependents.has(existing.id))) continue;
             const sameFrame = previous?.sourcePromptHash === frame.sourcePromptHash && (frame.kind !== StoryboardFrameKind.Key || previous.prompt === frame.prompt);
-            if (sameFrame && existing && (active.has(existing.id) || existing.metadata?.content || existing.metadata?.storageKey || existing.metadata?.taskStatus !== "cancelled" && (existing.metadata?.status === "loading" || existing.metadata?.taskId && !options.failedOnly))) { store({ ...frame, imageNodeId: existing.id }); continue; }
+            const metadata = existing?.metadata;
+            const failed = metadata?.status === "error" || metadata?.taskStatus === "failed";
+            const reusable = existing && (
+                active.has(existing.id) ||
+                Boolean(metadata?.content || metadata?.storageKey) ||
+                !failed && metadata?.taskStatus !== "cancelled" && (
+                    metadata?.status === "loading" ||
+                    Boolean(metadata?.taskId && !options.failedOnly)
+                )
+            );
+            if (sameFrame && existing && reusable) { store({ ...frame, imageNodeId: existing.id }); continue; }
             const refs = resolveEpisodeShotAssets(script, row, nodes);
-            const image = existing && sameFrame ? existing : createCanvasNode(CanvasNodeType.Image, grouped.group.position, {});
+            const image = existing && sameFrame ? existing : createCanvasNode(CanvasNodeType.Image, script.position, {});
             const prompt = [globalSettingsPrompt(script.metadata?.shortDrama?.parameters?.globalSettings, "storyboard", "image"), frame.prompt].filter(Boolean).join("\n\n");
-            const prepared: CanvasNodeData = { ...image, parentId: grouped.group.id, width: 280, height: 280,
+            const prepared: CanvasNodeData = { ...image, parentId: undefined, width: 280, height: 280,
                 title: `${row.shotCode || row.shotNumber} · ${storyboardFrameLabels[frame.kind]}${frame.kind === StoryboardFrameKind.Key ? ` ${frame.timeSeconds}秒` : ""}`,
                 metadata: { ...resetGenerationTaskMetadata(image.metadata), ...settings, model, count: 1, generationMode: "image", manualSize: true, freeResize: false, prompt,
                     composerContent: storyboardComposerContent(prompt, refs.referenceNodeIds, nodes),
@@ -179,14 +187,13 @@ export function materializeStoryboardFrames(script: CanvasNodeData, requests: { 
                     shortDrama: { stage: "storyboard", step: frame.kind === StoryboardFrameKind.Start ? ShortDramaStep.StartFrame : frame.kind === StoryboardFrameKind.End ? ShortDramaStep.EndFrame : ShortDramaStep.Keyframes,
                         pipelineId: script.metadata!.shortDrama!.pipelineId, role: "document", mediaKind: "image", mediaSubjectId: script.id, mediaShotId: row.shotCode || row.id, sourceNodeIds: [script.id], sourceSignatures: {}, episodeNumber: script.metadata?.shortDrama?.episodeNumber },
                 } };
-            next = next.some(node => node.id === image.id) ? next.map(node => node.id === image.id ? prepared : node) : [...next, prepared];
-            for (const id of refs.referenceNodeIds) if (!edges.some(edge => edge.fromNodeId === id && edge.toNodeId === image.id)) edges.push({ id: crypto.randomUUID(), fromNodeId: id, toNodeId: image.id, relation: "storyboard-asset-reference", storyboardRowId: row.id });
+            const selected = synchronizeGenerationSpec(prepared, { model, ...settings, count: 1, prompt, composerContent: prepared.metadata?.composerContent });
+            next = next.some(node => node.id === image.id) ? next.map(node => node.id === image.id ? selected : node) : [...next, selected];
             store({ ...frame, imageNodeId: image.id });
             targets.push({ rowId: row.id, nodeId: image.id });
         }
     };
     for (const { row, frames } of requests) materialize(row, frames);
     next = next.map(node => node.id === script.id ? { ...node, metadata: { ...node.metadata, storyboard: { ...node.metadata!.storyboard!, rows: node.metadata!.storyboard!.rows.map(row => rowPatches.has(row.id) ? { ...row, frames: rowPatches.get(row.id) } : row) } } } : node);
-    const laidOut = layoutCanvasGridGroups(next, new Set([grouped.group.id]));
-    return { nodes: nodes.some(node => node.id === grouped.group.id) ? laidOut : placeNewWorkflowGroup(laidOut, grouped.group.id, nodes, script), connections: edges, targets, blockedRows: [...blockedRows] };
+    return { nodes: next, connections: reconciled.connections, targets, blockedRows: [...blockedRows] };
 }

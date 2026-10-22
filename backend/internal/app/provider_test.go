@@ -1288,6 +1288,36 @@ func TestRunImageTaskOmitsAutomaticQualityAndSize(t *testing.T) {
 	}
 }
 
+func TestRunImageTaskAcceptsCompleteJSONBeforeGatewayClosesConnection(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"aGVsbG8="}]}`)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	profile := DefaultImageCapabilityConfig("openai-image", "gpt-image-2")
+	result, err := runImageTask(ctx, canvasGenerationInput{
+		Mode:            "image",
+		Prompt:          "a product photo",
+		Config:          providerConfig{BaseURL: server.URL, APIKey: "key", Model: "gpt-image-2", InterfaceType: "openai-image"},
+		ImageCapability: profile,
+	})
+	if err != nil {
+		t.Fatalf("runImageTask() error = %v", err)
+	}
+	images, _ := result["images"].([]map[string]string)
+	if len(images) != 1 || images[0]["dataUrl"] != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("images = %#v", result["images"])
+	}
+}
+
 func TestRunOpenAIImageTaskUsesMultipartEditContract(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

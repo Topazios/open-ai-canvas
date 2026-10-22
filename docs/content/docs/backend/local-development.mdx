@@ -84,6 +84,20 @@ bun run dev
 
 前端默认监听 `0.0.0.0:3000`，Vite 将 `/api` 和 OAuth 回调代理到 `127.0.0.1:8080`。如需修改代理目标，可设置 `VITE_API_PROXY_TARGET`。
 
+开发和预览服务从 `web/.env.local` 的 `CANVAS_DEV_ALLOWED_HOSTS` 读取逗号分隔的受控域名列表（仅域名，不含协议和端口）。该变量仅供 Vite 配置读取，不进入浏览器构建。实际映射域名只放在 Git 忽略的本地文件；不要写进源码或关闭主机校验。修改开发环境文件后 Vite 会自动重启，预览服务需重新启动。
+
+映射服务若把 Host 改成本地地址，浏览器 Origin 仍是外部地址，后端需要明确允许该来源。在 Git 忽略的 `.local/backend-config.json` 配置 `corsOrigins` 字符串数组，每项是完整来源（协议、域名和实际访问端口，不含路径），然后执行 `scripts/backend-local.ps1 restart`。未设置时保留本地默认值；进程环境变量 `CANVAS_CORS_ORIGINS` 优先于本地文件。这个来源策略覆盖登录、会话、写入及预检请求，无需给每个业务接口分别放行。域名映射继续使用同源 `/api`，不要修改浏览器 API 基址为本机回环地址。
+
+反向代理应保留原始 Host 和端口、`X-Forwarded-Host` 与 `X-Forwarded-Proto`，Nginx 配置使用 `$http_host` 传递外部主机和端口；Cookie 由访问主机归属，HTTPS 由转发协议判断。不要使用任意来源通配配置来绕过检查。
+
+### 局域网访问
+
+同一局域网的设备可访问启动脚本显示的 `http://<本机局域网IPv4>:3000`，在该地址重新登录即可。前端通过同源 `/api` 代理访问后端；保留默认相对 API 地址，不将客户端请求指向 `localhost:8080`。后端继续监听回环地址，无需向局域网开放 `8080` 或放宽跨域策略。
+
+Windows 防火墙启用时，仅允许同一局域网访问 TCP `3000`；不要关闭防火墙或开放数据库端口。局域网 IP 随网络变化时，重新运行 `scripts/start-local.ps1` 查看地址。
+
+HTTP 局域网页面缺少安全上下文 API。客户端标识统一使用已有 `createClientId`，内容摘要优先使用 Web Crypto、缺失时通过 `@noble/hashes` 生成相同 SHA-256，保证重试、素材和同步幂等键不变。浏览器系统剪贴板、本地 Runtime 签名等要求安全上下文的功能仍需 HTTPS；不放宽签名或权限校验。
+
 ## 时间线字幕转写（whisper.cpp）
 
 时间线“字幕转写”由**本地 whisper.cpp server** 执行：后端将片段音频预处理为 16k mono wav 后，POST 到 `CANVAS_WHISPER_BASE_URL/inference`（whisper server 原生接口，`response_format=verbose_json`）。未配置该地址时，转写任务会立即明确失败，提示“撰写失败未配置本地转写服务”。

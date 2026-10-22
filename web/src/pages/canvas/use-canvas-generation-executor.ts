@@ -1,12 +1,13 @@
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { isEpisodeStoryboardVideo } from "@/lib/canvas/workflow-episode-storyboard";
 import { storyboardFrameHash } from "@/lib/canvas/episode-storyboard-frames";
+import { storyboardFrameNodeSelection } from "@/lib/canvas/storyboard-frame-model";
 import { useCallback, useRef, type Dispatch, type SetStateAction } from "react";
 import { App } from "antd";
 
 import { buildNodeGenerationContext, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
-import { buildGenerationConfig, isGenerationCanceled } from "@/lib/canvas/canvas-project-generation";
+import { buildGenerationConfig, generationTaskMetadata, isGenerationCanceled } from "@/lib/canvas/canvas-project-generation";
 import { canvasGenerationPromptMetadata, canvasGenerationRequestFingerprint, runCanvasGenerationSubmissionOnce } from "@/lib/canvas/canvas-generation-submission";
 import { isGenerationTaskCapacityError } from "@/lib/canvas/canvas-generation-batch";
 import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture";
@@ -58,6 +59,8 @@ export type CanvasNodeGenerationOptions = {
     retryContext?: { retryOf: string; attemptGroupId: string; clientOperationId: string };
     onTaskUpdate?: (task: GenerationTask) => void;
     skipDuplicateConfirmation?: boolean;
+    storyboardRowId?: string;
+    batchTargetKind?: "node" | "storyboard_video";
 };
 
 export function useCanvasGenerationExecutor({
@@ -102,9 +105,11 @@ export function useCanvasGenerationExecutor({
         (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: CanvasNodeGenerationOptions) =>
             runCanvasGenerationSubmissionOnce(
                 submissionLocksRef.current,
-                nodeId,
+                options?.batchTargetKind === "storyboard_video" && options.storyboardRowId ? `${nodeId}:storyboard-video:${options.storyboardRowId}` : nodeId,
                 async () => {
-                    const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
+                    const storedSourceNode = nodesRef.current.find((node) => node.id === nodeId);
+                    const sourceNode = storedSourceNode && mode === "image" ? storyboardFrameNodeSelection(effectiveConfig, storedSourceNode, nodesRef.current) : storedSourceNode;
+                    const inlineStoryboardVideo = options?.batchTargetKind === "storyboard_video" && Boolean(options.storyboardRowId);
                     const frame = sourceNode?.metadata?.storyboardFrame || sourceNode?.metadata?.storyboardFramePlan;
                     const frameIsCurrent = () => {
                         if (!frame) return true;
@@ -115,7 +120,7 @@ export function useCanvasGenerationExecutor({
                             setNodes(current => current.map(node => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: "分镜已修改，未提交旧版本画面，请重新生成" } } : node));
                             return;
                     }
-                    if (isCanvasNodeGenerating(sourceNode)) {
+                    if (!inlineStoryboardVideo && isCanvasNodeGenerating(sourceNode)) {
                         message.info("该节点的生成任务仍在进行中，请等待完成后再生成");
                         return;
                     }
@@ -172,6 +177,7 @@ export function useCanvasGenerationExecutor({
                             editingTextNode ? buildTextRewritePrompt(sourceTextContent, prompt) : generationPrompt,
                             assets,
                             promptOnly,
+                            inlineStoryboardVideo ? options?.storyboardRowId : undefined,
                         );
                         const requirements = generationModelRequirements(mode, baseContext, sourceNode, generationConfig, true);
                         generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode, requirements);
@@ -192,7 +198,14 @@ export function useCanvasGenerationExecutor({
 
                     let skillExecution: Awaited<ReturnType<typeof skillRuntime.prepare<"canvas">>>;
                     try {
-                        skillExecution = await skillRuntime.prepare({ profile: "canvas", prompt: rawGenerationContext.prompt, skills: addedSkills, selectedSkillIds: options?.selectedSkillIds });
+                        skillExecution = await skillRuntime.prepare({
+                            profile: "canvas",
+                            prompt: rawGenerationContext.prompt,
+                            skills: addedSkills,
+                            // 分镜视频只使用当前镜头的剧情、资产和首尾帧。节点上遗留的整套技能快照会把
+                            // 无关制作规范再次拼进提示词，既容易超过模型限制，也会污染视频动作描述。
+                            selectedSkillIds: episodeShot ? undefined : options?.selectedSkillIds,
+                        });
                     } catch (error) {
                         message.error(error instanceof Error ? error.message : "技能上下文加载失败");
                         return;
@@ -214,8 +227,27 @@ export function useCanvasGenerationExecutor({
                     }
                     const promptLengthError = mode === "video" ? modelPromptLengthError(generationConfig, generationConfig.model, mode, effectivePrompt) : "";
                     if (promptLengthError) {
-                        message.error(promptLengthError);
-                        setNodes(current => current.map(node => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails: promptLengthError } } : node));
+                        const detail = `提交前校验失败，尚未调用上游模型：${promptLengthError}`;
+                        message.error(detail);
+                        setNodes(current => current.map(node => {
+                            if (node.id !== nodeId) return node;
+                            if (inlineStoryboardVideo && options?.storyboardRowId) {
+                                return {
+                                    ...node,
+                                    metadata: {
+                                        ...node.metadata,
+                                        storyboard: {
+                                            ...node.metadata?.storyboard!,
+                                            rows: (node.metadata?.storyboard?.rows || []).map(row => row.id !== options.storyboardRowId ? row : {
+                                                ...row,
+                                                videoGeneration: { ...row.videoGeneration, taskStatus: "failed", taskStage: "提交前校验失败", errorDetails: detail, prompt: effectivePrompt },
+                                            }),
+                                        },
+                                    },
+                                };
+                            }
+                            return { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails: detail, taskStage: "提交前校验失败" } };
+                        }));
                         return;
                     }
                     const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
@@ -339,7 +371,10 @@ export function useCanvasGenerationExecutor({
                         editingTextNode,
                         styleMetadata,
                         skillMetadata: skillExecution.metadata,
-                        taskContext: options?.context,
+                        taskContext: {
+                            ...options?.context,
+                            ...(inlineStoryboardVideo ? { storyboardRowId: options?.storyboardRowId, batchTargetKind: options?.batchTargetKind } : {}),
+                        },
                         retryContext: options?.retryContext,
                         setNodes,
                         setConnections,
@@ -349,7 +384,22 @@ export function useCanvasGenerationExecutor({
                         startGenerationRequest,
                         finishGenerationRequest,
                         bindGenerationTask: (targetNodeId: string, task: GenerationTask) => {
-                            bindGenerationTask(targetNodeId, task);
+                            if (inlineStoryboardVideo && options?.storyboardRowId) {
+                                const taskMeta = generationTaskMetadata(task);
+                                setNodes(current => current.map(node => node.id !== nodeId ? node : {
+                                    ...node,
+                                    metadata: {
+                                        ...node.metadata,
+                                        storyboard: {
+                                            ...node.metadata?.storyboard!,
+                                            rows: (node.metadata?.storyboard?.rows || []).map(row => row.id !== options.storyboardRowId ? row : {
+                                                ...row,
+                                                videoGeneration: { ...row.videoGeneration, ...taskMeta, errorDetails: task.status === "failed" || task.status === "cancelled" ? task.error : undefined, prompt },
+                                            }),
+                                        },
+                                    },
+                                }));
+                            } else bindGenerationTask(targetNodeId, task);
                             setNodes((current) => {
                                 const source = current.find((node) => node.id === nodeId);
                                 if (!source || source.metadata?.lastGenerationRequestFingerprint === requestFingerprint) return current;
@@ -372,6 +422,18 @@ export function useCanvasGenerationExecutor({
                     } catch (error) {
                         if (isGenerationCanceled(error)) return;
                         const failure = generationFailureMetadata(error, prompt);
+                        if (inlineStoryboardVideo && options?.storyboardRowId) {
+                            setNodes(current => current.map(node => node.id !== nodeId ? node : {
+                                ...node,
+                                metadata: {
+                                    ...node.metadata,
+                                    storyboard: {
+                                        ...node.metadata?.storyboard!,
+                                        rows: (node.metadata?.storyboard?.rows || []).map(row => row.id !== options.storyboardRowId ? row : { ...row, videoGeneration: { ...row.videoGeneration, taskStatus: "failed", errorDetails: failure.errorDetails, prompt } }),
+                                    },
+                                },
+                            }));
+                        }
                         if (options?.waitForTaskCapacity && isGenerationTaskCapacityError(error)) {
                             setNodes((current) =>
                                 current.map((node) => {

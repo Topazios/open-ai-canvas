@@ -18,7 +18,7 @@ import { ReasoningEffortSelect } from "@/components/reasoning-effort-select";
 import { WORKFLOW_CONTEXT_LIMIT } from "@/lib/canvas/workflow-text-batch";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { defaultWorkflowSources, nodeWorkflow, workflowGenerationSources, workflowParameters, workflowEpisodeProgress, workflowContinuationRange, DEFAULT_WORKFLOW_CONTINUATION_SPAN, episodeProgressLabel, workflowContextContent, type WorkflowGenerationRequest } from "@/lib/canvas/canvas-short-drama-workflow";
-import { shortDramaStep, ShortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
+import { isStoryboardFrameStep, shortDramaStep, ShortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
 import { selectableModelsByCapability, useEffectiveConfig } from "@/stores/use-config-store";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -38,6 +38,7 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
     const config = useEffectiveConfig();
     const theme = canvasThemes[useActiveTheme()];
     const step = shortDramaStep(target.step)!;
+    const selectableStepIds = target.stepIds?.filter((id) => !isStoryboardFrameStep(id)) || [];
     const capability = step.mediaOutput || "text";
     const isImage = capability === "image";
     const isAssetRevision = Boolean(target.assetRevisionSourceId);
@@ -147,7 +148,7 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
             <fieldset disabled={submitting} className="canvas-workflow-generator-fields">
                 {isAssetRevision ? <div className="canvas-workflow-generator-progress" role="status"><strong>{revisionAnchor?.title}</strong><span>本次重做 {revisionCount} 项资产 · 保留原版与资产编码</span></div> : null}
                 {step.id === ShortDramaStep.Plan ? <div className="canvas-workflow-generator-progress" aria-label="制作方案产物"><strong>总纲 · 共用规范 · 资产设计</strong><span>{productionPlanSections.map((section) => section.label).join(" · ")}</span></div> : null}
-                {target.stepIds && target.stepIds.length > 1 ? <label>制作项目<Select aria-label="制作项目" value={step.id} onChange={onStepChange} options={target.stepIds.map((id) => ({ value: id, label: `${shortDramaStep(id)!.label}${shortDramaStep(id)!.optional ? "（按需）" : ""}` }))} /></label> : null}
+                {selectableStepIds.length > 1 ? <label>制作项目<Select aria-label="制作项目" value={step.id} onChange={onStepChange} options={selectableStepIds.map((id) => ({ value: id, label: `${shortDramaStep(id)!.label}${shortDramaStep(id)!.optional ? "（按需）" : ""}` }))} /></label> : null}
                 <label>{isImage ? "生图模型" : "文本模型"}<ModelPicker config={config} value={model} capability={capability} onChange={setModel} fullWidth /></label>
                 {capability === "text" ? <ReasoningEffortSelect disabled={submitting} /> : null}
                 {isImage && imageSettings && model ? <details className="canvas-workflow-image-settings"><summary>{isSheet ? "统一设定板" : "图片规格"} · {imageSettings.size} · {imageSettings.quality}</summary><ImageSettingsPanel config={{ ...config, model, imageModel: model, ...imageSettings }} onConfigChange={(key, value) => setImageValues((current) => ({ ...current, [key]: value }))} theme={theme} showTitle={false} showCount={false} showSize={!isSheet} showTransparent={!isSheet} className="min-w-0 space-y-3" /></details> : null}

@@ -74,7 +74,7 @@ const shortDramaGuideGroups: Record<"assets" | "storyboard", ShortDramaGuideGrou
     ],
     storyboard: [
         { id: "guide.direction.breakdown", label: "场次与镜头拆解", stepIds: ["direction.shots"] },
-        { id: "guide.direction.frames", label: "分镜图与关键帧生成", stepIds: ["direction.boards", "direction.start_frame", "direction.end_frame", "direction.keyframes"] },
+        { id: "guide.direction.frames", label: "分镜图生成（首尾帧与关键帧在分镜列表管理）", stepIds: ["direction.boards"] },
         { id: "guide.direction.previsualization", label: "动作预演与连续性检查", stepIds: ["direction.previsualization"] },
     ],
 };
@@ -140,9 +140,10 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
     // 手工流水线要求输入真实连到分镜脚本；Agent 协议的风格板和剧本没有这条连线，按领域节点本身判断。
     const styleDone = Boolean((styleNode?.metadata?.content || styleNode?.metadata?.prompt || "").trim() && (hasAgentPipeline || !scriptNode || isConnectedToStoryboard(styleNode!.id)));
     const storyboardDone = meaningfulRows.length > 0 || shotNodes.length > 0;
-    const rowsWithVideo = meaningfulRows.filter((row) => row.videoNodeId && nodeById.get(row.videoNodeId)?.type === CanvasNodeType.Video);
+    const rowsWithVideo = meaningfulRows.filter((row) => row.videoGeneration?.content || row.videoGeneration?.storageKey || row.videoNodeId && nodeById.get(row.videoNodeId)?.type === CanvasNodeType.Video);
     const videoDone = meaningfulRows.length > 0
         ? rowsWithVideo.length === meaningfulRows.length && rowsWithVideo.every((row) => {
+              if (row.videoGeneration?.content || row.videoGeneration?.storageKey) return row.videoGeneration.taskStatus === "succeeded";
               const videoNode = nodeById.get(row.videoNodeId!);
               return videoNode?.metadata?.status === "success" && Boolean(videoNode.metadata.content);
           })

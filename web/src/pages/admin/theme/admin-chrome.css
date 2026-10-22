@@ -1028,7 +1028,8 @@
 @media (prefers-reduced-motion: reduce) {
     [data-admin-root] *,
     body.admin-overlays * {
-        transition-duration: 0.01ms !important;
+        /* 定位浮层会同步测量坐标；非零时长会让默认的 transition-property: all 干扰测量。 */
+        transition: none !important;
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
     }

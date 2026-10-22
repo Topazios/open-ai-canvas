@@ -1,5 +1,6 @@
 import { buildCanvasSpatialIndex, canvasNodeBounds, type CanvasSpatialBounds, type CanvasSpatialIndex } from "@/lib/canvas/canvas-spatial-index";
 import type { CanvasNodeData, CanvasSelectionHitMode, CanvasSelectionStrategy } from "@/types/canvas";
+import { isStoryboardFrameRecord } from "./storyboard-frame-records";
 
 type SelectionModifiers = {
     altKey: boolean;
@@ -52,7 +53,7 @@ export function createCanvasSelectionSpatialIndexCache(): CanvasSelectionSpatial
                 return root && !root.metadata?.imageBatchExpanded ? [node.id] : [];
             }));
             index = buildCanvasSpatialIndex(nodes
-                .filter((node) => !hiddenBatchChildIds.has(node.id) && !(node.parentId && nodeById.get(node.parentId)?.metadata?.frame?.collapsed))
+                .filter((node) => !isStoryboardFrameRecord(node) && !hiddenBatchChildIds.has(node.id) && !(node.parentId && nodeById.get(node.parentId)?.metadata?.frame?.collapsed))
                 .map((node) => ({ id: node.id, bounds: canvasNodeBounds(node), value: node })));
             source = nodes;
             return index;

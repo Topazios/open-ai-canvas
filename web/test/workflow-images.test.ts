@@ -69,16 +69,19 @@ describe("direct workflow image generation", () => {
         expect(f.nodes.some((node) => nodeWorkflow(node)?.step === "direction.scenes")).toBe(false);
         const shots = f.nodes.find((node) => nodeWorkflow(node)?.step === "direction.shots" && node.type === CanvasNodeType.Script)!;
         expect(shots.metadata?.prompt).toContain("一次完成场次调度");
-        for (const step of ["direction.boards", "direction.start_frame", "direction.end_frame", "direction.keyframes"] as const) {
+        const request = { ...f.request, step: "direction.boards" as const, sourceNodeIds: defaultWorkflowSources("direction.boards", f.request.pipelineId, f.nodes).filter(Boolean), imagePrompt: "EP01-SH02: medium close-up, protagonist opens the door" };
+        const subject = workflowImageSubjects(request, f.nodes)[0];
+        const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 });
+        expect(result.created[0].metadata?.prompt).toContain("EP01-SH02");
+        expect(result.created[0].metadata?.prompt?.startsWith(productionRuleBlock("storyboard", "image"))).toBe(true);
+        expect(result.created[0].metadata?.prompt?.split("【制作执行规范 v")).toHaveLength(2);
+        expect(nodeWorkflow(result.created[0])?.episodeNumber).toBe(1);
+        expect(nodeWorkflow(result.created[0])?.sourceSteps).toEqual(["direction.shots"]);
+        expect(() => createWorkflowImages({ ...request, imagePrompt: "", imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("镜头编号");
+        for (const step of ["direction.start_frame", "direction.end_frame", "direction.keyframes"] as const) {
             const request = { ...f.request, step, sourceNodeIds: defaultWorkflowSources(step, f.request.pipelineId, f.nodes).filter(Boolean), imagePrompt: "EP01-SH02: medium close-up, protagonist opens the door" };
             const subject = workflowImageSubjects(request, f.nodes)[0];
-            const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 });
-            expect(result.created[0].metadata?.prompt).toContain("EP01-SH02");
-            expect(result.created[0].metadata?.prompt?.startsWith(productionRuleBlock("storyboard", "image"))).toBe(true);
-            expect(result.created[0].metadata?.prompt?.split("【制作执行规范 v")).toHaveLength(2);
-            expect(nodeWorkflow(result.created[0])?.episodeNumber).toBe(1);
-            expect(nodeWorkflow(result.created[0])?.sourceSteps).toEqual(["direction.shots"]);
-            expect(() => createWorkflowImages({ ...request, imagePrompt: "", imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("镜头编号");
+            expect(() => createWorkflowImages({ ...request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("分镜列表中生成");
         }
     });
 
@@ -119,14 +122,11 @@ describe("direct workflow image generation", () => {
         const subject = workflowImageSubjects(request, f.nodes)[0];
         const shots = workflowImageShots(subject, request.step);
         expect(shots.map((shot) => shot.id)).toEqual(["SH01", "SH02"]);
-        const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imageShotId: "SH02" }, f.nodes, f.connections, { x: 0, y: 0 });
-        const node = result.created[0];
-        expect(node.metadata?.prompt).toContain("SHOT_2_BOARD"); expect(node.metadata?.prompt).toContain("呈现本镜头动作终点"); expect(node.metadata?.prompt).not.toContain("SHOT_1_BOARD");
-        expect(nodeWorkflow(node)?.mediaShotId).toBe("SH02");
+        expect(() => createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imageShotId: "SH02" }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("分镜列表中生成");
         expect(workflowImageShots(subject, "direction.keyframes")).toEqual([]);
         const legacy = f.nodes.find(node => nodeWorkflow(node)?.step === "direction.production" && node.type === CanvasNodeType.Text)!;
         expect(workflowImageShots(legacy, "direction.keyframes")[1].id).toBe("SH02/K1");
-        expect(() => createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imageShotId: "missing" }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("所选镜头");
+        expect(workflowImageShots(subject, "direction.end_frame").find((shot) => shot.id === "missing")).toBeUndefined();
         subject.metadata!.content = "Legacy freeform production document";
         subject.metadata!.storyboard = undefined;
         expect(workflowImageShots(subject, request.step)).toEqual([]);
@@ -136,12 +136,8 @@ describe("direct workflow image generation", () => {
         const f = workflowImageFixture();
         const request = { ...f.request, step: "direction.start_frame" as const, sourceNodeIds: defaultWorkflowSources("direction.start_frame", f.request.pipelineId, f.nodes).filter(Boolean) };
         const subjects = workflowImageSubjects(request, f.nodes);
-        const first = createWorkflowImages({ ...request, imageSubjectIds: [subjects[0].id], imageShotId: "SH01" }, f.nodes, f.connections, { x: 0, y: 0 });
-        const start = first.created[0]; start.metadata!.status = "success"; start.metadata!.storageKey = "resource:first-frame";
-        const end = { ...request, step: "direction.end_frame" as const, sourceNodeIds: [...request.sourceNodeIds, start.id], imageShotId: "SH01", imageSubjectIds: [subjects[0].id] };
-        expect(createWorkflowImages(end, first.nodes, first.connections, { x: 0, y: 0 }).created).toHaveLength(1);
-        expect(() => createWorkflowImages({ ...end, imageShotId: "SH02" }, first.nodes, first.connections, { x: 0, y: 0 })).toThrow("不同镜头");
-        expect(() => createWorkflowImages({ ...end, imageSubjectIds: [subjects[1].id] }, first.nodes, first.connections, { x: 0, y: 0 })).toThrow("同一集");
+        expect(() => createWorkflowImages({ ...request, imageSubjectIds: [subjects[0].id], imageShotId: "SH01" }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("分镜列表中生成");
+        expect(() => createWorkflowImages({ ...request, imageSubjectIds: [subjects[1].id], imageShotId: "SH02" }, f.nodes, f.connections, { x: 0, y: 0 })).toThrow("分镜列表中生成");
     });
 
     test("new media signatures detect resource edits while old saved signatures stay readable", () => {

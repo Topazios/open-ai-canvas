@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { useRef, useState, type CSSProperties } from "react";
 import { App, Button, Input, InputNumber, Segmented } from "antd";
 import { ArrowRight, Clock3, Dice5, Plus, Redo2, Save, Sparkles, Square, Undo2, Upload, X } from "lucide-react";
@@ -137,7 +138,7 @@ export function CanvasStoryDevelopmentEditor({ node, nodes, canvasId, onSave, on
             const generationBrief = { ...brief, ...(settings ? storyBriefFromSettings(settings) : {}), topicCount: brief.topicCount };
             const generationData = { ...current.current.data, brief: generationBrief };
             const prompt = buildStoryDevelopmentPrompt(generationData, nodes, content, instruction, draw);
-            const operationId = crypto.randomUUID();
+            const operationId = createClientId();
             const input = await prepareBackendGenerationTask({
                 projectId: canvasId, mode: "text", prompt, config: { ...config, model: selectedModel },
                 streamText: true, clientOperationId: operationId,

@@ -64,6 +64,8 @@ export function WorkspaceSidebarFooter({ expandedClassName, collapsedClassName, 
                 <Popover
                     trigger="click"
                     placement="rightBottom"
+                    zIndex={3000}
+                    rootClassName="workspace-account-popover"
                     open={menuOpen}
                     onOpenChange={setMenuOpen}
                     content={(
@@ -95,7 +97,7 @@ export function WorkspaceSidebarFooter({ expandedClassName, collapsedClassName, 
                         </div>
                     )}
                 >
-                    <button type="button" className={cn("app-workspace-account-button flex min-h-10 w-full min-w-0 items-center overflow-hidden rounded-md text-left transition-colors hover:bg-surface-hover", accountClassName)} title={creditsEnabled ? `${user.displayName || user.username} · ${balance} 积分` : user.displayName || user.username}>
+                    <button type="button" className={cn("app-workspace-account-button flex min-h-10 w-full min-w-0 items-center overflow-hidden rounded-md text-left transition-colors hover:bg-surface-hover", accountClassName)} title={creditsEnabled ? `${user.displayName || user.username} · ${balance} 积分` : user.displayName || user.username} aria-label="打开个人资料与账户菜单" onClick={(event) => event.stopPropagation()}>
                         <UserAvatar user={user} className="size-7" />
                         <span className={cn("min-w-0 flex-1 flex-col", expandedClassName)}>
                             <span className="truncate text-xs font-medium">{user.displayName || user.username}</span>

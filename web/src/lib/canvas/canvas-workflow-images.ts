@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
 import type { ReferenceImage } from "@/types/image";
 import { workflowAssetKind, workflowSourceMatches } from "./canvas-production-sources";
@@ -8,7 +9,7 @@ import { generationPromptFingerprint } from "../generation-error";
 import type { ImageCapabilityConfig } from "../model-capabilities";
 import { assetSheetKind, assetSheetImageSettings, assetSheetRatio, assetSheetPrompt } from "../asset-reference-sheet";
 import { assetSheetReferenceContent, workflowAssetSheetContext } from "./canvas-asset-sheet-context";
-import { ShortDramaStep, shortDramaStep } from "../short-drama-steps";
+import { isStoryboardFrameStep, ShortDramaStep, shortDramaStep } from "../short-drama-steps";
 import { createCanvasNode } from "./canvas-project-domain";
 import { episodeStoryboardRows } from "./workflow-episode-storyboard";
 import { groupWorkflowImages } from "./canvas-workflow-image-group";
@@ -78,6 +79,7 @@ export function createWorkflowImages(request: WorkflowGenerationRequest, nodes: 
     request = { ...request, sourceNodeIds: [...new Set(request.sourceNodeIds)] };
     const step = shortDramaStep(request.step);
     if (step?.mediaOutput !== "image" || request.aggregate) throw new Error("请选择图片生成步骤");
+    if (step.stage === "storyboard" && isStoryboardFrameStep(step.id)) throw new Error("首帧、尾帧和关键帧请在分镜列表中生成，不能创建额外的镜头帧容器");
     if (!request.model) throw new Error("请选择生图模型");
     const sharedAncestors = workflowGenerationSources(request, nodes, connections);
     const sheetKind = assetSheetKind(step.id);
@@ -161,7 +163,7 @@ export function createWorkflowImages(request: WorkflowGenerationRequest, nodes: 
                 ...(sheetKind ? { assetImageSourceIds: ancestors.map((node) => node.id) } : {}),
                 referenceSignatures: Object.fromEntries(references.map((node) => [node.id, assetMediaSignature(node)])),
                 ...(sheetKind && sheetContext ? { assetSheet: { version: 1 as const, kind: sheetKind, size: imageSettings!.size, styleSignatures: sheetContext.styleSignatures, promptFingerprint: generationPromptFingerprint(prompt) } } : {}),
-                episodeNumber: episode, version, operationId: crypto.randomUUID(), submission: "planned",
+                episodeNumber: episode, version, operationId: createClientId(), submission: "planned",
                 parameters: { episodeCount: parameters.episodeCount, minutesPerEpisode: parameters.minutesPerEpisode, instruction: request.instruction, ...(parameters.globalSettings ? { globalSettings: { ...parameters.globalSettings } } : {}) } },
         });
         node.position = { x, y: y + index * 340 };

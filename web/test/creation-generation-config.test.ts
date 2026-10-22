@@ -24,11 +24,29 @@ function videoConfig(generateAudio: { supported: boolean; default: boolean }): A
                 apiFormat: "openai",
                 scope: "system",
                 models: ["minimax-h3-a"],
-                modelCosts: [{ model: "minimax-h3-a", capability: "video", billingMode: "per_second", unitPriceMicrocredits: 1, capabilityConfig }],
+                modelCosts: [{ model: "minimax-h3-a", capability: "video", protocol: "agnes-video", billingMode: "per_second", unitPriceMicrocredits: 1, capabilityConfig }],
             },
         ],
     };
 }
+
+test("视频任务直连当前选中的渠道，即使渠道绑定了逻辑模型", async () => {
+    const config = videoConfig({ supported: true, default: false });
+    config.channels[0]!.interfaceType = "agnes-video";
+    config.channels[0]!.modelCosts![0]!.logicalModelId = "managed-video";
+
+    const task = await prepareBackendGenerationTask({ mode: "video", prompt: "保持人物连续动作", config });
+
+    expect(task.logicalModelId).toBeUndefined();
+    expect(task.input).toMatchObject({
+        config: {
+            channelId: "gravity",
+            channelModelKey: "minimax-h3-a",
+            model: "minimax-h3-a",
+            interfaceType: "agnes-video",
+        },
+    });
+});
 
 test("创作台无声视频报价、提交与重试不携带全局音频和水印默认值", async () => {
     const config = videoConfig({ supported: false, default: false });

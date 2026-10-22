@@ -138,13 +138,16 @@ describe("asset reference sheet contract", () => {
 
     test("single-shot storyboard and frames keep their requested square/transparent settings", () => {
         const f = workflowImageFixture();
-        for (const step of [ShortDramaStep.Boards, ShortDramaStep.StartFrame, ShortDramaStep.EndFrame, ShortDramaStep.Keyframes]) {
-            const request = { ...f.request, step, sourceNodeIds: defaultWorkflowSources(step, f.request.pipelineId, f.nodes).filter(Boolean), imageSettings: { size: "1024x1024", quality: "auto", transparentBackground: "true" } };
-            const subject = workflowImageSubjects(request, f.nodes)[0];
-            const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imagePrompt: "Single frame fixture" }, f.nodes, f.connections, center, profile(["1536x1024"]));
-            expect(result.created[0].metadata).toMatchObject(request.imageSettings);
-            expect(nodeWorkflow(result.created[0])!.assetSheet).toBeUndefined();
-            expect(result.created[0].metadata!.prompt).not.toContain("统一设定板模板");
+        const request = { ...f.request, step: ShortDramaStep.Boards, sourceNodeIds: defaultWorkflowSources(ShortDramaStep.Boards, f.request.pipelineId, f.nodes).filter(Boolean), imageSettings: { size: "1024x1024", quality: "auto", transparentBackground: "true" } };
+        const subject = workflowImageSubjects(request, f.nodes)[0];
+        const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imagePrompt: "Single frame fixture" }, f.nodes, f.connections, center, profile(["1536x1024"]));
+        expect(result.created[0].metadata).toMatchObject(request.imageSettings);
+        expect(nodeWorkflow(result.created[0])!.assetSheet).toBeUndefined();
+        expect(result.created[0].metadata!.prompt).not.toContain("统一设定板模板");
+        for (const step of [ShortDramaStep.StartFrame, ShortDramaStep.EndFrame, ShortDramaStep.Keyframes]) {
+            const frameRequest = { ...f.request, step, sourceNodeIds: defaultWorkflowSources(step, f.request.pipelineId, f.nodes).filter(Boolean), imageSettings: request.imageSettings };
+            const frameSubject = workflowImageSubjects(frameRequest, f.nodes)[0];
+            expect(() => createWorkflowImages({ ...frameRequest, imageSubjectIds: [frameSubject.id], imagePrompt: "Single frame fixture" }, f.nodes, f.connections, center, profile(["1536x1024"]))).toThrow("分镜列表中生成");
         }
     });
 

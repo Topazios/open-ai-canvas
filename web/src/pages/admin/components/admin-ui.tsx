@@ -317,6 +317,7 @@ export type AdminRowAction = {
 
 export function AdminRowActions({ primary, actions, visibleActionCount }: { primary?: { label: ReactNode; icon?: ReactNode; onClick: () => void | Promise<void>; disabled?: boolean }; actions: AdminRowAction[]; visibleActionCount?: number }) {
     const { modal } = App.useApp();
+    const [menuOpen, setMenuOpen] = useState(false);
     const resolvedVisibleActionCount = visibleActionCount ?? (actions.length <= 1 ? actions.length : 1);
     const visibleActions = actions.slice(0, Math.max(0, resolvedVisibleActionCount));
     const menuActions = actions.slice(Math.max(0, resolvedVisibleActionCount));
@@ -329,6 +330,7 @@ export function AdminRowActions({ primary, actions, visibleActionCount }: { prim
     }));
 
     const runAction = (action: AdminRowAction) => {
+        setMenuOpen(false);
         if (!action.confirm) {
             void action.onClick();
             return;
@@ -360,15 +362,28 @@ export function AdminRowActions({ primary, actions, visibleActionCount }: { prim
             {menuActions.length ? (
                 <Dropdown
                     trigger={["click"]}
+                    placement="bottomRight"
+                    styles={{ root: { zIndex: 3000 } }}
                     menu={{
                         items,
-                        onClick: ({ key }) => {
+                        onClick: ({ key, domEvent }) => {
+                            domEvent.stopPropagation();
                             const action = actions.find((item) => item.key === key);
                             if (action) runAction(action);
                         },
                     }}
+                    open={menuOpen}
+                    onOpenChange={setMenuOpen}
                 >
-                    <Button type="text" size="small" className="admin-row-action admin-row-action-more" aria-label="更多操作">
+                    <Button
+                        type="text"
+                        size="small"
+                        className="admin-row-action admin-row-action-more"
+                        aria-label="更多操作"
+                        aria-haspopup="menu"
+                        aria-expanded={menuOpen}
+                        onClick={(event) => event.stopPropagation()}
+                    >
                         <span>更多</span>
                         <ChevronDown className="admin-row-action-chevron" aria-hidden="true" />
                     </Button>

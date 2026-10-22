@@ -152,12 +152,14 @@ export type StoryboardRow = {
     keyframeTimeMs?: number;
     imageNodeId?: string;
     videoNodeId?: string;
+    videoGeneration?: StoryboardVideoGeneration;
     status?: CanvasNodeStatus;
     errorDetails?: string;
 };
 
 export type StoryboardData = {
 	executionMode?: "episode";
+    frameModels?: Partial<Record<"text" | "image", string>>;
     rows: StoryboardRow[];
     visibleColumns: StoryboardColumn[];
     referenceNodeIds: string[];
@@ -167,10 +169,36 @@ export enum StoryboardFrameKind { Start = "start", End = "end", Key = "key" }
 export enum StoryboardStartFrameMode { Auto = "auto", ReusePrevious = "reuse_previous", Independent = "independent" }
 export type StoryboardFrame = { id: string; kind: StoryboardFrameKind; prompt: string; timeSeconds: number; sourcePromptHash: string; imageNodeId?: string; sharedFrom?: { rowId: string; sourcePromptHash: string } };
 
+/** 分镜行内视频任务与结果。视频生成不再要求画布创建独立视频节点。 */
+export type StoryboardVideoGeneration = {
+    taskId?: string;
+    taskStatus?: "queued" | "running" | "succeeded" | "failed" | "cancelled" | string;
+    taskProgress?: number;
+    taskStage?: string;
+    taskProvider?: string;
+    taskErrorCode?: string;
+    taskCreatedAt?: string;
+    taskStartedAt?: string;
+    taskCompletedAt?: string;
+    taskDurationMs?: number;
+    errorDetails?: string;
+    content?: string;
+    storageKey?: string;
+    mimeType?: string;
+    bytes?: number;
+    width?: number;
+    height?: number;
+    durationMs?: number;
+    model?: string;
+    prompt?: string;
+    providerRequestId?: string;
+};
+
 export type CanvasGenerationBatchItem = {
     id: string;
     rowId: string;
     nodeId: string;
+    targetKind?: "node" | "storyboard_video";
     taskId?: string;
     status: CanvasGenerationBatchItemStatus;
     retryCount: number;

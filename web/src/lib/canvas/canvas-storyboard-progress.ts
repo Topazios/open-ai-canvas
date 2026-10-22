@@ -1,4 +1,4 @@
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type StoryboardRow } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type StoryboardRow, type StoryboardVideoGeneration } from "@/types/canvas";
 
 export type StoryboardPipelineItemState = "missing" | "idle" | "loading" | "success" | "error";
 
@@ -17,6 +17,7 @@ export type StoryboardPipelineRow = {
     imageNode?: CanvasNodeData;
     imageState: StoryboardPipelineItemState;
     videoNode?: CanvasNodeData;
+    videoGeneration?: StoryboardVideoGeneration;
     videoState: StoryboardPipelineItemState;
 };
 
@@ -35,12 +36,14 @@ export function deriveStoryboardPipelineProgress(scriptNode: CanvasNodeData, nod
     const pipelineRows = rows.map((row): StoryboardPipelineRow => {
         const imageNode = row.imageNodeId ? nodeById.get(row.imageNodeId) : undefined;
         const videoNode = row.videoNodeId ? nodeById.get(row.videoNodeId) : undefined;
+        const videoGeneration = row.videoGeneration;
         return {
             row,
             imageNode: imageNode?.type === CanvasNodeType.Image ? imageNode : undefined,
             imageState: nodePipelineState(imageNode, CanvasNodeType.Image),
             videoNode: videoNode?.type === CanvasNodeType.Video ? videoNode : undefined,
-            videoState: nodePipelineState(videoNode, CanvasNodeType.Video),
+            videoGeneration,
+            videoState: storyboardVideoState(videoGeneration, videoNode),
         };
     });
     const imageNodes = pipelineRows.flatMap((item) => item.imageNode ? [item.imageNode] : []);
@@ -53,7 +56,7 @@ export function deriveStoryboardPipelineProgress(scriptNode: CanvasNodeData, nod
     return {
         rows: pipelineRows,
         images: summarizeStage(pipelineRows.map((item) => ({ state: item.imageState, node: item.imageNode })), rows.length),
-        videos: summarizeStage(pipelineRows.map((item) => ({ state: item.videoState, node: item.videoNode })), rows.length),
+        videos: summarizeStage(pipelineRows.map((item) => ({ state: item.videoState, node: item.videoNode, created: Boolean(item.videoGeneration || item.videoNode) })), rows.length),
         final: summarizeFinalStage(linkedFinalNodes, rows.length > 0 || linkedFinalNodes.length > 0),
         successfulVideoNodeIds,
         finalNodeIds: linkedFinalNodes.map((node) => node.id),
@@ -68,11 +71,21 @@ function nodePipelineState(node: CanvasNodeData | undefined, expectedType: Canva
     return "idle";
 }
 
-function summarizeStage(items: Array<{ state: StoryboardPipelineItemState; node?: CanvasNodeData }>, total: number): StoryboardPipelineStage {
+function storyboardVideoState(generation: StoryboardVideoGeneration | undefined, legacyNode: CanvasNodeData | undefined): StoryboardPipelineItemState {
+    if (generation) {
+        if (generation.taskStatus === "succeeded" && (generation.content || generation.storageKey)) return "success";
+        if (generation.taskStatus === "failed") return "error";
+        if (generation.taskStatus === "queued" || generation.taskStatus === "running") return "loading";
+        if (generation.taskStatus === "cancelled") return "idle";
+    }
+    return nodePipelineState(legacyNode, CanvasNodeType.Video);
+}
+
+function summarizeStage(items: Array<{ state: StoryboardPipelineItemState; node?: CanvasNodeData; created?: boolean }>, total: number): CanvasStoryboardPipelineProgress["images"] {
     const success = items.filter((item) => item.state === "success").length;
     const failed = items.filter((item) => item.state === "error").length;
     const loading = items.filter((item) => item.state === "loading").length;
-    const created = items.filter((item) => Boolean(item.node)).length;
+    const created = items.filter((item) => item.created ?? Boolean(item.node)).length;
     return {
         total,
         created,

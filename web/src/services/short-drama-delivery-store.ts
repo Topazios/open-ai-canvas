@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import type { TimelineProject } from "@/types/timeline";
@@ -175,7 +176,7 @@ export async function addLocalDeliveryIssue(projectId: string, unitId: string, s
             const canonical = captureDeliveryIssuePosition(current, position.timeMs, position.clipId);
             if (canonical.sourceTimeMs !== position.sourceTimeMs) throw new Error("片段时间点与审片快照不一致，请重新定位");
         }
-        const issue: DeliveryIssue = { id: crypto.randomUUID(), severity, note: note.trim(), createdAt: new Date().toISOString() };
+        const issue: DeliveryIssue = { id: createClientId(), severity, note: note.trim(), createdAt: new Date().toISOString() };
         if (position) issue.position = { ...position };
         return { ...current, reviewStatus: "pending", issues: [...current.issues, issue] };
     });

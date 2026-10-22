@@ -15,7 +15,7 @@ import { applyGenerationConsumerEffect, generationEffectApplied } from "@/servic
 import { commitProducedModel } from "@/lib/canvas/produced-model";
 import { canonicalize } from "json-canonicalize";
 import { parseScreenplayAuditReport, screenplayReportMarkdown } from "./workflow-screenplay-audit";
-import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
+import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata, type StoryboardVideoGeneration } from "@/types/canvas";
 
 export function generationTaskInput(task: GenerationTask) {
     if (!task.inputJson) return null;
@@ -222,6 +222,40 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
         ...node,
         type: CanvasNodeType.Text,
         metadata: { ...node.metadata, content: result.text, richText: undefined, prompt, ...completedTaskMetadata(task), status: "success", errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined },
+    };
+}
+
+/** 将视频任务结果物化为分镜行数据，避免为每个镜头创建画布视频节点。 */
+export async function buildStoryboardVideoGeneration(node: CanvasNodeData, task: GenerationTask): Promise<StoryboardVideoGeneration> {
+    const virtualVideoNode: CanvasNodeData = {
+        ...node,
+        type: CanvasNodeType.Video,
+        metadata: { ...node.metadata, prompt: task.prompt, status: "loading" },
+    };
+    const updated = await buildGenerationTaskNodeResult(virtualVideoNode, task, [virtualVideoNode]);
+    const metadata = updated.metadata || {};
+    return {
+        taskId: task.id,
+        taskStatus: task.status,
+        taskProgress: metadata.taskProgress,
+        taskStage: metadata.taskStage,
+        taskProvider: metadata.taskProvider,
+        taskErrorCode: metadata.taskErrorCode,
+        taskCreatedAt: metadata.taskCreatedAt,
+        taskStartedAt: metadata.taskStartedAt,
+        taskCompletedAt: metadata.taskCompletedAt,
+        taskDurationMs: metadata.taskDurationMs,
+        errorDetails: metadata.errorDetails,
+        content: metadata.content,
+        storageKey: metadata.storageKey,
+        mimeType: metadata.mimeType,
+        bytes: metadata.bytes,
+        width: metadata.naturalWidth,
+        height: metadata.naturalHeight,
+        durationMs: metadata.durationMs,
+        model: task.model,
+        prompt: task.prompt,
+        providerRequestId: task.providerRequestId,
     };
 }
 

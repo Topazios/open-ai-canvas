@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { buildNodeGenerationInputs, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { isFrameNode } from "@/lib/canvas/canvas-frame";
+import { isStoryboardFrameRecord } from "@/lib/canvas/storyboard-frame-records";
 import { sameNodeSemanticData } from "@/lib/canvas/canvas-project-domain";
 import { canvasNodeRenderBudget, canvasNodeRenderPadding, CANVAS_MAX_RENDERED_CONNECTIONS, shouldReduceCanvasMediaEffects } from "@/lib/canvas/canvas-performance-mode";
 import { buildCanvasNodeMentionReferenceMap, buildCanvasResourceReferences, buildContextResourceNodeMap, buildToolMentionReference, parseToolMentionTokens } from "@/lib/canvas/canvas-resource-references";
@@ -101,6 +102,7 @@ export function useCanvasRenderModel({
         const batchChildIndexByRootId = new Map<string, Map<string, number>>();
 
         for (const node of nodes) {
+            if (isStoryboardFrameRecord(node)) { renderHiddenNodeIds.add(node.id); continue; }
             const rootId = node.metadata?.batchRootId;
             const root = rootId ? nodeById.get(rootId) : undefined;
             if (root && !root.metadata?.imageBatchExpanded) {
@@ -358,7 +360,7 @@ export function useCanvasRenderModel({
             const connection = connectionById.get(connectionId);
             const sourceFrom = endpoints && nodeById.get(endpoints.fromNodeId);
             const sourceTo = endpoints && nodeById.get(endpoints.toNodeId);
-            if (!connection || !sourceFrom || !sourceTo) return [];
+            if (!connection || !sourceFrom || !sourceTo || isStoryboardFrameRecord(sourceFrom) || isStoryboardFrameRecord(sourceTo)) return [];
             const visibleFrom = assetManifestFrameById.has(sourceFrom.id) ? nodeById.get(assetManifestFrameById.get(sourceFrom.id)!) : sourceFrom;
             const visibleTo = assetManifestFrameById.has(sourceTo.id) ? nodeById.get(assetManifestFrameById.get(sourceTo.id)!) : sourceTo;
             if (!visibleFrom || !visibleTo || visibleFrom.id === visibleTo.id) return [];

@@ -81,8 +81,8 @@ function WorkspaceSidebarProfile({ collapsed, user }: { collapsed: boolean; user
             <WorkspaceSidebarCheckin collapsed={collapsed} />
             <WorkspaceSidebarStorageMeter collapsed={collapsed} />
             <div className={cn("app-workspace-sidebar-profile-row", collapsed && "is-collapsed")}>
-                <Popover open={menuOpen} onOpenChange={setMenuOpen} trigger="click" placement="topLeft" arrow={false} rootClassName="workspace-account-popover" content={content}>
-                    <button type="button" className={cn("app-workspace-sidebar-profile", collapsed && "is-collapsed")} aria-label="打开账户菜单" title={profileName}>
+                <Popover open={menuOpen} onOpenChange={setMenuOpen} trigger="click" placement="topLeft" arrow={false} zIndex={3000} rootClassName="workspace-account-popover" content={content}>
+                    <button type="button" className={cn("app-workspace-sidebar-profile", collapsed && "is-collapsed")} aria-label="打开个人资料与账户菜单" title={profileName} onClick={(event) => event.stopPropagation()}>
                         <span className="app-workspace-sidebar-profile-avatar">{avatar}</span>
                         {!collapsed ? <span className="app-workspace-sidebar-profile-copy"><strong>{profileName}</strong><span>创作工作台</span></span> : null}
                     </button>

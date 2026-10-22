@@ -1,4 +1,5 @@
 import type { CanvasNodeData, Position } from "@/types/canvas";
+import { isStoryboardFrameRecord } from "./storyboard-frame-records";
 
 type Rect = Position & { width: number; height: number };
 const gap = 64;
@@ -9,7 +10,7 @@ const intersects = (a: Rect, b: Rect) => a.x < b.x + b.width + gap && a.x + a.wi
 
 // Search actual free rectangles near the source, not the bottom of its entire column.
 export function placeWorkflowFootprint(nodes: CanvasNodeData[], size: { width: number; height: number }, preferred: Position, anchor?: CanvasNodeData): Position {
-    const occupied = nodes.map(workflowNodeBounds);
+    const occupied = nodes.filter(node => !isStoryboardFrameRecord(node)).map(workflowNodeBounds);
     const candidates: Position[] = [preferred];
     const source = anchor ? workflowNodeBounds(anchor) : { ...preferred, width: 0, height: 0 };
     for (const rect of [source, ...occupied]) {

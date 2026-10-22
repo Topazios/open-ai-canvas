@@ -81,6 +81,10 @@ export const shortDramaSteps: readonly ShortDramaStepDefinition[] = [
     { id: S.Promotion, stage: "delivery", label: "封面、预告、切片与发布文案", requires: [S.Verify, S.Plan], requirement: "生成封面方案、预告与切片脚本、发布文案，不代替实际发布。" },
 ];
 export function shortDramaStep(id: string) { return shortDramaSteps.find((step) => step.id === id); }
+export const storyboardFrameStepIds: readonly ShortDramaStepId[] = [S.StartFrame, S.EndFrame, S.Keyframes];
+export function isStoryboardFrameStep(id: string): id is ShortDramaStepId {
+    return storyboardFrameStepIds.includes(id as ShortDramaStepId);
+}
 const legacyAssetSteps: readonly ShortDramaStepId[] = [S.Bible, S.Characters, S.Environments, S.Props, S.Special, S.SpecialReferences, S.Extract, S.Catalog, S.AssetApproval, S.Style, S.Settings, S.Voices, S.Scenes, S.Production];
 // A sample shot is an optional validation aid. It remains available from the
 // video work unit, but is intentionally outside the required dependency graph.
@@ -97,22 +101,13 @@ export type ShortDramaNextStepGroup = {
 const contextNextStepGroups: Partial<Record<ShortDramaStepId, readonly ShortDramaNextStepGroup[]>> = {
     [S.Scenes]: [{ id: "direction.shots", label: "场次与镜头拆解", stepIds: [S.Shots], entryStepId: S.Shots }],
     [S.Shots]: [
-        { id: "direction.frames", label: "分镜图与帧图生成", stepIds: [S.Boards, S.StartFrame, S.EndFrame, S.Keyframes], entryStepId: S.Boards },
+        { id: "direction.boards", label: "分镜图生成", stepIds: [S.Boards], entryStepId: S.Boards },
         { id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video },
         { id: "direction.previsualization", label: "顺序、节奏与动作预演", stepIds: [S.Previsualization], entryStepId: S.Previsualization },
     ],
-    [S.Boards]: [
-        { id: "direction.frames", label: "首尾帧与关键帧生成", stepIds: [S.StartFrame, S.EndFrame, S.Keyframes], entryStepId: S.StartFrame },
-        { id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video },
-    ],
-    [S.StartFrame]: [
-        { id: "direction.frames", label: "尾帧与关键帧生成", stepIds: [S.EndFrame, S.Keyframes], entryStepId: S.EndFrame },
-        { id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video },
-    ],
-    [S.EndFrame]: [
-        { id: "direction.frames", label: "关键帧生成", stepIds: [S.Keyframes], entryStepId: S.Keyframes },
-        { id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video },
-    ],
+    [S.Boards]: [{ id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video }],
+    [S.StartFrame]: [{ id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video }],
+    [S.EndFrame]: [{ id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video }],
     [S.Keyframes]: [{ id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video }],
     [S.Previsualization]: [{ id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video }],
     [S.Sound]: [{ id: "edit.subtitles", label: "字幕与音画整理", stepIds: [S.Subtitles], entryStepId: S.Subtitles }],

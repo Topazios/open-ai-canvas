@@ -141,6 +141,28 @@ function Start-ManagedBackend {
         CANVAS_CORS_ORIGINS = 'http://localhost:3000'
         CANVAS_LOCAL_STOP_FILE = $stopFile
     }
+    $localConfigPath = Join-Path $script:localDir 'backend-config.json'
+    if (Test-Path -LiteralPath $localConfigPath) {
+        $localConfig = Get-Content -LiteralPath $localConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($null -ne $localConfig.corsOrigins) {
+            if ($localConfig.corsOrigins -isnot [array] -or @($localConfig.corsOrigins | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+                throw 'Local backend corsOrigins must be an array of non-empty origin strings.'
+            }
+            $settings.CANVAS_CORS_ORIGINS = $localConfig.corsOrigins -join ','
+        }
+        if ($null -ne $localConfig.publicBaseUrl) {
+            if ($localConfig.publicBaseUrl -isnot [string] -or [string]::IsNullOrWhiteSpace($localConfig.publicBaseUrl)) {
+                throw 'Local backend publicBaseUrl must be a non-empty URL string.'
+            }
+            $settings.CANVAS_PUBLIC_BASE_URL = $localConfig.publicBaseUrl.Trim()
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:CANVAS_CORS_ORIGINS)) {
+        $settings.CANVAS_CORS_ORIGINS = $env:CANVAS_CORS_ORIGINS
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:CANVAS_PUBLIC_BASE_URL)) {
+        $settings.CANVAS_PUBLIC_BASE_URL = $env:CANVAS_PUBLIC_BASE_URL.Trim()
+    }
     $previous = @{}
     foreach ($key in $settings.Keys) {
         $previous[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')

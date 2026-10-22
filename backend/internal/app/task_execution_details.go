@@ -82,7 +82,7 @@ func (s *Service) TaskExecutionDetails(userID, id string) (*TaskExecutionDetails
 	// Only explicitly allowed scalar parameters are returned. Shared-call lookup
 	// below uses the same private identity inputs as execution, never exposes them.
 	_ = json.Unmarshal([]byte(parent.InputJSON), &input)
-	for _, key := range []string{"size", "quality", "vquality", "videoSeconds", "audioVoice", "audioFormat", "audioSpeed", "reasoningEffort", "count"} {
+	for _, key := range []string{"interfaceType", "apiFormat", "channelModelKey", "providerModelKey", "size", "quality", "vquality", "videoSeconds", "audioVoice", "audioFormat", "audioSpeed", "reasoningEffort", "count"} {
 		switch value := input.Config[key].(type) {
 		case string:
 			result.Parameters[key] = truncateRunes(value, 160)

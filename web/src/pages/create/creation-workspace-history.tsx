@@ -172,11 +172,18 @@ export function CreationHistoryDrawer({
                                         </div>
                                     ) : (
                                         <div className={menuOpenId === conversation.id ? "creation-history-row is-menu-open" : "creation-history-row"}>
-                                            <button
-                                                type="button"
+                                            <div
                                                 className="creation-history-item-main"
+                                                role="button"
+                                                tabIndex={0}
                                                 aria-current={active ? "page" : undefined}
                                                 onClick={() => {
+                                                    setMenuOpenId(null);
+                                                    onSelect(conversation);
+                                                }}
+                                                onKeyDown={(event) => {
+                                                    if (event.key !== "Enter" && event.key !== " ") return;
+                                                    event.preventDefault();
                                                     setMenuOpenId(null);
                                                     onSelect(conversation);
                                                 }}
@@ -200,13 +207,14 @@ export function CreationHistoryDrawer({
                                                         )}
                                                     </span>
                                                 </span>
-                                            </button>
+                                            </div>
                                             <span className="creation-history-time-slot" aria-hidden={menuOpenId === conversation.id}>
                                                 <time dateTime={conversation.updatedAt}>{formatHistoryRelativeTime(conversation.updatedAt)}</time>
                                             </span>
                                             <Dropdown
                                                 trigger={["click"]}
                                                 placement="bottomRight"
+                                                styles={{ root: { zIndex: 3000 } }}
                                                 open={menuOpenId === conversation.id}
                                                 onOpenChange={(open) => setMenuOpenId(open ? conversation.id : null)}
                                                 overlayClassName="creation-history-menu-overlay"
@@ -233,7 +241,7 @@ export function CreationHistoryDrawer({
                                                     type="button"
                                                     className={menuOpenId === conversation.id ? "creation-history-more is-open" : "creation-history-more"}
                                                     aria-label={`更多操作：${conversation.title.trim() || "新创作"}`}
-                                                    onClick={(event) => event.preventDefault()}
+                                                    onClick={(event) => event.stopPropagation()}
                                                 >
                                                     <MoreHorizontal />
                                                 </button>

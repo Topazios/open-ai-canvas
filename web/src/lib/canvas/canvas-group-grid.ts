@@ -1,6 +1,7 @@
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { nodeSizeFromRatio } from "./canvas-node-size";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
+import { isStoryboardFrameRecord } from "./storyboard-frame-records";
 
 export const WORKFLOW_IMAGE_GRID = { size: 280, columns: 3, gapX: 24, gapY: 48, padding: 24, top: 88 } as const;
 
@@ -12,7 +13,7 @@ export function isGridFrame(node: CanvasNodeData) {
 }
 
 function visibleMembers(frame: CanvasNodeData, members: CanvasNodeData[]) {
-    return members.filter(node => !(node.id === frame.metadata?.shortDrama?.assetGroup?.manifestId &&
+    return members.filter(node => !isStoryboardFrameRecord(node) && !(node.id === frame.metadata?.shortDrama?.assetGroup?.manifestId &&
         node.metadata?.shortDrama?.assetKey === "$summary"));
 }
 

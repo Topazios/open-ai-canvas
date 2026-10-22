@@ -494,6 +494,8 @@ export function removeCanvasNodes(nodes: CanvasNodeData[], requestedIds: Set<str
     const removedIds = new Set(requestedIds);
     nodes.forEach((node) => {
         if (requestedIds.has(node.id)) node.metadata?.batchChildIds?.forEach((childId) => removedIds.add(childId));
+        const binding = node.metadata?.storyboardFrame || node.metadata?.storyboardFramePlan;
+        if (binding && requestedIds.has(binding.scriptId)) removedIds.add(node.id);
     });
     const remainingNodes = nodes.filter((node) => !removedIds.has(node.id));
     const cleanedNodes = remainingNodes.map((node) => {

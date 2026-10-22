@@ -28,6 +28,7 @@ export function WorkspaceAccountMenu() {
             trigger="click"
             placement="bottomRight"
             arrow={false}
+            zIndex={3000}
             rootClassName="workspace-account-popover"
             open={menuOpen}
             onOpenChange={setMenuOpen}
@@ -47,7 +48,7 @@ export function WorkspaceAccountMenu() {
                 </div>
             )}
         >
-            <button type="button" className="app-workspace-topbar-icon-button app-workspace-account-trigger" aria-label="账户菜单" title={user.displayName || user.username}>
+            <button type="button" className="app-workspace-topbar-icon-button app-workspace-account-trigger" aria-label="打开个人资料与账户菜单" title={user.displayName || user.username} onClick={(event) => event.stopPropagation()}>
                 <UserAvatar user={user} className="size-6" />
             </button>
         </Popover></>

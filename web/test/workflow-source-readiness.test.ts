@@ -106,11 +106,13 @@ describe("asset task state and usable output are independent", () => {
                 expect(casting.created.length).toBeGreaterThan(0);
             }
         }
-        for (const step of ["direction.boards", "direction.start_frame", "direction.end_frame", "direction.keyframes"] as const) {
+        const boardRequest = { ...f.request, step: "direction.boards" as const, sourceNodeIds: defaultWorkflowSources("direction.boards", f.request.pipelineId, f.nodes).filter(Boolean) };
+        const boardSubject = workflowImageSubjects(boardRequest, f.nodes)[0];
+        expect(createWorkflowImages({ ...boardRequest, imageSubjectIds: [boardSubject.id], imagePrompt: "Shot frame" }, f.nodes, f.connections, center).created).toHaveLength(1);
+        for (const step of ["direction.start_frame", "direction.end_frame", "direction.keyframes"] as const) {
             const request = { ...f.request, step, sourceNodeIds: defaultWorkflowSources(step, f.request.pipelineId, f.nodes).filter(Boolean) };
             const subject = workflowImageSubjects(request, f.nodes)[0];
-            const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imagePrompt: "Shot frame" }, f.nodes, f.connections, center);
-            expect(result.created).toHaveLength(1);
+            expect(() => createWorkflowImages({ ...request, imageSubjectIds: [subject.id], imagePrompt: "Shot frame" }, f.nodes, f.connections, center)).toThrow("分镜列表中生成");
         }
     });
 });

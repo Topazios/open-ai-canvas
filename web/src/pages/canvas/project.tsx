@@ -71,7 +71,7 @@ import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-task-state";
 import { workflowAssetActions, workflowAssetRevisionMembers } from "@/lib/canvas/canvas-workflow-asset-actions";
 import { CanvasWorkflowAssetReview } from "./canvas-workflow-asset-review";
 import { nodeWorkflow, workflowEpisodeProgress, workflowSignature, workflowGroupingProblem } from "@/lib/canvas/canvas-short-drama-workflow";
-import { nextShortDramaStepGroups, nextShortDramaSteps, shortDramaStep, ShortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
+import { isStoryboardFrameStep, nextShortDramaStepGroups, nextShortDramaSteps, shortDramaStep, ShortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
 import { useShortDramaWorkflowGeneration } from "./use-short-drama-workflow-generation";
 import { useProductionAgentRuns } from "./use-production-agent-runs";
 import { CanvasProductionAgentDetails } from "./canvas-production-agent-details";
@@ -1652,6 +1652,7 @@ function InfiniteCanvasPage() {
 
     const openWorkflowGenerator = useCallback((step: ShortDramaStepId, anchorId?: string, stepIds?: ShortDramaStepId[]) => {
         if (step === ShortDramaStep.Reconcile) { step = ShortDramaStep.Audit; stepIds = undefined; }
+        if (isStoryboardFrameStep(step)) { message.info("首帧、尾帧和关键帧请在分镜列表中生成"); return; }
         const anchor = nodesRef.current.find((node) => node.id === anchorId);
         const pipelineId = nodeWorkflow(anchor)?.pipelineId || nodesRef.current.map(nodeWorkflow).find(Boolean)?.pipelineId;
         if (!pipelineId) { message.info("请先创建短剧流程并采用选题"); return; }
@@ -2248,7 +2249,7 @@ function InfiniteCanvasPage() {
         message.success(`已上传并填入参考图 ${columnIndex + 1}`);
     }, [createFileNode, message, nodesRef, replaceNodeMedia, updateBatchRow]);
 
-    const { addScriptRow, createAndGenerateScriptVideos, createScriptActionBoards, createScriptImageNodes, createScriptVideoNodes, generateScriptImages, generateScriptRows, generateScriptVideos, removeScriptRow, replaceScriptRows, updateScriptRow } =
+    const { addScriptRow, createAndGenerateScriptVideos, createScriptActionBoards, createScriptImageNodes, generateScriptImages, generateScriptRows, generateScriptVideos, removeScriptRow, replaceScriptRows, updateScriptRow } =
         useCanvasStoryboard({
             projectId,
             addedSkills,
@@ -2326,7 +2327,7 @@ function InfiniteCanvasPage() {
         bindGenerationTask,
         applyGenerationTaskResult,
     });
-    const { extractStoryboardKeyframes, generateStoryboardFrames, retryStoryboardFrame } = useEpisodeStoryboardFrames({
+    const { extractStoryboardKeyframes, generateStoryboardFrames, retryStoryboardFrame, selectStoryboardFrameModel } = useEpisodeStoryboardFrames({
         projectId, nodesRef, connectionsRef, setNodes, setConnections,
         retry: handleRetryNode, enqueue: enqueueGenerationBatch,
         save: () => saveCanvasProject({ requireRemote: true }),
@@ -2587,7 +2588,7 @@ function InfiniteCanvasPage() {
                     onGenerateFrames={(rowId, kind, options) => generateStoryboardFrames(contentNode.id, rowId, kind, options)}
                     onExtractKeyframes={(rowId) => extractStoryboardKeyframes(contentNode.id, rowId)}
                     onRetryFrame={(image) => { void retryStoryboardFrame(image); }}
-                    onFrameModelChange={(kind, model) => useConfigStore.getState().rememberModel(kind, model)}
+                    onFrameModelChange={(kind, model) => selectStoryboardFrameModel(contentNode.id, kind, model)}
                 />;
                 const pipeline = deriveStoryboardPipelineProgress(contentNode, scope.nodes, scope.connections);
                 return (
@@ -2600,7 +2601,6 @@ function InfiniteCanvasPage() {
                         mentionReferences={scope.mentionReferences}
                         onOpen={() => setScriptEditorNodeId(contentNode.id)}
                         onCreateImageNodes={() => createScriptImageNodes(contentNode.id)}
-                        onCreateVideoNodes={() => createScriptVideoNodes(contentNode.id)}
                         onGenerateImages={(rowIds) => void generateScriptImages(contentNode.id, rowIds)}
                         onGenerateVideos={(rowIds) => (contentNode.metadata?.storyboardVideoInputMode === "keyframe" ? void generateScriptVideos(contentNode.id, rowIds) : void createAndGenerateScriptVideos(contentNode.id, rowIds))}
                         onVideoInputModeChange={(storyboardVideoInputMode) => handleConfigNodeChange(contentNode.id, { storyboardVideoInputMode })}
@@ -2664,7 +2664,6 @@ function InfiniteCanvasPage() {
             createScriptActionBoards,
             createStoryboardFromBatchTable,
             createScriptImageNodes,
-            createScriptVideoNodes,
             fillRowsFromConnections,
             focusCanvasImageNode,
             generateBatchRows,
@@ -2695,6 +2694,7 @@ function InfiniteCanvasPage() {
             generateStoryboardFrames,
             extractStoryboardKeyframes,
             retryStoryboardFrame,
+            selectStoryboardFrameModel,
             productionAgentRuns.runs,
             stopRemainingBatchItems,
             theme,

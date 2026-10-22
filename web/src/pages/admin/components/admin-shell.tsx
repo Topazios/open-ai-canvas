@@ -118,10 +118,6 @@ function isAdminNavigationPath(pathname: string, navigationPath: string) {
     return pathname === navigationPath || pathname.startsWith(`${navigationPath}/`);
 }
 
-function adminPopupContainer(node?: HTMLElement) {
-    return document.getElementById("admin-root") || node?.closest("[data-admin-root]") || document.body;
-}
-
 export function AdminShell() {
     const userId = useUserStore((state) => state.user?.id);
     return (
@@ -153,7 +149,7 @@ function AdminShellLayout() {
     };
 
     return (
-        <ConfigProvider theme={getIsolatedAdminAntTheme(dark, appearance.activeSkin)} getPopupContainer={(node) => adminPopupContainer(node)}>
+        <ConfigProvider theme={getIsolatedAdminAntTheme(dark, appearance.activeSkin)}>
             <App>
                 <main id="admin-root" data-admin-root data-admin-density={density} className="admin-shell flex h-full min-h-0 overflow-hidden">
                     <aside className={cn("admin-sidebar hidden shrink-0 flex-col overflow-hidden lg:flex", collapsed && "is-collapsed")}>

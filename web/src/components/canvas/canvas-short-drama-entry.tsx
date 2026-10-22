@@ -1,6 +1,6 @@
 import { useId, useState, type CSSProperties } from "react";
 import { Popover } from "antd";
-import { AlignLeft, ArrowLeft, ArrowUpRight, Check, ChevronUp, Clapperboard, FolderKanban, GripHorizontal, Images, Info, LayoutGrid, Palette, Pencil, Plus, Settings2, Sparkles, Type, Upload, X } from "lucide-react";
+import { AlignLeft, ArrowUpRight, Check, ChevronRight, ChevronUp, Clapperboard, FolderKanban, GripHorizontal, Images, Info, Palette, Pencil, Plus, Settings2, Sparkles, Type, Upload, X } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { CanvasNodeActionButton } from "./canvas-node-action-bar";
@@ -210,13 +210,14 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
     const theme = canvasThemes[useActiveTheme()];
     const panelId = useId();
     const floating = useDramaGuidePosition(progress.active && !collapsed);
-    const [selectedStepId, setSelectedStepId] = useState<CanvasShortDramaStepId | "overview" | null>(null);
-    const selectedStep = selectedStepId === "overview" ? undefined : progress.steps.find((step) => step.id === selectedStepId) || progress.steps.find((step) => step.status === "current") || progress.steps[0];
+    const [selectedStepId, setSelectedStepId] = useState<CanvasShortDramaStepId | null>(null);
+    const currentStep = progress.steps.find((step) => step.status === "current") || progress.steps[0];
+    const selectedStep = progress.steps.find((step) => step.id === selectedStepId) || currentStep;
+    const selectedStepIndex = selectedStep ? progress.steps.findIndex((step) => step.id === selectedStep.id) : -1;
     const taskCount = progress.steps.reduce((count, step) => count + step.tasks.length, 0);
     const activateTask = (task: CanvasShortDramaTask) => {
         if (!task.action || task.unavailableReason) return;
         onTaskClick(task);
-        setSelectedStepId(null);
         onToggle();
     };
     const guideStyle = {
@@ -257,9 +258,6 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
                 </div>
                 <div className="canvas-drama-guide-controls">
                     {onOpenGlobalSettings ? <button type="button" onClick={onOpenGlobalSettings} aria-label="全局创作设定" title="全局创作设定"><Settings2 className="size-3.5" /></button> : null}
-                    <button type="button" onClick={() => setSelectedStepId((value) => value === "overview" ? null : "overview")} aria-label="全部阶段与子任务" title="全部阶段与子任务" aria-pressed={!selectedStep}>
-                        <LayoutGrid className="size-3.5" />
-                    </button>
                     <button type="button" onClick={onToggle} aria-label="折叠短剧流程" title="折叠短剧流程">
                         <ChevronUp className="size-3.5" />
                     </button>
@@ -268,88 +266,86 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
                     </button>
                 </div>
             </header>
-            <div className="canvas-drama-guide-bar">
-                <select aria-label="短剧制作阶段" value={selectedStep?.id || "overview"} onChange={(event) => setSelectedStepId(event.target.value as CanvasShortDramaStepId | "overview")}>
-                    {progress.steps.map((step, index) => <option key={step.id} value={step.id}>{index + 1}. {step.label}{step.status === "current" ? " · 当前" : step.status === "completed" ? " · 已具备" : ""}</option>)}
-                    <option value="overview">全部阶段与子任务</option>
-                </select>
-                <span className="canvas-drama-guide-progress">{progress.completedCount}/{progress.steps.length} 阶段</span>
+            <div className="canvas-drama-guide-summary">
+                <div className="canvas-drama-guide-summary-copy">
+                    <span>当前节奏</span>
+                    <strong>{currentStep ? currentStep.label : "等待开始"}</strong>
+                    <small>{currentStep ? `第 ${progress.steps.findIndex((step) => step.id === currentStep.id) + 1} / ${progress.steps.length} 阶段` : "暂无可执行阶段"}</small>
+                </div>
+                <div className="canvas-drama-guide-summary-meter" aria-label={`已完成 ${progress.completedCount} 个阶段，共 ${progress.steps.length} 个阶段`}>
+                    <span style={{ width: `${progress.steps.length ? (progress.completedCount / progress.steps.length) * 100 : 0}%` }} />
+                </div>
+                <strong className="canvas-drama-guide-summary-count">{progress.completedCount}/{progress.steps.length}</strong>
             </div>
-            {selectedStep ? (
-                <div id={panelId} className="canvas-drama-tasks" role="region" aria-label={`${selectedStep.label}子任务`}>
-                    <header>
-                        <strong>{selectedStep.label}</strong>
-                        <span>
-                            {selectedStep.tasks.filter((task) => task.ready).length}/{selectedStep.tasks.length} 项已具备
-                        </span>
-                        <button type="button" aria-label="返回全部阶段" title="返回全部阶段" onClick={() => setSelectedStepId("overview")}>
-                            <ArrowLeft className="size-3.5" />
-                        </button>
-                    </header>
-                    <ul>
-                        {selectedStep.tasks.map((task) => (
-                            <li key={task.id} data-task-key={task.id}>
-                                <span className="canvas-drama-task-state" aria-label={task.ready ? "已具备" : "待处理"}>
-                                    {task.ready ? <Check className="size-3.5" /> : <span className="canvas-drama-task-dot" />}
-                                </span>
-                                <div className="canvas-drama-task-copy">
-                                    <span>{task.label}</span>
-                                    {task.progressLabel ? <small>{task.progressLabel}</small> : null}
-                                    {task.statusDetail ? <small>{task.statusDetail}</small> : null}
-                                    {task.unavailableReason ? <small>{task.unavailableReason}</small> : null}
-                                </div>
-                                {task.action ? (
+            <div className="canvas-drama-workflow">
+                <nav className="canvas-drama-stage-list" aria-label="短剧制作阶段">
+                    <ol>
+                        {progress.steps.map((step, index) => {
+                            const readyCount = step.tasks.filter((task) => task.ready).length;
+                            const selected = selectedStep?.id === step.id;
+                            return (
+                                <li key={step.id} data-status={step.status} data-selected={selected ? "true" : "false"}>
                                     <button
                                         type="button"
-                                        className="canvas-drama-task-action"
-                                        disabled={Boolean(task.unavailableReason)}
-                                        onClick={() => activateTask(task)}
+                                        className="canvas-drama-stage-select"
+                                        aria-current={selected ? "step" : undefined}
+                                        onClick={() => setSelectedStepId(step.id)}
                                     >
-                                        {task.actionLabel}
-                                        <ArrowUpRight className="size-3.5" />
+                                        <span className="canvas-drama-step-index">{step.status === "completed" ? <Check className="size-3" /> : index + 1}</span>
+                                        <span className="canvas-drama-stage-select-copy">
+                                            <strong>{step.label}</strong>
+                                            <small>{step.status === "completed" ? "已完成" : step.status === "current" ? "进行中" : "待前置"} · {readyCount}/{step.tasks.length}</small>
+                                        </span>
+                                        <ChevronRight className="canvas-drama-stage-select-arrow size-3.5" aria-hidden="true" />
                                     </button>
-                                ) : (
-                                    <small className="canvas-drama-task-pending">待接入</small>
-                                )}
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-            ) : (
-                <div className="canvas-drama-overview" role="region" aria-label="短剧制作阶段与子任务总览">
-                    {progress.steps.map((step, index) => (
-                        <article key={step.id} className="canvas-drama-overview-item" data-status={step.status}>
-                            <header>
-                                <span className="canvas-drama-overview-index">{step.status === "completed" ? <Check className="size-3" /> : index + 1}</span>
-                                <strong>{step.label}</strong>
-                                <span>
-                                    {step.tasks.filter((task) => task.ready).length}/{step.tasks.length}
-                                </span>
-                            </header>
-                            <ul>
-                                {step.tasks.map((task) => (
-                                    <li key={task.id} data-task-key={task.id} data-ready={task.ready ? "true" : "false"}>
+                                </li>
+                            );
+                        })}
+                    </ol>
+                </nav>
+                {selectedStep ? (
+                    <div id={panelId} className="canvas-drama-tasks" role="region" aria-label={`${selectedStep.label}子任务`}>
+                        <header>
+                            <div className="canvas-drama-tasks-heading">
+                                <span>第 {selectedStepIndex + 1} 阶段</span>
+                                <strong>{selectedStep.label}</strong>
+                            </div>
+                            <span>{selectedStep.tasks.filter((task) => task.ready).length}/{selectedStep.tasks.length} 项已具备</span>
+                        </header>
+                        <p className="canvas-drama-tasks-hint">
+                            {selectedStep.status === "current" ? "按下面顺序继续当前制作，完成后自动进入下一阶段。" : selectedStep.status === "completed" ? "本阶段已完成，可查看或回到具体任务继续调整。" : "等待前置阶段完成后再开始，避免跳过依赖造成返工。"}
+                        </p>
+                        <ul>
+                            {selectedStep.tasks.map((task) => (
+                                <li key={task.id} data-task-key={task.id} data-ready={task.ready ? "true" : "false"}>
+                                    <span className="canvas-drama-task-state" aria-label={task.ready ? "已具备" : "待处理"}>
+                                        {task.ready ? <Check className="size-3.5" /> : <span className="canvas-drama-task-dot" />}
+                                    </span>
+                                    <div className="canvas-drama-task-copy">
+                                        <span>{task.label}</span>
+                                        {task.progressLabel ? <small>{task.progressLabel}</small> : null}
+                                        {task.statusDetail ? <small>{task.statusDetail}</small> : null}
+                                        {task.unavailableReason ? <small>{task.unavailableReason}</small> : null}
+                                    </div>
+                                    {task.action ? (
                                         <button
                                             type="button"
-                                            className="canvas-drama-overview-task"
-                                            title={task.unavailableReason || task.actionLabel}
-                                            aria-label={`${task.label}：${task.action && !task.unavailableReason ? task.actionLabel : "查看详情"}`}
-                                            onClick={() => {
-                                                if (task.action && !task.unavailableReason) activateTask(task);
-                                                else setSelectedStepId(step.id);
-                                            }}
+                                            className="canvas-drama-task-action"
+                                            disabled={Boolean(task.unavailableReason)}
+                                            onClick={() => activateTask(task)}
                                         >
-                                            <span>{task.label}</span>
-                                            <small>{task.ready ? "已具备" : !task.action ? "待接入" : task.unavailableReason ? "待就绪" : "待处理"}</small>
-                                            <ArrowUpRight className="size-3" aria-hidden="true" />
+                                            {task.actionLabel}
+                                            <ArrowUpRight className="size-3.5" />
                                         </button>
-                                    </li>
-                                ))}
-                            </ul>
-                        </article>
-                    ))}
-                </div>
-            )}
+                                    ) : (
+                                        <small className="canvas-drama-task-pending">待接入</small>
+                                    )}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                ) : null}
+            </div>
         </section>
         </div>
     );
