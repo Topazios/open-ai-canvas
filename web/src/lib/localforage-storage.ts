@@ -1,6 +1,7 @@
 import localforage from "localforage";
 import type { StateStorage } from "zustand/middleware";
 
+import { createChunkedStateStorage } from "@/lib/chunked-state-storage";
 import { isUserScopedPersistenceSuppressed, scopedStorageKey } from "@/lib/user-scope";
 
 localforage.config({
@@ -17,7 +18,7 @@ function browserStorageAvailable(): boolean {
 
 export function localForageStorageForScope(scope?: string): StateStorage {
     const keyFor = (name: string) => scopedStorageKey(name, scope);
-    return {
+    return createChunkedStateStorage({
         getItem: async (name) => {
             if (!browserStorageAvailable()) return null;
             return (await localforage.getItem<string>(keyFor(name))) || null;
@@ -32,7 +33,7 @@ export function localForageStorageForScope(scope?: string): StateStorage {
             if (isUserScopedPersistenceSuppressed()) return;
             await localforage.removeItem(keyFor(name));
         },
-    };
+    });
 }
 
 export const localForageStorage: StateStorage = localForageStorageForScope();
