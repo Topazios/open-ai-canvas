@@ -11,6 +11,8 @@ import (
 	"infinite-canvas/backend/internal/repository"
 )
 
+const productionWorldPolicy = `必须将故事发生地、发行方向、正文语言和人物身份分开解释：全局设定中的故事发生地是故事世界的权威来源，正文语言只决定输出文字语言，发行方向和目标市场只决定发行受众与区域偏好，不能互相替换。严格沿用用户明确选择的地区、社会制度、机构、职业环境、生活细节和世界规则；故事发生地不在中国时，未被选题或原文明确指定为中国籍、华裔、华人或移民的角色，不得仅因为中文输出而自动改成这些身份，也不得自动套用中国式家庭、机构、法律、货币、节日或城市称谓。故事地点必须影响人物关系、权力来源、策略及后果，而非只作装饰；大区域要形成连贯具体地点，缺乏可靠来源时不编造当地法律、制度或习俗。保留用户指定的类型和情绪兑现，本土化不等于日常经营、资源协商或疗愈故事；不能用克制退让替代所有爽点，也不能仅给普通生活故事增加超自然身份来冒充奇幻。沿用选题的本土创作依据、原文片名、原文故事概念与开场对白语境；制作方案把类型冲突、原文语义和本土因果写入世界设定，集纲与正文逐级落实，不必重写或重译整份文件。不得只替换姓名、职业与城市照搬既有冲突模板；人物策略、关系变化和剧情因果由本故事推导。中文输出可以对当地姓名进行中文音译或译写，但不能改变其故事身份。`
+
 func productionPolicyBase(system string) string {
 	const marker = "本轮是制作长任务。只能使用 production_* 工具"
 	if index := strings.Index(system, marker); index >= 0 {
@@ -38,29 +40,38 @@ func productionPolicyBase(system string) string {
 
 func productionCurrentPolicy(system string) string {
 	system = productionPolicyBase(system)
-	return strings.TrimSpace(system) + "\n\n" + productionAgentPolicy + "\n\n" + productionrules.Block("assets", "text")
+	return strings.TrimSpace(system) + "\n\n" + productionAgentPolicy + "\n" + productionAssetIdentityPolicy + "\n\n" + productionrules.Block("assets", "text")
 }
 
 func productionScopedPolicy(system string, m productionManifest) string {
 	system = productionPolicyBase(system)
+	worldPolicy := "\n\n" + productionWorldPolicy
 	if m.Plan != nil {
+		if m.Plan.Version >= 5 {
+			return strings.TrimSpace(system) + "\n\n" + independentPlanPolicy + worldPolicy + "\n" + productionAssetIdentityPolicy + "\n\n" + productionrules.Block("story", "text")
+		}
 		policy := productionPlanPolicy
 		if m.Plan.Version >= 2 {
-			policy = unifiedPlanPolicy
+			policy = unifiedPlanPolicy + "\n" + productionContinuityPolicy
+			if !m.Plan.AssetsStarted {
+				policy += "\n当前仅制作公共方案。完成 story、inventory、visual、direction、generation 后调用 production_check 并结束，不创建设定资产、不创建资产分组、不启动资产制作；必须等待用户手动点击生成资产。资产清单登记只是方案内容，不代表资产档案已生成。"
+			} else {
+				policy += "\n用户已按资产类别启动制作。registeredAssets 是本次任务携带的完整资产总表，按其类别和条目逐项拆解执行；只生成 selectedAssetKeys 授权范围内的未完成项，遵循 nextAction，不扩展到未授权类别。所选项覆盖检查通过后结束；已有有效文稿不重做。"
+			}
 		}
 		if m.Plan.Version >= 3 {
 			policy = strings.NewReplacer("人物（含配角和画外音）、场景、道具、特殊资产、独立声音五类", "人物（含配角和画外音）、场景、道具、独立声音四类", "覆盖全部篇章和五类", "覆盖全部篇章和四类", "CHR/SCN/PRP/SPC/AUD", "CHR/SCN/PRP/AUD").Replace(policy)
 			policy += "\n" + productionPlanIntegratedEffectsPolicy
 		}
-		return strings.TrimSpace(system) + "\n\n" + policy + "\n\n" + productionrules.Block("story", "text")
+		return strings.TrimSpace(system) + "\n\n" + policy + "\n" + productionAssetIdentityPolicy + worldPolicy + "\n\n" + productionrules.Block("story", "text")
 	}
 	if m.Storyboard != nil {
 		if m.Storyboard.Version == storyboardEpisodeVersion {
-			return strings.TrimSpace(system) + "\n\n" + storyboardEpisodePolicy + "\n\n" + productionrules.Block("storyboard", "text")
+			return strings.TrimSpace(system) + "\n\n" + storyboardEpisodePolicy + worldPolicy + "\n\n" + productionrules.Block("storyboard", "text")
 		}
-		return strings.TrimSpace(system) + "\n\n" + storyboardPolicy + "\n\n" + productionrules.Block("storyboard", "text")
+		return strings.TrimSpace(system) + "\n\n" + storyboardPolicy + worldPolicy + "\n\n" + productionrules.Block("storyboard", "text")
 	}
-	policy := productionCurrentPolicy(system)
+	policy := productionCurrentPolicy(system) + worldPolicy
 	if m.Category == "reconcile" {
 		policy = strings.ReplaceAll(policy, "只生成本轮指定分类，逐项调用 production_submit 写入。", "统一处理人物、场景、道具、独立声音四类资产，逐项调用 production_submit 写入。")
 		policy = strings.ReplaceAll(policy, "character/environment/prop/special/setting/style/sound", "character/environment/prop/setting/style/sound")

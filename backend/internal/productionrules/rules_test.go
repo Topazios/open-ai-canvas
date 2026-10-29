@@ -54,3 +54,19 @@ func TestAssetImageRulesReplaceOldEnvelopeOnly(t *testing.T) {
 		t.Fatal("embedded user text rewritten")
 	}
 }
+
+func TestAssetImageRulesReplacePriorVersionAndKeepHistoricalPropConstraints(t *testing.T) {
+	old := "【制作执行规范 v1 · assets/image】\n旧版规则\n【制作执行规范结束】\n\n名称：明代旧炮；炮身长约2米。"
+	got := Apply(old, "assets", "image")
+	if !strings.HasPrefix(got, Block("assets", "image")+"\n\n") || strings.Contains(got, "旧版规则") {
+		t.Fatal("prior asset-image envelope was not replaced")
+	}
+	for _, required := range []string{"准确保留名称、身份与时代", "必要的整体外形尺寸", "不要把真实历史物件虚称为无功能物件", "静态美术呈现不代表上游审核保证通过"} {
+		if !strings.Contains(Block("assets", "image"), required) {
+			t.Fatalf("asset-image rule missing %q", required)
+		}
+	}
+	if !strings.HasSuffix(got, "名称：明代旧炮；炮身长约2米。") {
+		t.Fatal("historical asset facts or exterior dimensions were changed")
+	}
+}

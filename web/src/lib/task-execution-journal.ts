@@ -1,7 +1,8 @@
 import type { TaskExecutionDetails } from "@/services/api/task-center";
 import { generationTaskStageLabel, generationTaskStatusLabel } from "./generation-task-display";
+import { executionTaskWarning } from "./execution-warning";
 
-export type ExecutionJournalRow = { id: string | number; kind: string; title: string; detail: string; time: string; failed: boolean; pending?: boolean; source?: string; nodeId?: string };
+export type ExecutionJournalRow = { id: string | number; kind: string; title: string; detail: string; time: string; failed: boolean; warning?: boolean; pending?: boolean; source?: string; nodeId?: string };
 
 export function taskElapsed(start?: string, end?: string, now = Date.now()) {
     const from = Date.parse(start || "");
@@ -20,15 +21,16 @@ export function taskExecutionRows(detail: TaskExecutionDetails, now = Date.now()
     if (startedAt) rows.push({ id: `${task.id}:started`, kind: "model", title: task.operation === "short_drama_batch" ? "开始分批处理" : "开始执行", detail: task.operation === "short_drama_batch" ? `本次请求包含 ${detail.unitCount || "多"} 份材料，执行过程中逐份保存结果。` : generationTaskStageLabel(task), time: startedAt, failed: false });
     for (const step of detail.steps) {
         const pending = step.status === "running" || step.status === "queued";
-        const status = generationTaskStatusLabel({ ...task, ...step });
-        rows.push({ id: step.id, kind: "model", title: `${step.label} · ${status}`, time: step.startedAt || step.createdAt, failed: step.status === "failed", pending,
+        const warning = executionTaskWarning(step.status, step.diagnostic);
+        const status = warning ? "内容待处理" : generationTaskStatusLabel({ ...task, ...step, diagnostic: step.diagnostic });
+        rows.push({ id: step.id, kind: "model", title: `${step.label} · ${status}`, time: step.startedAt || step.createdAt, failed: step.status === "failed" && !warning, warning, pending,
             detail: [step.stage, `排队等待 ${taskElapsed(step.createdAt, step.startedAt || step.completedAt, now)}`,
                 step.startedAt ? `执行耗时 ${taskElapsed(step.startedAt, step.completedAt, now)}` : "尚未开始调用模型",
                 step.error, step.outputPreview ? `已保存 ${step.outputChars} 字\n${step.outputPreview}${step.outputChars > Array.from(step.outputPreview).length ? "\n（内容较长，此处显示摘要）" : ""}` : pending ? "尚未收到可展示的正文，正在等待模型响应。" : ""].filter(Boolean).join("\n") });
     }
-    for (const event of detail.events || []) rows.push({ id: event.id, kind: "status", title: event.title, detail: "", time: event.createdAt, failed: event.failed });
-    if (detail.qualityWarnings?.length) rows.push({ id: `${task.id}:quality`, kind: "status", title: "正文完成度需复核", detail: detail.qualityWarnings.join("\n"), time: task.completedAt || task.updatedAt, failed: false });
+    for (const event of detail.events || []) rows.push({ id: event.id, kind: "status", title: event.title, detail: "", time: event.createdAt, failed: event.failed && !event.warning, warning: event.warning });
+    if (detail.qualityWarnings?.length) rows.push({ id: `${task.id}:quality`, kind: "status", title: "正文完成度需复核", detail: detail.qualityWarnings.join("\n"), time: task.completedAt || task.updatedAt, failed: false, warning: true });
     if (!terminal && task.status === "running") rows.push({ id: `${task.id}:current`, kind: "model", title: generationTaskStageLabel(task), detail: `${task.operation === "short_drama_batch" ? "流程历时（含重试间隔）" : "执行耗时"} ${taskElapsed(startedAt, undefined, now)}${task.textDraft ? `\n已接收 ${Array.from(task.textDraft).length} 字` : "\n尚未收到最终结果，后台任务仍在执行。"}`, time: task.updatedAt, failed: false, pending: true });
-    if (task.completedAt || ["succeeded", "failed", "cancelled"].includes(task.status)) rows.push({ id: `${task.id}:terminal`, kind: "status", title: generationTaskStatusLabel(task), detail: task.error || task.stage || "", time: task.completedAt || task.updatedAt, failed: task.status === "failed" });
+    if (task.completedAt || ["succeeded", "failed", "cancelled"].includes(task.status)) rows.push({ id: `${task.id}:terminal`, kind: "status", title: executionTaskWarning(task.status, task.diagnostic) ? "任务已停止 · 内容待处理" : generationTaskStatusLabel(task), detail: task.error || task.stage || "", time: task.completedAt || task.updatedAt, failed: task.status === "failed" && !executionTaskWarning(task.status, task.diagnostic), warning: executionTaskWarning(task.status, task.diagnostic) });
     return rows.sort((a,b) => Date.parse(a.time) - Date.parse(b.time) || String(a.id).localeCompare(String(b.id)));
 }

@@ -18,11 +18,15 @@ func requestTextProvider(ctx context.Context, config providerConfig, path string
 		return postStreamingTextResult(ctx, config, path, body, protocol, onDelta)
 	}
 	var payload map[string]interface{}
-	if err := postJSON(ctx, config, path, body, &payload); err != nil {
-		return providerTextResult{}, err
-	}
-	parsed, err := parseAgentToolPayload(payload, protocol)
-	if err != nil {
+	var parsed map[string]interface{}
+	if err := postJSON(ctx, config, path, body, &payload, func(data []byte, mimeType string) error {
+		var err error
+		parsed, err = parseAgentProviderResponse(data, mimeType, protocol, nil)
+		if err == nil && strings.TrimSpace(stringField(parsed, "text")) == "" {
+			err = missingProviderTextError(stringField(parsed, "reasoning"))
+		}
+		return err
+	}); err != nil {
 		return providerTextResult{}, err
 	}
 	result := providerTextResult{Text: stringField(parsed, "text"), Reasoning: stringField(parsed, "reasoning")}
@@ -125,21 +129,7 @@ func parseTextEventStream(data []byte, protocol string) (string, error) {
 		if err := validateTextPayload(payload); err != nil {
 			return err
 		}
-		if protocol == "responses" {
-			text.WriteString(stringField(payload, "delta"))
-		} else if protocol == "claude-api" {
-			delta, _ := payload["delta"].(map[string]interface{})
-			if stringField(delta, "type") == "text_delta" {
-				text.WriteString(stringField(delta, "text"))
-			}
-		} else {
-			choices, _ := payload["choices"].([]interface{})
-			for _, choice := range choices {
-				record, _ := choice.(map[string]interface{})
-				delta, _ := record["delta"].(map[string]interface{})
-				text.WriteString(streamContentText(delta["content"]))
-			}
-		}
+		text.WriteString(streamingTextDelta(protocol, eventName, payload))
 		eventName = ""
 		return nil
 	}
@@ -183,9 +173,23 @@ func streamContentText(value interface{}) string {
 	var result strings.Builder
 	for _, part := range parts {
 		record, _ := part.(map[string]interface{})
-		result.WriteString(stringField(record, "text"))
+		if isProviderTextPart(record) {
+			result.WriteString(stringField(record, "text"))
+		}
 	}
 	return result.String()
+}
+
+func isProviderTextPart(part map[string]interface{}) bool {
+	if thought, _ := part["thought"].(bool); thought {
+		return false
+	}
+	switch stringField(part, "type") {
+	case "", "text", "output_text":
+		return true
+	default:
+		return false
+	}
 }
 
 type streamingTextDeltaParser struct {
@@ -254,8 +258,8 @@ func (p *streamingTextDeltaParser) consumeFrame(frame string) {
 
 func streamingTextDelta(protocol string, eventName string, payload map[string]interface{}) string {
 	if protocol == "responses" {
-		eventType := firstNonEmptyString(strings.TrimSpace(eventName), stringField(payload, "type"))
-		if eventType == "response.output_text.delta" || eventType == "output_text.delta" || eventType == "" || eventType == "message" {
+		eventType := firstNonEmptyString(stringField(payload, "type"), strings.TrimSpace(eventName))
+		if eventType == "response.output_text.delta" || eventType == "output_text.delta" {
 			return stringField(payload, "delta")
 		}
 		return ""
@@ -291,7 +295,7 @@ func extractResponseText(payload map[string]interface{}) string {
 		content, _ := record["content"].([]interface{})
 		for _, part := range content {
 			partRecord, ok := part.(map[string]interface{})
-			if ok && stringField(partRecord, "text") != "" {
+			if ok && isProviderTextPart(partRecord) && stringField(partRecord, "text") != "" {
 				chunks = append(chunks, stringField(partRecord, "text"))
 			}
 		}
@@ -314,7 +318,7 @@ func extractChatCompletionText(payload map[string]interface{}) string {
 			continue
 		}
 		if message, ok := record["message"].(map[string]interface{}); ok {
-			if text := stringField(message, "content"); text != "" {
+			if text := streamContentText(message["content"]); text != "" {
 				chunks = append(chunks, text)
 			}
 		}

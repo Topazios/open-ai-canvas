@@ -59,6 +59,8 @@ type ManifestResponse struct {
 // tool-capable text request. Tool call paths are resolved against each item in
 // ToolCallsPath.
 type ManifestAgentResponse struct {
+	Text                   any      `json:"text,omitempty"`
+	Reasoning              any      `json:"reasoning,omitempty"`
 	TextPaths              []string `json:"textPaths,omitempty"`
 	ReasoningPaths         []string `json:"reasoningPaths,omitempty"`
 	ToolCallsPath          string   `json:"toolCallsPath,omitempty"`

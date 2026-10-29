@@ -1,5 +1,6 @@
 import { CollectionToolbar } from "@/components/layout/collection-toolbar";
 import { useConfirmedTaskRetry } from "@/components/use-confirmed-task-retry";
+import { retryTaskWithBillingConfirmation } from "@/services/task-retry";
 import { App, Button, Drawer, Form, Input, Modal, Typography } from "antd";
 import { Switch } from "@/components/ui/base/switch";
 import { SegmentedControl } from "@/components/ui/base/segmented-control";
@@ -154,10 +155,20 @@ export default function TasksPage() {
     const retryGroupTasks = async (key: string, items: GenerationTask[]) => {
         const retryable = items.filter((task) => isTaskFailed(task) && task.errorCode !== CONTENT_MODERATION_ERROR_CODE && !isContentModerationError(task.error));
         if (!retryable.length) return;
+        const confirmed = await new Promise<boolean>((resolve) => {
+            modal.confirm({
+                title: `重试 ${retryable.length} 个失败任务？`,
+                content: "确认后将自动依次提交并排队，不再逐个询问。上次请求未返回结果的任务费用仍待核对，重新提交会发起新调用，原调用仍可能产生费用。",
+                okText: "确认并全部重试", cancelText: "暂不重试", maskClosable: false,
+                onOk: () => { resolve(true); }, onCancel: () => { resolve(false); },
+                afterClose: () => { resolve(false); },
+            });
+        });
+        if (!confirmed) return;
         setRetryingGroup(key);
         try {
             for (const task of retryable) {
-                await runAction(task.id);
+                await runAction(task.id, true);
             }
         } finally {
             setRetryingGroup("");
@@ -301,14 +312,15 @@ export default function TasksPage() {
     }, [loadTasks]);
 
     const confirmedRetry = useConfirmedTaskRetry();
-    const runAction = async (id: string) => {
+    const runAction = async (id: string, billingAcknowledged = false) => {
         setActingId(id);
         try {
             const currentTask = await queryGenerationTask(id);
             const savingMedia = Boolean(currentTask.mediaStage);
             const next = currentTask.status === "queued" || currentTask.status === "running" || currentTask.status === "succeeded"
                 ? currentTask
-                : savingMedia ? await recoverGenerationTaskMedia(id) : await confirmedRetry(id);
+                : savingMedia ? await recoverGenerationTaskMedia(id)
+                : billingAcknowledged ? await retryTaskWithBillingConfirmation(id, async () => true) : await confirmedRetry(id);
             setTasks((items) => items.map((item) => (item.id === id ? next : item)));
             setDetailTask((current) => (current?.id === id ? { ...current, ...next } : current));
             setStatusFilter("active");

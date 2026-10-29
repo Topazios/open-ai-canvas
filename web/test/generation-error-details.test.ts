@@ -18,7 +18,7 @@ describe("safe upstream error details", () => {
     test("does not replace a safe upstream message with a generic HTTP hint", () => {
         const message = `模型服务暂时不可用（HTTP 500）；上游：${detail}`;
         expect(generationErrorMessage(message)).toBe(message);
-        expect(generationErrorMessage("模型服务暂时不可用（HTTP 500）")).toBe("网络异常。");
+        expect(generationErrorMessage("模型服务暂时不可用（HTTP 500）")).toBe("生成服务处理异常，请在任务中心查看诊断。");
     });
     test("keeps details when moderation metadata is stored", () => {
         const message = `内容审核未通过；上游：${detail}`;
@@ -27,6 +27,22 @@ describe("safe upstream error details", () => {
         expect(metadata.generationErrorCode).toBe("sensitive_words_detected");
     });
     test("upstream marker does not bypass URL hiding", () => {
-        expect(generationErrorMessage("模型服务请求失败；上游：https://private.test")).toBe("网络异常。");
+        expect(generationErrorMessage("模型服务请求失败；上游：https://private.test")).toBe("生成链路处理异常，请在任务中心查看诊断。");
+    });
+    test("does not classify response or local processing failures as network fluctuations", () => {
+        for (const code of [500, 502, 503, 504]) {
+            expect(generationErrorMessage(`HTTP ${code}`)).toBe("生成服务处理异常，请在任务中心查看诊断。");
+        }
+        expect(generationErrorMessage('POST https://internal.invalid/writeback: checkpoint rejected')).toBe("生成链路处理异常，请在任务中心查看诊断。");
+        expect(generationErrorMessage("生成结果校验未通过，原稿已保留")).toBe("生成结果校验未通过，原稿已保留");
+        for (const detail of ["connection reset by peer", "TLS handshake timeout"]) {
+            expect(generationErrorMessage(detail)).toBe("网络异常。");
+        }
+        for (const detail of ["decode result: unexpected EOF", "broken pipe"]) {
+            expect(generationErrorMessage(detail)).toBe("生成链路处理异常，请在任务中心查看诊断。");
+        }
+        for (const detail of ["convert media: context deadline exceeded", "context canceled"]) {
+            expect(generationErrorMessage(detail)).toBe("执行已超时或中断，请在任务中心核对任务状态。");
+        }
     });
 });

@@ -4,6 +4,9 @@ export const CONTENT_MODERATION_MESSAGE = "内容审核未通过，请修改生�
 
 const DEFAULT_GENERATION_ERROR_MESSAGE = "生成失败，请稍后重试。";
 const NETWORK_ERROR_MESSAGE = "网络异常。";
+const SERVICE_ERROR_MESSAGE = "生成服务处理异常，请在任务中心查看诊断。";
+const PROCESSING_ERROR_MESSAGE = "生成链路处理异常，请在任务中心查看诊断。";
+const INTERRUPTED_ERROR_MESSAGE = "执行已超时或中断，请在任务中心核对任务状态。";
 
 export type GenerationFailureMetadata = {
     errorDetails: string;
@@ -31,14 +34,16 @@ export function generationErrorMessage(error: unknown) {
     const resourceStorageMessage = resourceStorageFailureMessage(raw) || resourceStorageFailureMessage(displayMessage);
     if (resourceStorageMessage) return resourceStorageMessage;
     if (isNetworkFailure(displayMessage)) return NETWORK_ERROR_MESSAGE;
+    if (/context deadline exceeded|context canceled/i.test(displayMessage)) return INTERRUPTED_ERROR_MESSAGE;
+    if (/unexpected eof|broken pipe/i.test(displayMessage)) return PROCESSING_ERROR_MESSAGE;
     if (!providerMessage) {
         if (!displayMessage.includes("；上游：")) {
             if (hasHttpStatus(raw, 429)) return "服务当前繁忙，请稍后重试。";
             if (hasHttpStatus(raw, 401, 403)) return "生成服务鉴权失败，请检查渠道配置。";
             if (hasHttpStatus(raw, 404)) return "生成服务地址不可用，请检查渠道配置。";
-            if (hasHttpStatus(raw, 500, 502, 503, 504)) return NETWORK_ERROR_MESSAGE;
+            if (hasHttpStatus(raw, 500, 502, 503, 504)) return SERVICE_ERROR_MESSAGE;
         }
-        if (containsInfrastructureDetails(raw)) return NETWORK_ERROR_MESSAGE;
+        if (containsInfrastructureDetails(raw)) return PROCESSING_ERROR_MESSAGE;
     }
     return displayMessage || DEFAULT_GENERATION_ERROR_MESSAGE;
 }
@@ -125,7 +130,7 @@ function providerPayloadMessage(payload: unknown): string {
 }
 
 function isNetworkFailure(value: string) {
-    return /\b(?:dial tcp|connection refused|connection reset|no such host|i\/o timeout|context deadline exceeded|network error|failed to fetch|fetch failed|socket hang up|econnrefused|econnreset|etimedout)\b/i.test(value);
+    return /\b(?:dial tcp|connection refused|connection reset|no such host|i\/o timeout|network error|failed to fetch|fetch failed|socket hang up|econnrefused|econnreset|etimedout|tls handshake timeout)\b/i.test(value);
 }
 
 function hasHttpStatus(value: string, ...statuses: number[]) {

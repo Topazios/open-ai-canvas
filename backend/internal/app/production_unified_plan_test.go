@@ -19,7 +19,7 @@ func TestProductionUnifiedPlanRequiresSharedRulesAndAssignsStableCodes(t *testin
 	first := productionCall(t, s, run.ID, "production_plan_inventory", input, false)
 	retry := productionCall(t, s, run.ID, "production_plan_inventory", input, false)
 	identity := first["registeredAssets"].([]any)[0].(map[string]any)["identity"].(map[string]any)
-	if identity["code"] != "CHR-0001" || productionHash(first["registeredAssets"]) != productionHash(retry["registeredAssets"]) {
+	if !productionAssetBaseCode.MatchString(stringValue(identity["code"])) || !strings.HasPrefix(stringValue(identity["code"]), "CHR-") || productionHash(first["registeredAssets"]) != productionHash(retry["registeredAssets"]) {
 		t.Fatal(first, retry)
 	}
 	productionCall(t, s, run.ID, "production_submit", map[string]any{"key": "hero", "name": "林岚", "document": orderedPlanDocument("hero", "character"), "factIds": []string{}}, true)
@@ -30,8 +30,9 @@ func TestProductionUnifiedPlanRequiresSharedRulesAndAssignsStableCodes(t *testin
 	for _, section := range unifiedPlanSections[1:3] {
 		productionCall(t, s, run.ID, "production_submit", map[string]any{"key": section.Key, "name": section.Title, "document": orderedPlanDocument(section.Key, ""), "factIds": []string{}}, false)
 	}
-	productionCall(t, s, run.ID, "production_submit", map[string]any{"key": "hero", "name": "林岚", "document": orderedPlanDocument("hero", "character"), "factIds": []string{}}, false)
 	productionCall(t, s, run.ID, "production_submit", map[string]any{"key": "generation", "name": "生成与一致性规范", "document": orderedPlanDocument("generation", ""), "factIds": []string{}}, false)
+	startPlanAssetsForTest(t, s, run.ID)
+	productionCall(t, s, run.ID, "production_submit", map[string]any{"key": "hero", "name": "林岚", "document": orderedPlanDocument("hero", "character"), "factIds": []string{}}, false)
 	check = productionCall(t, s, run.ID, "production_check", map[string]any{}, false)
 	if check["valid"] != true {
 		t.Fatal(check)
@@ -65,23 +66,22 @@ func productionJSON(value any) string {
 
 func TestProductionAssetCodesDoNotRecycleAndAreCanvasScoped(t *testing.T) {
 	s, db, run := planFixture(t, 2)
-	execution, _ := s.repo.CloudAgent("user", run.ID)
-	first, err := newProductionAssetIdentity(s.repo, execution, "agent-canvas", "character")
+	first, err := newProductionAssetIdentity(s.repo, "agent-canvas", "story", "character")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Where("run_id = ?", run.ID).Delete(&model.ProductionAgentJob{}).Error; err != nil {
 		t.Fatal(err)
 	}
-	second, err := newProductionAssetIdentity(s.repo, execution, "agent-canvas", "character")
+	second, err := newProductionAssetIdentity(s.repo, "agent-canvas", "story", "character")
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := newProductionAssetIdentity(s.repo, execution, "other-canvas", "character")
+	other, err := newProductionAssetIdentity(s.repo, "other-canvas", "story", "character")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Code != "CHR-0001" || second.Code != "CHR-0002" || other.Code != "CHR-0001" || other.ID == first.ID {
+	if first.Code == second.Code || first.Code == other.Code || other.ID == first.ID || strings.Split(first.Code, "-")[1] != strings.Split(second.Code, "-")[1] || strings.Split(first.Code, "-")[1] == strings.Split(other.Code, "-")[1] {
 		t.Fatal(first, second, other)
 	}
 }
@@ -125,7 +125,7 @@ func TestProductionReconcileReusesIdentityAndRequiresReadingOriginal(t *testing.
 	}
 	job, _ = s.repo.ProductionAgentJob("user", run.ID)
 	_ = json.Unmarshal([]byte(job.ManifestJSON), &m)
-	if m.Assets[identity.Code].ID != identity.ID || m.Assets["shop"].Code != "SCN-0001" {
+	if m.Assets[identity.Code].ID != identity.ID || !strings.HasPrefix(m.Assets["shop"].Code, "SCN-") || !productionAssetBaseCode.MatchString(m.Assets["shop"].Code) {
 		t.Fatal(m.Assets)
 	}
 }

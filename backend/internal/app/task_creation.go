@@ -37,6 +37,20 @@ func screenplayAuditCanWaitForTextSlot(taskType string, metadata map[string]any)
 	return source == "canvas-short-drama-workflow" && step == "story.audit"
 }
 
+func canvasGenerationUsesDurableQueue(taskType, operation string) bool {
+	if operation == workflowBatchOperation || strings.HasPrefix(operation, "cloud_agent") {
+		return false
+	}
+	switch taskType {
+	case "canvas_image", "canvas_video", "canvas_audio":
+		return true
+	case "canvas_text":
+		return operation == "text"
+	default:
+		return false
+	}
+}
+
 // CreateTask 收敛任务进入系统前的 admission 流程：输入标准化、逻辑模型路由、
 // 能力/额度校验和持久化。执行阶段由 worker 与 provider 相关模块负责。
 // CreateTask 校验并创建一条生成任务。
@@ -148,6 +162,11 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return nil, err
+	}
+	if canvasGenerationUsesDurableQueue(taskType, req.Operation) {
+		// The worker's per-kind lane enforces execution concurrency. Canvas batch
+		// submissions must remain durably queued when that lane is full.
+		policy.Task.ActiveTaskLimit = 0
 	}
 	if canWaitForTextSlot {
 		// Keep the task queued and let the worker's text lane control actual
@@ -510,7 +529,7 @@ func (s *Service) resolveSystemChannelModelSelection(input map[string]any, taskT
 	nextConfig := make(map[string]any, len(config)+6)
 	for key, value := range config {
 		switch key {
-		case "channelId", "channelModelKey", "priceTierId", "providerModelKey", "apiFormat", "interfaceType", "baseUrl", "apiKey", "secretKey", "headers", "model", "capabilityConfig":
+		case "channelId", "channelModelKey", "priceTierId", "providerModelKey", "apiFormat", "interfaceType", "selectedProtocol", "baseUrl", "apiKey", "secretKey", "headers", "model", "capabilityConfig":
 			continue
 		default:
 			nextConfig[key] = value

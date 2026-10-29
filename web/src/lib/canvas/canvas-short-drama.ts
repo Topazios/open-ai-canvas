@@ -7,6 +7,7 @@ import type { ShortDramaStageId } from "@/lib/short-drama-stages";
 import { shortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
 import { nodeWorkflow, workflowAncestors, workflowEpisodeProgress, episodeProgressLabel, productionBibleReady } from "./canvas-short-drama-workflow";
 import { workflowImageSubjects, workflowImageShots } from "./canvas-workflow-images";
+import { workflowSoundSubjects } from "./canvas-workflow-sounds";
 import { workflowAssetKind } from "./canvas-production-sources";
 import type { PlannedAssetKind } from "../production-plan";
 import { latestBodyAudit, screenplayAuditState } from "./workflow-screenplay-audit";
@@ -62,7 +63,6 @@ type CanvasGuideStage = {
 const visibleShortDramaStages: readonly CanvasGuideStage[] = [
     { key: "story", label: "剧情与章节", sourceStages: ["story"] },
     { key: "storyboard", label: "分镜与视频草样", sourceStages: ["storyboard", "video"] },
-    { key: "voice", label: "配音与声音", sourceStages: ["voice"] },
     { key: "edit", label: "剪辑与后期", sourceStages: ["edit"] },
     { key: "review", label: "成片质检", sourceStages: ["review"] },
     { key: "delivery", label: "导出交付", sourceStages: ["delivery"] },
@@ -73,9 +73,7 @@ const shortDramaGuideGroups: Record<"assets" | "storyboard", ShortDramaGuideGrou
         { id: "guide.assets.references", label: "资产参考图生成", stepIds: ["assets.character_references", "assets.environment_references", "assets.prop_references"] },
     ],
     storyboard: [
-        { id: "guide.direction.breakdown", label: "场次与镜头拆解", stepIds: ["direction.shots"] },
-        { id: "guide.direction.frames", label: "分镜图生成（首尾帧与关键帧在分镜列表管理）", stepIds: ["direction.boards"] },
-        { id: "guide.direction.previsualization", label: "动作预演与连续性检查", stepIds: ["direction.previsualization"] },
+        { id: "guide.direction.breakdown", label: "分镜脚本与镜头提示词", stepIds: ["direction.scenes", "direction.shots", "direction.production"] },
     ],
 };
 
@@ -183,21 +181,16 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
         ],
         assets: [],
         storyboard: shortDramaGuideGroups.storyboard.map((group) => ({ ...group, stepIds: [...group.stepIds], nodeId: storyboardNodeId })),
-        voice: [
-            storyboardTask("voice.dialogue", "台词、旁白、说话人与情绪", meaningfulRows.some((row) => Boolean(row.dialogue?.trim() || row.audioEffects?.trim()))),
-            { id: "voice.casting", label: "角色声线与试听", unavailableReason: "自由画布待接入角色声线；现有入口位于项目资产库" },
-            { id: "voice.recording", label: "配音、音乐与音效素材", ready: Boolean(audioNode), action: "audio", actionLabel: "打开声音素材", nodeId: audioNode?.id },
-            timelineTask("voice.timing", "实际时长、音画对齐与混音"),
-        ],
+        voice: [],
         video: [
             storyboardTask("video.sample", "代表性镜头样片验证（可选）"),
-            storyboardTask("video.generate", "简单视频生成、导入与重试", videoDone),
+            storyboardTask("video.generate", "逐镜头视频、对白与音效生成", videoDone),
         ],
         edit: [
             { id: "video.finish", label: "视频表现、候选确认与问题回退", stepIds: ["video.performance", "video.approve"], entryStepId: "video.performance" },
             timelineTask("edit.rough", "镜头排序、入出点与粗剪"),
             timelineTask("edit.picture", "画面调整、转场与包装"),
-            timelineTask("edit.sound", "对白、音乐、音效与环境声"),
+            timelineTask("edit.sound", "整集背景音乐与声音混音"),
             timelineTask("edit.subtitles", "字幕、转写与样式校对"),
         ],
         review: [
@@ -212,7 +205,6 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
     const visibleTasks: Partial<Record<CanvasShortDramaStepId, CanvasShortDramaTask[]>> = {
         story: tasks.story,
         storyboard: [...tasks.storyboard, ...tasks.video],
-        voice: tasks.voice,
         edit: tasks.edit,
         review: tasks.review,
         delivery: tasks.delivery,
@@ -268,13 +260,13 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
                 }
                 if (definition.mediaOutput && definition.stage === "assets" && latest) {
                     const sourceNodeIds = nodeWorkflow(latest)!.sourceNodeIds;
-                    const subjects = workflowImageSubjects({ step: definition.id, sourceNodeIds }, nodes);
+                    const subjects = definition.mediaOutput === "audio" ? workflowSoundSubjects({ pipelineId: pipelineId!, sourceNodeIds }, nodes) : workflowImageSubjects({ step: definition.id, sourceNodeIds }, nodes);
                     const completed = subjects.filter((subject) => {
                         const result = documents.filter((node) => nodeWorkflow(node)?.mediaSubjectId === subject.id).at(-1);
                         return Boolean(result && validDocument(result));
                     }).length;
                     outputReady = subjects.length > 0 && completed === subjects.length;
-                    if (!outputReady) statusDetail = `已完成 ${completed}/${subjects.length} 项参考图`;
+                    if (!outputReady) statusDetail = `已完成 ${completed}/${subjects.length} 项${definition.mediaOutput === "audio" ? "声音试听" : "参考图"}`;
                 }
                 if (definition.mediaOutput && definition.stage === "assets" && !outputReady) {
                     const kind = workflowAssetKind[definition.requires[0]] as PlannedAssetKind | undefined;
@@ -305,8 +297,9 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
                 if (outputReady && definition.id !== "story.audit") statusDetail = ready ? "" : "文稿已产出 · 实际执行待验收";
                 return { definition, outputReady, ready, nodeId: latest?.id, statusDetail };
             });
-            const next = memberState.find((member) => !member.outputReady && !member.definition.optional) || memberState.find((member) => !member.outputReady && member.nodeId);
-            const ready = memberState.every((member) => member.ready || member.definition.optional);
+            const allOptional = memberState.every(member => member.definition.optional);
+            const next = memberState.find((member) => !member.outputReady && !member.definition.optional) || memberState.find((member) => !member.outputReady && (allOptional || member.nodeId));
+            const ready = memberState.every((member) => member.ready || (!allOptional && member.definition.optional));
             return {
                 ...task,
                 label: task.label || memberState[0]?.definition.label,

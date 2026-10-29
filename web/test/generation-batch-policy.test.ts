@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createCanvasNode, createStoryboardRow } from "@/lib/canvas/canvas-project-domain";
-import { generationBatchCandidates, generationBatchReservations, pauseNodeGenerationBatches, reconcileGenerationBatches } from "../src/lib/canvas/canvas-generation-batch";
+import { generationBatchCandidates, generationBatchQueueCandidates, generationBatchReservations, generationBatchRetryItems, pauseNodeGenerationBatches, reconcileGenerationBatches } from "../src/lib/canvas/canvas-generation-batch";
 import { CanvasNodeType, type CanvasNodeData, type CanvasGenerationBatch } from "../src/types/canvas";
 import { freshRuntimeLimits } from "../src/services/runtime-limits";
 import { installRuntimeLimits } from "./fixtures/runtime-limits";
@@ -18,6 +18,29 @@ test("legacy table/batch overrides never cap or expand system image/video capaci
         expect(selected.filter((item) => item.batch.mode === "batch_image")).toHaveLength(3);
         expect(selected.filter((item) => item.batch.mode === "storyboard_video")).toHaveLength(2);
     }
+});
+
+test("durable queue submits every eligible item regardless of current worker capacity", () => {
+    installRuntimeLimits({ image: 1 }, 1);
+    expect(generationBatchQueueCandidates(fixture("batch_image", 1), "project")).toHaveLength(6);
+});
+
+test("cancelled batch item can be retried after its task receipt is reset", () => {
+    installRuntimeLimits({ video: 1 }, 0);
+    const script = createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, {
+        storyboard: {
+            rows: [createStoryboardRow(1, { id: "shot-cancelled", videoMotionPrompt: "人物转身离开", videoGeneration: { taskId: "cancelled-task", taskStatus: "cancelled", errorDetails: "用户已取消" } })],
+            visibleColumns: [],
+            referenceNodeIds: [],
+        },
+    });
+    const row = script.metadata!.storyboard!.rows[0];
+    script.metadata!.generationBatches = [{
+        id: "cancelled-batch", projectId: "project", sourceNodeId: script.id, mode: "storyboard_video", status: "cancelled", createdAt: "", updatedAt: "",
+        items: [{ id: "cancelled-item", rowId: row.id, nodeId: script.id, targetKind: "storyboard_video", status: "cancelled", taskId: "cancelled-task", retryCount: 0 }],
+    }];
+
+    expect(generationBatchRetryItems([script], script.id, "cancelled-batch").map(item => item.id)).toEqual(["cancelled-item"]);
 });
 
 test("inline storyboard video ignores the script node's unrelated storyboard task", () => {
@@ -97,6 +120,23 @@ test("already submitted, completed and duplicate targets cannot be billed again"
     const selected = generationBatchCandidates(nodes, "project", freshRuntimeLimits()!, [], { image: 0, video: 0 });
     expect(selected).toHaveLength(4);
     expect(new Set(selected.map((item) => item.node.id)).size).toBe(4);
+});
+
+test("a submitting target reserves its node across batches before the task receipt arrives", () => {
+    installRuntimeLimits({ image: 6 }, 0);
+    const activeSource = createCanvasNode(CanvasNodeType.Text, { x: 0, y: 0 }, {});
+    const waitingSource = createCanvasNode(CanvasNodeType.Text, { x: 0, y: 0 }, {});
+    const target = createCanvasNode(CanvasNodeType.Image, { x: 0, y: 0 }, {});
+    activeSource.metadata!.generationBatches = [{
+        id: "active-batch", projectId: "project", sourceNodeId: activeSource.id, mode: "batch_image", status: "running", createdAt: "", updatedAt: "",
+        items: [{ id: "active-item", rowId: "row-a", nodeId: target.id, status: "submitting", retryCount: 0 }],
+    }];
+    waitingSource.metadata!.generationBatches = [{
+        id: "waiting-batch", projectId: "project", sourceNodeId: waitingSource.id, mode: "batch_image", status: "queued", createdAt: "", updatedAt: "",
+        items: [{ id: "waiting-item", rowId: "row-b", nodeId: target.id, status: "waiting", retryCount: 0 }],
+    }];
+
+    expect(generationBatchCandidates([activeSource, waitingSource, target], "project", freshRuntimeLimits()!, [], { image: 0, video: 0, text: 0 })).toEqual([]);
 });
 
 test("episode pause persists, stops unsubmitted rows and keeps submitted receipts until cancellation is confirmed", () => {

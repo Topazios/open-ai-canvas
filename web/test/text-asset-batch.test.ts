@@ -143,6 +143,17 @@ describe("parseTextAssetBatch", () => {
         expect(result?.mergedCount).toBe(5);
     });
 
+    test("orders model analysis by fixed category then category-local story priority", () => {
+        const result = parseTextAssetBatchModelJson(JSON.stringify({ items: [
+            { category: "environment", priority: 1, name: "核心场景", summary: "主线地点", sheetPrompt: "核心场景设定板" },
+            { category: "character", priority: 2, name: "重要配角", summary: "配角", sheetPrompt: "重要配角设定板" },
+            { category: "character", priority: 1, name: "主角", summary: "主线人物", sheetPrompt: "主角设定板" },
+            { category: "environment", priority: 2, name: "次要场景", summary: "次要地点", sheetPrompt: "次要场景设定板" },
+        ] }));
+
+        expect(result?.items.map(({ title }) => title)).toEqual(["主角", "重要配角", "核心场景", "次要场景"]);
+    });
+
     test("deduplicates model items and caps the review list", () => {
         const items = Array.from({ length: 65 }, (_, index) => ({
             category: "character",

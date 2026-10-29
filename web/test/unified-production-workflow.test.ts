@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { createShortDramaPipeline, deriveShortDramaProgress } from "../src/lib/canvas/canvas-short-drama";
-import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowAncestors, workflowGenerationSources } from "../src/lib/canvas/canvas-short-drama-workflow";
+import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, restoreWorkflowSourceConnections, workflowAncestors, workflowGenerationSources } from "../src/lib/canvas/canvas-short-drama-workflow";
 import { createWorkflowImages, workflowImageSubjects } from "../src/lib/canvas/canvas-workflow-images";
+import { restorePlanGroupConnections } from "../src/lib/canvas/canvas-plan-group-connections";
 import { productionAssetMentions, resolveProductionAssetReferences } from "../src/lib/canvas/production-asset-references";
 import { nextShortDramaSteps } from "../src/lib/short-drama-steps";
 import { completeUnifiedWorkflowPlan } from "./fixtures/workflow-plan";
@@ -59,6 +60,28 @@ test("asset groups reject broken ownership and removed group links", () => {
     expect(() => workflowAncestors([f.frame.id], f.result.nodes, f.request.pipelineId, f.result.connections.filter((edge) => edge.toNodeId !== groupId))).toThrow("来源连线");
     nodeWorkflow(group)!.planGroup!.rootFrameId = "missing";
     expect(() => workflowAncestors([f.frame.id], f.result.nodes, f.request.pipelineId, f.result.connections)).toThrow("关联已变化");
+});
+
+test("asset image generation restores a missing plan-group link from reciprocal metadata", () => {
+    const f = groupedPlan();
+    const groupId = nodeWorkflow(f.frame)!.planGroups!.character!;
+    const withoutGroupLink = f.result.connections.filter((edge) => !(edge.fromNodeId === f.frame.id && edge.toNodeId === groupId));
+    const repaired = restorePlanGroupConnections(f.result.nodes, withoutGroupLink);
+    expect(repaired).toHaveLength(withoutGroupLink.length + 1);
+    expect(repaired.at(-1)).toMatchObject({ fromNodeId: f.frame.id, toNodeId: groupId });
+    const request = { ...f.request, step: "assets.character_references" as const, sourceNodeIds: [groupId], imageSubjectIds: [f.docs[1].id], model: "fixture-image", imageSettings: { size: "1536x1024", quality: "auto", transparentBackground: "false" } };
+    expect(createWorkflowImages(request, f.result.nodes, repaired, { x: 0, y: 0 }).created).toHaveLength(1);
+});
+
+test("canvas workflow recovery restores plan-group links before outline and body generation", () => {
+    const f = groupedPlan();
+    const groupId = nodeWorkflow(f.frame)!.planGroups!.character!;
+    const withoutGroupLink = f.result.connections.filter((edge) => !(edge.fromNodeId === f.frame.id && edge.toNodeId === groupId));
+
+    expect(() => workflowAncestors([groupId], f.result.nodes, f.request.pipelineId, withoutGroupLink)).toThrow("资产分组的方案来源连线已移除");
+    const repaired = restoreWorkflowSourceConnections(f.result.nodes, withoutGroupLink);
+    expect(repaired).toContainEqual(expect.objectContaining({ fromNodeId: f.frame.id, toNodeId: groupId }));
+    expect(() => workflowAncestors([groupId], f.result.nodes, f.request.pipelineId, repaired)).not.toThrow();
 });
 
 test("unified plan generates reference images before body, with matching category and stable identity", () => {

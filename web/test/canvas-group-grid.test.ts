@@ -20,6 +20,16 @@ function width(nodes: CanvasNodeData[], value: number) {
 }
 
 describe("responsive group grid", () => {
+    test("plan root reserves bottom actions outside the document grid", () => {
+        const nodes = fixture(5);
+        nodes[0].metadata!.shortDrama!.step = ShortDramaStep.Plan;
+        const result = layoutCanvasGridGroups(nodes);
+        const frame = result[0];
+        const lastBottom = Math.max(...result.slice(1).map(node => node.position.y + node.height));
+        expect(frame.position.y + frame.height - lastBottom).toBeGreaterThanOrEqual(60);
+        expect(layoutCanvasGridGroups(result)).toBe(result);
+    });
+
     test("width controls columns, height fits rows, narrow width never crops a child", () => {
         const original = fixture(), snapshot = JSON.stringify(original);
         const three = layoutCanvasGridGroups(original);
@@ -76,7 +86,7 @@ describe("responsive group grid", () => {
 
     test("image groups retain square thumbnails and manual column count after restore", () => {
         const nodes = fixture(8).map(n => n.id === "group" ? { ...n, metadata: { ...n.metadata,
-            shortDrama: { ...n.metadata!.shortDrama!, mediaGroup: { sourceNodeId: "source" } } } } : { ...n, type: CanvasNodeType.Image });
+            shortDrama: { ...n.metadata!.shortDrama!, mediaKind: "image" as const, mediaGroup: { sourceNodeId: "source" } } } } : { ...n, type: CanvasNodeType.Image });
         const initial = layoutWorkflowImageGroups(nodes);
         expect(groupGridMetrics(initial[0], initial.slice(1)).columns).toBe(3);
         const five = layoutWorkflowImageGroups(width(initial, 1544));

@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"strings"
 	"unicode/utf8"
 
@@ -37,10 +38,37 @@ func recordTaskDiagnostic(task *model.Task, phase, code, outcome, retryClass str
 	if errors.As(cause, &appErr) && appErr.Reason != "" {
 		code = string(appErr.Reason)
 	}
+	if errors.Is(cause, errProviderOutputLimit) {
+		code = providerOutputLimitCode
+	}
+	var decodeErr providerResponseDecodeError
+	if errors.As(cause, &decodeErr) {
+		code = "upstream_response_invalid"
+	}
 	diagnostic := &model.TaskExecutionDiagnostic{
 		Code: code, Phase: phase, TaskSubmitted: outcome == "accepted" || outcome == "submitted", SubmissionOutcome: outcome,
 		RetryClass: retryClass, SafeMessage: safeTaskDiagnosticMessage(task.Error), DiagnosticID: task.ID,
 	}
+	var httpErr providerHTTPError
+	var payloadErr providerPayloadError
+	var networkErr *net.OpError
+	var requestTimeoutErr providerRequestTimeoutError
+	if phase == "execution" {
+		switch {
+		case errors.As(cause, &requestTimeoutErr):
+			diagnostic.Code, _ = providerRequestErrorDetails(cause)
+			diagnostic.Severity, diagnostic.ErrorSource, diagnostic.Outcome = "warning", "application", "needs_attention"
+		case errors.As(cause, &httpErr), errors.As(cause, &payloadErr):
+			diagnostic.Severity, diagnostic.ErrorSource = "error", "upstream"
+		case errors.As(cause, &networkErr):
+			diagnostic.Severity, diagnostic.ErrorSource = "error", "network"
+		case appErr != nil && appErr.Reason == ReasonUpstreamDNSFailed:
+			diagnostic.Severity, diagnostic.ErrorSource = "error", "network"
+		case appErr != nil:
+			diagnostic.Severity, diagnostic.ErrorSource, diagnostic.Outcome = "warning", "application", "needs_attention"
+		}
+	}
+	generationDiagnosticNotice(diagnostic)
 	raw, _ := json.Marshal(diagnostic)
 	task.ExecutionDiagnosticJSON, task.Diagnostic = string(raw), diagnostic
 }
@@ -84,6 +112,7 @@ func taskExecutionDiagnostic(task *model.Task) *model.TaskExecutionDiagnostic {
 	if json.Unmarshal([]byte(task.ExecutionDiagnosticJSON), &diagnostic) != nil {
 		return nil
 	}
+	generationDiagnosticNotice(&diagnostic)
 	// Execution success and writeback failure are separate facts. A successful
 	// task has no execution error; writeback errors remain in WritebackMessage.
 	if task.Status == model.TaskStatusSucceeded {
@@ -92,6 +121,26 @@ func taskExecutionDiagnostic(task *model.Task) *model.TaskExecutionDiagnostic {
 		diagnostic.SafeMessage = safeTaskDiagnosticMessage(diagnostic.SafeMessage)
 	}
 	return &diagnostic
+}
+
+func taskExecutionDiagnosticFromError(cause error) *model.TaskExecutionDiagnostic {
+	if cause == nil {
+		return nil
+	}
+	var httpErr providerHTTPError
+	var payloadErr providerPayloadError
+	var networkErr *net.OpError
+	var requestTimeoutErr providerRequestTimeoutError
+	switch {
+	case errors.As(cause, &requestTimeoutErr):
+		return &model.TaskExecutionDiagnostic{Severity: "warning", ErrorSource: "application", Phase: "execution", Outcome: "needs_attention"}
+	case errors.As(cause, &httpErr), errors.As(cause, &payloadErr):
+		return &model.TaskExecutionDiagnostic{Severity: "error", ErrorSource: "upstream", Phase: "execution"}
+	case errors.As(cause, &networkErr):
+		return &model.TaskExecutionDiagnostic{Severity: "error", ErrorSource: "network", Phase: "execution"}
+	default:
+		return nil
+	}
 }
 
 func taskSubmissionOutcome(task *model.Task, notSent bool) string {

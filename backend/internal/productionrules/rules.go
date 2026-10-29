@@ -8,24 +8,26 @@ import (
 	"strings"
 )
 
-const Version = 1
+const Version = 2
 
 //go:embed rules.json
 var catalogJSON []byte
 
 var catalog = func() struct {
-	Version    int                 `json:"version"`
-	Common     []string            `json:"common"`
-	Stages     map[string][]string `json:"stages"`
-	Media      map[string][]string `json:"media"`
-	AssetImage []string            `json:"assetImage"`
+	Version                  int                    `json:"version"`
+	Common                   []string               `json:"common"`
+	Stages                   map[string][]string    `json:"stages"`
+	Media                    map[string][]string    `json:"media"`
+	AssetImage               []string               `json:"assetImage"`
+	StoryboardReferenceImage ReferenceImageEncoding `json:"storyboardReferenceImage"`
 } {
 	var value struct {
-		Version    int                 `json:"version"`
-		Common     []string            `json:"common"`
-		Stages     map[string][]string `json:"stages"`
-		Media      map[string][]string `json:"media"`
-		AssetImage []string            `json:"assetImage"`
+		Version                  int                    `json:"version"`
+		Common                   []string               `json:"common"`
+		Stages                   map[string][]string    `json:"stages"`
+		Media                    map[string][]string    `json:"media"`
+		AssetImage               []string               `json:"assetImage"`
+		StoryboardReferenceImage ReferenceImageEncoding `json:"storyboardReferenceImage"`
 	}
 	if err := json.Unmarshal(catalogJSON, &value); err != nil {
 		panic(err)
@@ -35,6 +37,16 @@ var catalog = func() struct {
 	}
 	return value
 }()
+
+type ReferenceImageEncoding struct {
+	Encoding  string `json:"encoding"`
+	Quality   int    `json:"quality"`
+	MaxPixels int64  `json:"maxPixels"`
+}
+
+func StoryboardReferenceImageEncoding() ReferenceImageEncoding {
+	return catalog.StoryboardReferenceImage
+}
 
 func ValidStage(stage string) bool { return len(catalog.Stages[stage]) > 0 }
 
@@ -64,8 +76,7 @@ func Apply(prompt, stage, mode string) string {
 	// Replace the previous asset-image envelope on retry, not its body or any
 	// other scope. Historical task records and billing inputs are not rewritten.
 	if stage == "assets" && mode == "image" {
-		header := fmt.Sprintf("【制作执行规范 v%d · assets/image】\n", Version)
-		for strings.HasPrefix(prompt, header) {
+		for strings.HasPrefix(prompt, "【制作执行规范 v") && strings.Contains(strings.SplitN(prompt, "\n", 2)[0], " · assets/image】") {
 			_, rest, ok := strings.Cut(prompt, "\n【制作执行规范结束】\n\n")
 			if !ok {
 				break

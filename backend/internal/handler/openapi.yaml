@@ -959,8 +959,8 @@ paths:
       - $ref: "#/components/parameters/AgentRunID"
     post:
       tags: [agent]
-      summary: 暂停或继续当前用户的制作 Agent
-      description: 暂停在模型调用边界生效。失败任务继续前核对来源版本、调用回执和预算；取消不能作为暂停恢复。
+      summary: 暂停、继续制作 Agent 或手动启动方案资产
+      description: 暂停在模型调用边界生效。generate_assets 必须携带非空 assetKeys，仅执行明确选择的资产；前置依赖必须已完成、在当前活动授权范围内或一起选中。首次启动要求全部方案文稿校验并完成；后续可从已完成、失败或已暂停且当前调用收尾的任务选择新批次或重试。新批次替换当前执行选择范围并保留已保存产物；只有 modelSelection.continueAppend=true 才允许将新选择追加到仍在运行的批次。相同项的重复请求不重复派发；不重置正在执行或待保存的响应，按依赖及全局并发策略执行。保留有效产物、编码、历史和计费。未知上游取消状态禁止重发。
       requestBody:
         required: true
         content:
@@ -971,7 +971,32 @@ paths:
               properties:
                 action:
                   type: string
-                  enum: [pause, resume]
+                  enum: [pause, resume, generate_assets]
+                assetKeys:
+                  type: array
+                  minItems: 1
+                  description: generate_assets 必填，使用本任务 run.production.assets 中的 key；不提供时禁止默认全部生成。
+                  items:
+                    type: string
+                modelSelection:
+                  type: object
+                  description: 资产生成设置；模型、推理强度与补充要求会保存在本批次资产工作项中，并用于后续重试。
+                  required: [model]
+                  properties:
+                    model:
+                      type: string
+                    logicalModelId:
+                      type: string
+                    channelId:
+                      type: string
+                    channelModelKey:
+                      type: string
+                    reasoningEffort:
+                      type: string
+                      enum: [low, medium, high]
+                    instruction:
+                      type: string
+                      maxLength: 2000
       responses:
         "200":
           description: 信封 data.accepted
@@ -1613,6 +1638,29 @@ paths:
         "200":
           $ref: "#/components/responses/Envelope"
         "400":
+          $ref: "#/components/responses/Error"
+  /canvas-projects/{id}/task-events:
+    get:
+      tags: [tasks]
+      summary: 画布任务状态 SSE
+      description: |
+        一个画布使用一条事件流接收任务状态变化。事件只包含任务状态摘要，完整任务和结果通过任务批量查询或任务详情读取。
+        事件使用递增游标，断线重连时通过 after 或 Last-Event-ID 回放；事件过期后客户端必须重新批量同步画布任务。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: after
+          schema: { type: integer, minimum: 0 }
+          description: 画布任务事件游标，不要使用任务 ID
+      responses:
+        "200":
+          description: text/event-stream
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
   /tasks/{id}/recover-media:
     post:

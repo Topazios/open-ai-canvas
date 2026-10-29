@@ -61,6 +61,28 @@ func TestProductionPlanDocumentSchemas(t *testing.T) {
 	}
 }
 
+func TestProductionPlanToolSeparatesSharedDocumentsFromAssetDesign(t *testing.T) {
+	for _, test := range productionPlanDocumentCases {
+		t.Run(test.key, func(t *testing.T) {
+			tools := productionRuntimeTools(productionManifest{Plan: &productionPlan{Version: 3}}, map[string]any{"nextAction": map[string]any{"key": test.key, "kind": test.kind}})
+			for _, tool := range tools {
+				fn := tool["function"].(map[string]any)
+				if fn["name"] != "production_submit" {
+					continue
+				}
+				properties := fn["parameters"].(map[string]any)["properties"].(map[string]any)
+				if (properties["design"] != nil) != (test.kind != "") {
+					t.Fatal("public document and asset design contracts overlap")
+				}
+				document := properties["document"].(map[string]any)
+				if document["additionalProperties"] != false || len(document["required"].([]string)) != len(strings.Fields(test.fields)) {
+					t.Fatal("required document fields were removed")
+				}
+			}
+		})
+	}
+}
+
 func TestProductionPlanDocumentRenderAndRequiredFields(t *testing.T) {
 	for _, test := range productionPlanDocumentCases {
 		t.Run(test.key, func(t *testing.T) {
@@ -101,7 +123,7 @@ func TestProductionPlanDocumentRenderAndRequiredFields(t *testing.T) {
 					if rendered, err := productionRenderPlanDocument(test.key, test.kind, document); rendered != "" || err == nil {
 						t.Fatal("renderer accepted a missing required field")
 					} else {
-						requireProductionPlanDocumentError(t, err, "document", "missing_sections")
+						requireProductionPlanDocumentError(t, err, "document."+section.Key, "missing_sections")
 						if !strings.Contains(err.Error(), section.Key+"（"+section.Title+"）") {
 							t.Fatal("repair error omits field key/title", err)
 						}
@@ -208,12 +230,16 @@ func TestProductionPlanDocumentHeadingAndFenceValidation(t *testing.T) {
 	for _, value := range []string{"说明\n## 明确结局与人物最终归宿\n伪造完成", "说明\r\n  ## 明确结局与人物最终归宿", "# 新文稿", "```\n未闭合", "~~~text\n未闭合"} {
 		document["facts"] = value
 		_, err := productionRenderPlanDocument(test.key, test.kind, document)
-		requireProductionPlanDocumentError(t, err, "document.facts", "invalid_section")
+		issue := "invalid_heading"
+		if strings.HasPrefix(value, "```") || strings.HasPrefix(value, "~~~") {
+			issue = "unclosed_fence"
+		}
+		requireProductionPlanDocumentError(t, err, "document.facts", issue)
 	}
 	for _, value := range []string{"### 空子标题", "```\n```", "~~~\n~~~"} {
 		document["facts"] = value
 		_, err := productionRenderPlanDocument(test.key, test.kind, document)
-		requireProductionPlanDocumentError(t, err, "document", "missing_sections")
+		requireProductionPlanDocumentError(t, err, "document.facts", "missing_sections")
 	}
 	document["facts"] = "正文\r\n### 细分依据\r\n保留细节\n````markdown\n## 示例标题\n```\n````\n~~~text\n## 另一示例\n~~~"
 	content, err := productionRenderPlanDocument(test.key, test.kind, document)

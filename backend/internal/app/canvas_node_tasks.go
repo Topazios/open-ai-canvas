@@ -161,6 +161,11 @@ func (s *Service) ReconcileCanvasNodeTasks(ctx context.Context, userID, canvasID
 			failures = append(failures, err)
 		}
 	}
+	if len(deleted) > 0 {
+		if err := s.reconcileDeletedProductionPlanAssets(ctx, userID, canvasID, doc, deleted); err != nil {
+			failures = append(failures, err)
+		}
+	}
 	return errors.Join(failures...)
 }
 

@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
-import { applyGeneratedMediaResultMetadata, applyGenerationTaskResultToNodes, videoMetadata } from "@/lib/canvas/canvas-generation-task-sync";
+import { applyGeneratedMediaResultMetadata, applyGenerationTaskResultToNodes, buildGenerationTaskNodeResult, videoMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import * as imageStorage from "@/services/image-storage";
 
 function videoNode(assetId: string, storageKey: string): CanvasNodeData {
     return {
@@ -16,6 +17,37 @@ function videoNode(assetId: string, storageKey: string): CanvasNodeData {
 }
 
 describe("applyGeneratedMediaResultMetadata", () => {
+    test("asset-sheet task results keep the original generated image without cropping or recomposition", async () => {
+        const node = {
+            id: "sheet",
+            type: CanvasNodeType.Image,
+            title: "场景设定板",
+            position: { x: 0, y: 0 },
+            width: 400,
+            height: 280,
+            metadata: {
+                size: "1536x1024",
+                shortDrama: { assetSheet: { version: 3, kind: "environment", size: "1536x1024", styleSignatures: {} } },
+            },
+        } as CanvasNodeData;
+        const upload = spyOn(imageStorage, "uploadImage").mockResolvedValue({
+            url: "https://example.test/original.png", storageKey: "resource:original", width: 1536, height: 1024, bytes: 4, mimeType: "image/png",
+        });
+        const fetchSpy = spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not fetch image for cropping"));
+        try {
+            const result = await buildGenerationTaskNodeResult(node, {
+                id: "task", type: "canvas_image", status: "succeeded", prompt: "full sheet", attempts: 1, createdAt: "", updatedAt: "",
+                resultJson: JSON.stringify({ images: [{ dataUrl: "data:image/png;base64,AAAA", width: 1536, height: 1024 }] }),
+            });
+            expect(upload).toHaveBeenCalledWith("data:image/png;base64,AAAA");
+            expect(fetchSpy).not.toHaveBeenCalled();
+            expect(result.metadata?.storageKey).toBe("resource:original");
+        } finally {
+            upload.mockRestore();
+            fetchSpy.mockRestore();
+        }
+    });
+
     test("明确指定的节点已删除时不能根据 taskId 误更新其他节点", async () => {
         const other = { ...videoNode("asset", "video:key"), metadata: { taskId: "task" } };
         const applied = await applyGenerationTaskResultToNodes([other], { id: "task", type: "canvas_video", status: "succeeded", prompt: "", attempts: 1, createdAt: "", updatedAt: "" }, "deleted-node");

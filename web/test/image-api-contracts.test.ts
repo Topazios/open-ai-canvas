@@ -4,6 +4,34 @@ import { consumeChatCompletionStreamText, consumeGeminiStreamText, consumeRespon
 import { normalizeQuality, resolveRequestSize, validateImageSize } from "../src/services/api/image-validation";
 
 describe("image api contracts", () => {
+    test("Responses 按类型区分思考、正文和工具调用，不解析思考中的业务 JSON", () => {
+        const result = parseToolResponse({ status: "completed", output: [
+            { type: "reasoning", summary: [{ type: "summary_text", text: '{"toolCalls":[{"name":"save"}]}' }] },
+            { type: "message", content: [{ type: "summary_text", text: "not content" }, { type: "reasoning_text", text: "not content" }, { type: "output_text", text: " actual answer " }] },
+            { type: "function_call", call_id: "call-1", name: "read", arguments: "{}" },
+        ] });
+        expect(result).toEqual({ content: " actual answer ", reasoning: '{"toolCalls":[{"name":"save"}]}', toolCalls: [{ id: "call-1", type: "function", function: { name: "read", arguments: "{}" } }] });
+        expect(parseToolResponse({output:[{type:"reasoning", content:[{type:"reasoning_text",text:"only thinking"}]}]})).toEqual({content:"",reasoning:"only thinking",toolCalls:[]});
+    });
+
+    test("Chat 内容块中的思考不进入正文，也不成为工具调用", () => {
+        expect(parseChatCompletionPayload({ choices: [{ message: {
+            content: [{type:"reasoning_text",text:"not an answer"},{type:"text",thought:true,text:"thought"},{type:"text",text:"answer"}],
+            reasoning_content: "separate reasoning",
+        } }] })).toEqual({content:"answer",reasoning:"separate reasoning",toolCalls:[]});
+    });
+
+    test("Responses 增量中的工具参数和未知 delta 不进入正文或思考", () => {
+        const state = { buffer:"",text:"",reasoning:"" };
+        consumeResponseStreamText(state, [
+            {type:"response.reasoning_text.delta",delta:"thinking"},
+            {type:"response.function_call_arguments.delta",delta:'{"text":"tool argument"}'},
+            {delta:"unknown"},
+            {type:"response.output_text.delta",delta:"answer"},
+        ].map((event)=>`data: ${JSON.stringify(event)}\n\n`).join(""));
+        expect(state.text).toBe("answer");
+        expect(state.reasoning).toBe("thinking");
+    });
     test("规范化质量和尺寸，拒绝超出边界的图像", () => {
         expect(normalizeQuality("1k")).toBe("low");
         expect(normalizeQuality("2k")).toBe("medium");

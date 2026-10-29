@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createCanvasNode } from "../src/lib/canvas/canvas-project-domain";
 import { createWorkflowDocuments, workflowBodyTaskInput, workflowGenerationSources, workflowAncestors, workflowSignature, nodeWorkflow } from "../src/lib/canvas/canvas-short-drama-workflow";
-import { selectedAuditBodies, parseScreenplayAuditReport, screenplayAuditState, screenplayReportMarkdown, auditContextNodes, latestBodyAudit, screenplayAuditChecks, type ScreenplayAuditReport } from "../src/lib/canvas/workflow-screenplay-audit";
+import { selectedAuditBodies, parseScreenplayAuditReport, screenplayAuditState, screenplayReportMarkdown, auditContextNodes, latestBodyAudit, screenplayAuditChecks, screenplayBodySignature, type ScreenplayAuditReport } from "../src/lib/canvas/workflow-screenplay-audit";
 import { buildGenerationTaskNodeResult } from "../src/lib/canvas/canvas-generation-task-sync";
 import { deriveShortDramaProgress } from "../src/lib/canvas/canvas-short-drama";
 import { ShortDramaStep as S, activeShortDramaSteps, nextShortDramaSteps } from "../src/lib/short-drama-steps";
@@ -47,6 +47,7 @@ test("audit runs on the正文节点, never creates a report node or changes正�
     expect(input.prompt).toContain(JSON.stringify(f.body.metadata!.content!).slice(1, -1));
     expect(input.prompt).toContain("单集时长（分钟）：1-2");
     expect(input.prompt).toContain("不改原稿");
+    expect(input.prompt).toContain("本土叙事只按项目明确的故事发生地/文化来源判断");
     expect(input.prompt).not.toContain("无关资产库");
     expect(input.prompt).not.toContain("后续独有内容");
     expect(nodeWorkflow(f.audit)?.sourceNodeIds).toEqual([f.outline.id]);
@@ -197,6 +198,33 @@ test("a persistence-only global settings revision does not block a valid repair"
     expect(screenplayAuditState(f.audit, f.nodes, current).stale).toBe(false);
 });
 
+test("audit remains valid after task metadata and the inline report are persisted", () => {
+    const f = fixture();
+    const binding = nodeWorkflow(f.audit)!.screenplayAudit!;
+    expect(binding.bodySignature).toBe(screenplayBodySignature(f.audit));
+    const value = report(f);
+    f.audit.metadata = {
+        ...f.audit.metadata,
+        status: "success",
+        taskStage: "正文诊断完成",
+        taskId: "audit-task",
+        content: f.body.metadata!.content,
+        shortDrama: {
+            ...nodeWorkflow(f.audit)!,
+            materializedTaskId: "audit-task",
+            submission: "submitted",
+            screenplayAudit: {
+                ...binding,
+                report: value,
+                reportSignature: canonicalize(value),
+                reportMarkdown: screenplayReportMarkdown(value),
+            },
+        },
+    };
+    expect(screenplayAuditState(f.audit, f.nodes).stale).toBe(false);
+    expect(() => workflowBodyTaskInput(f.audit, f.nodes)).not.toThrow();
+});
+
 test("task result stores the report on the正文节点 and never replaces正文 with report text", async () => {
     const f = fixture(); const before = f.body.metadata!.content;
     const task: GenerationTask = { id: "audit-task", type: "canvas_text", status: "succeeded", prompt: "", attempts: 1, createdAt: "", updatedAt: "", resultJson: JSON.stringify({ text: JSON.stringify(report(f)) }) };
@@ -299,10 +327,10 @@ test("repair submits one prose request, keeps the complete episode and does not 
     expect(prepared.prompt).not.toContain("无关资产库");
 });
 
-test("new guide has six stages and keeps reference images after plan, with audit after prose", () => {
+test("new guide has five stages and keeps reference images after plan, with audit after prose", () => {
     const f = fixture();
     const stages = deriveShortDramaProgress(f.nodes, f.connections).steps;
-    expect(stages).toHaveLength(6);
+    expect(stages).toHaveLength(5);
     expect(stages.some(step => step.id === "assets")).toBe(false);
     expect(stages[0].tasks.map(task => task.id)).toEqual(["story.topic", "story.plan", "guide.assets.references", "story.episodes", "story.body", "story.audit"]);
     expect(stages.flatMap(stage => stage.tasks).some(task => task.id === "guide.assets.fixed")).toBe(false);

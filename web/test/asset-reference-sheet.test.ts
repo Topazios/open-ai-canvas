@@ -15,10 +15,43 @@ const profile = (values: string[], parameter: "size" | "aspect_ratio" = "size") 
 });
 
 describe("asset reference sheet contract", () => {
-    test("firearm film prop sheets describe nonfunctional exterior design only", () => {
+    test("all prop sheets separate exterior display from operation without a weapon keyword list", () => {
+        for (const [title, content] of [
+            ["旧炮群", "铁灰外壳，木架，整体长2米，轮径0.5米"],
+            ["长刀与藤牌", "钝口仿铁件，麻布缠柄，盾牌直径0.6米"],
+            ["虚构装置", "铜色外壳与陶瓷表面，整体高0.8米"],
+            ["普通相机", "黑色机身，皮革背带，宽0.14米"],
+        ]) {
+            for (const visualOnly of [false, true]) {
+                const prompt = assetSheetPrompt({ kind: AssetSheetKind.Prop, size: "16:9", title, content, style: "水彩平涂", visualOnly });
+                expect(prompt).toContain(title);
+                expect(prompt).toContain(content);
+                expect(prompt).toContain("下方为外观附件与表面细节区域");
+                expect(prompt).not.toContain("下方为拆解");
+                expect(prompt).toContain("整体外形长宽高、外径和摆放比例校对");
+                expect(prompt).toContain("涉及武器或危险物件时");
+                expect(prompt).toContain("不生成内部剖视、加工公差、制造改装过程或操作教程");
+                expect(prompt).toContain("名称：" + title);
+                expect(prompt).toContain("正面、侧面、背面、三分之四视角");
+            }
+        }
+    });
+
+    test("prop display boundaries follow supplied material and do not replace character or scene layouts", () => {
+        const prompt = assetSheetPrompt({ kind: AssetSheetKind.Prop, size: "16:9", title: "陈列物", content: "整体长2米", style: "铜色", instruction: "旧版式要求：下方为拆解与细节" });
+        expect(prompt.indexOf("【道具展示边界】")).toBeGreaterThan(prompt.indexOf("旧版式要求"));
+        for (const kind of [AssetSheetKind.Character, AssetSheetKind.Environment, AssetSheetKind.Special]) {
+            const other = assetSheetPrompt({ kind, size: "16:9", title: "测试", content: "灰蓝色外观", style: "水彩" });
+            expect(other).not.toContain("【道具展示边界】");
+            expect(other).toContain("【本次画面范围】");
+        }
+    });
+
+    test("hazardous historical props retain truthful identity and show only static exterior design", () => {
         const prompt = assetSheetPrompt({ kind: AssetSheetKind.Prop, size: "16:9", title: "P05猎人枪械", content: "磨损外壳，装饰灯", style: "水彩平涂" });
-        expect(prompt).toContain("不具备发射功能");
-        expect(prompt).toContain("外观与材质细节");
+        expect(prompt).toContain("准确保留历史或虚构题材中的名称、身份与时代");
+        expect(prompt).toContain("不把真实物件虚称为无功能模型");
+        expect(prompt).toContain("外表面与材质细节");
         expect(prompt).not.toContain("可拆附件");
         expect(prompt).not.toContain("结构拆解");
         expect(prompt).toContain("水彩平涂");
@@ -46,22 +79,39 @@ describe("asset reference sheet contract", () => {
     test("each category has the shared layout and its own applicable views", () => {
         const cases = [
             [ShortDramaStep.CharacterReferences, AssetSheetKind.Character, "正面全身、左侧全身、右侧全身、背面全身"],
-            [ShortDramaStep.EnvironmentReferences, AssetSheetKind.Environment, "主视角全景、正立面、侧剖面、俯视平面布局"],
+            [ShortDramaStep.EnvironmentReferences, AssetSheetKind.Environment, "主视角（略宽）、正立面、侧剖面、俯视平面"],
             [ShortDramaStep.PropReferences, AssetSheetKind.Prop, "正面、侧面、背面、三分之四视角"],
-            [ShortDramaStep.SpecialReferences, AssetSheetKind.Special, "基准/触发/持续/消退状态"],
+            [ShortDramaStep.SpecialReferences, AssetSheetKind.Special, "四个视图或已定义状态"],
         ] as const;
         for (const [step, kind, views] of cases) {
             expect(assetSheetKind(step)).toBe(kind);
             const prompt = assetSheetPrompt({ kind, size: "16:9", title: "fixture", content: "单幅主图，三视图，禁止文字", style: "水彩平涂，低饱和青绿" });
             expect(prompt).toContain(views);
-            expect(prompt).toContain("左侧占18%"); expect(prompt).toContain("右侧占82%");
+            expect(prompt).toContain("档案明确的物理尺寸作为唯一标尺");
             expect(prompt).toContain("水彩平涂，低饱和青绿");
-            expect(prompt).toContain("版式规则优先于材料中的");
-            expect(prompt).toContain("同一基准版本");
+            expect(prompt).toContain("完整设定板版式优先于资产材料中的");
+            expect(prompt).toContain("共用身高、体重和三围");
+            expect(prompt).toContain("生成一张完整的横向资产设定板");
+            expect(prompt).toContain("不要把图像切块、拼贴、重排");
+            expect(prompt).not.toContain("系统会合成最终设定板");
         }
         expect(assetSheetKind(ShortDramaStep.StartFrame)).toBeUndefined();
         expect(assetReferenceStep(ShortDramaStep.Characters)).toBe(ShortDramaStep.CharacterReferences);
         expect(assetReferenceStep(ShortDramaStep.Body)).toBeUndefined();
+    });
+
+    test("reference-board layouts include side information and scene measurement panels", () => {
+        const character = assetSheetPrompt({ kind: AssetSheetKind.Character, size: "16:9", title: "陈朔", content: "身高：178cm；体重：68kg", style: "电影写实" });
+        const scene = assetSheetPrompt({ kind: AssetSheetKind.Environment, size: "16:9", title: "出租屋", content: "长：8m；宽：5m；面积：40平方米", style: "电影写实" });
+        expect(character).toContain("左侧资料栏约占整幅宽度 18%");
+        expect(character).toContain("正面全身、左侧全身、右侧全身、背面全身");
+        expect(character).toContain("脚底基线延伸到头顶最高点");
+        expect(character).toContain("左侧半身肖像是唯一高分辨率脸部身份基准");
+        expect(scene).toContain("左侧资料栏约占整幅宽度 17%");
+        expect(scene).toContain("带尺寸线的空间拆解轴测图");
+        expect(scene).toContain("动线平面图");
+        expect(scene).toContain("同一个世界坐标场景的投影");
+        expect(scene).toContain("待测量");
     });
 
     test("uses declared landscape sizes and keeps quality without transparent or square global defaults", () => {
@@ -92,7 +142,7 @@ describe("asset reference sheet contract", () => {
             const result = createWorkflowImages({ ...request, imageSubjectIds: subjects.map((node) => node.id) }, nodes, connections, center, profile(["1024x1024", "1536x1024"]));
             for (const [index, node] of result.created.entries()) {
                 const sheet = nodeWorkflow(node)!.assetSheet!;
-                expect(sheet).toMatchObject({ version: 1, kind: assetSheetKind(step), size: "1536x1024" });
+                expect(sheet).toMatchObject({ version: 4, kind: assetSheetKind(step), size: "1536x1024" });
                 expect(Object.keys(sheet.styleSignatures)).toHaveLength(3);
                 if (styleSignatures) expect(sheet.styleSignatures).toEqual(styleSignatures);
                 styleSignatures = sheet.styleSignatures;

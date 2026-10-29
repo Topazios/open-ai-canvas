@@ -212,18 +212,36 @@ function taskParameterRows(inputJson?: string) {
         if (value === undefined || value === null || value === "") return;
         rows.push({ label, value: String(value) });
     };
-    add("尺寸 / 比例", config.size);
-    add("分辨率", config.vquality || config.quality);
-    add("秒数", config.videoSeconds === undefined ? undefined : `${config.videoSeconds} 秒`);
-    add("生成数量", config.count);
-    add("生成声音", booleanLabel(config.videoGenerateAudio));
-    add("水印", booleanLabel(config.videoWatermark));
-    add("音色", config.audioVoice);
-    add("音频格式", config.audioFormat);
-    add("音频速度", config.audioSpeed);
-    addReference("引用图片", input.referenceImages, "图片");
-    addReference("引用视频", input.referenceVideos, "视频");
-    addReference("引用音频", input.referenceAudios, "音频");
+    const mode = typeof input.mode === "string" ? input.mode : "";
+    if (mode === "image") {
+        add("尺寸 / 比例", config.size);
+        add("质量", config.quality);
+        add("透明背景", booleanLabel(config.transparentBackground));
+        add("生成数量", config.count);
+    } else if (mode === "video") {
+        add("尺寸 / 比例", config.size);
+        add("分辨率", config.vquality);
+        add("时长", config.videoSeconds === undefined ? undefined : `${config.videoSeconds} 秒`);
+        add("生成声音", booleanLabel(config.videoGenerateAudio));
+        add("水印", booleanLabel(config.videoWatermark));
+    } else if (mode === "audio") {
+        add("音色", config.audioVoice);
+        add("音频格式", config.audioFormat);
+        add("音频速度", config.audioSpeed);
+    } else if (mode === "text") {
+        add("推理强度", config.reasoningEffort);
+    }
+    if (mode === "image") {
+        addReference("引用图片", input.referenceImages, "图片");
+    } else if (mode === "video") {
+        addReference("引用图片", input.referenceImages, "图片");
+        addReference("引用视频", input.referenceVideos, "视频");
+        addReference("引用音频", input.referenceAudios, "音频");
+    } else if (mode === "audio") {
+        addReference("参考音频", input.referenceAudios, "音频");
+    } else if (mode === "text") {
+        addReference("引用图片", input.referenceImages, "图片");
+    }
     return rows;
 
     function addReference(label: string, value: unknown, kind: string) {

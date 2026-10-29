@@ -204,6 +204,25 @@ test("missing sync session recovers authenticated baselines without acknowledgin
     expect(requests.filter((request) => request.id === "session")).toHaveLength(1);
 });
 
+test("a failed initial sync can rebuild its authenticated baseline and deliver saved Agent documents", async () => {
+    allowSessionRecovery();
+    const adapter = apiClient.defaults.adapter as (config: any) => Promise<any>;
+    let unavailable = true;
+    apiClient.defaults.adapter = async (config) => {
+        if (config.url === "/user-data/snapshot" && unavailable) throw new Error("snapshot temporarily unavailable");
+        return adapter(config);
+    };
+    await expect(syncRemoteUserData(scope)).rejects.toThrow("snapshot temporarily unavailable");
+    unavailable = false;
+    useCanvasStore.getState().renameProject("canvas", "unsaved local title");
+    remote.set("canvas", { ...addNode(remote.get("canvas")!, "saved-document"), revision: 2 });
+    await refreshCanvasAfterAgent("canvas");
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.title).toBe("unsaved local title");
+    expect(remote.get("canvas")!.nodes.map((node) => node.id)).toEqual(["old-image", "saved-document"]);
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+});
+
 test("recovering planned body payloads saves the same normalized baseline and does not repeat uploads", async () => {
     const created = newDramaCanvasContent(defaultShortDramaSettings());
     created.nodes[0].metadata!.content = "已选定的故事";
@@ -670,6 +689,62 @@ test("generation save rebases independent nodes and retries with the current rev
     expect(remote.get("canvas")!.nodes.map((node) => node.id).sort()).toEqual(["agent-result", "generation-target", "old-image"]);
     expect(remote.get("canvas")!.revision).toBe(3);
     expect(requests.filter((request) => request.method === "put").map((request) => request.project!.revision)).toEqual([1, 2]);
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+});
+
+test("generation save only persists its canvas instead of failing on an unrelated conflict", async () => {
+    remote.set("other", { ...canvas("other"), title: "remote title", revision: 2 });
+    useCanvasStore.getState().renameProject("other", "unrelated local title");
+    useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "generation-target").nodes });
+
+    await saveRemoteUserDataNow("canvas");
+
+    expect(remote.get("canvas")!.nodes.at(-1)!.id).toBe("generation-target");
+    expect(requests.filter(request => request.method === "put").map(request => request.id)).toEqual(["canvas"]);
+    expect(useCanvasStore.getState().openProject("other")!.title).toBe("unrelated local title");
+});
+
+test("generation save recovers after an in-flight global save fails on another canvas", async () => {
+    remote.set("other", { ...canvas("other"), title: "remote title", revision: 2 });
+    useCanvasStore.getState().renameProject("other", "unrelated local title");
+    let release!: () => void;
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    beforePut = async () => { started(); await waiting; };
+    const background = saveRemoteUserDataNow().then(() => undefined, error => error);
+    await entered;
+    useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "generation-target").nodes });
+    const saving = saveRemoteUserDataNow("canvas");
+    release();
+
+    expect(await background).toBeInstanceOf(Error);
+    await saving;
+
+    expect(remote.get("canvas")!.nodes.at(-1)!.id).toBe("generation-target");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+    expect(useSyncProgressStore.getState().syncingProjects.other.phase).toBe("conflict");
+    expect(requests.filter(request => request.method === "put" && request.id === "canvas")).toHaveLength(1);
+});
+
+test("a joined generation save rechecks a recoverable conflict after the prior save settles", async () => {
+    useCanvasStore.getState().renameProject("other", "saved elsewhere");
+    let release!: () => void;
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    beforePut = async () => { started(); await waiting; };
+    const background = saveRemoteUserDataNow().then(() => undefined, error => error);
+    await entered;
+    useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "generation-target").nodes });
+    useSyncProgressStore.getState().setProjectProgress("canvas", { phase: "conflict" });
+    const saving = saveRemoteUserDataNow("canvas").then(() => undefined, error => error);
+    release();
+
+    expect((await background)?.message).toContain("云端画布已有更新");
+    expect(await saving).toBeUndefined();
+
+    expect(remote.get("canvas")!.nodes.at(-1)!.id).toBe("generation-target");
     expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
 });
 

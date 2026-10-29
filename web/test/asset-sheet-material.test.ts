@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { AssetSheetKind, assetSheetPrompt } from "@/lib/asset-reference-sheet";
-import { assetSheetSubjectMaterial, assetSheetStyleMaterial } from "@/lib/asset-sheet-material";
+import { assetSheetSubjectMaterial, assetSheetStyleMaterial, assetSheetShotMaterial } from "@/lib/asset-sheet-material";
 import { createWorkflowImages, workflowImageSubjects } from "@/lib/canvas/canvas-workflow-images";
 import { adjustWorkflowImagePrompt } from "@/lib/canvas/canvas-image-prompt-adjustment";
 import { nodeWorkflow, workflowSignature } from "@/lib/canvas/canvas-short-drama-workflow";
@@ -80,6 +80,83 @@ test("custom documents, new sections, nested headings and fenced examples are no
     expect(result).not.toContain("应删除");
 });
 
+test("storyboard projections preserve full physical constraints across standard, legacy, custom and freeform documents", () => {
+    const physical = `${"尺寸锚点；".repeat(200)}长度0.42米，手掌宽度的4倍。`;
+    const documents = [
+        `## 道具形状、尺寸、比例与辨识特征\n${physical}\n## 操作声、材质声与标志音效\n应隔离的道具音轨`,
+        `## 固定特征与制作设计\n${physical}\n## 声音设计\n应隔离的道具音轨`,
+        `## 外观与材质\n${physical}\n### 尺度补充\n距桌沿20厘米\n### 声音说明\n应隔离的道具音轨\n## 剧情摘要\n应隔离的剧情`,
+        `## 道具形状、尺寸、比例与辨识特征\n青铜器\n## 制作补记\n${physical}\n## 外形记录\n距桌沿20厘米\n## 颜色\n暗青色\n## 声音设计\n应隔离的道具音轨`,
+        `${physical}\n声音：应隔离的道具音轨\n材质：青铜，浮雕像声波。`,
+    ];
+    for (const content of documents) {
+        for (const hasReference of [false, true]) {
+            const material = assetSheetShotMaterial(content, AssetSheetKind.Prop, hasReference);
+            expect(material).toContain(physical);
+            expect(material).not.toContain("应隔离的道具音轨");
+            expect(material).not.toContain("应隔离的剧情");
+            if (content.includes("距桌沿")) expect(material).toContain("距桌沿20厘米");
+            if (content.includes("暗青色")) expect(material).toContain("暗青色");
+            if (content.includes("浮雕")) expect(material).toContain("浮雕像声波");
+        }
+        const subject = assetSheetSubjectMaterial(content, AssetSheetKind.Prop);
+        expect(subject).toContain(physical);
+        expect(subject).not.toContain("应隔离的");
+    }
+});
+
+test("both storyboard paths isolate explicit audio fields and nested sections without word-scanning visual prose", () => {
+    const mixed = [
+        "## 外观与空间设计",
+        "宽度：8米；声音：应隔离的音色；材质：吸音棉表面纹路像声波。",
+        "Voice: 应隔离的配音",
+        "应隔离的声音续行",
+        "补记：支架离地0.6米。声音：应隔离的标记音。外观：深绿色。",
+        "空间布局：入口距窗3米，音箱轮廓为方形。",
+        "### 声音设计",
+        "应隔离的音轨章节",
+        "#### 外观",
+        "应隔离的声音示例内设计",
+        "### 固定尺度",
+        "门高2米。",
+        "```text",
+        "## 声音设计",
+        "这是可视材质样本上的文字。",
+        "```",
+    ].join("\n");
+    for (const material of [assetSheetSubjectMaterial(mixed, AssetSheetKind.Environment), ...[false, true].map(hasReference => assetSheetShotMaterial(mixed, AssetSheetKind.Environment, hasReference))]) {
+        for (const value of ["宽度：8米", "吸音棉表面纹路像声波", "入口距窗3米", "音箱轮廓为方形", "支架离地0.6米", "外观：深绿色", "门高2米", "这是可视材质样本上的文字"]) expect(material).toContain(value);
+        expect(material).not.toContain("应隔离的");
+    }
+});
+
+test("visual field titles do not become audio or narrative fields because of their subject names", () => {
+    const content = "## 道具形状、尺寸、比例与辨识特征\n金属\n## 音乐盒外观与尺寸\n总长0.42米\n## 台词提示卡尺寸\n卡片宽20厘米\n## 走廊空间关系\n门距窗3米\n## 音乐盒\n底座高12厘米\n## Sound sculpture dimensions\nheight 2m\n## 声音\n应隔离的音轨\n## Voice\n应隔离的声线";
+    for (const hasReference of [false, true]) {
+        const material = assetSheetShotMaterial(content, AssetSheetKind.Prop, hasReference);
+        for (const value of ["总长0.42米", "卡片宽20厘米", "门距窗3米", "底座高12厘米", "height 2m"]) expect(material).toContain(value);
+        expect(material).not.toContain("应隔离的");
+    }
+});
+
+test("selected images keep custom spatial and special physical constraints while standard dossiers stay projected", () => {
+    for (const [kind, field, physical] of [
+        [AssetSheetKind.Character, "年龄感、体型、面部与辨识特征", "身高180cm"],
+        [AssetSheetKind.Environment, "空间布局、尺度与固定陈设", "宽8米，桌高80cm"],
+        [AssetSheetKind.Prop, "道具形状、尺寸、比例与辨识特征", "长度0.42米"],
+        [AssetSheetKind.Special, "固定形态、尺度、材质与辨识特征", "发光区域半径2米"],
+    ] as const) {
+        const content = `## ${field}\n${physical}\n## 人物经历与关键成因\n${"无关长篇经历".repeat(1000)}\n## 可复用配音提示词\n无关声音\n## 用户新增外观约束\n### 结构与空间补充\n左侧留出1米通道`;
+        for (const hasReference of [false, true]) {
+            const material = assetSheetShotMaterial(content, kind, hasReference);
+            expect(material).toContain(physical);
+            expect(material).toContain("左侧留出1米通道");
+            expect(material).not.toContain("无关");
+            expect(material.length).toBeLessThan(300);
+        }
+    }
+});
+
 test("styles select medium, colors and lighting without general prohibition or delivery documents", () => {
     const result = assetSheetStyleMaterial(style);
     for (const value of ["二维水彩", "纸面纹理", "青绿", "左上柔光", "禁止荧光紫"]) expect(result).toContain(value);
@@ -125,7 +202,7 @@ test("new image creation and automatic adjustment both handle current plan docum
     const f = workflowImageFixture();
     expect(f.request.step).toBe(ShortDramaStep.CharacterReferences);
     const subject = workflowImageSubjects(f.request, f.nodes)[0];
-    subject.metadata!.content = character;
+    subject.metadata!.content = `${character}\n\n## 制作补记\n左手掌宽9厘米。\n声音：不可带入的补充声音\n材质：袖口为亚麻。\n### 声音设计\n不可带入的嵌套声音`;
     const visual = f.nodes.find((node) => nodeWorkflow(node)?.bibleSection === "style")!;
     visual.metadata!.content = style;
     for (const node of f.nodes) {
@@ -137,7 +214,9 @@ test("new image creation and automatic adjustment both handle current plan docum
     const image = result.created[0];
     for (const prompt of [image.metadata!.prompt!, adjustWorkflowImagePrompt(image, result.nodes, image.metadata!.prompt!)]) {
         expect(prompt).toContain("墨绿棉布长外套"); expect(prompt).toContain("二维水彩");
+        expect(prompt).toContain("左手掌宽9厘米"); expect(prompt).toContain("袖口为亚麻");
         expect(prompt).not.toContain("不可带入的配音"); expect(prompt).not.toContain("管弦音乐");
+        expect(prompt).not.toContain("不可带入的补充声音"); expect(prompt).not.toContain("不可带入的嵌套声音");
         expect(prompt).not.toContain("又伸手递出资料的剧情表演");
         expect(prompt).toContain("【人物基准姿态与肢体】");
     }

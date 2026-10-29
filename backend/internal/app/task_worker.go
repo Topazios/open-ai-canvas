@@ -77,6 +77,7 @@ func (s *Service) wakeTaskDispatcher() {
 func (w *taskWorkerCoordinator) start(ctx context.Context) {
 	s := w.service
 	s.startTextReplayCleanup(ctx)
+	s.startCanvasTaskEventCleanup(ctx)
 	s.startProviderCancellationReconciliation(ctx)
 	s.startCanvasNodeTaskCleanup(ctx)
 	s.startBillingReviewAudit(ctx)
@@ -168,6 +169,7 @@ func (w *taskWorkerCoordinator) processNextTask() error {
 
 func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task, globalSlot *platform.SlotLease) error {
 	s := w.service
+	defer s.publishCanvasTaskEvent(task.ID)
 	terminal := s.terminalCoordinator()
 	policyCtx, cancelPolicy := context.WithTimeout(context.Background(), 3*time.Second)
 	reader := &Service{repo: s.repo.WithContext(policyCtx)}
@@ -295,7 +297,7 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task, globalSlot 
 		default:
 		}
 		decryptedInput, decryptErr := s.decryptTaskInputJSON(task.InputJSON)
-		if decryptErr == nil && s.shouldDeferVideoProviderTask(*task, decryptedInput, err) {
+		if !providerSucceeded && decryptErr == nil && s.shouldDeferVideoProviderTask(*task, decryptedInput, err) {
 			stage := "后台仍在生成"
 			message := "前台等待结束，上游视频仍在生成，将继续回查原任务"
 			var pendingErr providerStatePendingError
@@ -309,10 +311,11 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task, globalSlot 
 			_ = s.log(task.UserID, task.ID, "info", message, task.PollStage)
 			return nil
 		}
-		if newAPIChannel2TaskSyncExpired(*task, err, time.Now()) {
+		if !providerSucceeded && newAPIChannel2TaskSyncExpired(*task, err, time.Now()) {
 			err = errors.New("上游任务长时间未同步，已停止自动查询，请确认渠道任务状态后重试。")
 		}
-		if errors.Is(err, context.DeadlineExceeded) || deadlineExpired {
+		var requestTimeoutErr providerRequestTimeoutError
+		if !providerSucceeded && (deadlineExpired || (errors.Is(err, context.DeadlineExceeded) && !errors.As(err, &requestTimeoutErr))) {
 			// 画布 Agent 的单步超时是可恢复事件（运行期会关思考重试同一步），
 			// 因此必须与"任务执行超时"区分开，否则只能整轮判死。
 			if cloudAgentModelOperation(task) {

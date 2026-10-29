@@ -70,13 +70,14 @@ export type ApiCallLog = {
     method: string;
     path: string;
     model: string;
-    status: "succeeded" | "failed";
+    status: "running" | "succeeded" | "warning" | "failed";
     statusCode: number;
     durationMs: number;
     pollCount: number;
     providerStatus?: string;
     inputTokens: number;
     outputTokens: number;
+    reasoningTokens?: number;
     cachedTokens: number;
     usageAvailable: boolean;
     mediaCount: number;
@@ -90,6 +91,7 @@ export type ApiCallLog = {
     costAvailable: boolean;
     currency?: string;
     errorCode?: string;
+    errorSource?: string;
     error?: string;
     concurrencyLimit: number;
     upstreamUrl: string;
@@ -351,6 +353,7 @@ export type RuntimeTaskPolicy = {
     videoTimeoutMinutes: number;
     storyboardTimeoutMinutes: number;
     defaultTimeoutMinutes: number;
+    providerRequestTimeoutSeconds: number;
     /** 画布 Agent 单步模型调用的输出上限（思考 + 正文 + 工具参数）；0 表示不限制。 */
     agentStepMaxOutputTokens: number;
     /** 画布 Agent 单步模型调用的秒级墙钟；0 表示沿用文本任务超时。 */
@@ -386,10 +389,23 @@ export type RuntimePolicySetting = {
     storage: RuntimeStoragePolicy;
     task: RuntimeTaskPolicy;
     request: RuntimeRequestPolicy;
+    canvas: RuntimeCanvasPolicy;
     configured?: boolean;
     updatedBy?: string;
     createdAt?: string;
     updatedAt?: string;
+};
+
+export type RuntimeCanvasPolicy = {
+    connectionLineStyle: "solid" | "dashed";
+    connectionArrowStyle: "arrow" | "dot" | "none";
+    connectionEffect: "none" | "highlight";
+    taskEventHeartbeatSeconds: number;
+    taskEventMaxConnectionsPerUser: number;
+    taskEventMaxReplayEvents: number;
+    taskEventRetentionHours: number;
+    taskFallbackPollMinSeconds: number;
+    taskFallbackPollMaxSeconds: number;
 };
 
 export function getAuthSettings() {
@@ -598,7 +614,7 @@ export function getAdminSelfUseRuntimePolicy() {
     return http.get<{ setting: RuntimePolicySetting }>("/admin/settings/runtime-policy/self-use");
 }
 
-export function updateAdminRuntimePolicySetting(input: Pick<RuntimePolicySetting, "resource" | "storage" | "task" | "request">) {
+export function updateAdminRuntimePolicySetting(input: Pick<RuntimePolicySetting, "resource" | "storage" | "task" | "request" | "canvas">) {
     return http.put<{ setting: RuntimePolicySetting }>("/admin/settings/runtime-policy", input);
 }
 

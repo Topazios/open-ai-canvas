@@ -116,38 +116,39 @@ type cloudAgentApproval struct {
 }
 
 type cloudAgentRuntime struct {
-	ProductionParallel      map[string]productionParallelWork     `json:"productionParallel,omitempty"`
-	ProductionProgressStep  int                                   `json:"productionProgressStep,omitempty"`
-	ProductionStepLimit     int                                   `json:"productionStepLimit,omitempty"`
-	ProductionPaused        bool                                  `json:"productionPaused,omitempty"`
-	ProductionModelKey      string                                `json:"productionModelKey,omitempty"`
-	ProductionModelReceipts map[string]string                     `json:"productionModelReceipts,omitempty"`
-	ProductionRepairs       int                                   `json:"productionRepairs,omitempty"`
-	RuntimeRunID            string                                `json:"-"`
-	Request                 CloudAgentRequest                     `json:"request"`
-	Policy                  cloudAgentPolicySnapshot              `json:"policy"`
-	ParentID                string                                `json:"parentId,omitempty"`
-	Fingerprint             string                                `json:"fingerprint,omitempty"`
-	CreativeAnchor          cloudAgentCreativeAnchor              `json:"creativeAnchor,omitempty"`
-	TextHistory             []providerTextMessage                 `json:"textHistory,omitempty"`
-	Skills                  []cloudAgentSkill                     `json:"skills"`
-	Profile                 cloudAgentProfileSnapshot             `json:"profile"`
-	ProfileReads            map[string]bool                       `json:"profileReads,omitempty"`
-	ToolReadResults         map[string]cloudAgentCachedToolResult `json:"toolReadResults,omitempty"`
-	ToolReadReplays         map[string]int                        `json:"toolReadReplays,omitempty"`
-	readCacheExecution      bool                                  `json:"-"`
-	Canonical               canonicalAgentRequest                 `json:"canonical"`
-	ActiveTaskID            string                                `json:"activeTaskId"`
-	ActiveTextDraft         string                                `json:"activeTextDraft,omitempty"`
-	MediaTaskID             string                                `json:"mediaTaskId,omitempty"`
-	TaskIDs                 []string                              `json:"taskIds"`
-	Step                    int                                   `json:"step"`
-	Generations             int                                   `json:"generations"`
-	VideoSeconds            int                                   `json:"videoSeconds"`
-	Calls                   []cloudAgentCall                      `json:"calls"`
-	CallIndex               int                                   `json:"callIndex"`
-	ToolRepairs             map[string]cloudAgentToolRepair       `json:"toolRepairs,omitempty"`
-	Approval                *cloudAgentApproval                   `json:"approval,omitempty"`
+	ProductionParallel         map[string]productionParallelWork     `json:"productionParallel,omitempty"`
+	ProductionAssetNewVersions map[string]bool                       `json:"productionAssetNewVersions,omitempty"`
+	ProductionProgressStep     int                                   `json:"productionProgressStep,omitempty"`
+	ProductionStepLimit        int                                   `json:"productionStepLimit,omitempty"`
+	ProductionPaused           bool                                  `json:"productionPaused,omitempty"`
+	ProductionModelKey         string                                `json:"productionModelKey,omitempty"`
+	ProductionModelReceipts    map[string]string                     `json:"productionModelReceipts,omitempty"`
+	ProductionRepairs          int                                   `json:"productionRepairs,omitempty"`
+	RuntimeRunID               string                                `json:"-"`
+	Request                    CloudAgentRequest                     `json:"request"`
+	Policy                     cloudAgentPolicySnapshot              `json:"policy"`
+	ParentID                   string                                `json:"parentId,omitempty"`
+	Fingerprint                string                                `json:"fingerprint,omitempty"`
+	CreativeAnchor             cloudAgentCreativeAnchor              `json:"creativeAnchor,omitempty"`
+	TextHistory                []providerTextMessage                 `json:"textHistory,omitempty"`
+	Skills                     []cloudAgentSkill                     `json:"skills"`
+	Profile                    cloudAgentProfileSnapshot             `json:"profile"`
+	ProfileReads               map[string]bool                       `json:"profileReads,omitempty"`
+	ToolReadResults            map[string]cloudAgentCachedToolResult `json:"toolReadResults,omitempty"`
+	ToolReadReplays            map[string]int                        `json:"toolReadReplays,omitempty"`
+	readCacheExecution         bool                                  `json:"-"`
+	Canonical                  canonicalAgentRequest                 `json:"canonical"`
+	ActiveTaskID               string                                `json:"activeTaskId"`
+	ActiveTextDraft            string                                `json:"activeTextDraft,omitempty"`
+	MediaTaskID                string                                `json:"mediaTaskId,omitempty"`
+	TaskIDs                    []string                              `json:"taskIds"`
+	Step                       int                                   `json:"step"`
+	Generations                int                                   `json:"generations"`
+	VideoSeconds               int                                   `json:"videoSeconds"`
+	Calls                      []cloudAgentCall                      `json:"calls"`
+	CallIndex                  int                                   `json:"callIndex"`
+	ToolRepairs                map[string]cloudAgentToolRepair       `json:"toolRepairs,omitempty"`
+	Approval                   *cloudAgentApproval                   `json:"approval,omitempty"`
 	// AutoPreparedMedia is the durable admission checkpoint for permissionMode=auto.
 	// It prevents a worker restart between dry admission and billed submission from
 	// re-running admission or creating the draft node a second time.
@@ -179,6 +180,8 @@ type cloudAgentRuntime struct {
 	EmptyOutputEscalated int `json:"emptyOutputEscalated,omitempty"`
 	// StepTimeoutEscalated 记录"单步墙钟到点后已经关思考重试过几次"。
 	StepTimeoutEscalated int `json:"stepTimeoutEscalated,omitempty"`
+	// OutputLimitEscalated 记录模型输出触及协议上限后，关思考重试的次数。
+	OutputLimitEscalated int `json:"outputLimitEscalated,omitempty"`
 	// ForceThinkingOff 让本步请求强制关闭上游思考：思考模型偶发把整个输出预算花在推理上，
 	// 结果正文与工具调用皆空（实测 output_tokens 正好等于 maxOutputTokens）。
 	ForceThinkingOff bool `json:"forceThinkingOff,omitempty"`

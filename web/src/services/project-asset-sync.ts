@@ -77,8 +77,12 @@ export async function retryCanvasAssetSyncAfterRateLimit<T>(operation: () => Pro
         try {
             return await operation();
         } catch (error) {
-            if (!(error instanceof ApiError) || error.status !== 429 || attempt >= maxRetries) throw error;
-            const delayMs = Math.min(MAX_RATE_LIMIT_RETRY_MS, Math.max(0, error.retryAfterMs ?? DEFAULT_RATE_LIMIT_RETRY_MS));
+            const rateLimited = error instanceof ApiError && error.status === 429;
+            const canvasUpdating = error instanceof Error && /(?:画布仍在更新|本地画布仍在更新)/.test(error.message);
+            if ((!rateLimited && !canvasUpdating) || attempt >= maxRetries) throw error;
+            const delayMs = rateLimited
+                ? Math.min(MAX_RATE_LIMIT_RETRY_MS, Math.max(0, error.retryAfterMs ?? DEFAULT_RATE_LIMIT_RETRY_MS))
+                : Math.min(2_000, 250 * 2 ** attempt);
             await wait(delayMs, options.signal);
         }
     }

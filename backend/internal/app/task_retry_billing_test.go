@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -17,8 +18,9 @@ func imageRetryBillingFixture(t *testing.T) (*Service, *gorm.DB, model.Task) {
 	task := model.Task{ID: "image-retry", UserID: "user", Type: "canvas_image", Operation: "image", Status: model.TaskStatusFailed,
 		BillingOrderID: "pending-order", RouteRun: 2, InputJSON: `{"mode":"image","config":{"channelId":"channel","model":"image-test"}}`}
 	recordTaskDiagnostic(&task, "execution", "provider_execution_failed", "unknown", "reconcile_submission", nil)
+	capabilityConfig := mustEncodeModelCapabilityConfig(t, DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceOpenAIImage), "image-test"))
 	for _, row := range []any{
-		&model.ChannelModel{ID: "image-cm", ChannelID: "channel", ModelKey: "image-test", Capability: "image", BillingMode: "fixed_request", UnitPriceMicrocredits: 100, PriceConfigured: true, Enabled: true},
+		&model.ChannelModel{ID: "image-cm", ChannelID: "channel", ModelKey: "image-test", Capability: "image", Protocol: model.ChannelInterfaceOpenAIImage, CapabilityConfigJSON: capabilityConfig, BillingMode: "fixed_request", UnitPriceMicrocredits: 100, PriceConfigured: true, Enabled: true},
 		&model.ChannelModelPriceTier{ID: "image-tier", ChannelModelID: "image-cm", SelectorKey: "{}", SelectorJSON: "{}", BillingMode: "fixed_request", UnitPriceMicrocredits: 100, PriceConfigured: true, Enabled: true},
 		&model.BillingOrder{ID: task.BillingOrderID, UserID: task.UserID, TaskID: task.ID, IdempotencyKey: "old", Status: model.BillingStatusUncertain, AmountMicrocredits: 50, ReservedAmountMicrocredits: 50},
 		&task,
@@ -31,6 +33,43 @@ func imageRetryBillingFixture(t *testing.T) (*Service, *gorm.DB, model.Task) {
 		t.Fatal(err)
 	}
 	return s, db, task
+}
+
+func TestImageRetryRebuildsCurrentSystemChannelProtocol(t *testing.T) {
+	s, db, task := imageRetryBillingFixture(t)
+	agnesCapability := mustEncodeModelCapabilityConfig(t, DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceAgnesImage), "image-test"))
+	if err := db.Model(&model.ChannelModel{}).Where("id = ?", "image-cm").Updates(map[string]any{
+		"protocol":               model.ChannelInterfaceAgnesImage,
+		"capability_config_json": agnesCapability,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	task.InputJSON = `{"mode":"image","config":{"channelId":"channel","model":"image-test","interfaceType":"openai-image","selectedProtocol":"openai-image","apiFormat":"openai"}}`
+	if err := db.Save(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RetryTask(task.UserID, task.ID, task.BillingOrderID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.repo.Task(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err := s.decryptTaskInputJSON(stored.InputJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input map[string]any
+	if err := json.Unmarshal([]byte(decrypted), &input); err != nil {
+		t.Fatal(err)
+	}
+	config := input["config"].(map[string]any)
+	if got := config["interfaceType"]; got != string(model.ChannelInterfaceAgnesImage) {
+		t.Fatalf("retry interfaceType = %#v, want %q", got, model.ChannelInterfaceAgnesImage)
+	}
+	if _, exists := config["selectedProtocol"]; exists {
+		t.Fatalf("stale selectedProtocol survived retry: %#v", config)
+	}
 }
 
 func TestImageRetryPendingBillingRequiresSpecificConfirmation(t *testing.T) {

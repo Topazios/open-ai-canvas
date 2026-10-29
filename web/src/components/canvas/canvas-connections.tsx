@@ -6,6 +6,7 @@ import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@/lib/canvas/canvas-storyboard-layout";
 import { batchReferenceHandleY } from "@/lib/canvas/canvas-batch-table";
 import { borderConnectionPath, closestBorderPoint, shortestBorderPair } from "@/lib/canvas/canvas-connection-routing";
+import type { RuntimeLimits } from "@/stores/use-user-store";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@/types/canvas";
 
 export const ConnectionPath = React.memo(function ConnectionPath({
@@ -17,6 +18,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
     active,
     visualMode = "full",
     hideVisual = false,
+    connectionPolicy,
     onSelect,
     onContextMenu,
 }: {
@@ -28,54 +30,36 @@ export const ConnectionPath = React.memo(function ConnectionPath({
     active: boolean;
     visualMode?: "full" | "hover-only";
     hideVisual?: boolean;
+    connectionPolicy?: RuntimeLimits["canvas"];
     onSelect: () => void;
     onContextMenu?: (event: ReactMouseEvent<SVGPathElement>) => void;
 }) {
     const theme = canvasThemes[useActiveTheme()];
     const [hovered, setHovered] = useState(false);
     const { pathD, startX, startY, endX, endY } = canvasConnectionPath(connection, from, to, fromScrollTop, toScrollTop);
-    const emphasized = active || hovered;
+    const emphasized = (active || hovered) && (connectionPolicy?.connectionEffect || "highlight") === "highlight";
     const showVisual = !hideVisual && visualMode === "full";
     const showEmphasis = !hideVisual && emphasized;
-    const gradientId = `canvas-flow-${connection.id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
-    const markerId = `${gradientId}-target`;
-    const animationDelay = connectionAnimationDelay(connection.id);
-    const flowStyle = {
-        pointerEvents: "none",
-        "--canvas-connection-delay": `${animationDelay}ms`,
-    } as React.CSSProperties;
-    const cometStyle = {
-        pointerEvents: "none",
-        "--canvas-connection-delay": `${animationDelay - 180}ms`,
-    } as React.CSSProperties;
+    const lineStyle = connectionPolicy?.connectionLineStyle || "solid";
+    const arrowStyle = connectionPolicy?.connectionArrowStyle || "arrow";
+    const markerId = `canvas-connection-${connection.id.replace(/[^a-zA-Z0-9_-]/g, "")}-target`;
 
     return (
         <g>
-            {showVisual ? <defs>
-                <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1={startX} y1={startY} x2={endX} y2={endY}>
-                    <stop offset="0%" stopColor={theme.node.muted} stopOpacity={0.18} />
-                    <stop offset="48%" stopColor={theme.accent.primary} stopOpacity={0.58} />
-                    <stop offset="100%" stopColor={theme.accent.primary} stopOpacity={0.34} />
-                </linearGradient>
-                <linearGradient id={`${gradientId}-comet`} gradientUnits="userSpaceOnUse" x1={startX} y1={startY} x2={endX} y2={endY}>
-                    <stop offset="0%" stopColor={theme.accent.primary} stopOpacity={0} />
-                    <stop offset="45%" stopColor={theme.accent.primary} stopOpacity={0.95} />
-                    <stop offset="100%" stopColor={theme.accent.primary} stopOpacity={0} />
-                </linearGradient>
-                <marker id={markerId} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
-                    <path d="M 0 0 L 8 4 L 0 8 Z" fill={theme.accent.primary} fillOpacity={0.95} />
+            {showVisual && arrowStyle === "arrow" ? <defs>
+                <marker id={markerId} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto">
+                    <path d="M 0 0 L 8 4 L 0 8 Z" fill={theme.accent.primary} fillOpacity={0.86} />
                 </marker>
             </defs> : null}
-            {/* 选中或悬停时增加光晕，常态使用持续流动和终点箭头表达方向。 */}
             {showEmphasis ? <path
                 d={pathD}
                 stroke={theme.accent.primary}
-                strokeWidth="8"
+                strokeWidth="4"
                 vectorEffect="non-scaling-stroke"
-                strokeOpacity={0.18}
+                strokeOpacity={0.12}
                 fill="none"
                 strokeLinecap="round"
-                style={{ pointerEvents: "none", filter: "blur(3px)" }}
+                style={{ pointerEvents: "none", filter: "blur(2px)" }}
             /> : null}
             <path
                 data-connection-id={connection.id}
@@ -99,68 +83,29 @@ export const ConnectionPath = React.memo(function ConnectionPath({
             />
             {showVisual ? <path
                 d={pathD}
-                stroke={theme.node.muted}
-                strokeWidth={emphasized ? 5 : 3.5}
-                vectorEffect="non-scaling-stroke"
-                strokeOpacity={emphasized ? 0.18 : 0.16}
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                style={{ pointerEvents: "none" }}
-            /> : null}
-            {showVisual ? <path
-                d={pathD}
                 stroke={emphasized ? theme.accent.primary : theme.node.muted}
-                strokeWidth={emphasized ? 3.4 : 2.6}
+                strokeWidth={emphasized ? 1.8 : 1.4}
                 vectorEffect="non-scaling-stroke"
-                strokeOpacity={emphasized ? 0.95 : 0.8}
+                strokeOpacity={emphasized ? 0.92 : 0.64}
+                strokeDasharray={lineStyle === "dashed" ? "5 4" : undefined}
                 fill="none"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                markerEnd={showVisual ? `url(#${markerId})` : undefined}
+                markerEnd={arrowStyle === "arrow" ? `url(#${markerId})` : undefined}
                 style={{ pointerEvents: "none" }}
             /> : null}
-            {showVisual ? <>
-                <circle cx={startX} cy={startY} r={emphasized ? 3.5 : 2.5} fill={theme.node.muted} fillOpacity={emphasized ? 0.78 : 0.58} vectorEffect="non-scaling-stroke" style={{ pointerEvents: "none" }} />
-                <circle className="canvas-connection-target" cx={endX} cy={endY} r={emphasized ? 5 : 4} fill={theme.accent.primary} fillOpacity={0.96} vectorEffect="non-scaling-stroke" style={{ pointerEvents: "none" }} />
-            </> : null}
-            {showVisual ? <path
-                className="canvas-connection-flow"
-                d={pathD}
-                stroke={`url(#${gradientId})`}
-                strokeWidth={emphasized ? "3.2" : "2.8"}
+            {showVisual && arrowStyle === "dot" ? <circle
+                cx={endX}
+                cy={endY}
+                r={2.2}
+                fill={theme.accent.primary}
+                fillOpacity={0.82}
                 vectorEffect="non-scaling-stroke"
-                strokeOpacity={emphasized ? "0.98" : "0.9"}
-                strokeDasharray="10 26"
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                style={flowStyle}
-            /> : null}
-            {showVisual ? <path
-                className="canvas-connection-comet"
-                d={pathD}
-                stroke={`url(#${gradientId}-comet)`}
-                strokeWidth={emphasized ? "5.2" : "4.4"}
-                vectorEffect="non-scaling-stroke"
-                strokeDasharray="20 124"
-                strokeOpacity={emphasized ? "1" : "0.94"}
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                style={cometStyle}
+                style={{ pointerEvents: "none" }}
             /> : null}
         </g>
     );
-}, (previous, next) => previous.connection === next.connection && previous.from === next.from && previous.to === next.to && previous.active === next.active && previous.visualMode === next.visualMode && previous.hideVisual === next.hideVisual && previous.fromScrollTop === next.fromScrollTop && previous.toScrollTop === next.toScrollTop);
-
-function connectionAnimationDelay(connectionId: string) {
-    let hash = 0;
-    for (let index = 0; index < connectionId.length; index += 1) {
-        hash = (hash * 31 + connectionId.charCodeAt(index)) >>> 0;
-    }
-    return -(hash % 900);
-}
+}, (previous, next) => previous.connection === next.connection && previous.from === next.from && previous.to === next.to && previous.active === next.active && previous.visualMode === next.visualMode && previous.hideVisual === next.hideVisual && previous.connectionPolicy === next.connectionPolicy && previous.fromScrollTop === next.fromScrollTop && previous.toScrollTop === next.toScrollTop);
 
 export function canvasConnectionPath(connection: CanvasConnection, from: CanvasNodeData, to: CanvasNodeData, fromScrollTop = 0, toScrollTop = 0) {
     const fixedStart = connection.fromHandleId && from.id === connection.fromNodeId ? { x: from.position.x + from.width, y: connectionHandleY(from, connection.fromHandleId, fromScrollTop) } : undefined;

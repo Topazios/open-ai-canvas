@@ -5,6 +5,7 @@ import { Select } from "@/components/ui/base/select";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { changeDramaSetting, defaultShortDramaSettings, DramaMarket, DramaSource, dramaOptionsForSettings, dramaSettingLabels, dramaSettingOptions, dramaSettingSections, resolvedDramaTargetMarket, validateShortDramaSettings, type ShortDramaGlobalSettings } from "@/lib/short-drama-settings";
 import "./canvas-global-settings-dialog.css";
+import { projectVoiceCalibration } from "@/lib/production-sound";
 
 type Props = {
     title: string;
@@ -61,6 +62,11 @@ export function CanvasGlobalSettingsDialog({ title: initialTitle, settings, edit
                     <h3 id={`drama-section-${section.id}`}><span>{String(index + 1).padStart(2, "0")}</span>{section.title}</h3>
                     <div className="canvas-global-settings-grid">
                     {section.fields.map(field)}
+                    {section.id === "distribution" ? <div className="canvas-global-setting-field canvas-global-setting-wide">
+                        <label htmlFor="drama-voice-calibration">人物统一试听文本</label>
+                        <Input.TextArea id="drama-voice-calibration" aria-label="人物统一试听文本" value={projectVoiceCalibration(draft)} maxLength={2000} autoSize={{ minRows: 3 }} disabled={busy}
+                            onChange={event => setDraft(current => ({ ...current, voiceCalibrationText: event.target.value, voiceCalibrationLanguage: current.voiceLanguage }))} />
+                    </div> : null}
                     {section.id === "story" && !editing && draft.source !== DramaSource.Original ? <div className="canvas-global-setting-field canvas-global-setting-wide">
                         <label htmlFor="drama-source-content">已有故事 / 剧本</label>
                         <Button icon={<FileUp size={15} />} disabled={busy} onClick={() => fileInput.current?.click()}>导入 TXT / Markdown</Button>

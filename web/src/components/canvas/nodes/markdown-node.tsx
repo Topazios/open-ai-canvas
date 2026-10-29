@@ -1,6 +1,6 @@
 import { FileText } from "lucide-react";
 
-import { AIMessageMarkdown } from "@/components/ai/ai-message-markdown";
+import { CanvasMarkdownPreview } from "@/components/canvas/canvas-markdown-preview";
 import { useUpstreamNodes } from "@/components/canvas/canvas-node-graph-context";
 import { getNodeResourceKind } from "@/lib/canvas/node-registry";
 import type { CanvasTheme } from "@/lib/canvas-theme";
@@ -34,13 +34,6 @@ export function MarkdownNodeContent({ node, theme }: MarkdownNodeContentProps) {
     }
 
     return (
-        <div
-            className="h-full w-full overflow-y-auto overflow-x-hidden px-4 py-3"
-            data-canvas-no-zoom
-            style={{ color: theme.node.text }}
-            onWheel={(event) => event.stopPropagation()}
-        >
-            <AIMessageMarkdown>{source}</AIMessageMarkdown>
-        </div>
+        <CanvasMarkdownPreview source={source} theme={theme} className="overflow-x-hidden px-4 py-3" style={{ color: theme.node.text }} dataCanvasNoZoom />
     );
 }

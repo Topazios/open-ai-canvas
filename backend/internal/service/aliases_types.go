@@ -8,6 +8,7 @@ type (
 	CloudAgentRequest                      = app.CloudAgentRequest
 	CloudAgentRunViewOptions               = app.CloudAgentRunViewOptions
 	CloudAgentMediaSettings                = app.CloudAgentMediaSettings
+	ProductionAssetModelSelection          = app.ProductionAssetModelSelection
 	CloudAgentCapabilitySet                = app.CloudAgentCapabilitySet
 	AgentProfileRequest                    = app.AgentProfileRequest
 	AgentProfileView                       = app.AgentProfileView
@@ -269,6 +270,7 @@ type (
 	RunPaymentReconciliationRequest        = app.RunPaymentReconciliationRequest
 	RunningHubWorkflowFetchRequest         = app.RunningHubWorkflowFetchRequest
 	RuntimePolicySetting                   = app.RuntimePolicySetting
+	RuntimeCanvasPolicy                    = app.RuntimeCanvasPolicy
 	RuntimeRequestPolicy                   = app.RuntimeRequestPolicy
 	RuntimeResourcePolicy                  = app.RuntimeResourcePolicy
 	RuntimeTaskPolicy                      = app.RuntimeTaskPolicy
@@ -315,6 +317,7 @@ type (
 	TapNowImportMetadata                   = app.TapNowImportMetadata
 	TapNowImportWarning                    = app.TapNowImportWarning
 	TaskBillingSummary                     = app.TaskBillingSummary
+	CanvasTaskEventView                    = app.CanvasTaskEventView
 	TaskClientContext                      = app.TaskClientContext
 	TaskListOptions                        = app.TaskListOptions
 	TaskSummary                            = app.TaskSummary

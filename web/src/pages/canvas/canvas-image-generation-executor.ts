@@ -15,6 +15,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { storyboardContinuitySnapshot } from "@/lib/canvas/storyboard-frame-continuity";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
+import { prepareCanvasImageTask } from "./task-adapters/image";
 
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
@@ -193,25 +194,8 @@ export async function executeImageGeneration({
         targetIds.map(async (targetId) => {
             try {
                 await runCanvasGenerationTaskToConsumer(
-                    {
-                        projectId,
-                        nodeId: targetId,
-                        ...retryContext,
-                        mode: "image",
-                        prompt: effectivePrompt,
-                        config: { ...generationConfig, count: "1" },
-                        referenceImages,
-                        signal: controller.signal,
-                        metadata: {
-                            sourceNodeId: nodeId,
-                            ...taskContext,
-                            resolvedCharacterVersions: generationContext.resolvedCharacterVersions,
-                            promptTemplateOperation: sourceNode?.metadata?.promptTemplateOperation,
-                            promptTemplateVariables: sourceNode?.metadata?.promptTemplateVariables,
-                            ...styleMetadata,
-                            ...skillMetadata,
-                        },
-                    },
+                    // 参数构造迁移到任务适配器（canvas-image-single，shadow 阶段），载荷与原字面量一致。
+                    prepareCanvasImageTask({ projectId, nodeId, sourceNode, effectivePrompt, generationConfig, generationContext, controller, styleMetadata, skillMetadata, taskContext, retryContext }, targetId),
                     {
                         bindTask: (task) => bindGenerationTask(targetId, task),
                         consumeTask: (task) => applyGenerationTaskResult(targetId, task),

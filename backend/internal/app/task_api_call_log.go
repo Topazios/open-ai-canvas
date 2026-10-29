@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"strings"
 	"time"
 
@@ -54,10 +55,17 @@ func (s *Service) ensureFailedProviderAttemptLogged(task model.Task, taskErr err
 	errorCode := "request_not_sent"
 	statusCode := 0
 	var httpErr providerHTTPError
+	var payloadErr providerPayloadError
+	var networkErr *net.OpError
+	var appErr *AppError
+	diagnostic := taskExecutionDiagnostic(&task)
 	if errors.As(taskErr, &httpErr) {
 		path = "/task/provider-request"
 		errorCode = "provider_request_unlogged"
 		statusCode = httpErr.StatusCode
+	} else if errors.As(taskErr, &payloadErr) || errors.As(taskErr, &networkErr) || (diagnostic != nil && (diagnostic.ErrorSource == "upstream" || diagnostic.ErrorSource == "network")) {
+		path = "/task/provider-request"
+		errorCode = "provider_request_unlogged"
 	} else if strings.TrimSpace(metadata.ProviderRequestID) != "" {
 		path = "/task/provider-state"
 		errorCode = "provider_state_unlogged"
@@ -86,6 +94,24 @@ func (s *Service) ensureFailedProviderAttemptLogged(task model.Task, taskErr err
 		Error:             truncateRunes(s.UserFacingErrorMessage(taskErr), 2_000),
 		StartedAt:         startedAt,
 		CreatedAt:         now,
+	}
+	// Missing primary audit rows do not turn confirmed provider/network errors
+	// into preflight warnings. INTERNAL describes this fallback row, not where
+	// the failure happened or whether a request was submitted.
+	switch {
+	case errors.As(taskErr, &httpErr), errors.As(taskErr, &payloadErr):
+		callLog.ErrorSource = "upstream"
+	case errors.As(taskErr, &networkErr):
+		callLog.ErrorSource = "network"
+	case diagnostic != nil:
+		callLog.ErrorSource = firstNonEmpty(diagnostic.ErrorSource, "unknown")
+		if diagnostic.Severity != "error" && diagnostic.ErrorSource != "upstream" && diagnostic.ErrorSource != "network" {
+			callLog.Status = model.ApiCallStatusWarning
+		}
+	case path == "/task/provider-preflight" && errors.As(taskErr, &appErr):
+		callLog.Status, callLog.ErrorSource = model.ApiCallStatusWarning, "application"
+	default:
+		callLog.Status, callLog.ErrorSource = model.ApiCallStatusWarning, "unknown"
 	}
 	if err := s.LogAPICall(callLog); err != nil {
 		log.Printf("provider attempt log write failed: task_id=%s error=%v", task.ID, err)

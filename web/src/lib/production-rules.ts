@@ -17,9 +17,8 @@ export function applyProductionRules(prompt: string, stage: ShortDramaStageId, m
     const block = productionRuleBlock(stage, mode);
     if (prompt.startsWith(block + "\n\n")) return prompt;
     if (stage === "assets" && mode === "image") {
-        const header = `【制作执行规范 v${PRODUCTION_RULES_VERSION} · assets/image】\n`;
         const end = "\n【制作执行规范结束】\n\n";
-        while (prompt.startsWith(header)) {
+        while (prompt.startsWith("【制作执行规范 v") && prompt.split("\n", 1)[0]?.includes(" · assets/image】")) {
             const index = prompt.indexOf(end);
             if (index < 0) break;
             prompt = prompt.slice(index + end.length);

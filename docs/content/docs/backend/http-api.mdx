@@ -5,6 +5,14 @@ description: 信封、错误码与 OpenAPI
 
 # HTTP API 合同
 
+## 生成警告与失败来源
+
+请求日志支持 `status=warning`，来源由 `errorSource` 区分。HTTP 2xx 中的输出额度耗尽、响应截断、无效 JSON、工具参数或文稿字段不满足要求，显示为内容待补全／待修正警告；这些情况不能算调用成功，也不计入调用失败率。HTTP 非 2xx、明确 API `error` 和 SSE `error/response.failed` 仍按上游失败记录，即使其错误码与内容诊断同名。没有明确来源证据的中断提示需核对，不自行宣称渠道故障。
+
+任务和子步骤的可选 `diagnostic.severity/errorSource/outcome`、事件 `severity` 及并行项 `severity` 供界面使用；任务中心、执行记录、并行列表和画布统一显示警告。`outcome=incomplete|needs_revision|not_saved|not_submitted|needs_attention` 表示尚未完成交付。调度的终止状态仍用于安全停止、重试和阻断依赖，不把未通过校验或未保存的内容伪装为成功。恢复运行或成功后按当前状态展示，不能继承旧警告。历史事件只在所属用户、运行与任务匹配后作只读投影，不补写原事件或账单。
+
+列表、详情、筛选、导出和统计使用同一警告分类；警告保留真实 HTTP 状态、渠道状态、用量和费用。原始渠道状态 `incomplete` 不代表完整成功，缺少流结束事件也不能据此宣称上游已正常完成。来源和严重度用于解释处理结果，不绕过保存、版本、权限或计费核对。
+
 ## 节点执行详情
 
 `GET /tasks/:id/execution` 只读、登录且按任务所属用户授权，返回 `task`、`parameters`、`steps`、`events`、`unitCount`、`truncated`。分批任务另外返回 `firstStartedAt`，取父任务开始与最早子任务创建时间中的较早值，不受最近 200 条记录截断影响；流程历时包含重试等待，不能当作纯模型用时。普通任务与分批任务统一使用此接口；Agent 制作运行仍使用原运行事件接口，前端共用执行记录组件。
@@ -63,17 +71,47 @@ description: 信封、错误码与 OpenAPI
 
 Responses 普通生成与 Agent 统一处理 `input_text/input_image`、`text.format`、`max_output_tokens` 和思考参数；工具未显式设置 `strict` 时保持非严格语义。默认 `store: false`，会话和恢复继续由本地任务/Agent 管理，不自动启用供应商后台模式或 `previous_response_id`。SSE 必须接收到完成结果；失败、未完成、拒绝、缺少终态、空结果都不能当作完整正文采用。同步中转的 HTTP 200 未完成结果不能按成功结算，费用进入待核对。完整影响范围和验收见 [文本协议影响评估](./text-protocol-impact)。
 
+Responses 明确以 `max_output_tokens` 结束时，任务诊断及请求日志记为 `output_limit_exceeded`，返回可读的输出上限原因，不能把部分输出当成已保存文稿。普通 Agent 运行可按原单步预算关闭思考设置并恢复当前步骤一次；恢复次数持久化，保留已完成产物并清理失败回执，仍触顶则停止，不以原参数无限重试或自动放宽管理员预算。恢复事件为 `model_failure_recovered`，原因为 `output_limit_retried`。
+
+v2 及以上制作方案的总纲、规范及独立资产文稿，完整输出仍超限时改按类型模板的必填字段分批制作；并发文稿按本项关闭思考重试一次，正文输出仍超限再拆分。每批只请求当前字段，沿用全局并发、单步输出预算及普通任务日志与计费路径；超限批次递归拆分，单字段仍超限明确指出字段并停止自动重试，不接受截断 JSON。完整章节私有持久保存，模型进度事件报告暂存章节数；章节不创建额外画布节点、不计为完整文稿。服务重启、显式继续均保留已完成章节；已知完整输出超限的旧并发任务在显式继续时直接分批，不重发相同的完整请求。全部章节完成后由原 `production_submit` 合并校验模板、关系、资产引用和文稿长度，校验通过才保存到原文稿。具名字段错误可定向重开此前章节，保留修正原文及文稿级有限重试计数；前置、模板或目标文稿版本变化拒绝覆盖。恢复事件原因为 `production_document_output_limit`；发现与清单登记仍按原有有限恢复规则处理。
+
+仍采用旧契约的在途制作文稿，工具 schema 将 `key/name/expectedHash` 约束为本项指定值，`factIds` 固定为空数组；新建文稿使用空 `expectedHash`，不能复制来源文稿的哈希。并发项持久固定目标版本，重试及写入前再次核对，目标变化不通过重新调用模型覆盖。JSON 解析错误、文稿身份错误及版本错误分别诊断；本地字段校验失败由独立的 `tool_failed` 事件记录 `field/issue`。安全的结构化长错误保留具体原因，仍过滤密钥、地址和堆栈信息。
+
+校验拒绝的原稿保留在私有修正上下文；能够定位的章节只重写问题字段，其他结构合格字段暂存，并在最终合并时再次接受全部业务校验。结构化关系冲突与未登记资产引用定位实际出错字段，不把所有文稿都指向 relationships。只有版本参数错误时可提交 `document={}` 明确修正参数并复用原稿，此次请求不携带原稿正文、前置文稿和资产库；未声明字段及其正文不静默丢弃，必须由模型整理到当前模板。资产结构化 design 在定向修复中保留。相同规范化工具参数及同一诊断连续三次未解决停止自动重试，实际改动参数的修订仍受文稿总重试预算约束；保留原稿和成功文稿。用户显式继续时重置该项纠错计数。网络重试仍使用独立预算，不修改全局并发及输出配置。
+
+新派发的固定并行文稿任务持久保存 `serverBoundArguments`，其工具 schema 仅请求 `document` 及允许的 `design`；服务端按该项检查点补齐缺失的 key、name、expectedHash 与固定 factIds。模型显式提交的值仍须通过身份、版本校验，旧在途任务不追溯改变契约。上游成功但本地契约待纠正时，`production_model_completed.status` 保持 `succeeded`，另发 `tool_failed`，携带 `phase: validation`、`errorSource: application`、assetKey 和 retry 分组。完整保存后发 `tool_completed` 的 recovered 回执；暂存部分章节不代表完整文稿恢复，纠偏耗尽保留真实未完成状态。前端按文稿及分组隔离并行纠偏记录。
+
+生成结果在渠道成功后的本地处理失败使用任务诊断 `phase: postprocess`、`code: local_processing_failed`、`retryClass: inspect_local_processing`，不归为 `provider_execution_failed`，也不因该分类重新发起收费生成。渠道成功后的本地 context 取消同样保留为后处理失败；只有数据库明确已取消才沿用实际取消收尾，上游未成功时保留原 worker context 取消流程。本地 context 取消或来源未确认的执行超时在工具事件中归为 `execution_interrupted`；诊断应核对任务状态，不能只凭错误文字认定上游故障或网络波动。
+
+新建制作方案的 `production_inventory` 按 `nextAction.inventoryReviewRequired` 要求提交 `inventoryReview`，分批按 `section` 合并。`sourceSections` 列出当前总纲章节与逐集规划 key；每节提交需求主体、逐字引句、资产 key、`asset/state/excluded` 处理方式及理由，或明确无需求理由。`complete=true` 前验证来源、每节声明及每项登记资产的映射；资产 `subjectKeys` 表示关联主体，`dependsOn` 表示设计前置。旧检查点不追溯启用。该验证证明引用匹配及声明覆盖，不能证明自然语言需求已全部发现。
+
+Responses 恢复时显式发送 `reasoning.effort: "none"`，省略该字段会恢复上游默认思考行为。声明式文本 Agent 的流式与非流式请求均在原请求日志收尾之前校验完整结果，HTTP 200 下的截断、缺失终态及无效 JSON 必须记录失败原因和实际用量。历史 `incomplete` 请求若报文已被压缩且错误摘要为空，管理端只读补充同用户关联失败任务中明确的输出上限诊断，不改写成功请求或项目内容。
+
+文本结果按协议独立返回 `text`、可选 `reasoning` 和 `toolCalls`；流式正文及思考使用独立事件，不把 reasoning、summary、thinking、thought 片段或函数参数 delta 拼入正文。思考中的 JSON 和工具描述不作为业务结构或可执行工具。Agent 可以只返回合法工具调用；普通文本任务必须有正文。只有思考的响应明确报告缺少实际内容，不进入文稿保存。上游明确截断、失败或缺少必需终态仍然失败，不能仅凭 HTTP 200、存在思考、正文长度或 token 总量判断成功。
+
+请求日志新增可选 `reasoningTokens`，仅表示上游报告的输出用量细分；未提供时省略，显式 0 保留。`outputTokens` 仍为原上游输出总量，费用公式不变。管理详情分别显示输出总量、其中思考和内容/工具；未提供明细不按字符数估算。声明式协议的 `agentResponse.text/reasoning` 支持与 `response` 相同的表达式；显式表达式的空结果不再回退到路径字段，避免重新引入已过滤的思考。Gemini 官方插件按 `part.thought` 区分正文与思考，函数调用单独映射；该规则在插件配置及生成器中维护。
+
 资产五步骤及 `direction.shots` 的新任务调用 `POST /agent/runs`，传入 `production: { targetNodeId }`、`permissionMode: "auto"`、模型和幂等键；不要求设置 `maxCredits` 或 `maxSteps`。制作任务以来源处理、产物保存和覆盖校验作为完成条件，不应用历史请求中的累计调用次数和任务积分上限。正常模型计费、单次报价授权、账户余额、权限与数据配额继续生效；普通 Agent 的预算规则不变。后端核验当前用户画布、目标容器和同流程正文来源，冻结版本；不由浏览器上传拼接后的全文。关闭页面不停止任务。
 
 分镜运行的 `run.production.workKind` 为 `storyboard`，此时 `processedPages/totalPages` 表示已完成/计划场次，`artifactCount` 表示已保存镜头详情数，`shotTotal` 表示规划镜头总数。新版 `executionMode=episode` 按集并发，`episodeTaskStatus` 表示本集当前模型调用的真实状态，`currentItem` 表示批次范围，`concurrencyLimit` 为全局 Agent 上限。先铺完整镜头清单，再在每集单一通道内按场连续批量补全，单批 1–8 镜原子保存；全部详情完成后仍须整集审查通过。旧版 `concurrentItems/parallelItems` 保留逐镜在途回执，先结算再升级，不新增逐镜任务。场次、清单、回执和审查哈希沿用制作清单持久化，每集原节点原位转为分镜列表，不额外生成调度节点。`production_model_completed` 可包含 `queueMs/executionMs`，均取真实时间戳，不能把排队称为模型执行时间。
 
 前置制作方案的 `workKind=plan`，`phase` 为 `input/story/inventory/standards/assets/generation/validation`；`phaseLabel` 和可选 `currentItem` 用于详情展示。`inventoryComplete` 表示当前版本资产清单及索引已完成，之前不把 `totalPages` 当成最终总数。`processedPages` 仅统计通过模板及依赖版本检查的文稿，`artifactCount` 是原始回执数量。四份共用文稿之外，系统自动生成一份资产总表，各资产分别保存为文本节点。
 
-制作方案的进度还包含 `documentCount/documentTotal`（公共文稿）、`assetCount/assetTotal`（资产档案）、`concurrentItems`（在途及等待重试的项目名称）和 `concurrencyLimit`（实时读取全局 `agentConcurrency`，读取失败时省略）。`production_model_started/completed` 的 `itemName/assetKey` 标识分工，前端按 `taskId` 配对乱序返回。`production_model_completed.status=failed` 也可能表示模型响应成功但文稿校验未通过，不改变原模型任务的计费结果。画布公共容器的 `shortDrama.planGroups` 为类别到容器 ID 的映射，资产容器以 `planGroup.rootFrameId/kind` 反向关联；共享原制作任务锚点，取消会处理所有在途子任务。
+制作方案的进度还包含 `documentCount/documentTotal`（公共文稿）、`assetCount/assetTotal`（资产档案）、`concurrentItems`（在途及等待重试的项目名称）和 `concurrencyLimit`（实时读取全局 `agentConcurrency`，读取失败时省略）。`assetGroups` 按类别返回 `kind/total/completed/status`，状态为 `waiting_standards/waiting/running/error/complete`，完成数按当前有效依赖版本核对，不能将总任务执行中解释为每个资产组执行中。总纲及清单完成后，美术与导演规范可并行，随后完成生成与一致性规范；全部规范有效后才允许资产任务入队和保存，规范更新使对应资产需要复核。`production_model_started/completed` 的 `itemName/assetKey` 标识分工，前端按 `taskId` 配对乱序返回。`production_model_completed.status=failed` 也可能表示模型响应成功但文稿校验未通过，不改变原模型任务的计费结果。画布公共容器的 `shortDrama.planGroups` 为类别到容器 ID 的映射，资产容器以 `planGroup.rootFrameId/kind` 反向关联；共享原制作任务锚点，取消会处理所有在途子任务。
 
-v2 方案调用 `production_plan_inventory` 分批登记，参数包含 `storyHash/assets/absent/complete`；资产新增 `purpose/plannedRange/dependsOn`，未确定精确集次时 `episodes=[]`。`complete=true` 校验类别覆盖和无环依赖，固定本版清单。`production_submit.document` 按当前文稿类型提供专用 schema，详见制作规则文档。模型回执按持久检查点隔离，恢复后不复用前一阶段的响应；未知工具及相同无进展响应会停止并保留可恢复状态。制作字段纠正按相同请求、相同错误及相同进度识别重复，不把不同文稿的纠正合计为调用上限。
+v2 方案调用 `production_plan_inventory` 分批登记，参数包含 `storyHash/assets/absent/complete`；资产新增 `purpose/plannedRange/dependsOn`，未确定精确集次时 `episodes=[]`。`complete=true` 校验类别覆盖和无环依赖，固定本版清单。`production_submit.document` 按当前文稿类型提供专用 schema，详见制作规则文档。公共规范不提供 `design` 参数，造型转换表及声音总表填写到对应 `document` 字段；`design.variants` 仅在独立资产阶段使用，由系统分配变体编码。变体只用于需要独立参考图或独立资产码的重大形态、结构或身份变化；疲惫、受伤、污渍、光照、持物和开合写入连续性字段。公共规范提交 `design` 返回字段纠正错误，避免把公共设计误当单一资产保存。并发输出校验错误保留原始错误链，具体安全文案写入执行事件和下一次纠正上下文，已成功文稿保留。模型回执按持久检查点隔离，恢复后不复用前一阶段的响应；未知工具及相同无进展响应会停止并保留可恢复状态。制作字段纠正按相同请求、相同错误及相同进度识别重复，不把不同文稿的纠正合计为调用上限。
 
-`GET /agent/runs/:id` 的 `run.production` 包含 `targetNodeId`、`paused`、`waitingForBoundary`、`waitingForSharedFacts`、`processedPages`、`totalPages`、`artifactCount`、`validated`；`maxSteps` 返回 0 表示无累计次数上限。`POST /agent/runs/:id/production-control` 使用 `{action: "pause" | "resume"}`；取消仍用原 `/cancel`，旧 `maxSteps` 参数不再改变制作任务的执行边界。继续任务保留原始请求、累计调用、计费记录、正文事实、产物和节点绑定。暂停只阻止下一次模型派发；已有上游响应允许结束。失败恢复先检查来源、计费和调用状态，未知上游取消结果禁止重发。
+画布任务浮层按持久 Agent run 展示制作阶段、并行项状态、文稿及资产完成数量，通过原分组详情查看执行记录；内部模型任务不重复计为独立制作。画布终态以同一绑定 run 的实际状态为准，旧快照不得使已停止任务持续显示规划中；状态轮询可再次修正被旧快照覆盖的显示，不重跑模型或修改生成内容。
+
+画布任务状态还可通过 `GET /canvas-projects/:id/task-events` 订阅为 SSE。连接按当前用户和画布隔离，支持 `Last-Event-ID` 或 `?after=` 断线续传；事件只携带任务 ID、状态、阶段和进度摘要，正文、错误详情和资源仍通过受权限保护的任务接口读取。事件流只负责实时唤醒，前端保留按全局画布策略配置的低频批量兜底刷新，用于补齐丢失、漏发或页面重新打开期间创建的任务。浏览器断开不会取消任务，连接上限、心跳、回放条数、事件保留时间和兜底刷新间隔均由资源与策略中的画布配置控制。
+
+`GET /agent/runs/:id` 的 `run.production` 包含 `targetNodeId`、`paused`、`waitingForBoundary`、`waitingForSharedFacts`、`processedPages`、`totalPages`、`artifactCount`、`validated`，制作方案另有 `planReady`、`assetsStarted`；`maxSteps` 返回 0 表示无累计次数上限。`POST /agent/runs/:id/production-control` 使用 `{action: "pause" | "resume" | "generate_assets"}`；取消仍用原 `/cancel`，旧 `maxSteps` 参数不再改变制作任务的执行边界。继续任务保留原始请求、累计调用、计费记录、正文事实、产物和节点绑定。暂停只阻止下一次模型派发；已有上游响应允许结束。失败恢复先检查来源、计费和调用状态，未知上游取消结果禁止重发。
+
+制作方案 v2/v3 先完成故事总纲、资产总表、视觉美术、导演视听和生成一致性规范五份文稿，覆盖校验通过后结束，不自动创建资产分组或档案。右键类别命令直接发送该类别全部未完成项 `{action: "generate_assets", assetKeys: ["清单中的key"]}`，详情支持单项重试；缺少或空选择禁止默认生成全部资产。服务端重新核验任务归属、全部规范当前版本、未完成的设计依赖、原调用及计费状态；前置资产必须已经有效完成、在执行中的授权范围内，或由用户明确一起选中。首次启动要求方案已完成且校验通过；后续支持任务已完成、失败或已暂停并收尾后的分批选择与单项重试。执行中提交新类别追加到当前授权范围，相同项或其子集幂等，不替换正在执行、自动重试或待保存的检查点；依赖未完成的新增项只排队，不提前调用模型。
+
+`generate_assets` 是删除资产后的显式重新生成入口：在同一事务中退役已不存在的资产节点回执、清理仍匹配原绑定的缺失分组关联，只为所选类别创建新容器和新资产节点 ID，稳定资产 key/编号不变，退役信息写入任务事件。所选资产节点被人工修改或移走时保留原节点并为本次生成创建候选版本，不覆盖用户内容；未选资产的变更不阻塞本批。公共方案文稿、原目标和来源失效仍拒绝生成。后台轮询、普通 `resume` 不执行清理，禁止自动复活已删除节点。依赖、权限、计费及保存失败回滚本次清理。
+
+该操作持久化 `assetsStarted` 和 `selectedAssetKeys`，调度、工具提交和完成检查使用相同范围；执行中取范围并集，已停止且调用收尾后按本次选择执行，只重置所选失败项，保留有效文稿、已完成资产、编码及历史日志。模型调用已成功但资产回执尚未保存时，资产状态为 `saving`，前端禁止重复提交并显示保存中。新增同级资产分组不修改现有资产回执或依赖版本，也不重启活动 Agent；并发仍读取系统全局策略。未选失败或延时重试记录不占并发、不阻塞所选批次结束。普通 `resume` 沿用上次范围，不授权首次资产阶段。`run.production.assets` 返回完整清单的 `key/code/name/kind/status/error/missingDependencies`，状态为 `pending|blocked|failed|stopped|queued|running|saving|retrying|complete`；`selectedAssetKeys` 返回当前范围。`assetCount/assetTotal` 表示全清单完成数，`processedPages/totalPages` 表示当前批次文稿与所选资产进度，不能把所选批次完成等同于全资产完成。
 
 制作事实查询在作业清单中持久记录已查询的事实 ID，续跑指引定位尚未查询的事实页。读到新事实、保存正文事实或资产计为进展；重复查询相同内容不重置无进展检测。覆盖检查通过后，下一模型边界重新核验来源、产物与覆盖；仍有效则直接结束模型循环，不再收费调用一次模型来确认完成。真实错误、用户取消和持续空转仍会停止，并保留已有结果；不把这些停止原因视为成功。
 
@@ -81,13 +119,19 @@ v2 方案调用 `production_plan_inventory` 分批登记，参数包含 `storyHa
 
 制作节点详情和失败重试共用执行记录入口，画布不再显示独立调度浮层。每个节点独立读取状态，单个错误不会中断其它节点。已创建运行继续由后台推进；没有回执的持久请求显示“提交待确认”，用户显式继续后携原幂等键核对/提交，页面刷新不自动重发收费请求。提交失败原因写入节点 `errorDetails`。
 
-制作工具返回 `nextAction` 指向未处理页或分类事实查询。每页校验失败提供可修正的事实序号及 schema 错误，不部分保存或丢弃无效事实；已保存页复用原结果。模型提前结束时从下一未处理页继续，而不是反复触发全剧覆盖检查。连续 12 次调用没有读取新页或保存事实、资产时停止无进展循环，保留记录供显式续跑。该保护与调用次数、积分上限分别生效，不能代替真实输出质量验收。
+制作工具返回 `nextAction` 指向未处理页或当前待提交内容。每页校验失败提供可修正的字段及 schema 错误，不部分保存或丢弃无效事实；已保存页复用原结果。`production_read.pageId` 只接受来源页 ID，已保存总纲、规范和资产文稿使用 `production_query.assetKey` 读取。制作方案上下文保留最近写入失败及原有工具配对，成功状态读取不会抹掉错误，真正保存后移除旧错误；已登记资产索引包含出场集数，身份冲突返回具体字段及原始身份。
+
+有序制作方案在每次模型请求中只提供持久 `nextAction` 对应工具：读取来源、提交当前文稿、登记清单或完成检查。协议层使用自动工具选择，不发送强制 `required` 或命名工具选择；服务端仍按 `productionRequiredTool` 校验返回操作，避免思考模型不支持强制选择而在 HTTP 请求阶段失败。分镜、并行制作和无进展纠偏同样保留工具范围与结果检查，不通过关闭思考、切换渠道或名字特判推进流程。执行侧保留已授权工具白名单，旧在途回执仍可正常收尾。上下文只保留当前阶段、当前文稿的失败，上一阶段失败正文不重新进入下一阶段。每个文稿字段的 schema 明示系统生成章节标题，字段正文不得包含一级或二级 Markdown 标题，代码围栏必须闭合。清单检查点提供 `registeredKindCounts` 和 `undeclaredKinds`；分批登记必须显式传 `complete`，核对完成后可用 `assets=[]`、`complete=true` 保存总表，系统不会仅凭类别数量自动判定语义完整。
+
+相同持久检查点下反复说明、重复读取、失败或缺失工具执行回执，都计入无进展检测；只有成功的新读取或实际持久成果变化才是进展。检测后发起定向纠偏，要求返回指定制作工具。只有已执行且返回 `invalid_tool_arguments`、`requiredAction=fix_arguments`、`retryable=true` 的前置参数错误可继续有限纠正，最多额外 3 次，既有同参数错误重试限制仍生效；纠正计数持久于任务及请求上下文，不因稍改参数或复用模型回执而重置。其余拒绝、未执行、无变化保存或继续空读，在下一模型入队前停止并记录最后的安全工具错误，已有成果保留供显式继续。逐集骨架按统一 11 列定义生成提示及校验，结果与代价等合并字段不得拆列；错误指引要求保留剧情并仅调整错误行的列边界。真实分页、新来源、保存成果和人工继续分别处理，不用任务总调用次数或积分上限代替进展及质量验收。
 
 `POST /canvas-projects/:id/tasks/reconcile` 核对完整已保存画布中的节点与任务绑定，可传 `{deletedNodeIds: string[]}`（最多 5000 项）记录用户明确删除的节点。目标仍存在时不处理；普通任务没有首次落盘绑定证据时不因暂缺节点而取消。节点确认删除后，先取消制作 Agent/普通任务及 Agent 子调用，停止后逻辑移除任务。失败保留任务并重试，不把上游取消未确认描述为已退款。用户任务列表不再显示已移除记录，账务、资源、审计和幂等回执保留。成功保存画布、打开画布核对及每 30 秒的后台分页扫描都会尝试清理；浏览器关闭不影响补偿。已移除任务不能重试或继续，撤销节点删除也不自动重新发起收费请求。
 
 制作步骤来源签名使用带 `v2:` 标识的规范 JSON 哈希，不受后端对象字段排序影响；已有未带版本签名按原写入字段顺序验证。此修复不忽略正文变化、前置缺失、移出容器或断开连线等真实失效条件。
 
 资产制作运行使用 `production_status/read/facts/query/submit/check` 工具，每份正文按整集保存，不再按固定字符数拆正文页。目录每页最多 24 条；事实查询每页最多 64 条且受约 24KB 响应大小限制。分镜新版使用 `production_storyboard_context/brief/plan/layout/submit/read/review/reset`，`layout` 先确定全部镜头占位，`submit` 按检查点的 offset、expectedHash、plannedShots 顺序提交当前场 1–8 镜。上下文只含当前集及当前批次所需内容；审查直接提供整集全文与全部镜头。`expand` 仅用于结算历史逐镜响应。`production_submit` 使用稳定 key、结构化 document、有效 factIds 和可选 design（variants/sounds/conflicts）；document 包含 facts/design/variants/sound/prompt/negativePrompt/continuity/uncertainties，服务端按类别统一生成 Markdown。人物必须包含角色声音文稿，并同步到 sounds 索引；规范 settings 只需 facts/design/continuity/uncertainties，style 不需要 variants。缺字段返回可修正工具错误，不将残缺文稿写成完整资产。修订需 expectedHash，最多 256 条新增事实引用，旧引用由后端累积保留；未提供的变体和冲突索引沿用旧值。人工修改、删除、移出及来源变化仍拒绝旧写入。
+
+制作方案请求的 `nextAction.documentBudget` 包含 `maxChars/headingChars/acceptedContentChars/remainingContentChars/batchMaxContentChars/suggestedFieldChars`，按最终 Markdown 的 Unicode 字符计量；本批正文建议从剩余预算分配，后续必填章节预留空间，章节建议可在总额内调配。逐集规划继承原按总集数计算的额外篇幅。`document/field_length` 返回实际数、上限及需压缩量；旧检查点超限时仅重开占用过多的章节，原文留作私有修复来源，不截断，不放宽最终长度、结构、关系、引用或版本检查，有界重试保持有效。资产总表由系统完整投影登记项，输出分类数量、中文类别、计划范围及精确集数、依赖主体的编码和名称、缺省理由及编码复用规则；未细化集数不补造，总表不受模型文稿输出长度限制，已登记行数不代表自动通过语义完整性审核。
 
 `production_query` 可用 assetKey 读取单个已保存资产的全文与 expectedHash；增量修订保留已处理批次的内容。查询和覆盖检查的 pendingWork 返回一批遗漏事实、一个待补文稿及缺失字段，旧任务续跑也使用当前工具与制作规则。取消“连续三次模型未调用工具就失败”的旧判断；未完成时继续补齐，持续无进展保护仍保留。机器校验覆盖事实引用及必需文稿章节，不证明语义质量或声线建议已经获用户认可。
 
@@ -161,6 +205,7 @@ OpenAI Responses 写入 `reasoning.effort`，Chat Completions 写入 `reasoning_
 - `access.delivery` 为 `cdn`、`origin`、`platform-local` 或 `platform-proxy`。配置了可用 CDN 时返回 CDN 地址；OSS 源站签名是源站直连，不等于 CDN。`requireCDN` 开启且 CDN 鉴权不完整时失败，不静默回源。浏览器的展示、复制、下载和本地处理不允许使用 `platform-proxy`，云资源正文始终由 OSS/CDN 直接发送给浏览器；`allowPrivateProxy` 只允许服务端在 `provider-input` 场景向第三方模型提交参考素材时读取私有源站。
 - `expiresAt` / `refreshAt` 只描述当前授权有效期。`provider-input` 默认 4 小时，其余签名访问默认 5 分钟；公开 CDN 可没有 `expiresAt`。签名地址不写入画布或服务端持久化内容。
 - `GET /api/resources/:id/file` 仍是稳定平台入口，负责本地/平台代理字节流，云资源只返回 307 到 CDN 或对象存储；`?access=1` 只返回访问描述，不打开正文。`Range` 只影响字节流路径。
+- 模型输入的公共签名路径 `/api/public/resources/:id/file`（含带文件名路径）同时支持 `GET` 和 `HEAD`。`HEAD` 沿用签名、有效期和变体校验，仅返回媒体响应头且不发送正文，供上游下载前探测；不为渠道绕过签名或增加域名特例。
 - 公共资源、画布分享、外观、公告、管理员资源和日志媒体复用同一个 HTTP 执行器。公共签名链接受自身到期时间和变体绑定限制，但已签发的外部 URL 不承诺立即撤销。
 
 当前自动签名能力：公开 CDN、七牛私有下载签名和对象存储源站签名。阿里云/腾讯云私有 CDN 签名尚未自动支持，不能仅填写 CDN 域名就宣称已命中 CDN。真实 CORS、Range、CDN 命中率及账单收益必须在实际云环境通过浏览器网络记录和服务端流量观测验收。
@@ -188,6 +233,10 @@ CANVAS_BACKEND_DATA_DIR=/明确的数据目录 ./migrate-schema repair-canvas-re
 保存网络故障在原 worker 中最多自动重试四次（15 秒、1 分钟、3 分钟、10 分钟并加抖动；超过 20 分钟不再安排自动重试），使用 `next_poll_at` 释放 worker，而不是在请求内睡眠。不可重试错误直接保留为保存失败。画布和任务中心显示“作品已生成，正在保存”或“作品保存未完成”，失败按钮为“重试保存”。完成后客户端消费原任务的结果。
 
 请求明细保留上游生成与结果下载的独立状态，新增 `upload`、`local_save`、`register` 内部非计费明细；列表和详情通过 `mediaStage` 展示交付摘要。`recordType=request` 排除这些保存明细和下载，`all` 查看全部阶段，`download` 仍仅查看下载。视频下载失败不会再覆盖生成请求的成功记录。
+
+模型提交日志新增 `status=running`，在实际 HTTP 请求发出前持久化，完成后原记录更新为 `succeeded` 或 `failed`；日志准入写入失败则不向上游发起新的模型调用。文本、图片、视频和音频复用同一审计边界。请求明细支持筛选处理中；日期范围按真实时间比较，SQLite 的本地时区记录不会因 UTC 边界被遗漏。视频轮询仍合并到原调用记录。排队时间不计入上游 HTTP 耗时。
+
+分镜按集批量提交先统一保存各集幂等参数，再按系统全局 Agent 策略独立提交；画布结果刷新不阻塞下一集提交。未提交节点明确显示尚未提交。首尾帧及关键帧的 `metadata.storyboardFrame` 标记传递到任务：参考图传输副本按共享制作配置编码，仅对不透明 PNG 应用 JPEG 94，不改变尺寸、数量、顺序或原资源；透明图、蒙版和普通编辑保持原数据，超出编码像素预算时跳过压缩。提示词保留当前镜头、参考编号、当前变体和物理尺度，已有参考图时不重复携带其他服装及完整资产档案。
 
 此恢复能力接入声明式媒体协议返回 URL/data URL 的任务路径；旧协议自行下载、协议二进制下载端点以及无恢复记录的历史失败任务不自动补录。历史任务需先核实上游结果可用性、资源归属及原账单，再单独制定修复动作。
 
@@ -334,10 +383,13 @@ Token 报价的 `estimated` 为 `true`，`quantity` 是预留 Token 数。参考
 | --- | --- |
 | `GET /canvas-projects/:id` | 返回当前内容及权威版本号；响应包含基于数据库 `revision` 的弱 `ETag` 和 `Cache-Control: private, no-cache`。请求可用 `If-None-Match` 做条件读取，版本未变化时返回无正文的 `304`。 |
 | `GET /canvas-projects/:id/history` | 返回 `snapshots` 摘要与 `currentRevision`，不批量读取历史正文 |
+| `POST /canvas-projects/:id/nodes/:nodeId/variant-code` | 为已保存的独立资产预留造型或声音状态编码，返回 `data.code`；无请求正文 |
 | `GET /canvas-projects/:id/history/:snapshotId` | 按需返回 `snapshot` 摘要和 `project` 历史正文 |
 | `POST /canvas-projects/:id/history/:snapshotId/restore` | 请求 `{ revision }` 为当前画布版本，成功返回新版本摘要；恢复前强制备份当前内容 |
 
 历史接口先验证画布归属；无权访问、已删除画布或不存在的快照返回 404。恢复沿用画布写入限流和素材校验，在同一事务完成版本校验、备份、内容写入及历史资源保护。恢复保留当前画布 ID 和项目归属，生成新版本，不倒退版本号。升级前的内容无法补建历史。
+
+状态编码接口要求登录并在事务内验证画布归属、文本节点及有效资产身份，与制作 Agent 共用持久编号序列，格式为 `资产编码-V序号`。预留编码不自动修改画布，前端保存资料时写入；未采用的预留号不回收。资产改名不更换身份，修改已有造型名称时携带原 `code`，拒绝其他资产的造型编码或重复编码。此接口复用现有编号表，无新增数据库迁移。
 
 平移和缩放只持久化浏览器视口，内容 PUT 忽略客户端 `viewport` 和 `remoteContentHash`。前端遇到 409/428 会保留账号隔离的本地草稿、暂停该画布自动提交，并提供加载最新版和下载草稿入口；载入最新版前草稿写入失败时停止替换。其他画布仍可保存。
 

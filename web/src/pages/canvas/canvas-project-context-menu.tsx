@@ -1,4 +1,4 @@
-import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
+import { CanvasNodeContextMenu, type CanvasWorkflowMenuAction } from "@/components/canvas/canvas-context-menu";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeTypeId, type CanvasWorkspaceMode, type ContextMenuState, type Position } from "@/types/canvas";
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
@@ -44,7 +44,7 @@ type CanvasProjectContextMenuProps = {
     onCopySelection: () => void;
     onDeleteSelection: () => void;
     onSendToAgent: () => void;
-    workflowActions?: Array<{ label: string; disabled?: boolean; run: () => void }>;
+    workflowActions?: CanvasWorkflowMenuAction[];
 };
 
 export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props }: CanvasProjectContextMenuProps) {

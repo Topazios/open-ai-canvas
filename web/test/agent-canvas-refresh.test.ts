@@ -4,9 +4,10 @@ import { canvasContentHash } from "@/lib/canvas/canvas-content";
 import { readCanvasSyncDrafts } from "@/services/canvas-sync-drafts";
 import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { http } from "@/services/api/request";
-import { applyAgentCanvasPatches, initializeRemoteUserDataSession, refreshCanvasAfterAgent, resetRemoteUserDataSync, subscribeAgentCanvasRefresh, saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { applyAgentCanvasPatches, initializeRemoteUserDataSession, loadCanvasProjectForEditing, refreshCanvasAfterAgent, resetRemoteUserDataSync, subscribeAgentCanvasRefresh, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType } from "@/types/canvas";
+import { mergeAgentCanvasEditor } from "@/lib/canvas/agent-canvas-patch";
 
 const initial: CanvasProject = { id: "agent-test", revision: 1, title: "测试", createdAt: "2026-01-01", updatedAt: "2026-01-01", nodes: [], connections: [], chatSessions: [], activeChatId: null, viewport: { x: 0, y: 0, k: 1 } };
 const remote: CanvasProject = { ...initial, revision: 2, nodes: [{ id: "text-1", type: CanvasNodeType.Text, title: "剧本", position: { x: 20, y: 20 }, width: 320, height: 240, metadata: { content: "正文" } }] };
@@ -54,6 +55,59 @@ test("successful Agent refresh projects nodes into the open editor and store", a
     await refreshCanvasAfterAgent(initial.id);
     expect(editor.nodes).toEqual(remote.nodes);
     expect(useCanvasStore.getState().projects[0].nodes).toEqual(remote.nodes);
+});
+
+test("saved production documents reach the live editor despite a newer local receipt", async () => {
+    const target = { ...remote.nodes[0], id: "plan", metadata: { status: "loading" as const, taskStage: "正在提交制作 Agent",
+        shortDrama: { stage: "story" as const, step: "story.plan" as const, pipelineId: "pipeline", sourceNodeIds: [], sourceSignatures: {}, role: "document" as const, submission: "submitting" as const, productionAgent: {} },
+    } };
+    const ancestor = { ...initial, nodes: [target] };
+    const accepted = { ...target, metadata: { ...target.metadata, taskStage: "制作 Agent 正在执行",
+        shortDrama: { ...target.metadata.shortDrama, submission: "submitted" as const, productionAgent: { runId: "run-1" } },
+    } };
+    const cloud = { ...remote, nodes: [accepted, remote.nodes[0]] };
+    const get = await setup(ancestor);
+    await refreshCanvasAfterAgent(initial.id);
+    get.mockResolvedValue({ project: cloud });
+    let editor = { ...ancestor, nodes: [{ ...accepted, metadata: { ...accepted.metadata, taskStage: "已排队等待制作 Agent", prompt: "local prompt" } }] };
+    unsubscribe = subscribeAgentCanvasRefresh((project, previous) => { editor = mergeAgentCanvasEditor(previous!, project, editor.nodes, editor.connections) as typeof editor; });
+    await refreshCanvasAfterAgent(initial.id);
+    expect(editor.nodes.map((node) => node.id)).toEqual(["plan", "text-1"]);
+    expect(editor.nodes[0].metadata).toMatchObject({ taskStage: "制作 Agent 正在执行", prompt: "local prompt" });
+    expect(useCanvasStore.getState().projects[0].revision).toBe(2);
+    expect(useSyncProgressStore.getState().syncingProjects[initial.id].phase).not.toBe("conflict");
+    expect(await readCanvasSyncDrafts(initial.id)).toHaveLength(0);
+});
+
+test("reopening after a production merge conflict loads the cloud result and archives the local version", async () => {
+    const root = {
+        id: "plan-root", type: CanvasNodeType.Frame, title: "制作方案", position: { x: 0, y: 0 }, width: 900, height: 500,
+        metadata: { shortDrama: { stage: "story" as const, step: "story.plan" as const, pipelineId: "pipeline", sourceNodeIds: [], sourceSignatures: {}, role: "collection" as const, planVersion: 5 as const, planReady: false } },
+    };
+    const oldDocument = {
+        id: "cloud-story", type: CanvasNodeType.Text, title: "本地草稿", parentId: root.id, position: { x: 20, y: 80 }, width: 300, height: 220,
+        metadata: { status: "success" as const, content: "旧版本草稿", shortDrama: { stage: "story" as const, step: "story.plan" as const, pipelineId: "pipeline", sourceNodeIds: [], sourceSignatures: {}, role: "document" as const, planSection: "story" as const } },
+    };
+    const local = { ...initial, nodes: [root, oldDocument] };
+    const completed = { ...root, metadata: { shortDrama: { ...root.metadata.shortDrama, sourceNodeIds: ["cloud-story"], planReady: true } } };
+    const story = {
+        id: "cloud-story", type: CanvasNodeType.Text, title: "故事总纲", parentId: root.id, position: { x: 20, y: 80 }, width: 300, height: 220,
+        metadata: { status: "success" as const, content: "云端已完成的总纲", shortDrama: { stage: "story" as const, step: "story.plan" as const, pipelineId: "pipeline", sourceNodeIds: [], sourceSignatures: {}, role: "document" as const, planSection: "story" as const } },
+    };
+    const cloud = { ...local, revision: 2, nodes: [completed, story] };
+    useCanvasStore.setState({ projects: [local] });
+    await initializeRemoteUserDataSession("agent-user");
+    const get = spyOn(http, "get").mockResolvedValue({ project: cloud });
+    restore = () => get.mockRestore();
+
+    await loadCanvasProjectForEditing(local.id);
+
+    const loaded = useCanvasStore.getState().openProject(local.id)!;
+    expect(loaded.revision).toBe(2);
+    expect(loaded.nodes.map((node) => node.id)).toEqual(["plan-root", "cloud-story"]);
+    expect(loaded.nodes.find((node) => node.id === "cloud-story")?.metadata?.content).toBe("云端已完成的总纲");
+    expect(useSyncProgressStore.getState().syncingProjects[local.id]).toMatchObject({ phase: "done", message: "已加载云端已完成的制作内容，本地修改已保留为草稿" });
+    expect((await readCanvasSyncDrafts(local.id)).some((draft) => draft.project.nodes.some((node) => node.id === "cloud-story" && node.metadata?.content === "旧版本草稿"))).toBe(true);
 });
 
 test("unsaved editor conflicts preserve store and acknowledged baseline", async () => {
@@ -125,6 +179,32 @@ test("incremental batches update the editor once without full canvas requests", 
     expect(get).not.toHaveBeenCalled();
     expect(deliveries).toBe(1);
     expect(useCanvasStore.getState().projects[0].nodes).toEqual(remote.nodes);
+});
+
+test("stale task history restores missing plan documents and saves them through the revisioned canvas API", async () => {
+    await setup(initial);
+    const frame = { id: "plan-frame", type: CanvasNodeType.Frame, title: "制作方案", position: { x: 0, y: 0 }, width: 900, height: 500,
+        metadata: { shortDrama: { stage: "story" as const, step: "story.plan" as const, role: "collection" as const, sourceNodeIds: ["summary"], sourceSignatures: {}, planReady: false } } };
+    const summary = { id: "summary", type: CanvasNodeType.Text, title: "故事总结", parentId: frame.id, position: { x: 20, y: 80 }, width: 320, height: 240,
+        metadata: { status: "success" as const, content: "方案摘要", shortDrama: { stage: "story" as const, step: "story.plan" as const, role: "collection" as const, sourceNodeIds: [], sourceSignatures: {} } } };
+    const note = { ...remote.nodes[0], id: "local-note", title: "本地笔记" };
+    useCanvasStore.setState({ projects: [{ ...initial, nodes: [frame, summary, note] }] });
+    const document = { id: "plan-doc", type: CanvasNodeType.Text, title: "资产总表", parentId: frame.id, position: { x: 20, y: 360 }, width: 400, height: 280,
+        metadata: { status: "success" as const, content: "已完成的资产规范", shortDrama: { stage: "story" as const, step: "story.plan" as const, role: "document" as const, planSection: "inventory" as const, sourceNodeIds: [] } } };
+    const patch = { canvasId: initial.id, baseRevision: 0, revision: 1, updatedAt: "2026-10-28T12:00:00Z", nodes: [{ before: null, after: document }], connections: [] };
+    const put = spyOn(http, "put").mockImplementation(async (_url, body) => {
+        const saved = JSON.parse(String(body)).project as CanvasProject;
+        expect(saved.nodes.map((node) => node.id)).toContain(document.id);
+        expect(saved.nodes.find((node) => node.id === note.id)?.title).toBe(note.title);
+        return { project: { id: saved.id, title: saved.title, createdAt: saved.createdAt, updatedAt: saved.updatedAt, revision: 2 } } as never;
+    });
+    try {
+        await applyAgentCanvasPatches(initial.id, [patch]);
+        const saved = useCanvasStore.getState().projects[0];
+        expect(saved.nodes.map((node) => node.id)).toEqual([frame.id, summary.id, note.id, document.id]);
+        expect(saved.revision).toBe(2);
+        expect(put).toHaveBeenCalledTimes(1);
+    } finally { put.mockRestore(); }
 });
 
 test("already projected deltas still advance the remote baseline", async () => {
@@ -200,6 +280,19 @@ test("an identical cloud snapshot clears a stale conflict without replaying edit
     await expect(saveRemoteUserDataNow(initial.id)).resolves.toBeUndefined();
 });
 
+test("Agent completion is still projected when a stale canvas conflict flag exists", async () => {
+    await setup(remote);
+    useSyncProgressStore.getState().setProjectProgress(initial.id, { phase: "conflict", draftCount: 1 });
+    const local = { ...remote, revision: 1, title: "本地未保存标题" };
+    useCanvasStore.setState({ projects: [local] });
+
+    await refreshCanvasAfterAgent(initial.id);
+
+    expect(useCanvasStore.getState().projects[0].nodes).toEqual(remote.nodes);
+    expect(useCanvasStore.getState().projects[0].title).toBe("本地未保存标题");
+    expect(useSyncProgressStore.getState().syncingProjects[initial.id].phase).toBe("pending");
+});
+
 test("replayed events against an unchanged cloud ancestor preserve pending local edits", async () => {
     await setup(initial);
     await refreshCanvasAfterAgent(initial.id);
@@ -231,7 +324,7 @@ test("Agent updates merge a local title edit and the next save uses the new revi
     expect(merged.revision).toBe(2);
     expect(merged.nodes).toEqual(remote.nodes);
     const put = spyOn(http, "put").mockImplementation(async (_url, body) => {
-        const project = (body as { project: CanvasProject }).project;
+        const project = JSON.parse(String(body)).project as CanvasProject;
         expect(project.revision).toBe(2);
         return { project: { ...project, revision: 3 } } as never;
     });

@@ -142,8 +142,7 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
             if (!sourceDataUrl) throw new Error("无法读取情绪编辑源图片，未使用整图重绘结果");
             resultDataUrl = await compositeEmotionImage(sourceDataUrl, image.dataUrl, emotionEdit.editRegion, emotionEdit.faceBox);
         }
-        const uploaded =
-            image.storageKey && !emotionEdit
+        const uploaded = image.storageKey && !emotionEdit
                 ? { url: await resolveImageUrl(image.storageKey, image.dataUrl), storageKey: image.storageKey, width: image.width || 1024, height: image.height || 1024, bytes: image.bytes || 0, mimeType: image.mimeType || "image/png" }
                 : await uploadImage(resultDataUrl);
         const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
@@ -331,7 +330,7 @@ export async function applyMaterializedGenerationTaskResultToNodes(nodes: Canvas
     const updatedNode = await buildGenerationTaskNodeResult(node, { ...task, resultJson: JSON.stringify(result) }, nodes);
     const durableNode = {
         ...updatedNode,
-        metadata: applyGenerationConsumerEffect({ ...updatedNode.metadata, assetId: asset.id }, effectKey, (metadata) => metadata).value,
+        metadata: applyGenerationConsumerEffect({ ...updatedNode.metadata, assetId: updatedNode.metadata?.storageKey === asset.data.storageKey ? asset.id : undefined }, effectKey, (metadata) => metadata).value,
     };
     return {
         nodes: applySuccessfulVersionSelection(nodes, durableNode),

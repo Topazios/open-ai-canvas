@@ -15,6 +15,9 @@ const (
 type TaskExecutionDiagnostic struct {
 	Code              string `json:"code"`
 	Phase             string `json:"phase"`
+	Severity          string `json:"severity,omitempty"`
+	ErrorSource       string `json:"errorSource,omitempty"`
+	Outcome           string `json:"outcome,omitempty"`
 	FieldPath         string `json:"fieldPath,omitempty"`
 	TaskSubmitted     bool   `json:"taskSubmitted"`
 	SubmissionOutcome string `json:"submissionOutcome"`

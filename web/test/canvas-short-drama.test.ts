@@ -17,15 +17,14 @@ describe("canvas short drama preproduction guide", () => {
         const before = JSON.stringify(pipeline);
         const progress = deriveShortDramaProgress(pipeline.nodes, pipeline.connections);
         expect(progress.active).toBe(true);
-        expect(progress.steps.map((step) => step.id)).toEqual(["story", "storyboard", "voice", "edit", "review", "delivery"]);
-        expect(progress.steps.map((step) => step.label)).toEqual(["剧情与章节", "分镜与视频草样", "配音与声音", "剪辑与后期", "成片质检", "导出交付"]);
+        expect(progress.steps.map((step) => step.id)).toEqual(["story", "storyboard", "edit", "review", "delivery"]);
+        expect(progress.steps.map((step) => step.label)).toEqual(["剧情与章节", "分镜与视频草样", "剪辑与后期", "成片质检", "导出交付"]);
         expect(progress.steps.every((step) => step.tasks.length > 0)).toBe(true);
-        expect(progress.steps.reduce((count, step) => count + step.tasks.length, 0)).toBe(24);
+        expect(progress.steps.reduce((count, step) => count + step.tasks.length, 0)).toBe(18);
         expect(progress.steps.flatMap((step) => step.tasks.map((task) => task.id))).toEqual([
             "story.topic", "story.plan", "guide.assets.references", "story.episodes", "story.body", "story.audit",
-            "guide.direction.breakdown", "guide.direction.frames", "guide.direction.previsualization",
+            "guide.direction.breakdown",
             "video.sample", "video.generate",
-            "voice.dialogue", "voice.casting", "voice.recording", "voice.timing",
             "video.finish",
             "edit.rough", "edit.picture", "edit.sound", "edit.subtitles",
             "review.audit", "review.revision",
@@ -67,7 +66,7 @@ describe("canvas short drama preproduction guide", () => {
             expect(step.tasks.every((task) => task.actionLabel === "生成" && !task.ready)).toBe(true);
             expect(step.status).not.toBe("completed");
         }
-        expect(progress.steps.find((step) => step.id === "voice")!.tasks.find((task) => task.id === "voice.recording")!.unavailableReason).toBeUndefined();
+        expect(progress.steps.some((step) => step.id === "voice")).toBe(false);
     });
 
     test("storyboard actions open its actual node and videos require every shot result", () => {
@@ -103,9 +102,8 @@ describe("canvas short drama preproduction guide", () => {
         const audio = createCanvasNode(CanvasNodeType.Audio, { x: 0, y: 0 }, { storageKey: "local-audio" });
         pipeline.nodes.push(audio);
         const progress = deriveShortDramaProgress(pipeline.nodes, pipeline.connections);
-        const voice = progress.steps.find((step) => step.id === "voice")!;
-        expect(voice.tasks.find((task) => task.id === "voice.recording")!.ready).toBe(true);
-        expect(voice.status).not.toBe("completed");
+        expect(progress.steps.some((step) => step.id === "voice")).toBe(false);
+        expect(progress.steps.find((step) => step.id === "edit")!.tasks.find((task) => task.id === "edit.sound")!.label).toBe("整集背景音乐与声音混音");
         expect(progress.steps.find((step) => step.id === "edit")!.tasks.find((task) => task.id === "edit.rough")!.nodeId).toBe(audio.id);
     });
 

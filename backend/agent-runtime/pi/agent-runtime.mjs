@@ -2,6 +2,7 @@ import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { Agent, setGlobalDispatcher } from "undici";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -60,13 +61,17 @@ function createMessage(model, result) {
 }
 
 async function bridge(request, path, body, signal) {
+  const serialized = JSON.stringify(body);
+  const raw = Buffer.from(serialized);
+  const shouldCompress = raw.byteLength >= 512 * 1024;
   const response = await fetch(new URL(path, request.bridgeURL), {
     method: "POST",
     headers: {
       "content-type": "application/json",
+      ...(shouldCompress ? { "content-encoding": "gzip" } : {}),
       authorization: `Bearer ${request.bridgeToken}`,
     },
-    body: JSON.stringify(body),
+    body: shouldCompress ? gzipSync(raw) : raw,
     signal,
   });
   const data = await response.json().catch(() => ({}));

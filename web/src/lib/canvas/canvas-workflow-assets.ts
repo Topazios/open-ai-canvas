@@ -4,8 +4,8 @@ import { parseAssetProfile } from "./canvas-workflow-asset-profile";
 import { legacyProductionBibleKeys, productionBibleSection, type ProductionBibleSection } from "../production-bible";
 
 export const assetGroupOutputInstruction = `本步骤必须只输出一个 JSON 对象，不加 Markdown 围栏：
-{"summary":"覆盖集数、归并情况、冲突及待确认项", "items":[{"name":"唯一资产名称", "content":"完整 Markdown 文稿，含正文依据、出现集数场次、固定特征、状态变体、可直接使用的完整提示词、负面约束及待确认项"}]}
-每个独立资产一个条目，合并别名和跨集重复项，名称不得重复；没有该类资产时 items 为 []，summary 说明依据。不要为凑数量虚构资产。最多 200 项，超出时明确报告范围不足，不假称完整。`;
+{"summary":"覆盖集数、归并情况、冲突及待确认项", "items":[{"priority":1,"name":"唯一资产名称", "content":"完整 Markdown 文稿，含正文依据、出现集数场次、固定特征、固定形态、可直接使用的完整提示词、负面约束及待确认项；重大变体为独立条目，不放入共用资产节点；疲惫、受伤、污渍、光照、持物和开合写入连续性"}]}
+每个独立资产一个条目，合并别名和跨集重复项，名称不得重复；按剧情重要性在本类别内从主到次排序，priority 从 1 开始连续且唯一，1 最重要，画布严格按此顺序排列。人物先主线驱动者与核心对手，再主要配角、次要角色、群演/画外人物；场景先核心反复空间与高潮空间，再主要、次要空间；道具先主线关键物件、证据/目标物，再反复使用道具、一般功能道具。声音和其他资产按其对主线及关键场面的作用排序，不得按名字、出场先后或生成完成先后随机排列。没有该类资产时 items 为 []，summary 说明依据。不要为凑数量虚构资产。最多 200 项，超出时明确报告范围不足，不假称完整。`;
 
 export function emptyWorkflowAssetManifest(nodes: CanvasNodeData[], id: string) {
     const anchor = nodes.find((node) => node.id === id);
@@ -24,7 +24,7 @@ export function restoreEmptyWorkflowAssetGroup(nodes: CanvasNodeData[], id: stri
     return nodes.map((node) => node.id === id ? { ...node, metadata: { ...node.metadata, shortDrama: { ...data, assetOutput: true, materializedTaskId: undefined } } } : node);
 }
 
-export function parseWorkflowAssetGroup(content: string, mode?: "bible" | "assets", requiredSections: readonly ProductionBibleSection[] = legacyProductionBibleKeys): { summary: string; items: { name: string; content: string; section?: ProductionBibleSection; profile?: WorkflowAssetProfile }[] } {
+export function parseWorkflowAssetGroup(content: string, mode?: "bible" | "assets", requiredSections: readonly ProductionBibleSection[] = legacyProductionBibleKeys): { summary: string; items: { name: string; content: string; priority?: number; section?: ProductionBibleSection; profile?: WorkflowAssetProfile }[] } {
     const text = content.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, "$1");
     let value: unknown;
     try { value = JSON.parse(text); } catch { throw new Error("模型未返回完整的资产分组 JSON"); }
@@ -38,10 +38,12 @@ export function parseWorkflowAssetGroup(content: string, mode?: "bible" | "asset
         const record = item as Record<string, unknown>;
         const section = mode === "bible" ? record.section : undefined;
         if (mode === "bible" && !productionBibleSection(section)) throw new Error("制作规范条目必须标注有效的分类 section");
-        return { name: item.name.trim(), content: item.content.trim(), section: section as ProductionBibleSection | undefined,
+        const priority = Number.isInteger(record.priority) && Number(record.priority) > 0 && Number(record.priority) <= 200 ? Number(record.priority) : undefined;
+        return { name: item.name.trim(), content: item.content.trim(), priority, section: section as ProductionBibleSection | undefined,
             profile: mode === "assets" ? parseAssetProfile(record, item.content.trim()) : undefined };
     });
     if (mode === "bible" && (items.length !== requiredSections.length || new Set(items.map((item) => item.section)).size !== requiredSections.length || requiredSections.some((key) => !items.some((item) => item.section === key)))) throw new Error("统一制作规范必须同时包含所有要求的分类文稿");
+    if (mode === "assets") items.sort((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER) || left.name.localeCompare(right.name, "zh-CN"));
     return { summary: value.summary.trim(), items };
 }
 

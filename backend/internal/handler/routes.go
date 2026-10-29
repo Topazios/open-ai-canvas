@@ -121,6 +121,19 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, tasks)
 	})
+	r.GET("/canvas-projects/:id/task-events", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		after, err := taskTextEventCursor(c)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		streamCanvasTaskEvents(c, svc, user.ID, c.Param("id"), after)
+	})
 	r.GET("/tasks/:id", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -299,6 +312,90 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, logs)
 	})
+}
+
+func streamCanvasTaskEvents(c *gin.Context, svc *service.Service, userID, projectID string, after int64) {
+	subscription, cleanup, err := svc.SubscribeCanvasTaskEvents(c.Request.Context(), userID, projectID)
+	if err != nil {
+		failService(c, err)
+		return
+	}
+	defer cleanup()
+
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache, no-transform")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	if _, err := fmt.Fprint(c.Writer, ": connected\n\n"); err != nil {
+		return
+	}
+	c.Writer.Flush()
+
+	writeEvents := func(events []service.CanvasTaskEventView) bool {
+		for _, event := range events {
+			if event.Seq <= after {
+				continue
+			}
+			if !writeCanvasTaskSSE(c, event) {
+				return false
+			}
+			after = event.Seq
+		}
+		return true
+	}
+	initial, err := svc.CanvasTaskEvents(userID, projectID, after, svc.CanvasTaskEventReplayLimit())
+	if err != nil {
+		writeCanvasTaskSSEError(c, "画布任务事件暂时不可用")
+		return
+	}
+	if !writeEvents(initial) {
+		return
+	}
+	heartbeatTicker := time.NewTicker(svc.CanvasTaskEventHeartbeat())
+	defer heartbeatTicker.Stop()
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case event, ok := <-subscription:
+			if !ok {
+				return
+			}
+			if event.Seq > after {
+				if !writeCanvasTaskSSE(c, event) {
+					return
+				}
+				after = event.Seq
+			}
+		case <-heartbeatTicker.C:
+			if _, err := fmt.Fprint(c.Writer, ": heartbeat\n\n"); err != nil {
+				return
+			}
+			c.Writer.Flush()
+		}
+	}
+}
+
+func writeCanvasTaskSSE(c *gin.Context, event service.CanvasTaskEventView) bool {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return false
+	}
+	if _, err := fmt.Fprintf(c.Writer, "id: %d\nevent: %s\ndata: %s\n\n", event.Seq, event.EventType, data); err != nil {
+		return false
+	}
+	c.Writer.Flush()
+	return true
+}
+
+func writeCanvasTaskSSEError(c *gin.Context, message string) {
+	data, err := json.Marshal(map[string]string{"message": message})
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", data)
+	c.Writer.Flush()
 }
 
 func taskTextEventCursor(c *gin.Context) (int64, error) {

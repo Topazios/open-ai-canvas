@@ -3,6 +3,7 @@ import { BookOpenCheck, FileText, Image as ImageIcon, Music2, Pencil, Video } fr
 
 import type { CanvasNodeRenderLOD } from "@/lib/canvas/canvas-node-lod";
 import { CachedResourceImage } from "@/components/cached-resource-image";
+import { CanvasMarkdownPreview } from "@/components/canvas/canvas-markdown-preview";
 import { canvasRichTextHTML } from "@/lib/canvas/canvas-rich-text";
 import { canvasTextFontSize } from "@/lib/canvas/canvas-text-scale";
 import { recordCanvasRender } from "@/lib/canvas/canvas-performance-diagnostics";
@@ -54,6 +55,7 @@ export type CanvasNodeContentProps = {
     onReloadResource?: (node: CanvasNodeData) => void;
     onOpenInfo?: (node: CanvasNodeData) => void;
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
+    onMaskEdit?: (node: CanvasNodeData) => void;
     onCancelTask?: (node: CanvasNodeData) => void;
     onToggleBatch?: () => void;
     reduceMediaEffects?: boolean;
@@ -76,7 +78,7 @@ export function CanvasNodeContent(props: CanvasNodeContentProps) {
     if (props.node.type === MEDIA_CONVERSION_NODE_TYPE) return <MediaConversionNodeContent node={props.node} theme={props.theme} />;
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent node={props.node} theme={props.theme} onOpenTaskDetails={props.onOpenTaskDetails} onCancelTask={props.onCancelTask} />;
-    if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} onOpenInfo={props.onOpenInfo} onOpenTaskDetails={props.onOpenTaskDetails} />;
+    if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} onOpenInfo={props.onOpenInfo} onOpenTaskDetails={props.onOpenTaskDetails} onMaskEdit={props.onMaskEdit} />;
 
     const pluginDefinition = getNodeDefinition(props.node.type)?.plugin;
     if (pluginDefinition) return <PluginCanvasNodeContent {...props} renderer={pluginDefinition.renderer} schema={pluginDefinition.schema} />;
@@ -215,6 +217,7 @@ function DrawingContent({ node, theme, drawingProjectId }: CanvasNodeContentProp
 function TextContent({ node, theme, isEditingContent, textareaRef, mentionReferences, onContentChange, onStopEditing }: CanvasNodeContentProps) {
     const fontSize = canvasTextFontSize(node.width, node.height, node.metadata?.fontSize);
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as CSSProperties;
+    const source = node.metadata?.content || "";
     const richTextHTML = useMemo(() => canvasRichTextHTML(node.metadata?.richText), [node.metadata?.richText]);
 
     return (
@@ -237,6 +240,8 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                     onPointerDown={(event) => event.stopPropagation()}
                     onWheel={(event) => event.stopPropagation()}
                 />
+            ) : source ? (
+                <CanvasMarkdownPreview source={source} theme={theme} className="px-4 pb-4 pt-0 font-mono" style={textStyle} />
             ) : richTextHTML ? (
                 <div
                     className="thin-scrollbar block h-full w-full select-text overflow-y-auto break-words bg-transparent px-4 pb-4 font-mono [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:opacity-70 [&_code]:rounded [&_code]:bg-black/6 [&_code]:px-1 dark:[&_code]:bg-white/8 [&_h1]:my-2 [&_h1]:text-[1.55em] [&_h1]:font-semibold [&_h2]:my-2 [&_h2]:text-[1.3em] [&_h2]:font-semibold [&_h3]:my-1.5 [&_h3]:text-[1.12em] [&_h3]:font-semibold [&_hr]:my-3 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-black/90 [&_pre]:p-2 [&_pre]:text-white [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
@@ -245,9 +250,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                     dangerouslySetInnerHTML={{ __html: richTextHTML }}
                 />
             ) : (
-                <div className="thin-scrollbar block h-full w-full select-text overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-4 pb-4 pt-0 font-mono" style={textStyle} onWheel={(event) => event.stopPropagation()}>
-                    {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>双击编辑文字</span>}
-                </div>
+                <div className="block h-full w-full select-text overflow-hidden whitespace-pre-wrap break-words bg-transparent px-4 pb-4 pt-0 font-mono" style={textStyle} onWheel={(event) => event.stopPropagation()}><span style={{ color: theme.node.placeholder }}>双击编辑文字</span></div>
             )}
         </div>
     );

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createShortDramaPipeline } from "../src/lib/canvas/canvas-short-drama";
 import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowContextContent, workflowSources, workflowSignature } from "../src/lib/canvas/canvas-short-drama-workflow";
 import { completeWorkflowPlan } from "./fixtures/workflow-plan";
-import { ProductionPlanSection, unifiedProductionPlanInstruction } from "../src/lib/production-plan";
+import { ProductionPlanSection, storyPlanInstruction } from "../src/lib/production-plan";
 import { productionAssetKinds } from "../src/lib/production-plan";
 import { activeShortDramaSteps, nextShortDramaSteps } from "../src/lib/short-drama-steps";
 
@@ -17,30 +17,36 @@ test("plan is a durable grouped agent job with only container edges and required
     const { result } = plan(); const node = result.created[0];
     expect(nodeWorkflow(node)?.productionAgent).toEqual({});
     expect(nodeWorkflow(node)?.textBatch).toBeUndefined();
-    expect(node.metadata!.prompt).toContain("人物必须包含性格");
-    expect(node.metadata!.prompt).toContain("配音提示词");
+    expect(node.metadata!.prompt).toContain("故事总纲");
+    expect(node.metadata!.prompt).not.toContain("完整资产档案");
     expect(result.connections.filter((edge) => edge.toNodeId === node.id)).toHaveLength(0);
     expect(result.connections.filter((edge) => edge.toNodeId === node.parentId)).toHaveLength(1);
 });
 
 test("new plans use four asset categories and no separate special workflow", () => {
     const { result } = plan();
-    expect(nodeWorkflow(result.created[0])?.planVersion).toBe(3);
+    expect(nodeWorkflow(result.created[0])?.planVersion).toBe(5);
     expect(productionAssetKinds.map((kind) => kind.kind)).toEqual(["character", "environment", "prop", "sound"]);
     expect(activeShortDramaSteps.some((step) => step.id === "assets.special_references")).toBe(false);
     expect(nextShortDramaSteps("story.plan").some((step) => step.id === "assets.special_references")).toBe(false);
-    expect(result.created[0].metadata!.prompt).toContain("不增加规范节点");
+    expect(result.created[0].metadata!.prompt).toContain("本步骤只生成故事总纲与世界规则");
 });
 
-test("submitted plan prompt follows the shared ordered workflow and system field templates", () => {
+test("submitted story plan contains only the story outline and world rules", () => {
     const prompt = plan().result.created[0].metadata!.prompt!;
-    expect(prompt).toContain(unifiedProductionPlanInstruction);
-    expect(prompt).toContain("每项资产按系统提供的固定字段模板完整填写");
-    expect(prompt).toContain("不适用字段注明理由");
+    expect(prompt).toContain(storyPlanInstruction);
     expect(prompt).toContain("结局遵循全局设置与用户要求");
+    expect(prompt).toContain("按项目参数为每集建立规划骨架");
+    expect(prompt).toContain("不以固定悬念、反转或节奏模板替代题材适配");
+    expect(prompt).toContain("保存到当前文稿后立即结束");
+    expect(prompt).toContain("不要登记资产清单、制作规范或资产档案");
+    expect(prompt).not.toContain("生产资产模板");
+    expect(prompt).not.toContain("全剧资产清单与系统编码");
+    expect(prompt).not.toContain("视觉与美术规范");
+    expect(prompt).not.toContain("导演与视听规范");
+    expect(prompt).not.toContain("生成与一致性规范");
     expect(prompt).not.toContain("明确结局");
     expect(prompt).not.toContain("不以悬念代替结局");
-    expect(prompt).not.toContain("四份共用文稿，再逐项设计");
 });
 
 test("downstream context uses asset indexes without repeating the system catalog body", () => {
@@ -60,7 +66,7 @@ test("downstream context uses asset indexes without repeating the system catalog
 test("partial plans cannot advance; finished plan container carries the correct branch", () => {
     const { result, request } = plan();
     const frameId = result.created[0].parentId!;
-    expect(() => workflowSources("story.episodes", request.pipelineId, result.nodes, [frameId], result.connections)).toThrow("完整资产清单");
+    expect(() => workflowSources("story.episodes", request.pipelineId, result.nodes, [frameId], result.connections)).toThrow("先完成故事总纲");
     const { frame, docs } = completeWorkflowPlan(result);
     expect(defaultWorkflowSources("story.episodes", request.pipelineId, result.nodes, docs[1].id)).toEqual([frame.id]);
     const episodes = createWorkflowDocuments({ ...request, step: "story.episodes", sourceNodeIds: [frame.id] }, result.nodes, result.connections, { x: 0, y: 0 });

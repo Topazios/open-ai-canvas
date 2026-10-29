@@ -7,6 +7,7 @@ import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasNodeDragPreview,
 import { calculateCanvasPreviewTransform, sameCanvasViewport, shouldRebaseCanvasRaster } from "@/lib/canvas/canvas-leafer-viewport";
 import { offsetSelectedNodeBounds } from "@/lib/canvas/canvas-selection";
 import type { CanvasTheme } from "@/lib/canvas-theme";
+import type { RuntimeLimits } from "@/stores/use-user-store";
 import type { CanvasDisplayConnection, CanvasNodeData, ConnectionHandle, Position, SelectionBox, ViewportTransform } from "@/types/canvas";
 
 type NodeBounds = { left: number; top: number; width: number; height: number; count: number } | null;
@@ -16,6 +17,7 @@ type CanvasLeaferGraphicsLayerProps = {
     viewport: ViewportTransform;
     theme: CanvasTheme;
     displayConnections: CanvasDisplayConnection[];
+    connectionPolicy?: RuntimeLimits["canvas"];
     selectedConnectionId: string | null;
     relatedConnectionIds: Set<string>;
     scriptScrollTopById: Record<string, number>;
@@ -46,7 +48,6 @@ type UnderlayScene = LeaferScene & {
 
 type ConnectionSceneEntry = {
     path: Path;
-    flow: Path;
     target: Path;
     connection: CanvasDisplayConnection["connection"];
     from: CanvasNodeData;
@@ -131,39 +132,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         });
         resize();
 
-        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-        let animationFrame = 0;
-        let lastFrame = 0;
-        const animateFlow = (time: number) => {
-            animationFrame = requestAnimationFrame(animateFlow);
-            if (time - lastFrame < 1000 / 30) return;
-            lastFrame = time;
-            const enabled = !document.hidden && !reducedMotion.matches && !document.documentElement.classList.contains("no-motion") && container.dataset.canvasViewportInteracting !== "true";
-            underlay.host.dataset.connectionFlow = enabled ? "running" : "paused";
-            const scale = Math.max(0.05, viewportRef.current.k);
-            for (const entry of underlay.connectionEntries.values()) {
-                if (entry.flow.visible !== enabled) entry.flow.visible = enabled;
-                if (enabled) {
-                    if (entry.flow.dashPattern?.[0] !== 14 / scale) entry.flow.dashPattern = [14 / scale, 30 / scale];
-                    entry.flow.dashOffset = -((time * 0.07) % 44) / scale;
-                }
-            }
-        };
-        const refreshMotion = () => {
-            cancelAnimationFrame(animationFrame);
-            const paused = document.hidden || reducedMotion.matches;
-            underlay.host.dataset.connectionFlow = paused ? "paused" : "running";
-            for (const entry of underlay.connectionEntries.values()) entry.flow.visible = !paused;
-            if (!paused) animationFrame = requestAnimationFrame(animateFlow);
-        };
-        document.addEventListener("visibilitychange", refreshMotion);
-        reducedMotion.addEventListener("change", refreshMotion);
-        refreshMotion();
-
         return () => {
-            cancelAnimationFrame(animationFrame);
-            document.removeEventListener("visibilitychange", refreshMotion);
-            reducedMotion.removeEventListener("change", refreshMotion);
             unsubscribe();
             unsubscribeSelection();
             unsubscribeNodeDrag();
@@ -180,7 +149,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const underlay = underlayRef.current;
         if (!underlay) return;
         rebuildConnections(underlay, props);
-    }, [props.displayConnections, props.relatedConnectionIds, props.scriptScrollTopById, props.selectedConnectionId, props.theme]);
+    }, [props.connectionPolicy, props.displayConnections, props.relatedConnectionIds, props.scriptScrollTopById, props.selectedConnectionId, props.theme]);
 
     useLayoutEffect(() => {
         const overlay = overlayRef.current;
@@ -254,7 +223,6 @@ function rebuildConnections(scene: UnderlayScene, props: CanvasLeaferGraphicsLay
     for (const [connectionId, entry] of scene.connectionEntries) {
         if (nextIds.has(connectionId)) continue;
         entry.path.remove();
-        entry.flow.remove();
         entry.target.remove();
         scene.connectionEntries.delete(connectionId);
     }
@@ -267,12 +235,10 @@ function rebuildConnections(scene: UnderlayScene, props: CanvasLeaferGraphicsLay
         let entry = scene.connectionEntries.get(connection.id);
         if (!entry) {
             const path = new Path({ hittable: false });
-            const flow = new Path({ hittable: false, visible: scene.host.dataset.connectionFlow !== "paused" });
             const target = new Path({ hittable: false });
             scene.connections.add(path);
-            scene.connections.add(flow);
             scene.connections.add(target);
-            entry = { path, flow, target, connection, from, to, signature: "" };
+            entry = { path, target, connection, from, to, signature: "" };
             scene.connectionEntries.set(connection.id, entry);
         }
         entry.connection = connection;
@@ -314,33 +280,42 @@ function connectionSceneSignature(connection: CanvasDisplayConnection["connectio
         emphasized ? "active" : "idle",
         props.theme.accent.primary,
         props.theme.node.muted,
+        props.connectionPolicy?.connectionLineStyle || "solid",
+        props.connectionPolicy?.connectionArrowStyle || "arrow",
+        props.connectionPolicy?.connectionEffect || "highlight",
     ].join("|");
 }
 
 function syncConnectionPath(entry: ConnectionSceneEntry, props: CanvasLeaferGraphicsLayerProps, preview: CanvasNodeDragPreview | null, previewIds: ReadonlySet<string> | null = preview?.nodeIds || null) {
     const from = translatePreviewNode(entry.from, previewIds, preview);
     const to = translatePreviewNode(entry.to, previewIds, preview);
-    const emphasized = props.selectedConnectionId === entry.connection.id || props.relatedConnectionIds.has(entry.connection.id);
+    const isRelated = props.selectedConnectionId === entry.connection.id || props.relatedConnectionIds.has(entry.connection.id);
+    const emphasized = isRelated && (props.connectionPolicy?.connectionEffect || "highlight") === "highlight";
     const geometry = canvasConnectionPath(entry.connection, from, to, props.scriptScrollTopById[entry.from.id] || 0, props.scriptScrollTopById[entry.to.id] || 0);
     entry.path.set({
         path: geometry.pathD,
         stroke: emphasized ? props.theme.accent.primary : props.theme.node.muted,
-        strokeWidth: emphasized ? 4.2 : 3.2,
+        strokeWidth: emphasized ? 1.8 : 1.35,
         strokeScaleFixed: true,
         strokeCap: "round",
-        opacity: emphasized ? 0.44 : 0.68,
+        strokeJoin: "round",
+        dashPattern: (props.connectionPolicy?.connectionLineStyle || "solid") === "dashed" ? [6, 5] : undefined,
+        opacity: emphasized ? 0.9 : 0.52,
         hittable: false,
     });
-    entry.flow.set({
-        path: geometry.pathD, stroke: props.theme.accent.primary, strokeWidth: emphasized ? 4.2 : 3.6,
-        strokeScaleFixed: true, strokeCap: "round", dashPattern: [14, 30], opacity: emphasized ? 1 : 0.92, hittable: false,
-    });
+    const arrowStyle = props.connectionPolicy?.connectionArrowStyle || "arrow";
     entry.target.set({
-        path: connectionTargetArrowPath(geometry.startX, geometry.startY, geometry.endX, geometry.endY, to),
+        path: arrowStyle === "none" ? "" : arrowStyle === "dot"
+            ? connectionTargetDotPath(geometry.endX, geometry.endY, emphasized ? 2.6 : 2.1)
+            : connectionTargetArrowPath(geometry.startX, geometry.startY, geometry.endX, geometry.endY, to),
         fill: props.theme.accent.primary,
-        opacity: emphasized ? 1 : 0.92,
+        opacity: arrowStyle === "none" ? 0 : emphasized ? 0.95 : 0.62,
         hittable: false,
     });
+}
+
+function connectionTargetDotPath(x: number, y: number, radius: number) {
+    return `M ${x - radius} ${y} A ${radius} ${radius} 0 1 0 ${x + radius} ${y} A ${radius} ${radius} 0 1 0 ${x - radius} ${y} Z`;
 }
 
 function connectionTargetArrowPath(startX: number, startY: number, endX: number, endY: number, target: CanvasNodeData) {
@@ -356,8 +331,8 @@ function connectionTargetArrowPath(startX: number, startY: number, endX: number,
     const uy = side.distance <= 2 ? side.uy : (endY - startY) / length;
     const px = -uy;
     const py = ux;
-    const size = Math.min(14, Math.max(9, length * 0.08));
-    const width = size * 0.62;
+    const size = Math.min(8, Math.max(6, length * 0.04));
+    const width = size * 0.52;
     const baseX = endX - ux * size;
     const baseY = endY - uy * size;
     return `M ${endX} ${endY} L ${baseX + px * width} ${baseY + py * width} L ${baseX - px * width} ${baseY - py * width} Z`;

@@ -34,7 +34,11 @@ func TestProductionPlanRequirementsReachEachToolSchema(t *testing.T) {
 	}
 	for key, fields := range productionPlanFieldRequirements {
 		known := map[string]bool{}
-		for _, section := range productionPlanDocumentSections(key, "") {
+		schemaVersion := 1
+		if key == "story" {
+			schemaVersion = 2
+		}
+		for _, section := range productionPlanDocumentSectionsForSchema(key, "", schemaVersion) {
 			known[section.Key] = true
 		}
 		for field := range fields {
@@ -42,6 +46,21 @@ func TestProductionPlanRequirementsReachEachToolSchema(t *testing.T) {
 				t.Fatalf("orphan requirement %s.%s", key, field)
 			}
 		}
+	}
+}
+
+func TestProductionPlanEpisodeArchitectureRequirementIsVersioned(t *testing.T) {
+	legacy := productionPlanDocumentSectionsForSchema("story", "", productionPlanDocumentSchemaVersion(3))
+	if productionPlanDocumentSchemaVersion(3) != 1 || len(legacy) != len(productionPlanDocumentSections("story", "")) {
+		t.Fatal("legacy plan schema changed")
+	}
+	sections := productionPlanDocumentSectionsForSchema("story", "", productionPlanDocumentSchemaVersion(4))
+	if productionPlanDocumentSchemaVersion(4) != 2 || sections[len(sections)-1].Key != "episodeArchitecture" {
+		t.Fatal("new plans must expose the executable episode skeleton")
+	}
+	description := productionPlanFieldDescriptionForSchema("story", "", sections[len(sections)-1], 2)
+	if !strings.Contains(description, "集号须覆盖 1 至当前计划总集数") || !strings.Contains(description, "因果结果/代价") {
+		t.Fatalf("episode requirement is not actionable: %s", description)
 	}
 }
 
@@ -79,8 +98,8 @@ func TestProductionPlanParallelRequestIncludesSoundRequirements(t *testing.T) {
 		t.Fatal(err)
 	}
 	canonical := stateCanonicalFromInput(input)
-	if len(canonical.Tools) != 1 {
-		t.Fatalf("unexpected tools: %d", len(canonical.Tools))
+	if len(canonical.Tools) != 1 || canonical.ToolChoice != "auto" {
+		t.Fatalf("parallel request must keep one tool without forced wire selection: %+v", canonical)
 	}
 	fn := canonical.Tools[0]["function"].(map[string]any)
 	properties := fn["parameters"].(map[string]any)["properties"].(map[string]any)

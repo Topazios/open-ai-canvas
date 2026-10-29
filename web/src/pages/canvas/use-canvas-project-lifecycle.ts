@@ -363,10 +363,11 @@ export function useCanvasProjectLifecycle({
         });
     }, [persistLocalEdits]);
 
-    const saveCanvasProject = useCallback(async (options: { requireRemote?: boolean } = {}): Promise<boolean> => {
+    const saveCanvasProject = useCallback(async (options: { requireRemote?: boolean; quiet?: boolean } = {}): Promise<boolean> => {
         try {
             await persistLocalEdits();
-        } catch {
+        } catch (error) {
+            if (options.quiet) throw error;
             message.error("画布保存失败，请稍后重试");
             return false;
         }
@@ -375,7 +376,8 @@ export function useCanvasProjectLifecycle({
             message.success("画布已保存到云端");
         } catch (error) {
             const detail = error instanceof Error ? error.message : "未知错误";
-            message.warning(`本地画布布局已保存，云端同步失败：${detail}`);
+            if (options.quiet) throw error;
+            if (!options.quiet) message.warning(`本地画布布局已保存，云端同步失败：${detail}`);
             // Imports can retain their durable local result; sharing requires cloud success.
             return options.requireRemote === false;
         }

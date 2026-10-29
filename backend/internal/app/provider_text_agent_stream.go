@@ -25,19 +25,25 @@ func postStreamingAgent(ctx context.Context, config providerConfig, path string,
 	if len(onReasoning) > 0 {
 		parser.emitReasoning = onReasoning[0]
 	}
-	data, mimeType, err := postStreamingBinary(ctx, config, path, body, parser.consume)
-	if err != nil {
-		return nil, err
+	var result map[string]interface{}
+	_, _, err := postStreamingBinary(ctx, config, path, body, parser.consume, func(data []byte, mimeType string) error {
+		var err error
+		result, err = parseAgentProviderResponse(data, mimeType, protocol, parser)
+		return err
+	})
+	return result, err
+}
+
+func parseAgentProviderResponse(data []byte, mimeType, protocol string, parser *streamingAgentParser) (map[string]interface{}, error) {
+	if parser != nil && strings.Contains(strings.ToLower(mimeType), "event-stream") {
+		parser.flush()
+		return parser.result()
 	}
-	if !strings.Contains(strings.ToLower(mimeType), "event-stream") {
-		var payload map[string]interface{}
-		if err := json.Unmarshal(data, &payload); err != nil {
-			return nil, fmt.Errorf("Agent 接口返回格式无效：%w", err)
-		}
-		return parseAgentToolPayload(payload, protocol)
+	var payload map[string]interface{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, providerResponseDecodeError{fmt.Errorf("Agent 接口返回格式无效：%w", err)}
 	}
-	parser.flush()
-	return parser.result()
+	return parseAgentToolPayload(payload, protocol)
 }
 
 type streamingAgentToolCall struct {
@@ -105,12 +111,20 @@ func (p *streamingAgentParser) consumeFrame(frame string) {
 		}
 	}
 	raw := strings.TrimSpace(strings.Join(dataLines, "\n"))
+	if (eventName == "error" || eventName == "response.failed") && (raw == "" || raw == "[DONE]") {
+		p.err = providerPayloadError{raw: raw, message: "上游流式请求失败，生成未完成"}
+		return
+	}
 	if raw == "" || raw == "[DONE]" {
 		return
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		p.err = fmt.Errorf("Agent 流式事件解析失败：%w", err)
+		if eventName == "error" || eventName == "response.failed" {
+			p.err = providerPayloadError{raw: raw, message: "上游流式请求失败，生成未完成"}
+			return
+		}
+		p.err = providerResponseDecodeError{fmt.Errorf("上游 Agent 流式响应不完整或 JSON 无效，生成未完成：%w", err)}
 		return
 	}
 	if err := validateTextPayload(payload); err != nil {
@@ -118,7 +132,7 @@ func (p *streamingAgentParser) consumeFrame(frame string) {
 		return
 	}
 	if eventName == "error" {
-		p.err = errors.New("上游流式请求失败，生成未完成")
+		p.err = providerPayloadError{raw: raw, message: "上游流式请求失败，生成未完成"}
 		return
 	}
 	switch p.protocol {
@@ -132,7 +146,7 @@ func (p *streamingAgentParser) consumeFrame(frame string) {
 }
 
 func (p *streamingAgentParser) consumeResponsesEvent(eventName string, payload map[string]interface{}) {
-	eventType := firstNonEmptyString(strings.TrimSpace(eventName), stringField(payload, "type"))
+	eventType := firstNonEmptyString(stringField(payload, "type"), strings.TrimSpace(eventName))
 	switch eventType {
 	case "response.output_text.delta", "output_text.delta":
 		p.appendText(stringField(payload, "delta"))
@@ -141,13 +155,18 @@ func (p *streamingAgentParser) consumeResponsesEvent(eventName string, payload m
 	case "response.completed":
 		p.completed, _ = payload["response"].(map[string]interface{})
 		if p.completed == nil {
-			p.err = errors.New("Responses 完成事件缺少结果")
+			p.err = providerResponseDecodeError{Err: errors.New("Responses 完成事件缺少结果")}
 		}
-	case "response.failed", "response.incomplete", "error":
+	case "response.failed", "error":
+		p.err = providerPayloadError{message: "上游 Responses 流式请求失败，生成未完成"}
+		if raw, err := json.Marshal(payload); err == nil {
+			p.err = providerPayloadError{raw: string(raw), message: "上游 Responses 流式请求失败，生成未完成"}
+		}
+	case "response.incomplete":
 		response, _ := payload["response"].(map[string]interface{})
 		p.err = validateResponsesCompletion(response)
 		if p.err == nil {
-			p.err = errors.New("Responses 流式生成未完成")
+			p.err = providerResponseDecodeError{Err: errors.New("Responses 流式生成未完成")}
 		}
 	case "response.output_item.added":
 		item, _ := payload["item"].(map[string]interface{})
@@ -282,7 +301,7 @@ func (p *streamingAgentParser) result() (map[string]interface{}, error) {
 		return nil, p.err
 	}
 	if p.protocol == "responses" && p.completed == nil {
-		return nil, errors.New("Responses 流中断或缺少完成事件，生成未完成")
+		return nil, providerResponseDecodeError{errors.New("Responses 流中断或缺少完成事件，生成未完成")}
 	}
 	if p.completed != nil {
 		result, err := parseAgentToolPayload(p.completed, p.protocol)
@@ -318,15 +337,12 @@ func (p *streamingAgentParser) result() (map[string]interface{}, error) {
 		}
 		var parsed interface{}
 		if err := json.Unmarshal([]byte(arguments), &parsed); err != nil {
-			return nil, fmt.Errorf("Agent 工具参数不是完整 JSON：%w", err)
+			return nil, providerResponseDecodeError{fmt.Errorf("Agent 工具参数不是完整 JSON：%w", err)}
 		}
 		calls = append(calls, map[string]interface{}{"id": call.id, "type": "function", "function": map[string]interface{}{"name": call.name, "arguments": arguments}})
 	}
 	result["toolCalls"] = calls
-	if p.text.Len() == 0 && len(calls) == 0 {
-		return nil, errors.New("画布 Agent 接口没有返回内容")
-	}
-	return result, nil
+	return result, validateAgentOutput(result)
 }
 
 func intField(value map[string]interface{}, key string, fallback int) int {

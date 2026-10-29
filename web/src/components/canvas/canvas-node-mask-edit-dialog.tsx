@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Button, Input, Modal, Slider } from "antd";
+import { Button, Input, Modal, Segmented, Slider } from "antd";
 import { Brush, ChevronDown, Eraser, RotateCcw, WandSparkles, X } from "lucide-react";
 
 import { readImageMeta } from "@/lib/image-utils";
@@ -17,12 +17,26 @@ export type CanvasImageMaskEditPayload = {
 };
 
 type DrawMode = "paint" | "erase";
+type RedrawTab = "prompt" | "mask";
+
+type CanvasNodeRedrawDialogProps = {
+    dataUrl: string;
+    open: boolean;
+    config: AiConfig;
+    initialPrompt?: string;
+    canEditPrompt?: boolean;
+    canAutoAdjust?: boolean;
+    onClose: () => void;
+    onConfirm: (payload: CanvasImageMaskEditPayload) => void;
+    onRegenerate?: (prompt: string) => void;
+    onAutoAdjust?: () => void;
+};
 
 const defaultBrushSize = 100;
 const maskFillColor = "rgba(37, 99, 235, .38)";
 const maskBorderColor = "rgba(255, 255, 255, .72)";
 
-export function CanvasNodeMaskEditDialog({ dataUrl, open, config, onClose, onConfirm }: { dataUrl: string; open: boolean; config: AiConfig; onClose: () => void; onConfirm: (payload: CanvasImageMaskEditPayload) => void }) {
+export function CanvasNodeMaskEditDialog({ dataUrl, open, config, initialPrompt = "", canEditPrompt = false, canAutoAdjust = false, onClose, onConfirm, onRegenerate, onAutoAdjust }: CanvasNodeRedrawDialogProps) {
     const maskCanvasRef = useRef<HTMLCanvasElement>(null);
     const previewCanvasRef = useRef<HTMLCanvasElement>(null);
     const drawingRef = useRef<{ active: boolean; last: { x: number; y: number } | null }>({ active: false, last: null });
@@ -33,18 +47,36 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, config, onClose, onCon
     const [error, setError] = useState("");
     const [generationConfig, setGenerationConfig] = useState<AiConfig>(() => config);
     const [advancedOpen, setAdvancedOpen] = useState(false);
+    const [tab, setTab] = useState<RedrawTab>("prompt");
+    const [regenPrompt, setRegenPrompt] = useState(initialPrompt);
+    const [regenError, setRegenError] = useState("");
+    const hasImage = Boolean(dataUrl);
+    const showPromptTab = canEditPrompt && Boolean(onRegenerate);
+    const activeTab: RedrawTab = !hasImage ? "prompt" : showPromptTab ? tab : "mask";
     const theme = canvasThemes[useActiveTheme()];
 
     useEffect(() => {
         if (!open) return;
+        let cancelled = false;
         setPrompt("");
         setBrushSize(defaultBrushSize);
         setMode("paint");
         setError("");
-        setAdvancedOpen(true);
+        setAdvancedOpen(false);
+        setTab(showPromptTab ? "prompt" : "mask");
+        setRegenPrompt(initialPrompt);
+        setRegenError("");
         setGenerationConfig(config);
-        void readImageMeta(dataUrl).then(setImage);
-    }, [dataUrl, open]);
+        setImage(null);
+        if (dataUrl) {
+            void readImageMeta(dataUrl).then((meta) => {
+                if (!cancelled) setImage(meta);
+            });
+        }
+        return () => {
+            cancelled = true;
+        };
+    }, [dataUrl, open, initialPrompt]);
 
     useEffect(() => {
         clearCanvas(maskCanvasRef.current);
@@ -75,6 +107,7 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, config, onClose, onCon
     };
 
     const startDraw = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+        if (activeTab !== "mask") return;
         event.preventDefault();
         event.stopPropagation();
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -84,7 +117,7 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, config, onClose, onCon
     };
 
     const moveDraw = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-        if (!drawingRef.current.active) return;
+        if (activeTab !== "mask" || !drawingRef.current.active) return;
         event.preventDefault();
         draw(event);
     };
@@ -101,6 +134,12 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, config, onClose, onCon
         setError("");
     };
 
+    const submitRegenerate = () => {
+        const nextPrompt = regenPrompt.trim();
+        if (!nextPrompt) return setRegenError("请输入提示词");
+        onRegenerate?.(nextPrompt);
+    };
+
     const submit = () => {
         const nextPrompt = prompt.trim();
         const canvas = maskCanvasRef.current;
@@ -110,117 +149,163 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, config, onClose, onCon
         onConfirm({ prompt: nextPrompt, maskDataUrl: buildEditMask(canvas), generationConfig: { model: generationConfig.model, imageModel: generationConfig.imageModel, size: generationConfig.size, quality: generationConfig.quality, count: generationConfig.count, transparentBackground: generationConfig.transparentBackground } });
     };
 
+    const subtitle = !hasImage ? "图片生成失败，可修改提示词后重新生成" : image ? `${image.width} x ${image.height}px` : "读取中";
+
     return (
-        <Modal className="workspace-modal workspace-modal-wide" title={null} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} centered destroyOnHidden>
-            <div className="grid gap-5 lg:grid-cols-[minmax(360px,1fr)_340px]">
-                <div className="flex min-h-[360px] items-center justify-center rounded-lg bg-surface-active p-0">
-                    <div className="relative inline-block max-w-full overflow-hidden rounded-lg bg-transparent select-none">
-                        <img src={dataUrl} alt="" className="relative z-0 block max-h-[68dvh] max-w-full bg-transparent" draggable={false} />
-                        {image ? (
-                            <>
-                                <canvas ref={maskCanvasRef} width={image.width} height={image.height} className="hidden" />
-                                <canvas
-                                    ref={previewCanvasRef}
-                                    width={image.width}
-                                    height={image.height}
-                                    className="absolute inset-0 z-10 h-full w-full cursor-crosshair touch-none"
-                                    onPointerDown={startDraw}
-                                    onPointerMove={moveDraw}
-                                    onPointerUp={stopDraw}
-                                    onPointerCancel={stopDraw}
-                                />
-                            </>
-                        ) : null}
-                    </div>
-                </div>
-
-                <div className="flex max-h-[68dvh] min-h-[min(360px,calc(100dvh-96px))] flex-col overflow-hidden">
-                    <div className="thin-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-                        <div>
-                            <h2 className="text-xl font-semibold">局部重绘</h2>
-                            <div className="mt-2 text-sm opacity-60">{image ? `${image.width} x ${image.height}px` : "读取中"}</div>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                            <Button type={mode === "paint" ? "primary" : "default"} aria-pressed={mode === "paint"} icon={<Brush className="size-4" />} onClick={() => setMode("paint")}>
-                                画笔
-                            </Button>
-                            <Button type={mode === "erase" ? "primary" : "default"} aria-pressed={mode === "erase"} icon={<Eraser className="size-4" />} onClick={() => setMode("erase")}>
-                                擦除
-                            </Button>
-                        </div>
-
-                        <div className="space-y-2">
-                            <div className="flex items-center justify-between text-sm">
-                                <span className="font-medium opacity-75">笔刷大小</span>
-                                <span className="font-semibold">{brushSize}px</span>
-                            </div>
-                            <Slider min={8} max={160} step={2} value={brushSize} onChange={setBrushSize} />
-                        </div>
-
-                        <div className="space-y-2">
-                            <div className="text-sm font-medium opacity-75">修改要求</div>
-                            <Input.TextArea
-                                rows={4}
-                                value={prompt}
-                                status={error && !prompt.trim() ? "error" : undefined}
-                                placeholder="例如：把选中区域改成金属材质，保持原图光影"
-                                onChange={(event) => {
-                                    setPrompt(event.target.value);
-                                    setError("");
-                                }}
-                            />
-                            {error ? <div className="text-xs font-medium text-destructive">{error}</div> : null}
-                        </div>
-
-                        <div className="rounded-xl border border-border/60">
-                            <button
-                                type="button"
-                                className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm font-medium"
-                                aria-expanded={advancedOpen}
-                                onClick={() => setAdvancedOpen((current) => !current)}
-                            >
-                                <span>高级生成设置</span>
-                                <ChevronDown className={`size-4 shrink-0 opacity-60 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
-                            </button>
-                            {advancedOpen ? (
-                                <div className="space-y-3 border-t border-border/60 px-3 pb-3 pt-3">
-                                    <div className="space-y-2">
-                                        <div className="text-sm font-medium opacity-75">生成模型</div>
-                                        <ModelPicker
-                                            config={generationConfig}
-                                            value={generationConfig.imageModel || generationConfig.model}
-                                            capability="image"
-                                            fullWidth
-                                            showSelectedPrice={false}
-                                            onChange={(model) => setGenerationConfig((current) => ({ ...current, model, imageModel: model, ...defaultImageParamsForModel(current, model) }))}
-                                        />
-                                    </div>
-                                    <ImageSettingsPanel
-                                        config={generationConfig}
-                                        showTitle={false}
-                                        showCount={false}
-                                        bypassPriceGuard
-                                        className="space-y-3"
-                                        theme={theme}
-                                        onConfigChange={(key, value) => setGenerationConfig((current) => ({ ...current, [key]: value }))}
+        <Modal className={hasImage ? "workspace-modal workspace-modal-wide" : "workspace-modal"} title={null} open={open} onCancel={onClose} footer={null} width={hasImage ? undefined : 520} centered destroyOnHidden>
+            <div className={hasImage ? "flex min-w-0 flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-5" : "flex min-w-0 flex-col"} style={hasImage ? undefined : { height: "min(480px, calc(100dvh - 96px))" }}>
+                {hasImage ? (
+                    <div className="flex h-[34dvh] min-h-0 min-w-0 items-center justify-center overflow-hidden rounded-lg bg-surface-active lg:h-[min(640px,calc(100dvh-96px))]">
+                        <div className="relative inline-block max-w-full overflow-hidden rounded-lg bg-transparent select-none">
+                            <img src={dataUrl} alt="" className="relative z-0 block max-h-[34dvh] max-w-full bg-transparent lg:max-h-[min(640px,calc(100dvh-96px))]" draggable={false} />
+                            {image ? (
+                                <>
+                                    <canvas ref={maskCanvasRef} width={image.width} height={image.height} className="hidden" />
+                                    <canvas
+                                        ref={previewCanvasRef}
+                                        width={image.width}
+                                        height={image.height}
+                                        className={`absolute inset-0 z-10 h-full w-full touch-none ${activeTab === "mask" ? "cursor-crosshair" : "pointer-events-none"}`}
+                                        onPointerDown={startDraw}
+                                        onPointerMove={moveDraw}
+                                        onPointerUp={stopDraw}
+                                        onPointerCancel={stopDraw}
                                     />
-                                </div>
+                                </>
                             ) : null}
                         </div>
                     </div>
+                ) : null}
 
-                    <div className="mt-3 flex shrink-0 items-center justify-between gap-2 border-t border-border/50 pt-3">
-                        <Button icon={<RotateCcw className="size-4" />} onClick={resetMask}>
-                            重置
-                        </Button>
-                        <div className="flex items-center gap-2">
-                            <Button icon={<X className="size-4" />} onClick={onClose}>
+                <div className={`flex min-h-0 min-w-0 flex-col gap-4 overflow-hidden ${hasImage ? "h-[calc(66dvh-72px)] min-h-[360px] lg:h-[min(640px,calc(100dvh-96px))]" : "h-full"}`}>
+                    <div className="flex shrink-0 flex-col gap-3">
+                        <div className="flex min-w-0 flex-col gap-1">
+                            <h2 className="text-xl font-semibold leading-7">重绘</h2>
+                            <div className="text-sm leading-5 opacity-60">{subtitle}</div>
+                        </div>
+                        {hasImage && showPromptTab ? <Segmented block value={activeTab} options={[{ label: "提示词", value: "prompt" }, { label: "局部重绘", value: "mask" }]} onChange={(value) => setTab(value as RedrawTab)} /> : null}
+                    </div>
+
+                    <div className="thin-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pr-1 [scrollbar-gutter:stable]">
+                        {activeTab === "prompt" ? (
+                            <div className="flex h-full min-h-[240px] min-w-0 flex-col gap-2">
+                                <div className="flex shrink-0 items-center justify-between gap-2">
+                                    <span className="text-sm font-medium opacity-75">提示词</span>
+                                    {canAutoAdjust && onAutoAdjust ? (
+                                        <Button size="small" className="shrink-0 whitespace-nowrap" icon={<WandSparkles className="size-3.5" />} onClick={onAutoAdjust}>
+                                            自动调整
+                                        </Button>
+                                    ) : null}
+                                </div>
+                                <div className="min-h-0 flex-1">
+                                    <Input.TextArea
+                                        className="!h-full !resize-none"
+                                        value={regenPrompt}
+                                        status={regenError ? "error" : undefined}
+                                        placeholder="修改后将按新提示词整体重新生成这张图"
+                                        onChange={(event) => {
+                                            setRegenPrompt(event.target.value);
+                                            setRegenError("");
+                                        }}
+                                    />
+                                </div>
+                                {regenError ? <div className="shrink-0 text-xs font-medium text-destructive">{regenError}</div> : null}
+                                <div className="shrink-0 break-words text-xs leading-5 opacity-60">整体重新生成会发起新的计费调用，原图保留在历史中。</div>
+                            </div>
+                        ) : (
+                            <div className="flex min-w-0 flex-col gap-4">
+                                <div className="grid grid-cols-2 gap-2">
+                                    <Button className="whitespace-nowrap" type={mode === "paint" ? "primary" : "default"} aria-pressed={mode === "paint"} icon={<Brush className="size-4" />} onClick={() => setMode("paint")}>
+                                        画笔
+                                    </Button>
+                                    <Button className="whitespace-nowrap" type={mode === "erase" ? "primary" : "default"} aria-pressed={mode === "erase"} icon={<Eraser className="size-4" />} onClick={() => setMode("erase")}>
+                                        擦除
+                                    </Button>
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                    <div className="flex items-center justify-between gap-2 text-sm">
+                                        <span className="font-medium opacity-75">笔刷大小</span>
+                                        <span className="font-semibold">{brushSize}px</span>
+                                    </div>
+                                    <Slider min={8} max={160} step={2} value={brushSize} onChange={setBrushSize} />
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                    <div className="text-sm font-medium opacity-75">修改要求</div>
+                                    <Input.TextArea
+                                        rows={3}
+                                        value={prompt}
+                                        status={error && !prompt.trim() ? "error" : undefined}
+                                        placeholder="例如：把选中区域改成金属材质，保持原图光影"
+                                        onChange={(event) => {
+                                            setPrompt(event.target.value);
+                                            setError("");
+                                        }}
+                                    />
+                                    {error ? <div className="text-xs font-medium text-destructive">{error}</div> : null}
+                                </div>
+
+                                <div className="rounded-xl border border-border/60">
+                                    <button
+                                        type="button"
+                                        className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm font-medium"
+                                        aria-expanded={advancedOpen}
+                                        onClick={() => setAdvancedOpen((current) => !current)}
+                                    >
+                                        <span>高级生成设置</span>
+                                        <ChevronDown className={`size-4 shrink-0 opacity-60 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
+                                    </button>
+                                    {advancedOpen ? (
+                                        <div className="flex flex-col gap-3 border-t border-border/60 px-3 pb-3 pt-3">
+                                            <div className="flex flex-col gap-2">
+                                                <div className="text-sm font-medium opacity-75">生成模型</div>
+                                                <ModelPicker
+                                                    config={generationConfig}
+                                                    value={generationConfig.imageModel || generationConfig.model}
+                                                    capability="image"
+                                                    fullWidth
+                                                    showSelectedPrice={false}
+                                                    onChange={(model) => setGenerationConfig((current) => ({ ...current, model, imageModel: model, ...defaultImageParamsForModel(current, model) }))}
+                                                />
+                                            </div>
+                                            <ImageSettingsPanel
+                                                config={generationConfig}
+                                                showTitle={false}
+                                                showCount={false}
+                                                bypassPriceGuard
+                                                className="space-y-3"
+                                                theme={theme}
+                                                onConfigChange={(key, value) => setGenerationConfig((current) => ({ ...current, [key]: value }))}
+                                            />
+                                        </div>
+                                    ) : null}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-t border-border/50 pt-3">
+                        {activeTab === "mask" ? (
+                            <Button className="shrink-0 whitespace-nowrap" icon={<RotateCcw className="size-4" />} onClick={resetMask}>
+                                重置
+                            </Button>
+                        ) : (
+                            <span />
+                        )}
+                        <div className="flex shrink-0 items-center gap-2">
+                            <Button className="whitespace-nowrap" icon={<X className="size-4" />} onClick={onClose}>
                                 取消
                             </Button>
-                            <Button type="primary" icon={<WandSparkles className="size-4" />} onClick={submit}>
-                                AI 修改
-                            </Button>
+                            {activeTab === "mask" ? (
+                                <Button className="whitespace-nowrap" type="primary" icon={<WandSparkles className="size-4" />} onClick={submit}>
+                                    AI 修改
+                                </Button>
+                            ) : (
+                                <Button className="whitespace-nowrap" type="primary" icon={<WandSparkles className="size-4" />} onClick={submitRegenerate}>
+                                    保存并重新生成
+                                </Button>
+                            )}
                         </div>
                     </div>
                 </div>

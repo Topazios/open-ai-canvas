@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { Check, ChevronDown, ChevronRight, CircleAlert, Info, LoaderCircle, Video } from "lucide-react";
+import { Boxes, Check, ChevronDown, ChevronRight, CircleAlert, Info, LoaderCircle, RefreshCw, TriangleAlert, Video } from "lucide-react";
 
 import { CometCard } from "@/components/ui/aceternity/comet-card";
 import { CanvasFolderPreview } from "@/components/canvas/canvas-folder-preview";
@@ -10,6 +10,10 @@ import { FRAME_HEADER_HEIGHT, FRAME_PADDING, isCanvasFolderNode } from "@/lib/ca
 import type { CanvasNodeRenderLOD } from "@/lib/canvas/canvas-node-lod";
 import { recordCanvasRender } from "@/lib/canvas/canvas-performance-diagnostics";
 import { episodeProgress, episodeProgressLabel } from "@/lib/canvas/canvas-short-drama-workflow";
+import { productionAssetGroupState, productionTaskState, productionPlanAssetAction, productionPlanCanvasDocumentCount } from "@/lib/canvas/production-agent-state";
+import { CanvasNodeActionButton } from "./canvas-node-action-bar";
+import { groupStatusButtonsCompact } from "@/lib/canvas/canvas-node-header-metrics";
+import type { AgentRun } from "@/services/api/agent";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { CanvasNodeType, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type Position } from "@/types/canvas";
@@ -22,6 +26,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     dragOffset,
     childNodes,
     taskAnchor,
+    productionRun,
     scale,
     isSelected,
     isDropTarget,
@@ -34,6 +39,9 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     onTitleChange,
     onContextMenu,
     onOpenTaskDetails,
+    onRetryFailed,
+    onGeneratePlanAssets,
+    planAssetsBusy = false,
     readOnly = false,
     onHoverStart,
     onHoverEnd,
@@ -42,6 +50,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     dragOffset?: Position;
     childNodes: CanvasNodeData[];
     taskAnchor?: CanvasNodeData;
+    productionRun?: AgentRun;
     renderLOD?: CanvasNodeRenderLOD;
     scale: number;
     isSelected: boolean;
@@ -55,6 +64,9 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     onTitleChange: (nodeId: string, title: string) => void;
     onContextMenu: (event: ReactMouseEvent, nodeId: string) => void;
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
+    onRetryFailed?: (frame: CanvasNodeData, failedNodes: CanvasNodeData[]) => void;
+    onGeneratePlanAssets?: (targetNodeId: string) => void;
+    planAssetsBusy?: boolean;
     readOnly?: boolean;
     onHoverStart?: (nodeId: string) => void;
     onHoverEnd?: (nodeId: string) => void;
@@ -185,28 +197,43 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     const mediaRunning = mediaMembers.filter((node) => node.metadata?.status === "loading").length;
     const mediaFailed = mediaMembers.filter((node) => node.metadata?.status === "error").length;
     const assetManifest = collection?.assetGroup ? taskAnchor || childNodes.find((node) => node.id === collection.assetGroup!.manifestId) : undefined;
-    const assetCount = collection?.assetGroup ? childNodes.filter((node) => collection.sourceNodeIds.includes(node.id) && node.id !== collection.assetGroup!.manifestId).length : 0;
+    const planRoot = collection?.step === "story.plan" && !collection.planGroup;
+    const assetCount = collection?.assetGroup ? planRoot ? productionPlanCanvasDocumentCount(data, childNodes)
+        : childNodes.filter((node) => collection.sourceNodeIds.includes(node.id) && node.id !== collection.assetGroup!.manifestId).length : 0;
     const assetManifestData = assetManifest?.metadata?.shortDrama;
+    const planAssetAction = productionPlanAssetAction(data, productionRun);
     const expectedAssetCount = collection?.assetGroup?.kind === "bible" ? collection.assetGroup.sections?.length || 2 : undefined;
-    const assetTaskState = assetManifest?.metadata?.status;
-    const assetTaskActive = assetTaskState === "loading" || assetTaskState === "idle" || Boolean(assetManifestData?.productionAgent?.runId);
-    const assetTaskFailed = assetTaskState === "error" || Boolean(assetManifest?.metadata?.errorDetails);
-    const assetTaskComplete = assetTaskState === "success" && Boolean(assetManifestData?.materializedTaskId);
-    const assetTaskLabel = collection?.assetGroup
-        ? assetTaskFailed
+    const groupTask = productionAssetGroupState(data, assetManifest, productionRun);
+    const { active: assetTaskActive, failed: assetTaskFailed, complete: assetTaskComplete, warning: assetTaskWarning } = groupTask || productionTaskState(assetManifest, productionRun);
+    const assetTaskLabel = groupTask?.label || (collection?.assetGroup
+        ? assetTaskWarning
+            ? `内容待处理 · 已生成 ${assetCount}${expectedAssetCount ? `/${expectedAssetCount}` : ""}`
+            : assetTaskFailed
             ? `制作未完成 · 已生成 ${assetCount}${expectedAssetCount ? `/${expectedAssetCount}` : ""}`
             : assetTaskComplete
                 ? `制作完成 · 已生成 ${assetCount}${expectedAssetCount ? `/${expectedAssetCount}` : ""}`
                 : assetTaskActive
-                    ? `${assetManifest?.metadata?.taskStage || "制作进行中"} · 已生成 ${assetCount}${expectedAssetCount ? `/${expectedAssetCount}` : ""}`
+                    ? `${productionRun?.production?.concurrentItems?.join("、") || productionRun?.production?.currentItem || productionRun?.production?.phaseLabel || assetManifest?.metadata?.taskStage || "制作进行中"} · 已生成 ${assetCount}${expectedAssetCount ? `/${expectedAssetCount}` : ""}`
                     : assetCount > 0
                         ? `已生成 ${assetCount}${expectedAssetCount ? `/${expectedAssetCount}` : ""} · 待核对`
                         : "等待生成"
-        : "";
+        : "");
+    const failedNodes = useMemo(() => {
+        if (readOnly || folder || !onRetryFailed) return [];
+        const scope = collection ? childNodes.filter((node) => collection.sourceNodeIds.includes(node.id)) : childNodes;
+        const manifestId = collection?.assetGroup?.manifestId;
+        return scope.filter((node) => node.id !== manifestId && node.metadata?.status === "error");
+    }, [childNodes, collection, folder, onRetryFailed, readOnly]);
+    const compactButtons = groupStatusButtonsCompact(data.width * scale);
+    const retryFailedButton = onRetryFailed && failedNodes.length > 0 ? <button type="button" aria-label={`一键重试 ${failedNodes.length} 个失败任务`} title="一键重试失败任务"
+        className="pointer-events-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
+        style={{ color: theme.node.text, outlineColor: theme.frame.activeStroke }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onRetryFailed(data, failedNodes); }}>
+        <RefreshCw className="size-3.5" aria-hidden="true" />{compactButtons ? <span>{failedNodes.length}</span> : <>重试失败 {failedNodes.length}</>}
+    </button> : null;
     const collectionDetails = onOpenTaskDetails ? <button type="button" aria-label="查看分组任务详情" title="查看分组任务详情"
-        className="pointer-events-auto ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-black/10 dark:hover:bg-white/10"
+        className="pointer-events-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-black/10 dark:hover:bg-white/10"
         style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenTaskDetails(data); }}>
-        <Info className="size-3.5" aria-hidden="true" />详情
+        <Info className="size-3.5" aria-hidden="true" /><span className={compactButtons ? "sr-only" : undefined}>详情</span>
     </button> : null;
 
     return (
@@ -318,9 +345,10 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                 </div>
 
                 {collection?.assetGroup ? <div aria-label="资产分组状态" className="pointer-events-auto absolute inset-x-3 flex min-w-0 items-center gap-1.5 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
-                    {assetTaskFailed ? <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" /> : assetTaskComplete ? <Check className="size-3.5 shrink-0" aria-hidden="true" /> : assetTaskActive ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" aria-hidden="true" /> : null}
-                    <span className="min-w-0 flex-1 truncate" title={assetManifest?.metadata?.errorDetails || assetTaskLabel}>{assetTaskLabel}</span>
-                    {assetManifest && onOpenTaskDetails && (assetTaskActive || assetTaskFailed || Boolean(assetManifestData?.productionAgent) || assetTaskComplete) ? <button
+                    {assetTaskWarning ? <TriangleAlert className="size-3.5 shrink-0" style={{ color: "var(--status-warning)" }} aria-label="内容待处理" /> : assetTaskFailed ? <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" /> : assetTaskComplete ? <Check className="size-3.5 shrink-0" aria-hidden="true" /> : assetTaskActive ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" aria-hidden="true" /> : null}
+                    <span className="min-w-0 flex-1 truncate" style={assetTaskWarning ? { color: "var(--status-warning)" } : undefined} title={(assetTaskWarning ? assetManifest?.metadata?.generationWarning?.message : undefined) || assetManifest?.metadata?.errorDetails || assetTaskLabel}>{assetTaskLabel}</span>
+                    {!planRoot ? retryFailedButton : null}
+                    {!planRoot && assetManifest && onOpenTaskDetails && (assetTaskActive || assetTaskFailed || Boolean(assetManifestData?.productionAgent) || assetTaskComplete) ? <button
                         type="button"
                         className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[var(--fs-label)] transition-colors hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
                         style={{ color: theme.node.text, outlineColor: theme.frame.activeStroke }}
@@ -331,15 +359,28 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                             event.stopPropagation();
                             onOpenTaskDetails(data);
                         }}
-                    ><Info className="size-3.5" aria-hidden="true" />详情</button> : null}
-                </div> : collection?.mediaGroup || collection?.assetRevisionGroup ? <div aria-label={collection.assetRevisionGroup ? "资产重做进度" : "图片容器进度"} className="pointer-events-none absolute inset-x-3 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
-                    已完成 {mediaComplete}/{mediaMembers.length} · 进行中 {mediaRunning} · 失败 {mediaFailed}
+                    ><Info className="size-3.5" aria-hidden="true" /><span className={compactButtons ? "sr-only" : undefined}>详情</span></button> : null}
+                </div> : collection?.mediaGroup || collection?.assetRevisionGroup ? <div aria-label={collection.assetRevisionGroup ? "资产重做进度" : "图片容器进度"} className="pointer-events-none absolute inset-x-3 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
+                    <span className="min-w-0">已完成 {mediaComplete}/{mediaMembers.length} · 进行中 {mediaRunning} · 失败 {mediaFailed}</span>
+                    {retryFailedButton}
                     {collectionDetails}
-                </div> : collection && progress ? <div aria-label="分集容器进度" className="pointer-events-none absolute inset-x-3 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
-                    {collapsed ? <div>共 {progress.total} 集 · 每集 {collection.parameters?.minutesPerEpisode || "待定"} 分钟</div> : null}
-                    {episodeProgressLabel(progress)}
+                </div> : collection && progress ? <div aria-label="分集容器进度" className="pointer-events-none absolute inset-x-3 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
+                    {collapsed ? <div className="basis-full">共 {progress.total} 集 · 每集 {collection.parameters?.minutesPerEpisode || "待定"} 分钟</div> : null}
+                    <span className="min-w-0">{episodeProgressLabel(progress)}</span>
+                    {retryFailedButton}
                     {collectionDetails}
-                </div> : collapsed ? <FramePreview nodes={childNodes.filter((node) => node.id !== collection?.assetGroup?.manifestId)} frame={data} theme={theme} /> : null}
+                </div> : <>
+                    {collapsed ? <FramePreview nodes={childNodes.filter((node) => node.id !== collection?.assetGroup?.manifestId)} frame={data} theme={theme} /> : null}
+                    {retryFailedButton ? <div aria-label="失败任务操作" className="pointer-events-none absolute inset-x-3 z-10 flex items-center text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px" }}>
+                        <span className="truncate">失败 {failedNodes.length}</span>
+                        {retryFailedButton}
+                    </div> : null}
+                </>}
+                    {planRoot && !collapsed && !readOnly ? <div className="pointer-events-auto absolute inset-x-3 bottom-2 flex items-center gap-1" data-canvas-no-zoom aria-label="制作方案操作">
+                        {planAssetAction && onGeneratePlanAssets ? <span title={planAssetAction.reason}><CanvasNodeActionButton theme={theme} label="生成资产" icon={planAssetsBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : <Boxes className="size-3.5" />} primary disabled={!planAssetAction.ready || planAssetsBusy} onClick={() => { if (planAssetAction.targetNodeId) onGeneratePlanAssets(planAssetAction.targetNodeId); }} /></span> : null}
+                        {onOpenTaskDetails ? <CanvasNodeActionButton theme={theme} label="详情" icon={<Info className="size-3.5" />} onClick={() => onOpenTaskDetails(data)} /> : null}
+                        {onRetryFailed && failedNodes.length > 0 ? <CanvasNodeActionButton theme={theme} label={`重试失败 ${failedNodes.length}`} icon={<RefreshCw className="size-3.5" />} onClick={() => onRetryFailed(data, failedNodes)} /> : null}
+                    </div> : null}
                     </>
                 )}
             </CometCard>

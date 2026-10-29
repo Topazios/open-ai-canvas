@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,73 @@ import (
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/repository"
 )
+
+func TestProductionParallelSharedDocumentCorrectionPreservesCompletedDocuments(t *testing.T) {
+	s, db, runID := parallelPlanFixture(t)
+	for _, key := range []string{"visual", "direction"} {
+		run, state := productionRuntimeState(t, s, runID)
+		m, doc, rows := orderedPlanState(t, s, runID)
+		for _, work := range productionParallelReady(m, doc, rows) {
+			if work.Key == key {
+				if err := s.enqueueProductionParallel(run, &state, m, doc, rows, work); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	_, state := productionRuntimeState(t, s, runID)
+	completeParallel(t, db, state.ProductionParallel["direction"])
+	task, _ := s.repo.Task(state.ProductionParallel["direction"].TaskID)
+	if err := s.settleProductionParallel("user", runID, state.ProductionParallel["direction"], task); err != nil {
+		t.Fatal(err)
+	}
+	work := state.ProductionParallel["visual"]
+	args, _ := json.Marshal(map[string]any{"key": work.Key, "name": work.Name, "factIds": []string{}, "document": orderedPlanDocument("visual", ""), "design": productionDesignFields{Variants: []productionDesignVariant{{Code: "CHR-0001-V0002", Name: "工作服", Description: "状态表应写在公共规范正文"}}}})
+	call := productionRuntimeCall("production_submit")
+	call.Function.Arguments = string(args)
+	if err := db.Model(&model.Task{}).Where("id = ?", work.TaskID).Updates(map[string]any{"status": model.TaskStatusSucceeded, "result_json": productionRuntimeResult(t, call)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	task, _ = s.repo.Task(work.TaskID)
+	if err := s.settleProductionParallel("user", runID, work, task); err != nil {
+		t.Fatal(err)
+	}
+	run, state := productionRuntimeState(t, s, runID)
+	work = state.ProductionParallel["visual"]
+	if !strings.Contains(work.Correction, "公共规范只提交 document") || work.TaskID != "" || work.Error != "" {
+		t.Fatalf("specific validation was lost from retry: %+v", work)
+	}
+	m, doc, rows := orderedPlanState(t, s, runID)
+	if len(rows) != 3 || !productionPlanArtifactValid(m, doc, rows, "direction") {
+		t.Fatal("failed visual draft removed completed documents")
+	}
+	if err := s.enqueueProductionParallel(run, &state, m, doc, rows, work); err != nil {
+		t.Fatal(err)
+	}
+	_, state = productionRuntimeState(t, s, runID)
+	work = state.ProductionParallel["visual"]
+	task, _ = s.repo.Task(work.TaskID)
+	var input map[string]any
+	_ = json.Unmarshal([]byte(task.InputJSON), &input)
+	canonical := stateCanonicalFromInput(input)
+	parameters := canonical.Tools[0]["function"].(map[string]any)["parameters"].(map[string]any)
+	if parameters["properties"].(map[string]any)["design"] != nil || !strings.Contains(task.InputJSON, "公共规范只提交 document") {
+		t.Fatal("retry exposed asset design or omitted the specific correction")
+	}
+	completeParallel(t, db, work)
+	task, _ = s.repo.Task(work.TaskID)
+	if err := s.settleProductionParallel("user", runID, work, task); err != nil {
+		t.Fatal(err)
+	}
+	submitOrderedPlan(t, s, runID, "generation", "", "生成规范")
+	if result := productionCall(t, s, runID, "production_check", map[string]any{}, false); result["valid"] != true {
+		t.Fatal(result)
+	}
+	m, _, rows = orderedPlanState(t, s, runID)
+	if len(rows) != 5 || m.Plan.AssetsStarted {
+		t.Fatal("plan did not finish all five documents or started assets automatically")
+	}
+}
 
 func parallelPlanFixture(t *testing.T) (*Service, *gorm.DB, string) {
 	t.Helper()
@@ -31,6 +99,172 @@ func parallelPlanFixture(t *testing.T) (*Service, *gorm.DB, string) {
 	}
 	productionCall(t, s, run.ID, "production_plan_inventory", productionPlan{StoryHash: story["hash"].(string), Assets: items, Complete: true}, false)
 	return s, db, run.ID
+}
+
+func TestNewV5PlanAutomaticallySchedulesAllPlanDocumentsAfterStory(t *testing.T) {
+	s, _, run := planFixture(t, 5)
+	productionCall(t, s, run.ID, "production_read", map[string]any{"pageId": productionFirstPage(t, s, run.ID)}, false)
+	runRecord, state := productionRuntimeState(t, s, run.ID)
+	_, manifest, doc, err := productionLoad(s.repo, runRecord, &state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.Plan.PlansStarted || strings.Join(manifest.Plan.SelectedPlanKeys, ",") != "inventory,visual,direction,generation" {
+		t.Fatalf("new v5 plan did not persist its automatic scope: %+v", manifest.Plan)
+	}
+	ready := productionParallelReady(manifest, doc, nil)
+	if len(ready) != 1 || ready[0].Key != "story" {
+		t.Fatalf("expected story to be the first backend phase: %+v", ready)
+	}
+	storyDocument := orderedPlanDocument("story", "")
+	storyDocument["episodeArchitecture"] = productionEpisodeArchitectureFixture(3)
+	productionCall(t, s, run.ID, "production_submit", map[string]any{"key": "story", "name": "故事总纲", "document": storyDocument, "factIds": []string{}}, false)
+	runRecord, state = productionRuntimeState(t, s, run.ID)
+	_, manifest, doc, err = productionLoad(s.repo, runRecord, &state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := s.repo.ProductionAgentArtifacts("user", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready = productionParallelReady(manifest, doc, artifacts)
+	if len(ready) != 1 || ready[0].Key != "inventory" || manifest.Plan.AssetsStarted {
+		t.Fatalf("the durable backend plan did not schedule inventory first: ready=%+v plan=%+v", ready, manifest.Plan)
+	}
+	next := productionPlanNextAction(manifest, doc, artifacts)
+	if next["inventoryReviewRequired"] != true || len(productionIDs(next["sourceSections"])) == 0 || next["sourceSectionText"] == nil {
+		t.Fatal("v5 inventory phase did not receive the story evidence ledger inputs", next)
+	}
+	if err := s.enqueueProductionParallel(runRecord, &state, manifest, doc, artifacts, ready[0]); err != nil {
+		t.Fatal(err)
+	}
+	_, state = productionRuntimeState(t, s, run.ID)
+	task, err := s.repo.Task(state.ProductionParallel["inventory"].TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taskInput map[string]any
+	if err := json.Unmarshal([]byte(task.InputJSON), &taskInput); err != nil {
+		t.Fatal(err)
+	}
+	canonical := stateCanonicalFromInput(taskInput)
+	toolParameters := canonical.Tools[0]["function"].(map[string]any)["parameters"].(map[string]any)
+	toolProperties := toolParameters["properties"].(map[string]any)
+	if toolProperties["inventoryReview"] == nil || !strings.Contains(task.InputJSON, "episodeArchitecture/EP-003") {
+		t.Fatal("parallel inventory request lost its required story evidence inputs")
+	}
+}
+
+func TestV5PlanSectionCallsKeepOnlySectionRelevantContext(t *testing.T) {
+	t.Run("story keeps source inputs without asset catalogs", func(t *testing.T) {
+		s, _, run := planFixture(t, 5)
+		productionCall(t, s, run.ID, "production_read", map[string]any{"pageId": productionFirstPage(t, s, run.ID)}, false)
+		runRecord, state := productionRuntimeState(t, s, run.ID)
+		manifest, doc, rows := orderedPlanState(t, s, run.ID)
+		ready := productionParallelReady(manifest, doc, rows)
+		if len(ready) != 1 || ready[0].Key != "story" {
+			t.Fatalf("expected story work, got %+v", ready)
+		}
+		if err := s.enqueueProductionParallel(runRecord, &state, manifest, doc, rows, ready[0]); err != nil {
+			t.Fatal(err)
+		}
+		_, state = productionRuntimeState(t, s, run.ID)
+		task, err := s.repo.Task(state.ProductionParallel["story"].TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var input map[string]any
+		if err := json.Unmarshal([]byte(task.InputJSON), &input); err != nil {
+			t.Fatal(err)
+		}
+		messages, _ := json.Marshal(stateCanonicalFromInput(input).Messages)
+		context := string(messages)
+		for _, field := range []string{"sourceInputs", "projectParameters"} {
+			if !strings.Contains(context, field) {
+				t.Fatalf("story request lost required context %q", field)
+			}
+		}
+		for _, field := range []string{"sections", "registeredAssets", "existingAssets", "reuseInstruction"} {
+			if strings.Contains(context, field) {
+				t.Fatalf("story request retained unrelated context %q", field)
+			}
+		}
+	})
+
+	t.Run("standards keep only prerequisite documents", func(t *testing.T) {
+		s, _, run := planFixture(t, 5)
+		productionCall(t, s, run.ID, "production_read", map[string]any{"pageId": productionFirstPage(t, s, run.ID)}, false)
+		storyDocument := orderedPlanDocument("story", "")
+		storyDocument["episodeArchitecture"] = productionEpisodeArchitectureFixture(3)
+		story := productionCall(t, s, run.ID, "production_submit", map[string]any{"key": "story", "name": "故事总纲", "document": storyDocument, "factIds": []string{}}, false)
+		assets := []productionPlanAsset{{Key: "hero", Kind: "character", Name: "女主", Priority: 1, Purpose: "推动主线", PlannedRange: "全剧", Episodes: []int{1}}}
+		absent := map[string]string{"environment": "无独立场景", "prop": "无独立道具", "sound": "无独立声音"}
+		productionCall(t, s, run.ID, "production_plan_inventory", productionPlan{StoryHash: stringValue(story["hash"]), Assets: assets, Absent: absent, InventoryReview: productionInventoryReviewForTest(t, s, run.ID, assets), Complete: true}, false)
+		manifest, _, _ := orderedPlanState(t, s, run.ID)
+		manifest.Plan.PlansStarted = true
+		manifest.Plan.SelectedPlanKeys = []string{"visual"}
+		encoded, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.repo.UpdateProductionAgentManifest("user", run.ID, string(encoded)); err != nil {
+			t.Fatal(err)
+		}
+		runID := run.ID
+		runRecord, state := productionRuntimeState(t, s, runID)
+		manifest, doc, rows := orderedPlanState(t, s, runID)
+		work := productionParallelWork{Key: "visual", Name: "视觉与美术规范", Dependencies: productionParallelDependencyHash(manifest, rows, "visual")}
+		if err := s.enqueueProductionParallel(runRecord, &state, manifest, doc, rows, work); err != nil {
+			t.Fatal(err)
+		}
+		_, state = productionRuntimeState(t, s, runID)
+		task, err := s.repo.Task(state.ProductionParallel["visual"].TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var input map[string]any
+		if err := json.Unmarshal([]byte(task.InputJSON), &input); err != nil {
+			t.Fatal(err)
+		}
+		messages, _ := json.Marshal(stateCanonicalFromInput(input).Messages)
+		context := string(messages)
+		if !strings.Contains(context, "requiredDocuments") {
+			t.Fatal("visual request omitted its prerequisite documents")
+		}
+		for _, field := range []string{"sourceInputs", "projectParameters", "sections", "registeredAssets", "existingAssets", "reuseInstruction"} {
+			if strings.Contains(context, field) {
+				t.Fatalf("visual request retained unrelated context %q", field)
+			}
+		}
+	})
+}
+
+func TestProductionParallelReasoningDoesNotForceToolChoice(t *testing.T) {
+	s, _, runID := parallelPlanFixture(t)
+	for _, key := range []string{"visual", "direction", "generation"} {
+		submitOrderedPlan(t, s, runID, key, "", key)
+	}
+	startPlanAssetsForTest(t, s, runID)
+	productionRuntimeMutate(t, s, runID, func(state *cloudAgentRuntime) { state.Policy.ReasoningMode = "deep" })
+	run, state := productionRuntimeState(t, s, runID)
+	m, doc, rows := orderedPlanState(t, s, runID)
+	work := productionParallelWork{Key: "character", Name: "测试人物", ValidationAttempts: 1, Dependencies: productionParallelDependencyHash(m, rows, "character")}
+	if err := s.enqueueProductionParallel(run, &state, m, doc, rows, work); err != nil {
+		t.Fatal(err)
+	}
+	_, state = productionRuntimeState(t, s, runID)
+	task, err := s.repo.Task(state.ProductionParallel[work.Key].TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input map[string]any
+	if err := json.Unmarshal([]byte(task.InputJSON), &input); err != nil {
+		t.Fatal(err)
+	}
+	if got := stateCanonicalFromInput(input).ToolChoice; got != "auto" {
+		t.Fatalf("reasoning asset task forced tool choice: %v", got)
+	}
 }
 
 func TestProductionParallelDrainPreservesCheckpoint(t *testing.T) {
@@ -115,11 +349,14 @@ func TestProductionParallelDependenciesPauseRestartAndOutOfOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = &Service{repo: repository.New(db), dataDir: s.dataDir, disablePiRuntime: true}
+	submitOrderedPlan(t, s, runID, "generation", "", "生成规范")
+	startPlanAssetsForTest(t, s, runID)
 	productionRuntimeMutate(t, s, runID, func(state *cloudAgentRuntime) { state.ProductionPaused = false })
 	cancel, done = startParallel(t, s, runID)
 	state = waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return len(state.ProductionParallel) == 3 })
-	if _, ok := state.ProductionParallel["sound"]; ok {
-		t.Fatal("dependent sound started before character")
+	manifest, assetDoc, assetRows := orderedPlanState(t, s, runID)
+	if err := productionParallelPrerequisites(manifest, assetDoc, assetRows, "sound"); err != nil {
+		t.Fatalf("sound asset remained blocked by an unselected dependency: %v", err)
 	}
 	if len(state.TaskIDs) != initialTasks+5 {
 		t.Fatalf("duplicate calls after restart: %v", state.TaskIDs)
@@ -130,12 +367,12 @@ func TestProductionParallelDependenciesPauseRestartAndOutOfOrder(t *testing.T) {
 	s = &Service{repo: repository.New(db), dataDir: s.dataDir, disablePiRuntime: true}
 	_, done = startParallel(t, s, runID)
 	completeParallel(t, db, state.ProductionParallel["environment"])
-	state = waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return state.ProductionParallel["special"].TaskID != "" })
+	state = waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return state.ProductionParallel["sound"].TaskID != "" })
 	if len(state.ProductionParallel) != 3 || len(state.TaskIDs) != initialTasks+6 {
 		t.Fatal("incorrect concurrency/receipt reuse")
 	}
 	completeParallel(t, db, state.ProductionParallel["character"])
-	state = waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return state.ProductionParallel["sound"].TaskID != "" })
+	state = waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return state.ProductionParallel["special"].TaskID != "" })
 	for _, work := range state.ProductionParallel {
 		completeParallel(t, db, work)
 	}
@@ -161,12 +398,97 @@ func TestProductionParallelDependenciesPauseRestartAndOutOfOrder(t *testing.T) {
 		t.Fatal("missing category groups")
 	}
 	progress := s.productionAgentProgress("user", runID, &state)
-	if progress.DocumentCount != 4 || progress.AssetCount != 5 || progress.DocumentTotal != 5 {
+	if progress.DocumentCount != 5 || progress.AssetCount != 5 || progress.DocumentTotal != 5 {
 		t.Fatalf("incorrect counts: %+v", progress)
 	}
-	submitOrderedPlan(t, s, runID, "generation", "", "生成规范")
 	if report := productionCall(t, s, runID, "production_check", map[string]any{}, false); report["valid"] != true {
 		t.Fatal(report)
+	}
+}
+
+func TestProductionParallelFailureDrainsIndependentWorkAndDelayedRetries(t *testing.T) {
+	s, db, runID := parallelPlanFixture(t)
+	for _, key := range []string{"visual", "direction", "generation"} {
+		submitOrderedPlan(t, s, runID, key, "", key)
+	}
+	startPlanAssetsForTest(t, s, runID)
+	cancel, done := startParallel(t, s, runID)
+	state := waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return len(state.ProductionParallel) == 3 })
+	cancel()
+	<-done
+	initialCalls := len(state.TaskIDs)
+	for _, key := range []string{"character", "environment"} {
+		work := state.ProductionParallel[key]
+		if work.TaskID == "" {
+			t.Fatal("missing initial task", key)
+		}
+		if err := db.Model(&model.Task{}).Where("id = ?", work.TaskID).Updates(map[string]any{"status": model.TaskStatusFailed, "error": "test failure"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		status, code := 400, "invalid_request_error"
+		if key == "environment" {
+			status, code = 200, "unavailable"
+		}
+		if err := db.Create(&model.ApiCallLog{ID: newID(), TaskID: work.TaskID, StatusCode: status, ErrorCode: code}).Error; err != nil {
+			t.Fatal(err)
+		}
+		task, _ := s.repo.Task(work.TaskID)
+		if err := s.settleProductionParallel("user", runID, work, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, state = productionRuntimeState(t, s, runID)
+	if state.ProductionParallel["character"].Error == "" || state.ProductionParallel["environment"].TaskID != "" || state.ProductionParallel["environment"].TransientAttempts != 1 {
+		t.Fatal("permanent and transient failures not isolated", state.ProductionParallel)
+	}
+	productionRuntimeMutate(t, s, runID, func(state *cloudAgentRuntime) {
+		work := state.ProductionParallel["environment"]
+		work.RetryAt = time.Now().Add(time.Minute).UnixMilli()
+		state.ProductionParallel["environment"] = work
+	})
+	// Restart with a failed item, a delayed retry, and an outstanding sibling.
+	// An additional independent asset must still be admitted to the free slot.
+	s = &Service{repo: repository.New(db), dataDir: s.dataDir, disablePiRuntime: true}
+	_, done = startParallel(t, s, runID)
+	state = waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return state.ProductionParallel["special"].TaskID != "" })
+	for _, key := range []string{"prop", "special"} {
+		completeParallel(t, db, state.ProductionParallel[key])
+	}
+	waitParallel(t, s, runID, func(state cloudAgentRuntime) bool {
+		return len(state.ProductionParallel) == 2 && state.ProductionParallel["environment"].TaskID == ""
+	})
+	select {
+	case err := <-done:
+		t.Fatal("batch stopped before delayed retry became eligible", err)
+	default:
+	}
+	productionRuntimeMutate(t, s, runID, func(state *cloudAgentRuntime) {
+		work := state.ProductionParallel["environment"]
+		work.RetryAt = 0
+		state.ProductionParallel["environment"] = work
+	})
+	state = waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return state.ProductionParallel["environment"].TaskID != "" })
+	completeParallel(t, db, state.ProductionParallel["environment"])
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "1 项文稿未完成") || !strings.Contains(err.Error(), "测试character") {
+			t.Fatal("batch did not report its failed item after draining", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("failed item left the batch stuck after independent work drained")
+	}
+	_, state = productionRuntimeState(t, s, runID)
+	if len(state.ProductionParallel) != 1 || len(state.TaskIDs) != initialCalls+2 {
+		t.Fatal("failed item retried automatically or dependent sound was dispatched", state.ProductionParallel)
+	}
+	m, doc, rows := orderedPlanState(t, s, runID)
+	if len(rows) != 8 || productionPlanPrerequisites(m, doc, rows, "sound") == nil {
+		t.Fatal("independent results were lost or failed dependency was bypassed")
+	}
+	for _, key := range []string{"environment", "prop", "special"} {
+		if !productionPlanArtifactValid(m, doc, rows, key) {
+			t.Fatal("independent document not saved", key)
+		}
 	}
 }
 
@@ -174,6 +496,8 @@ func TestProductionPlanRegroupPreservesReceiptsAndFillsFirstCell(t *testing.T) {
 	s, _, runID := parallelPlanFixture(t)
 	submitOrderedPlan(t, s, runID, "visual", "", "美术规范")
 	submitOrderedPlan(t, s, runID, "direction", "", "导演规范")
+	submitOrderedPlan(t, s, runID, "generation", "", "生成规范")
+	startPlanAssetsForTest(t, s, runID)
 	submitOrderedPlan(t, s, runID, "character", "character", "测试character")
 	submitOrderedPlan(t, s, runID, "sound", "sound", "测试sound")
 	_, before, rows := orderedPlanState(t, s, runID)
@@ -210,6 +534,53 @@ func TestProductionPlanRegroupPreservesReceiptsAndFillsFirstCell(t *testing.T) {
 	}
 }
 
+func TestProductionPlanGroupCreationLeavesUnselectedEditedAssetsUntouched(t *testing.T) {
+	s, db, runID := parallelPlanFixture(t)
+	for _, key := range []string{"visual", "direction", "generation"} {
+		submitOrderedPlan(t, s, runID, key, "", key)
+	}
+	if result := productionCall(t, s, runID, "production_check", map[string]any{}, false); result["valid"] != true {
+		t.Fatal(result)
+	}
+	if err := s.completeCloudAgentPiRun("user", runID); err != nil {
+		t.Fatal(err)
+	}
+	s.disablePiRuntime = true
+	if err := s.GenerateProductionPlanAssets("user", runID, []string{"character"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ensureProductionPlanGroups("user", runID); err != nil {
+		t.Fatal(err)
+	}
+	submitOrderedPlan(t, s, runID, "character", "character", "测试character")
+	_, _, before := orderedPlanState(t, s, runID)
+	var character model.ProductionAgentArtifact
+	for _, row := range before {
+		if row.Key == "character" {
+			character = row
+		}
+	}
+	productionEditCanvas(t, s, db, func(doc map[string]any) {
+		productionNode(doc, character.NodeID)["metadata"].(map[string]any)["content"] = "用户手动修改的人物文稿"
+	})
+	if err := s.GenerateProductionPlanAssets("user", runID, []string{"prop"}); err != nil {
+		t.Fatal("starting an independent selected asset should not be blocked by an unrelated edited document", err)
+	}
+	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
+		t.Fatal("creating the selected prop group should preserve the unselected edit", changed, err)
+	}
+	m, doc, after := orderedPlanState(t, s, runID)
+	if productionNode(doc, character.NodeID)["metadata"].(map[string]any)["content"] != "用户手动修改的人物文稿" {
+		t.Fatal("group creation overwrote the user's character edit")
+	}
+	if productionPlanArtifactValid(m, doc, after, "character") {
+		t.Fatal("group creation silently adopted the user's edit as a generated receipt")
+	}
+	if m.Plan.Groups["prop"] == "" {
+		t.Fatal("selected prop group was not created")
+	}
+}
+
 func TestProductionParallelRejectsChangedPredecessorWithoutRetry(t *testing.T) {
 	s, db, runID := parallelPlanFixture(t)
 	cancel, done := startParallel(t, s, runID)
@@ -229,12 +600,13 @@ func TestProductionParallelRejectsChangedPredecessorWithoutRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.settleProductionParallel("user", runID, work, task); err == nil {
-		t.Fatal("changed predecessor accepted")
+	if err := s.settleProductionParallel("user", runID, work, task); err != nil {
+		t.Fatal("stale result should be checkpointed for manual retry, not left in saving state", err)
 	}
 	_, after := productionRuntimeState(t, s, runID)
-	if after.ProductionParallel["visual"].TaskID != work.TaskID || len(after.TaskIDs) != len(state.TaskIDs) {
-		t.Fatal("source change created retry")
+	stale := after.ProductionParallel["visual"]
+	if stale.TaskID != "" || stale.Error == "" || !stale.QuietHold || stale.RetryAt != 0 || len(after.TaskIDs) != len(state.TaskIDs) {
+		t.Fatal("source change left a saving task or billed an automatic retry", stale)
 	}
 }
 
@@ -342,6 +714,9 @@ func TestProductionParallelInvalidOutputAndExplicitResumeKeepCompletedSibling(t 
 	if state.ProductionParallel["visual"].TaskID != "" || state.ProductionParallel["visual"].Correction == "" || state.ProductionParallel["visual"].RetryAt == 0 {
 		t.Fatal("invalid output not scheduled for local correction")
 	}
+	if state.ProductionParallel["visual"].ValidationAttempts != 1 || state.ProductionParallel["visual"].TransientAttempts != 0 {
+		t.Fatalf("validation failure used the wrong retry budget: %+v", state.ProductionParallel["visual"])
+	}
 	// Exhaustion belongs to this item only; continuing must keep its sibling.
 	run, err := s.repo.CloudAgent("user", runID)
 	if err != nil {
@@ -352,6 +727,7 @@ func TestProductionParallelInvalidOutputAndExplicitResumeKeepCompletedSibling(t 
 		work := state.ProductionParallel["visual"]
 		work.Error = "字段待补齐"
 		work.Attempts = 4
+		work.ValidationSignature, work.RepeatedValidationFailures = "same-failure", cloudAgentToolAttemptLimit
 		state.ProductionParallel["visual"] = work
 		current.Status = "failed"
 		return cloudAgentSave(current, &state)
@@ -362,7 +738,7 @@ func TestProductionParallelInvalidOutputAndExplicitResumeKeepCompletedSibling(t 
 		t.Fatal(err)
 	}
 	_, state = productionRuntimeState(t, s, runID)
-	if state.ProductionParallel["visual"].Error != "" || state.ProductionParallel["visual"].Attempts != 0 {
+	if state.ProductionParallel["visual"].Error != "" || state.ProductionParallel["visual"].Attempts != 0 || state.ProductionParallel["visual"].ValidationSignature != "" || state.ProductionParallel["visual"].RepeatedValidationFailures != 0 {
 		t.Fatal("failed item cannot resume")
 	}
 	m, doc, rows := orderedPlanState(t, s, runID)

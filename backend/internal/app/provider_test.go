@@ -84,8 +84,8 @@ func TestProviderRequestErrorDetails(t *testing.T) {
 		code string
 		text string
 	}{
-		{name: "cancelled", err: context.Canceled, code: "request_cancelled", text: "任务取消，中断上游请求"},
-		{name: "timeout", err: context.DeadlineExceeded, code: "upstream_timeout", text: "等待上游响应超时"},
+		{name: "cancelled", err: context.Canceled, code: "request_cancelled", text: "执行上下文已取消，请核对任务状态"},
+		{name: "timeout", err: context.DeadlineExceeded, code: "upstream_timeout", text: "执行等待时间已到，请核对任务状态"},
 		{name: "network error", err: errors.New("dial tcp: connection refused"), text: "dial tcp: connection refused"},
 	}
 	for _, tt := range tests {
@@ -93,6 +93,92 @@ func TestProviderRequestErrorDetails(t *testing.T) {
 			code, text := providerRequestErrorDetails(tt.err)
 			if code != tt.code || text != tt.text {
 				t.Fatalf("providerRequestErrorDetails() = (%q, %q), want (%q, %q)", code, text, tt.code, tt.text)
+			}
+		})
+	}
+}
+
+func TestDoBinaryStopsAfterCompleteJSONWithoutWaitingForEOF(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		payload := `{"data":[{"b64_json":"aGVsbG8="}]}`
+		_, _ = io.WriteString(w, payload)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	body, _, err := doBinaryWithConsumer(req, nil)
+	if err != nil {
+		t.Fatalf("complete JSON was treated as a timeout: %v", err)
+	}
+	if string(body) != `{"data":[{"b64_json":"aGVsbG8="}]}` {
+		t.Fatalf("body = %s", body)
+	}
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("waited for EOF after complete JSON: %s", elapsed)
+	}
+}
+
+func TestDoBinaryStopsAfterTerminalSSEFrameWithoutWaitingForEOF(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	body, mimeType, err := doBinaryWithConsumer(req, nil)
+	if err != nil {
+		t.Fatalf("terminal SSE frame was treated as a timeout: %v", err)
+	}
+	if mimeType != "text/event-stream" || !strings.Contains(string(body), "response.completed") {
+		t.Fatalf("unexpected response (%q): %s", mimeType, body)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("waited for EOF after terminal SSE frame: %s", elapsed)
+	}
+}
+
+func TestProviderSSEBodyCompleteRequiresTerminalFrame(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "responses completed", body: "event: response.completed\ndata: {}\n\n", want: true},
+		{name: "responses failed", body: "event: response.failed\ndata: {}\n\n", want: true},
+		{name: "responses incomplete", body: "data: {\"type\":\"response.incomplete\"}\n\n", want: true},
+		{name: "chat done", body: "data: [DONE]\n\n", want: true},
+		{name: "claude stopped", body: "event: message_stop\ndata: {}\n\n", want: true},
+		{name: "ordinary event", body: "event: response.output_text.delta\ndata: {}\n\n", want: false},
+		{name: "unterminated frame", body: "event: response.completed\ndata: {}", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerSSEBodyComplete("text/event-stream", []byte(tt.body)); got != tt.want {
+				t.Fatalf("providerSSEBodyComplete() = %t, want %t", got, tt.want)
 			}
 		})
 	}

@@ -1,6 +1,6 @@
 import { useId, useState, type CSSProperties } from "react";
 import { Popover } from "antd";
-import { AlignLeft, ArrowUpRight, Check, ChevronRight, ChevronUp, Clapperboard, FolderKanban, GripHorizontal, Images, Info, Palette, Pencil, Plus, Settings2, Sparkles, Type, Upload, X } from "lucide-react";
+import { AlignLeft, ArrowUpRight, Check, ChevronUp, Clapperboard, FolderKanban, GripHorizontal, Images, Info, Palette, Pencil, Plus, Settings2, Sparkles, Type, Upload, X } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { CanvasNodeActionButton } from "./canvas-node-action-bar";
@@ -296,7 +296,6 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
                                             <strong>{step.label}</strong>
                                             <small>{step.status === "completed" ? "已完成" : step.status === "current" ? "进行中" : "待前置"} · {readyCount}/{step.tasks.length}</small>
                                         </span>
-                                        <ChevronRight className="canvas-drama-stage-select-arrow size-3.5" aria-hidden="true" />
                                     </button>
                                 </li>
                             );
@@ -312,9 +311,6 @@ export function CanvasShortDramaGuide({ progress, collapsed, onToggle, onSkip, o
                             </div>
                             <span>{selectedStep.tasks.filter((task) => task.ready).length}/{selectedStep.tasks.length} 项已具备</span>
                         </header>
-                        <p className="canvas-drama-tasks-hint">
-                            {selectedStep.status === "current" ? "按下面顺序继续当前制作，完成后自动进入下一阶段。" : selectedStep.status === "completed" ? "本阶段已完成，可查看或回到具体任务继续调整。" : "等待前置阶段完成后再开始，避免跳过依赖造成返工。"}
-                        </p>
                         <ul>
                             {selectedStep.tasks.map((task) => (
                                 <li key={task.id} data-task-key={task.id} data-ready={task.ready ? "true" : "false"}>

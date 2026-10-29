@@ -2,6 +2,7 @@ import { createElement, useCallback, useRef, type Dispatch, type SetStateAction 
 import { App, Button, Input } from "antd";
 import { WandSparkles } from "lucide-react";
 import { useConfirmedTaskRetry } from "@/components/use-confirmed-task-retry";
+import { retryTaskWithBillingConfirmation } from "@/services/task-retry";
 
 import { buildNodeGenerationContext, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { isEpisodeStoryboardVideo } from "@/lib/canvas/workflow-episode-storyboard";
@@ -42,6 +43,7 @@ import { resolveImageUrl } from "@/services/image-storage";
 import { retryWorkflowGeneration } from "@/services/workflow-generation-retry";
 import { adjustWorkflowImagePrompt } from "@/lib/canvas/canvas-image-prompt-adjustment";
 import { controlProductionAgent } from "@/services/api/agent";
+import { bindProductionAgentRun } from "@/lib/canvas/production-agent-state";
 import { submitProductionAgent } from "@/services/production-agent";
 import { refreshCanvasAfterAgent } from "@/services/user-data-sync";
 import { restoreEmptyWorkflowAssetGroup } from "@/lib/canvas/canvas-workflow-assets";
@@ -102,10 +104,19 @@ export function useCanvasGenerationRetry({
             const production = node.metadata?.shortDrama?.productionAgent;
             if (production) {
                 try {
-                    if (production.runId) await controlProductionAgent(production.runId, "resume");
-                    else if (production.request) await submitProductionAgent(production.request);
+                    if (production.runId) {
+                        await controlProductionAgent(production.runId, "resume");
+                        setNodes((current) => current.map((entry): CanvasNodeData => entry.id === node.id && entry.metadata?.shortDrama && entry.metadata.shortDrama.productionAgent?.runId === production.runId ? {
+                            ...entry, metadata: { ...entry.metadata, status: "loading", errorDetails: undefined, taskStage: "已请求继续制作",
+                                shortDrama: { ...entry.metadata.shortDrama, submission: "submitted" } },
+                        } : entry));
+                    } else if (production.request) {
+                        const { run } = await submitProductionAgent(production.request);
+                        setNodes((current) => current.map((entry) => entry.id === node.id ? bindProductionAgentRun(entry, run, production.request) : entry));
+                    }
                     else throw new Error("制作任务尚未提交，请使用继续提交入口");
-                    await refreshCanvasAfterAgent(projectId);
+                    try { await refreshCanvasAfterAgent(projectId); }
+                    catch (cause) { message.warning(`任务已恢复，画布结果同步待恢复：${cause instanceof Error ? cause.message : "请查看任务详情"}`); }
                 } catch (cause) { message.error(cause instanceof Error ? cause.message : "恢复制作任务失败"); }
                 return;
             }
@@ -124,8 +135,51 @@ export function useCanvasGenerationRetry({
                 message.info("任务状态已变化，请刷新后查看；未重复提交");
                 return;
             }
-            if (!frame && node.metadata?.shortDrama && (node.type === CanvasNodeType.Text || (node.metadata.shortDrama.mediaKind === "image" && !sourceTask?.mediaStage))) {
-                if (node.metadata.shortDrama.mediaKind === "image" && sourceTask?.status === "failed" && (isContentModerationError(sourceTask.errorCode) || isContentModerationError(sourceTask.error))) {
+            let regenerate = false;
+            if (options?.editPrompt && !frame && node.metadata?.shortDrama?.mediaKind === "image" && node.type === CanvasNodeType.Image) {
+                if (sourceTask && (sourceTask.status === "queued" || sourceTask.status === "running")) { message.info("任务进行中，请等待完成后再修改提示词"); return; }
+                const previousPrompt = sourceTask?.prompt || node.metadata.prompt || "";
+                const current = node;
+                const adjust = () => adjustWorkflowImagePrompt(current, nodesRef.current, previousPrompt);
+                let preset: string | undefined;
+                if (options.autoAdjustPrompt) {
+                    try { preset = adjust(); }
+                    catch (error) { message.error(error instanceof Error ? error.message : "自动调整失败，未提交生成"); return; }
+                } else if (options.prompt?.trim()) preset = options.prompt.trim();
+                const revised = preset ?? await new Promise<string | null>((resolve) => {
+                    let draft = node.metadata?.prompt || previousPrompt;
+                    const dialog = modal.confirm({
+                        title: "修改提示词并重新生成", width: 720,
+                        content: createElement(Input.TextArea, { "aria-label": "图片提示词", defaultValue: draft, autoSize: { minRows: 8, maxRows: 14 }, onChange: (event) => { draft = event.target.value; } }),
+                        okText: "保存并重新生成", cancelText: "取消", maskClosable: false,
+                        footer: (_, { OkBtn, CancelBtn }) => createElement("div", { className: "flex flex-wrap justify-end gap-2" },
+                            createElement(CancelBtn),
+                            current.metadata?.shortDrama?.assetSheet ? createElement(Button, { icon: createElement(WandSparkles, { size: 14 }), onClick: () => {
+                                try { const prompt = adjust(); resolve(prompt); dialog.destroy(); }
+                                catch (error) { message.error(error instanceof Error ? error.message : "自动调整失败，未提交生成"); }
+                            } }, "自动调整并重新生成") : null,
+                            createElement(OkBtn)),
+                        onOk: (close: () => void) => {
+                            if (!draft.trim()) { message.warning("提示词不能为空"); return; }
+                            resolve(draft.trim());
+                            close();
+                        },
+                        onCancel: () => { resolve(null); }, afterClose: () => { resolve(null); },
+                    });
+                });
+                if (!revised) return;
+                if (!options.autoAdjustPrompt && sourceTask?.status === "failed" && (isContentModerationError(sourceTask.errorCode) || isContentModerationError(sourceTask.error)) && generationPromptFingerprint(revised) === generationPromptFingerprint(previousPrompt)) {
+                    message.warning("请先修改提示词，不能原样重试审核未通过的内容");
+                    return;
+                }
+                const latest = nodesRef.current.find((item) => item.id === node.id);
+                if (!latest || latest.metadata?.taskId !== node.metadata?.taskId) { message.info("任务状态已变化，请刷新后重试；未重复提交"); return; }
+                node = { ...latest, metadata: { ...latest.metadata, prompt: revised, composerContent: revised } };
+                setNodes((items) => items.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, prompt: revised, composerContent: revised } } : item));
+                regenerate = true;
+            }
+            if (!frame && node.metadata?.shortDrama && (node.type === CanvasNodeType.Text || node.metadata.shortDrama.mediaKind === "audio" || (node.metadata.shortDrama.mediaKind === "image" && (regenerate || !sourceTask?.mediaStage)))) {
+                if (!regenerate && node.metadata.shortDrama.mediaKind === "image" && sourceTask?.status === "failed" && (isContentModerationError(sourceTask.errorCode) || isContentModerationError(sourceTask.error))) {
                     const previousPrompt = sourceTask.prompt;
                     const adjust = () => adjustWorkflowImagePrompt(node, nodesRef.current, previousPrompt || "");
                     let revised: string | null;
@@ -164,7 +218,9 @@ export function useCanvasGenerationRetry({
                 }
                 const controller = startGenerationRequest(node.id, node.id, node.id);
                 try {
-                    const initialTask = await retryWorkflowGeneration(node, sourceTask, projectId, effectiveConfig, undefined, nodesRef.current, retryTask);
+                    // 批量重试已在入口确认过一次计费风险，这里仍只用该任务自己的订单号确认其本次尝试。
+                    const retry = options?.billingAcknowledged ? (id: string) => retryTaskWithBillingConfirmation(id, async () => true) : retryTask;
+                    const initialTask = await retryWorkflowGeneration(node, sourceTask, projectId, effectiveConfig, undefined, nodesRef.current, retry, regenerate);
                     if (controller.signal.aborted) return;
                     bindGenerationTask(node.id, initialTask);
                     setNodes((current) => restoreEmptyWorkflowAssetGroup(current.map((item) => {
@@ -532,6 +588,7 @@ export function useCanvasGenerationRetry({
                     metadata: {
                         retry: true,
                         sourceNodeId: sourceNode.id,
+                        ...(sourceNode.metadata?.storyboardFrame ? { storyboardFrame: sourceNode.metadata.storyboardFrame } : {}),
                         resolvedCharacterVersions: context?.resolvedCharacterVersions || [],
                         promptTemplateOperation: node.metadata?.promptTemplateOperation,
                         promptTemplateVariables: node.metadata?.promptTemplateVariables,

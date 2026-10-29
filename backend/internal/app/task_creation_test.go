@@ -33,6 +33,27 @@ func TestScreenplayAuditCanWaitForTextSlot(t *testing.T) {
 	}
 }
 
+func TestCanvasGenerationUsesDurableQueue(t *testing.T) {
+	tests := []struct {
+		taskType  string
+		operation string
+		want      bool
+	}{
+		{taskType: "canvas_image", operation: "image", want: true},
+		{taskType: "canvas_video", operation: "video", want: true},
+		{taskType: "canvas_audio", operation: "audio", want: true},
+		{taskType: "canvas_text", operation: "text", want: true},
+		{taskType: "canvas_text", operation: workflowBatchOperation, want: false},
+		{taskType: "canvas_text", operation: "cloud_agent_step", want: false},
+		{taskType: "timeline_render", operation: "render", want: false},
+	}
+	for _, test := range tests {
+		if got := canvasGenerationUsesDurableQueue(test.taskType, test.operation); got != test.want {
+			t.Errorf("canvasGenerationUsesDurableQueue(%q, %q) = %v, want %v", test.taskType, test.operation, got, test.want)
+		}
+	}
+}
+
 func TestTaskInputUsesWorkflowProvider(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -190,6 +211,35 @@ func TestResolveSystemChannelModelSelectionRebuildsAuthoritativeExecutionSpec(t 
 	options := resolved["capabilityOptions"].(map[string]any)
 	if options["quality"] != config["quality"] || options["size"] != config["size"] || options["count"] != config["count"] {
 		t.Fatalf("capabilityOptions and provider config diverged: options=%#v config=%#v", options, config)
+	}
+}
+
+func TestResolveSystemChannelModelSelectionDropsStaleSelectedProtocol(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceAgnesImage), "agnes-image-2.5-flash")
+	svc, _, channel, channelModel := createSystemChannelSelectionFixture(t, "image", model.ChannelInterfaceAgnesImage, profile, []model.ChannelModelPriceTier{
+		newSelectionPriceTier("agnes-tier", `{}`, "agnes-image-2.5-flash", "fixed_request"),
+	})
+	input := map[string]any{
+		"mode": "image",
+		"config": map[string]any{
+			"channelId":        channel.ID,
+			"model":            channelModel.ModelKey,
+			"interfaceType":    string(model.ChannelInterfaceOpenAIImage),
+			"selectedProtocol": string(model.ChannelInterfaceOpenAIImage),
+			"apiFormat":        "openai",
+		},
+	}
+
+	resolved, err := svc.resolveSystemChannelModelSelection(input, "canvas_image", "")
+	if err != nil {
+		t.Fatalf("resolveSystemChannelModelSelection() error = %v", err)
+	}
+	config := resolved["config"].(map[string]any)
+	if got := config["interfaceType"]; got != string(model.ChannelInterfaceAgnesImage) {
+		t.Fatalf("interfaceType = %#v, want %q", got, model.ChannelInterfaceAgnesImage)
+	}
+	if _, exists := config["selectedProtocol"]; exists {
+		t.Fatalf("stale selectedProtocol survived authoritative rebuild: %#v", config)
 	}
 }
 

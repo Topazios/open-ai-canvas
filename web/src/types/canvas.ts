@@ -52,7 +52,7 @@ export function isBuiltinCanvasNodeType(type: CanvasNodeTypeId): type is CanvasN
 }
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
-export type CanvasNodeRetryOptions = { adjustPrompt?: boolean };
+export type CanvasNodeRetryOptions = { adjustPrompt?: boolean; billingAcknowledged?: boolean; /** 用新提示词整体重新生成；未带 prompt 时先弹出提示词输入框 */ editPrompt?: boolean; /** 重绘弹窗已填好的新提示词，传入后不再二次弹窗 */ prompt?: string; /** 按资产设定板规则自动调整提示词后重新生成 */ autoAdjustPrompt?: boolean };
 export type CanvasMediaPerformanceMode = "auto" | "quality" | "performance";
 export type CanvasWorkspaceMode = "simple" | "professional";
 export type CanvasToolMode = "move" | "box-select";
@@ -279,7 +279,7 @@ export type StoryDevelopmentBrief = {
     minutesPerEpisode: string;
     topicCount?: number;
 };
-export type StoryTopicCandidate = { id: string; title: string; logline: string; conflict: string; appeal: string };
+export type StoryTopicCandidate = { id: string; title: string; logline: string; conflict: string; appeal: string; localization?: import("@/lib/drama-storycraft").LocalizedTopic };
 export type StoryDevelopmentData = {
     stage: StoryDevelopmentStage;
     pipelineId: string;
@@ -287,6 +287,7 @@ export type StoryDevelopmentData = {
     brief?: StoryDevelopmentBrief;
     candidates?: StoryTopicCandidate[];
     selectedTopicId?: string;
+    topicSourceKind?: "imported";
     episodeNumber?: number;
     sourceSignatures?: Record<string, string>;
 };
@@ -343,6 +344,14 @@ export type CanvasNodeMetadata = {
     fileUploadProgress?: number;
     locked?: boolean;
     errorDetails?: string;
+    generationWarning?: {
+        severity: "warning";
+        errorSource?: string;
+        phase?: string;
+        outcome?: string;
+        code?: string;
+        message: string;
+    };
     generationErrorCode?: string;
     resourceReloadAvailable?: boolean;
     failedPromptFingerprint?: string;

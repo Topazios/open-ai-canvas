@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { groupExecutionRows, groupMemberState, groupSessionMembers, groupSessionOwner, groupSessionTargets, groupSessionHasEarlier, type GroupSessionSnapshot } from "../src/lib/canvas/canvas-group-session";
+import { groupExecutionRows, groupMemberState, groupSessionMembers, groupSessionOwner, nodeDetailsTarget, groupSessionTargets, groupSessionHasEarlier, type GroupSessionSnapshot } from "../src/lib/canvas/canvas-group-session";
 import { CanvasGroupTaskDetails } from "../src/pages/canvas/canvas-group-task-details";
 import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
 
@@ -14,6 +14,15 @@ test("all member entries resolve to one owning group and never include another g
     expect(groupSessionTargets(groupSessionMembers(group, nodes))).toHaveLength(1);
     const nested = { ...group, id: "nested", parentId: group.id };
     expect(groupSessionOwner(nested, [...nodes, nested])).toBe(nested);
+});
+
+test("a node with its own task opens its own details while task-less members open the group", () => {
+    const own = node("own", group.id, "task-own");
+    const plain = node("plain", group.id);
+    const nodes = [group, own, plain];
+    expect(nodeDetailsTarget(own, nodes)).toBe(own);
+    expect(nodeDetailsTarget(plain, nodes)).toBe(group);
+    expect(nodeDetailsTarget(group, nodes)).toBe(group);
 });
 
 test("asset groups show only their own records from the shared production agent", () => {
@@ -43,12 +52,42 @@ test("streaming drafts are not reported completed and planned failures stay visi
     expect(groupMemberState({ ...node("a"), metadata: { status: "error" } })).toBe("执行失败");
 });
 
+test("retained content on a warning node stays pending until a current receipt proves recovery", () => {
+    const retained: CanvasNodeData = { ...node("a"), metadata: { status: "idle", content: "保留的原稿", generationWarning: { severity: "warning", message: "待补齐" } } };
+    expect(groupMemberState(retained)).toBe("内容待处理");
+    for (const [taskStatus, label] of [["running", "执行中"], ["queued", "排队中"], ["succeeded", "已完成"], ["cancelled", "已取消"]] as const) {
+        expect(groupMemberState({ ...retained, metadata: { ...retained.metadata, taskStatus } })).toBe(label);
+    }
+    for (const [status, label] of [["completed", "已完成"], ["running", "执行中"], ["cancelled", "已取消"], ["failed", "执行失败"]]) {
+        expect(groupMemberState(retained, { kind: "agent", run: { id: "current", status } as any })).toBe(label);
+    }
+});
+
+test("group counts and rows retain structured warning semantics without marking outputs complete", () => {
+    const member = node("a", group.id, "task");
+    const task: GroupSessionSnapshot = { kind: "task", detail: { task: { id: "task", status: "failed", diagnostic: { severity: "warning", errorSource: "content", outcome: "not_saved" }, createdAt: "2026-10-25", updatedAt: "2026-10-25" } as any, steps: [], events: [], unitCount: 0, truncated: false, parameters: {} } };
+    expect(groupMemberState(member, task)).toBe("内容待处理");
+    const event = (seq: number, runId: string, severity: string) => ({ seq, eventId: `${runId}-${seq}`, runId, type: "run_failed", payload: { severity, text: "内容未完整保存" }, createdAt: "2026-10-25" });
+    const agent: GroupSessionSnapshot = { kind: "agent", run: { id: "run", status: "failed", events: [event(8, "other", "error"), event(2, "run", "warning"), event(1, "run", "error")] } as any };
+    expect(groupMemberState(member, agent)).toBe("内容待处理");
+    expect(groupExecutionRows([member], { "task:task": task }, "asc").find(row => String(row.id).endsWith("terminal"))).toMatchObject({ warning: true, failed: false });
+});
+
 test("group detail renders one journal without per-child execution-record buttons", () => {
     const html = renderToStaticMarkup(<CanvasGroupTaskDetails node={group} nodes={[group, node("one", group.id), node("two", group.id)]} submitting={false} onResume={() => {}} onRetry={() => {}} onCancel={() => {}} agentState={{ runs: [], nodeErrors: {}, readErrors: {}, syncError: "", busy: {}, control: async () => {}, refresh: () => {} }} />);
     expect(html.match(/aria-label="逐次执行记录"/g)).toHaveLength(1);
     expect(html).toContain("2 个节点");
     expect(html).toContain("全部节点");
     expect(html).not.toContain(">执行记录</button>");
+});
+
+test("plan task details do not expand the asset checklist", () => {
+    const manifest = { ...node("manifest", group.id), metadata: { shortDrama: { pipelineId: "pipeline", assetKey: "$summary", productionAgent: { runId: "run" } } } } as CanvasNodeData;
+    const plan = { ...group, metadata: { shortDrama: { pipelineId: "pipeline", role: "collection", step: "story.plan", sourceNodeIds: [manifest.id], assetGroup: { manifestId: manifest.id } } } } as CanvasNodeData;
+    const run = { id: "run", canvasId: "canvas", status: "completed", permissionMode: "auto", createdAt: "2026-10-24", updatedAt: "2026-10-24", production: { targetNodeId: manifest.id, workKind: "plan", planReady: true, assets: [{ key: "character", code: "CHR-1", name: "角色", kind: "character", status: "pending", missingDependencies: [] }] } } as any;
+    const html = renderToStaticMarkup(<CanvasGroupTaskDetails node={plan} nodes={[plan, manifest]} submitting={false} onResume={() => {}} onRetry={() => {}} onCancel={() => {}} agentState={{ runs: [run], nodeErrors: {}, readErrors: {}, syncError: "", busy: {}, control: async () => {}, refresh: () => {} }} />);
+    expect(html).not.toContain("资产清单");
+    expect(html).not.toContain("选择 角色");
 });
 
 function coordinatorFixture() {

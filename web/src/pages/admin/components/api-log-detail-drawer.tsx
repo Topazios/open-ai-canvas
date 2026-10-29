@@ -7,6 +7,7 @@ import { formatCredits } from "@/constant/credits";
 import { mediaDeliverySummary } from "@/lib/generation-task-display";
 import { getAdminApiLog, queryAdminApiLogTask, type ApiCallLog } from "@/services/api/auth";
 import { AdminStatusBadge } from "./admin-ui";
+import { logStatus } from "../logs/log-view";
 
 export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: string | null; onClose: () => void; onLogUpdated?: (log: ApiCallLog) => void }) {
     const { message } = App.useApp();
@@ -56,13 +57,11 @@ export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: st
     );
 }
 
-function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; querying: boolean; onQueryProviderTask: () => void }) {
-    const providerStatus = log.providerStatus?.toLowerCase();
-    const processing = ["queued", "pending", "processing", "running", "in_progress"].includes(providerStatus || "");
-    const failed = log.status === "failed" || ["failed", "cancelled", "expired"].includes(providerStatus || "");
+export function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; querying: boolean; onQueryProviderTask: () => void }) {
+    const status = logStatus(log);
     const items = [
         ["时间", new Date(log.startedAt || log.createdAt).toLocaleString("zh-CN", { hour12: false })],
-        ["状态", <AdminStatusBadge label={failed ? "失败" : processing ? "处理中" : "成功"} tone={failed ? "error" : processing ? "warning" : "success"} />],
+        ["状态", <AdminStatusBadge {...status} />],
         [
             "用户",
             <div>
@@ -93,8 +92,14 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
                         <span className="text-foreground/55">输入</span> <span className="ml-2 text-foreground/85">{log.inputTokens.toLocaleString()}</span>
                     </div>
                     <div>
-                        <span className="text-foreground/55">输出</span> <span className="ml-2 text-foreground/85">{log.outputTokens.toLocaleString()}</span>
+                        <span className="text-foreground/55">输出总量</span> <span className="ml-2 text-foreground/85">{log.outputTokens.toLocaleString()}</span>
                     </div>
+                    {log.reasoningTokens !== undefined ? (
+                        <>
+                            <div><span className="text-foreground/55">其中思考</span> <span className="ml-2 text-foreground/85">{log.reasoningTokens.toLocaleString()}</span></div>
+                            <div><span className="text-foreground/55">内容/工具</span> <span className="ml-2 text-foreground/85">{(log.outputTokens - log.reasoningTokens).toLocaleString()}</span></div>
+                        </>
+                    ) : <div className="text-foreground/35">思考用量未提供</div>}
                     {log.cachedTokens > 0 ? (
                         <div>
                             <span className="text-foreground/55">缓存</span> <span className="ml-2 text-foreground/85">{log.cachedTokens.toLocaleString()}</span>
@@ -109,10 +114,10 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
         ["成本价格（积分）", log.creditCostMicrocredits !== undefined ? `${formatCredits(log.creditCostMicrocredits)} 积分` : log.creditCostConfigured ? "待核算" : "未配置"],
         ["上游成本", log.costAvailable ? <span className="font-mono tabular-nums">{log.currency || "USD"} {(log.estimatedCostMicros / 1_000_000).toFixed(6)}</span> : <span className="text-foreground/35">未配置成本</span>],
         [
-            "错误信息",
+            status.tone === "error" ? "错误信息" : "提示信息",
             [log.errorCode, log.error].filter(Boolean).length > 0 ? (
                 <div>
-                    {log.errorCode ? <div className="mb-1 font-mono text-sm font-medium text-red-500">{log.errorCode}</div> : null}
+                    {log.errorCode ? <div className={`mb-1 font-mono text-sm font-medium${status.tone === "error" ? " text-[var(--status-error)]" : status.tone === "warning" ? " text-[var(--status-warning)]" : ""}`}>{log.errorCode}</div> : null}
                     {log.error ? <div className="text-sm text-foreground/75">{log.error}</div> : null}
                 </div>
             ) : (

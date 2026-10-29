@@ -72,7 +72,12 @@ func TestReasoningEffortDefaultsAndProtocolMapping(t *testing.T) {
 				}
 				input.TextOptions.ReasoningDisabled = true
 				applyTextThinking(body, input, wire)
-				if len(body) != 0 {
+				if wire == "responses" {
+					reasoning, _ := body["reasoning"].(map[string]any)
+					if reasoning["effort"] != "none" || len(reasoning) != 1 {
+						t.Fatalf("recovery did not explicitly disable reasoning: %#v", body)
+					}
+				} else if len(body) != 0 {
 					t.Fatalf("recovery retained reasoning: %#v", body)
 				}
 				input.TextOptions.ReasoningDisabled = false
@@ -110,6 +115,14 @@ func TestReasoningEffortAdmissionAndBatchPersistence(t *testing.T) {
 		if string(recovered.TextOptions.ReasoningEffort) != expected {
 			t.Fatal("roundtrip lost preference")
 		}
+	}
+	childWithoutLimit := workflowChildTextOptions(map[string]any{"textOptions": map[string]any{"stream": true}})
+	if _, exists := childWithoutLimit["maxOutputTokens"]; exists {
+		t.Fatalf("workflow child reintroduced a hidden output limit: %#v", childWithoutLimit)
+	}
+	childWithLimit := workflowChildTextOptions(map[string]any{"textOptions": map[string]any{"maxOutputTokens": 4096}})
+	if childWithLimit["maxOutputTokens"] != 4096 {
+		t.Fatalf("workflow child did not preserve explicit output limit: %#v", childWithLimit)
 	}
 	for _, invalid := range []any{"max", "off", 3, true} {
 		if _, err := normalizeTaskInput(map[string]any{"mode": "text", "textOptions": map[string]any{"reasoningEffort": invalid}}); err == nil {

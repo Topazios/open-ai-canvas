@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -21,7 +23,8 @@ import (
 	"time"
 )
 
-const requestLimit = 32 << 20
+const requestLimit = 64 << 20
+const compressedRequestLimit = 32 << 20
 const lineLimit = 4 << 20
 
 type Bridge struct {
@@ -186,24 +189,63 @@ func BridgeCall(w http.ResponseWriter, r *http.Request, expectedToken string, ha
 		http.Error(w, `{"error":"unauthorized bridge"}`, http.StatusUnauthorized)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, requestLimit+1))
+	var source io.Reader = r.Body
+	compressed := strings.EqualFold(strings.TrimSpace(r.Header.Get("Content-Encoding")), "gzip")
+	if encoding := strings.TrimSpace(r.Header.Get("Content-Encoding")); encoding != "" && !compressed && !strings.EqualFold(encoding, "identity") {
+		http.Error(w, `{"error":"unsupported bridge content encoding"}`, http.StatusUnsupportedMediaType)
+		return
+	}
+	compressedBytes := int64(0)
+	if compressed {
+		limited := &io.LimitedReader{R: r.Body, N: compressedRequestLimit + 1}
+		gz, err := gzip.NewReader(limited)
+		if err != nil {
+			slog.Warn("agent bridge request rejected", "endpoint", r.URL.Path, "encoding", "gzip", "content_length", r.ContentLength, "reason", "invalid gzip")
+			http.Error(w, `{"error":"invalid compressed bridge payload"}`, http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		body, err := io.ReadAll(io.LimitReader(gz, requestLimit+1))
+		compressedBytes = compressedRequestLimit + 1 - limited.N
+		if err == nil && len(body) <= requestLimit {
+			// The gzip reader may stop before the underlying limit is reached. Count
+			// bytes from the declared length when available for useful rejection logs.
+			compressedBytes = r.ContentLength
+		}
+		if err != nil || len(body) > requestLimit || limited.N == 0 {
+			slog.Warn("agent bridge request rejected", "endpoint", r.URL.Path, "encoding", "gzip", "compressed_bytes", compressedBytes, "decoded_bytes", len(body), "limit_bytes", requestLimit)
+			http.Error(w, `{"error":"bridge payload too large or unreadable"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
+		if err := dispatchBridgePayload(w, r, body, handler); err != nil {
+			return
+		}
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(source, requestLimit+1))
 	if err != nil || len(body) > requestLimit {
+		slog.Warn("agent bridge request rejected", "endpoint", r.URL.Path, "encoding", "identity", "content_length", r.ContentLength, "read_bytes", len(body), "limit_bytes", requestLimit)
 		http.Error(w, `{"error":"bridge payload too large or unreadable"}`, http.StatusRequestEntityTooLarge)
 		return
 	}
+	dispatchBridgePayload(w, r, body, handler)
+}
+
+func dispatchBridgePayload(w http.ResponseWriter, r *http.Request, body []byte, handler func(context.Context, map[string]json.RawMessage) (any, error)) error {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, `{"error":"invalid bridge payload"}`, http.StatusBadRequest)
-		return
+		return err
 	}
 	result, err := handler(r.Context(), payload)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
+		return err
 	}
 	_ = json.NewEncoder(w).Encode(result)
+	return nil
 }
 
 func RuntimeDir() (string, error) {

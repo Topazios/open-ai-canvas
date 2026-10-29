@@ -85,10 +85,15 @@ func postAgentRequest(ctx context.Context, input canvasGenerationInput, path str
 	}
 	delete(body, "stream")
 	var payload map[string]interface{}
-	if err := postJSON(ctx, input.Config, path, body, &payload); err != nil {
+	var parsed map[string]interface{}
+	if err := postJSON(ctx, input.Config, path, body, &payload, func(data []byte, mimeType string) error {
+		var err error
+		parsed, err = parseAgentProviderResponse(data, mimeType, protocol, nil)
+		return err
+	}); err != nil {
 		return nil, err
 	}
-	return parseAgentToolPayload(payload, protocol)
+	return parsed, nil
 }
 
 // agentStepOutputLimit 取本次 Agent 调用的输出上限。
@@ -171,6 +176,11 @@ func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, a
 		applyAgentOutputLimit(body, agentStepOutputLimit(input), wire)
 		normalizeAgentToolChoice(body, input, wire)
 		spec.Body = body
+		if wire == "responses" {
+			return runDeclarativeResponsesAgentTask(ctx, input, spec)
+		}
+		var parser *streamingAgentParser
+		var consume func(string, []byte)
 		if input.StreamText {
 			body["stream"] = true
 			if wire == "chat-completion" {
@@ -178,41 +188,27 @@ func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, a
 					return nil, err
 				}
 			}
-			parser := newStreamingAgentParser(wire, input.OnTextDelta)
+			parser = newStreamingAgentParser(wire, input.OnTextDelta)
 			parser.emitReasoning = input.OnReasoningDelta
-			data, mime, err := executeProtocolBinaryRequestWithConsumer(ctx, input.Config, spec, parser.consume)
-			if err != nil {
-				return nil, err
-			}
-			if strings.Contains(strings.ToLower(mime), "event-stream") {
-				parser.flush()
-				return parser.result()
-			}
-			var payload map[string]interface{}
-			if err := json.Unmarshal(data, &payload); err != nil {
-				return nil, fmt.Errorf("Agent 接口返回格式无效：%w", err)
-			}
-			return parseAgentToolPayload(payload, wire)
+			consume = parser.consume
 		}
-	}
-	body, err := executeDeclarativeAgentWithGeminiCache(ctx, input, spec)
-	if err != nil {
-		return nil, err
-	}
-	if knownWire {
-		var payload map[string]interface{}
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return nil, fmt.Errorf("Agent 接口返回格式无效：%w", err)
-		}
-		// Raw Responses HTTP output nests text in output[].content[];
-		// output_text is only a convenience field on some SDKs/gateways.
-		result, err := parseAgentToolPayload(payload, wire)
-		if err == nil && payload["usage"] != nil {
-			result["usage"] = payload["usage"]
-		}
+		var result map[string]interface{}
+		_, _, err := executeProtocolBinaryRequestWithConsumer(ctx, input.Config, spec, consume, func(data []byte, mimeType string) error {
+			var err error
+			result, err = parseAgentProviderResponse(data, mimeType, wire, parser)
+			return err
+		})
 		return result, err
 	}
-	parsed, err := adapter.ParseAgent(ctx, body)
+	var parsed protocol.AgentResult
+	_, err = executeDeclarativeAgentWithGeminiCache(ctx, input, spec, func(data []byte, _ string) error {
+		var err error
+		parsed, err = adapter.ParseAgent(ctx, data)
+		if err == nil && strings.TrimSpace(parsed.Text) == "" && len(parsed.ToolCalls) == 0 {
+			err = missingProviderTextError(parsed.Reasoning)
+		}
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -239,10 +235,119 @@ func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, a
 	return result, nil
 }
 
+func runDeclarativeResponsesAgentTask(ctx context.Context, input canvasGenerationInput, spec protocol.RequestSpec) (map[string]interface{}, error) {
+	// Keep the create request synchronous; stream its body when requested so
+	// gateways do not need to buffer a long Agent response before sending bytes.
+	body := protocolBodyObject(spec.Body)
+	if body == nil {
+		return nil, errors.New("声明式 Agent 请求体必须是 JSON 对象")
+	}
+	var createdBody []byte
+	var err error
+	if input.StreamText {
+		body["stream"] = true
+		parser := newStreamingAgentParser("responses", input.OnTextDelta)
+		parser.emitReasoning = input.OnReasoningDelta
+		spec.Body = body
+		var result map[string]interface{}
+		createdBody, _, err = executeProtocolBinaryRequestWithConsumer(withProviderRequestKind(ctx, "create"), input.Config, spec, parser.consume, func(data []byte, mimeType string) error {
+			if strings.Contains(strings.ToLower(mimeType), "event-stream") {
+				var parseErr error
+				result, parseErr = parseAgentProviderResponse(data, mimeType, "responses", parser)
+				return parseErr
+			}
+			var response map[string]interface{}
+			if parseErr := json.Unmarshal(data, &response); parseErr != nil {
+				return providerResponseDecodeError{fmt.Errorf("Responses 创建响应格式无效：%w", parseErr)}
+			}
+			status := strings.ToLower(strings.TrimSpace(stringField(response, "status")))
+			if status == "completed" || status == "succeeded" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired" || status == "incomplete" || status == "" {
+				var parseErr error
+				result, parseErr = parseAgentProviderResponse(data, "application/json", "responses", nil)
+				return parseErr
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if result != nil {
+			return result, nil
+		}
+	} else {
+		delete(body, "stream")
+		spec.Body = body
+		createdBody, _, err = executeProtocolBinaryRequestWithConsumer(withProviderRequestKind(ctx, "create"), input.Config, spec, nil, func(data []byte, _ string) error {
+			var response map[string]interface{}
+			if err := json.Unmarshal(data, &response); err != nil {
+				return providerResponseDecodeError{fmt.Errorf("Responses 创建响应格式无效：%w", err)}
+			}
+			status := strings.ToLower(strings.TrimSpace(stringField(response, "status")))
+			if status == "completed" || status == "succeeded" || status == "failed" || status == "cancelled" || status == "canceled" || status == "expired" || status == "incomplete" || status == "" {
+				_, err := parseAgentProviderResponse(data, "application/json", "responses", nil)
+				return err
+			}
+			return nil
+		})
+	}
+	if err != nil {
+		return nil, err
+	}
+	var created map[string]interface{}
+	if err := json.Unmarshal(createdBody, &created); err != nil {
+		return nil, providerResponseDecodeError{fmt.Errorf("Responses 创建响应格式无效：%w", err)}
+	}
+	status := strings.ToLower(strings.TrimSpace(stringField(created, "status")))
+	if status == "completed" || status == "succeeded" || status == "" {
+		return parseAgentProviderResponse(createdBody, "application/json", "responses", nil)
+	}
+	if status == "failed" || status == "cancelled" || status == "canceled" || status == "expired" || status == "incomplete" {
+		return parseAgentProviderResponse(createdBody, "application/json", "responses", nil)
+	}
+	taskID := strings.TrimSpace(stringField(created, "id"))
+	if taskID == "" {
+		return nil, errors.New("Responses 创建响应未完成且没有返回 response ID")
+	}
+	pollAdapter, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType)
+	if !ok {
+		return nil, fmt.Errorf("接口类型 %s 未安装声明式轮询适配器", input.Config.InterfaceType)
+	}
+	request := protocolRequestFromInput(input)
+	policy := declarativeProtocolPollPolicy("text")
+	policy.RetryTransient = true
+	return runVideoPollLoop(ctx, taskID, policy, func(pollCtx context.Context) (videoPollOutcome, error) {
+		pollContext := protocol.PollContext{BaseURL: input.Config.BaseURL, Model: request.Model, Request: request, TaskID: taskID}
+		pollSpec, err := pollAdapter.BuildPoll(pollCtx, pollContext)
+		if err != nil {
+			return videoPollOutcome{}, err
+		}
+		data, err := executeProtocolRequest(withProviderRequestKind(pollCtx, "poll"), input.Config, pollSpec)
+		if err != nil {
+			return videoPollOutcome{}, err
+		}
+		state, err := pollAdapter.ParsePoll(pollCtx, pollContext, data)
+		if err != nil {
+			return videoPollOutcome{}, err
+		}
+		switch state.Status {
+		case protocol.StatusSucceeded:
+			result, err := parseAgentProviderResponse(data, "application/json", "responses", nil)
+			if err == nil && input.StreamText && input.OnTextDelta != nil {
+				input.OnTextDelta(stringField(result, "text"))
+			}
+			return videoPollOutcome{Done: err == nil, Result: result}, err
+		case protocol.StatusFailed, protocol.StatusCancelled:
+			return videoPollOutcome{}, protocolResultError(state.Message, taskID)
+		default:
+			return videoPollOutcome{}, nil
+		}
+	})
+}
+
 // executeDeclarativeAgentWithGeminiCache keeps explicit Prompt Cache entirely
 // optional: cache creation, cleanup, and a single stale-cache rebuild can never
 // turn a valid uncached Agent request into a failed run.
-func executeDeclarativeAgentWithGeminiCache(ctx context.Context, input canvasGenerationInput, spec protocol.RequestSpec) ([]byte, error) {
+func executeDeclarativeAgentWithGeminiCache(ctx context.Context, input canvasGenerationInput, spec protocol.RequestSpec, validators ...func([]byte, string) error) ([]byte, error) {
 	baseSpec, err := cloneProtocolRequestSpec(spec)
 	if err != nil {
 		return nil, err
@@ -257,7 +362,7 @@ func executeDeclarativeAgentWithGeminiCache(ctx context.Context, input canvasGen
 			executeSpec, cacheUsed = prepared, used
 		}
 	}
-	body, err := executeProtocolRequest(ctx, input.Config, executeSpec)
+	body, _, err := executeProtocolBinaryRequestWithConsumer(ctx, input.Config, executeSpec, nil, validators...)
 	if err == nil || input.Config.InterfaceType != officialGeminiAgentInterface || !cacheUsed || !geminiRequestUsesCachedContent(executeSpec) || !isGeminiCachedContentNotFound(err, stringValue(protocolBodyObject(executeSpec.Body)["cachedContent"])) {
 		return body, err
 	}
@@ -279,7 +384,8 @@ func executeDeclarativeAgentWithGeminiCache(ctx context.Context, input canvasGen
 	// The rebuilt request is intentionally executed only once. If it receives
 	// another CachedContent 404, the first stale-cache recovery already happened;
 	// preserve the provider error instead of recursively rebuilding forever.
-	return executeProtocolRequest(ctx, input.Config, rebuilt)
+	body, _, err = executeProtocolBinaryRequestWithConsumer(ctx, input.Config, rebuilt, nil, validators...)
+	return body, err
 }
 
 func claudeAgentBody(request map[string]interface{}) map[string]interface{} {
@@ -428,7 +534,7 @@ func parseAgentToolPayload(payload map[string]interface{}, protocol string) (map
 		if err := validateResponsesCompletion(payload); err != nil {
 			return nil, err
 		}
-		result["text"] = firstNonEmptyString(stringField(payload, "output_text"), extractResponseText(payload))
+		result["text"] = firstRawString(stringField(payload, "output_text"), extractResponseText(payload))
 		if reasoning := extractResponseReasoning(payload); reasoning != "" {
 			result["reasoning"] = reasoning
 		}
@@ -441,10 +547,7 @@ func parseAgentToolPayload(payload map[string]interface{}, protocol string) (map
 			calls = append(calls, map[string]interface{}{"id": firstNonEmptyString(stringField(item, "call_id"), stringField(item, "id")), "type": "function", "function": map[string]interface{}{"name": stringField(item, "name"), "arguments": stringField(item, "arguments")}})
 		}
 		result["toolCalls"] = calls
-		if result["text"] == "" && len(calls) == 0 {
-			return nil, errors.New("Responses 接口没有返回文本或工具调用")
-		}
-		return result, nil
+		return result, validateAgentOutput(result)
 	}
 	if protocol == "claude-api" {
 		content := interfaceSlice(payload["content"])
@@ -455,7 +558,7 @@ func parseAgentToolPayload(payload map[string]interface{}, protocol string) (map
 			case "text":
 				result["text"] = result["text"].(string) + stringField(item, "text")
 			case "thinking":
-				result["reasoning"] = resultString(result, "reasoning") + firstNonEmptyString(stringField(item, "thinking"), stringField(item, "text"))
+				result["reasoning"] = resultString(result, "reasoning") + firstRawString(stringField(item, "thinking"), stringField(item, "text"))
 			case "tool_use":
 				arguments, err := json.Marshal(item["input"])
 				if err != nil {
@@ -465,10 +568,7 @@ func parseAgentToolPayload(payload map[string]interface{}, protocol string) (map
 			}
 		}
 		result["toolCalls"] = calls
-		if result["text"] == "" && len(calls) == 0 {
-			return nil, errors.New("Claude Agent 接口没有返回内容")
-		}
-		return result, nil
+		return result, validateAgentOutput(result)
 	}
 	choices := interfaceSlice(payload["choices"])
 	if len(choices) == 0 {
@@ -476,8 +576,8 @@ func parseAgentToolPayload(payload map[string]interface{}, protocol string) (map
 	}
 	choice, _ := choices[0].(map[string]interface{})
 	message, _ := choice["message"].(map[string]interface{})
-	result["text"] = stringField(message, "content")
-	if reasoning := firstNonEmptyString(stringField(message, "reasoning_content"), stringField(message, "reasoning")); reasoning != "" {
+	result["text"] = streamContentText(message["content"])
+	if reasoning := firstRawString(stringField(message, "reasoning_content"), stringField(message, "reasoning")); reasoning != "" {
 		result["reasoning"] = reasoning
 	}
 	calls := make([]interface{}, 0)
@@ -487,5 +587,19 @@ func parseAgentToolPayload(payload map[string]interface{}, protocol string) (map
 		calls = append(calls, map[string]interface{}{"id": stringField(item, "id"), "type": "function", "function": map[string]interface{}{"name": stringField(function, "name"), "arguments": stringField(function, "arguments")}})
 	}
 	result["toolCalls"] = calls
-	return result, nil
+	return result, validateAgentOutput(result)
+}
+
+func validateAgentOutput(result map[string]interface{}) error {
+	if strings.TrimSpace(stringField(result, "text")) != "" || len(interfaceSlice(result["toolCalls"])) > 0 {
+		return nil
+	}
+	return missingProviderTextError(stringField(result, "reasoning"))
+}
+
+func missingProviderTextError(reasoning string) error {
+	if strings.TrimSpace(reasoning) != "" {
+		return errors.New("模型接口没有返回内容：仅返回思考内容，缺少正文或工具调用")
+	}
+	return errors.New("模型接口没有返回内容：缺少正文或工具调用")
 }

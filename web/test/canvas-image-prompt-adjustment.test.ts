@@ -7,11 +7,11 @@ import { retryWorkflowGeneration } from "@/services/workflow-generation-retry";
 import { defaultConfig } from "@/stores/use-config-store";
 import { workflowImageFixture } from "./fixtures/workflow-image-project";
 
-function fixture(step = ShortDramaStep.PropReferences) {
+function fixture(step = ShortDramaStep.PropReferences, title?: string) {
     const f = workflowImageFixture();
     const request = { ...f.request, step, sourceNodeIds: defaultWorkflowSources(step, f.request.pipelineId, f.nodes) };
     const subject = workflowImageSubjects(request, f.nodes)[0];
-    subject.title = step === ShortDramaStep.PropReferences ? "P05猎人枪械" : "测试资产";
+    subject.title = title || (step === ShortDramaStep.PropReferences ? "P05猎人枪械" : "测试资产");
     subject.metadata!.content = "## 身份与正文依据\n第八集追逐剧情\n\n## 固定特征与制作设计\n灰色磨损外壳，青色装饰灯，橙色布条。\n\n## 道具声音\n低频音效\n\n## 生成提示词\n旧的结构拆解要求\n\n## 跨集连续性\n第九集补充剧情";
     const result = createWorkflowImages({ ...request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 });
     return { ...result, image: result.created[0], subject };
@@ -23,10 +23,26 @@ test("automatic adjustment keeps visual identity and layout, excludes unrelated 
     const prompt = adjustWorkflowImagePrompt(f.image, f.nodes, f.image.metadata!.prompt!);
     expect(prompt).toContain("P05猎人枪械");
     expect(prompt).toContain("灰色磨损外壳，青色装饰灯，橙色布条");
-    expect(prompt).toContain("不具备发射功能");
-    expect(prompt).toContain("左侧占18%");
+    expect(prompt).toContain("不把真实物件虚称为无功能模型");
+    expect(prompt).toContain("不展示操作、发射、伤害效果、弹药或内部机构");
+    expect(prompt).toContain("左侧资料栏约占整幅宽度 17%");
     expect(prompt).toContain(f.image.metadata!.size!);
     for (const discarded of ["第八集追逐剧情", "第九集补充剧情", "低频音效", "旧的结构拆解要求"]) expect(prompt).not.toContain(discarded);
+    expect(JSON.stringify(f.nodes)).toBe(before);
+});
+
+test("legacy cannon sheets rebuild with the same static display contract as new sheets", () => {
+    const f = fixture(ShortDramaStep.PropReferences, "旧炮群（含炮架与附件外观）");
+    const before = JSON.stringify(f.nodes);
+    const original = f.image.metadata!.prompt!;
+    const legacy = original.replace("下方为外观附件与表面细节区域", "下方为拆解与细节区域");
+    for (const prompt of [original, adjustWorkflowImagePrompt(f.image, f.nodes, legacy)]) {
+        expect(prompt).toContain(f.subject.title);
+        expect(prompt).toContain("灰色磨损外壳，青色装饰灯，橙色布条");
+        expect(prompt).toContain("【道具展示边界】");
+        expect(prompt).not.toContain("下方为拆解");
+        expect(prompt).toContain(f.image.metadata!.size!);
+    }
     expect(JSON.stringify(f.nodes)).toBe(before);
 });
 
@@ -34,7 +50,7 @@ test("character and environment use their own visual views", () => {
     for (const step of [ShortDramaStep.CharacterReferences, ShortDramaStep.EnvironmentReferences]) {
         const f = fixture(step);
         const prompt = adjustWorkflowImagePrompt(f.image, f.nodes, f.image.metadata!.prompt!);
-        expect(prompt).toContain(step === ShortDramaStep.CharacterReferences ? "正面全身、左侧全身、右侧全身、背面全身" : "主视角全景、正立面、侧剖面、俯视平面布局");
+        expect(prompt).toContain(step === ShortDramaStep.CharacterReferences ? "正面全身、左侧全身、右侧全身、背面全身" : "主视角（略宽）、正立面、侧剖面、俯视平面");
     }
 });
 

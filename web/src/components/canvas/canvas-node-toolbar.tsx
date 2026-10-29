@@ -637,8 +637,8 @@ export function CanvasNodeInfoModal({ node, open, onClose, onMetadataChange, rea
     const title = (
         <div className="canvas-node-inspector-title">
             <div className="min-w-0">
-                <div className="text-[var(--fs-heading-lg)] font-semibold">{children ? "任务详情" : "节点信息"}</div>
-                {node && !children ? <div className="canvas-node-inspector-id">{node.id}</div> : null}
+                <div className="text-[var(--fs-heading-lg)] font-semibold">{!children ? "节点信息" : node?.type === CanvasNodeType.Frame ? "容器任务详情" : "生成详情"}</div>
+                {node && (!children || node.type !== CanvasNodeType.Frame) ? <div className="canvas-node-inspector-id">{node.id}</div> : null}
             </div>
         </div>
     );

@@ -167,7 +167,7 @@ func executeProtocolBinaryRequest(ctx context.Context, config providerConfig, sp
 	return executeProtocolBinaryRequestWithConsumer(ctx, config, spec, nil)
 }
 
-func executeProtocolBinaryRequestWithConsumer(ctx context.Context, config providerConfig, spec protocol.RequestSpec, consume func(string, []byte)) ([]byte, string, error) {
+func executeProtocolBinaryRequestWithConsumer(ctx context.Context, config providerConfig, spec protocol.RequestSpec, consume func(string, []byte), validators ...func([]byte, string) error) ([]byte, string, error) {
 	if err := spec.Validate(); err != nil {
 		return nil, "", err
 	}
@@ -196,9 +196,8 @@ func executeProtocolBinaryRequestWithConsumer(ctx context.Context, config provid
 	}
 	if consume != nil {
 		req.Header.Set("Accept", "text/event-stream")
-		return doBinaryWithConsumer(req, consume)
 	}
-	return doBinary(req)
+	return doBinaryWithConsumer(req, consume, validators...)
 }
 
 func protocolRequestBody(ctx context.Context, config providerConfig, spec protocol.RequestSpec) (io.Reader, string, error) {

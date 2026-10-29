@@ -146,6 +146,16 @@ func TestEnrichAPICallLogReadsResponsesStreamUsage(t *testing.T) {
 	}
 }
 
+func TestEnrichAPICallLogReadsResponsesOutputLimit(t *testing.T) {
+	log := &model.ApiCallLog{Capability: "text", Path: "/v1/responses", Status: model.ApiCallStatusSucceeded, StatusCode: 200}
+	stream := []byte("event: response.created\ndata: {\"response\":{\"status\":\"in_progress\",\"error\":null}}\n\n" +
+		"event: response.incomplete\ndata: {\"response\":{\"status\":\"incomplete\",\"error\":null,\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":31,\"output_tokens\":16384}}}\n\n")
+	(&Service{}).EnrichAPICallLog(log, stream)
+	if log.Status != model.ApiCallStatusWarning || log.ErrorSource != "content" || log.ProviderStatus != "incomplete" || log.ErrorCode != providerOutputLimitCode || log.Error != errProviderOutputLimit.Error() || log.OutputTokens != 16384 {
+		t.Fatalf("incomplete response must retain its explicit reason and usage: %#v", log)
+	}
+}
+
 func TestEnrichAPICallLogRejectsEmptyTextUsage(t *testing.T) {
 	log := &model.ApiCallLog{Capability: "text", Path: "/v1/chat/completions"}
 	(&Service{}).EnrichAPICallLog(log, []byte(`{"usage":{}}`))

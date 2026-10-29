@@ -75,7 +75,8 @@ func (s *Service) decorateAPICallLogs(logs []model.ApiCallLog) error {
 				billingOrderIDs = append(billingOrderIDs, log.BillingOrderID)
 			}
 		}
-		if (log.Capability != "image" && log.Capability != "video" && log.Capability != "audio") || log.TaskID == "" {
+		needsFailureDetail := log.DisplayStatus() == model.ApiCallStatusWarning && log.ProviderStatus == "incomplete" && (log.Error == "" || log.ErrorCode == "")
+		if (log.Capability != "image" && log.Capability != "video" && log.Capability != "audio" && !needsFailureDetail) || log.TaskID == "" {
 			continue
 		}
 		if _, exists := seenTaskIDs[log.TaskID]; exists {
@@ -131,6 +132,14 @@ func (s *Service) decorateAPICallLogs(logs []model.ApiCallLog) error {
 			}
 		}
 		if task, exists := taskByID[logs[index].TaskID]; exists && task.UserID == logs[index].UserID {
+			// Older truncated payloads may have lost incomplete_details. Use the
+			// matching task's persisted diagnostic without rewriting its results.
+			if logs[index].DisplayStatus() == model.ApiCallStatusWarning && logs[index].ProviderStatus == "incomplete" && task.Status == model.TaskStatusFailed {
+				if diagnostic := taskExecutionDiagnostic(&task); diagnostic != nil && diagnostic.Code == providerOutputLimitCode {
+					logs[index].ErrorCode = firstNonEmpty(logs[index].ErrorCode, diagnostic.Code)
+					logs[index].Error = firstNonEmpty(logs[index].Error, diagnostic.SafeMessage)
+				}
+			}
 			logs[index].TaskStatus = task.Status
 			logs[index].MediaStage = task.MediaStage
 			previewURL, previewKind := taskMediaPreview(task.ResultJSON, task.Type)
@@ -142,6 +151,13 @@ func (s *Service) decorateAPICallLogs(logs []model.ApiCallLog) error {
 				logs[index].MediaPreviewKind = previewKind
 			}
 		}
+		candidate := logs[index]
+		candidate.ResponseBody = ""
+		if candidate.ErrorSource == "" && candidate.DisplayStatus() == model.ApiCallStatusWarning && model.APICallResponseHasExplicitFailure(logs[index].ResponseBody) {
+			logs[index].Status = model.ApiCallStatusFailed
+			logs[index].ErrorSource = "upstream"
+		}
+		logs[index].Status = logs[index].DisplayStatus()
 	}
 	return nil
 }
@@ -296,7 +312,7 @@ func (s *Service) AdminAnalyticsCSV(actor *model.User, query AnalyticsQuery) ([]
 			outputTokens = strconv.FormatInt(log.OutputTokens, 10)
 			cachedTokens = strconv.FormatInt(log.CachedTokens, 10)
 		}
-		_ = writer.Write([]string{log.CreatedAt.Format(time.RFC3339), log.UserID, log.ChannelID, log.TaskID, log.Capability, log.RequestKind, log.Model, string(log.Status), strconv.Itoa(log.StatusCode), strconv.FormatInt(log.DurationMs, 10), inputTokens, outputTokens, cachedTokens, strconv.Itoa(log.MediaCount), strconv.Itoa(log.VideoSeconds), revenue, cost, profit, classifyAPICallError(log)})
+		_ = writer.Write([]string{log.CreatedAt.Format(time.RFC3339), log.UserID, log.ChannelID, log.TaskID, log.Capability, log.RequestKind, log.Model, string(log.DisplayStatus()), strconv.Itoa(log.StatusCode), strconv.FormatInt(log.DurationMs, 10), inputTokens, outputTokens, cachedTokens, strconv.Itoa(log.MediaCount), strconv.Itoa(log.VideoSeconds), revenue, cost, profit, classifyAPICallError(log)})
 	}
 	writer.Flush()
 	return buffer.Bytes(), writer.Error()

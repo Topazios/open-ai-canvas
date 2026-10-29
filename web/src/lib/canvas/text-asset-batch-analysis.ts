@@ -20,6 +20,7 @@ export const TEXT_ASSET_ANALYSIS_RESPONSE_SCHEMA = {
                 additionalProperties: false,
                 required: [
                     "category",
+                    "priority",
                     "name",
                     "aliases",
                     "summary",
@@ -35,6 +36,7 @@ export const TEXT_ASSET_ANALYSIS_RESPONSE_SCHEMA = {
                 ],
                 properties: {
                     category: { type: "string", enum: ["character", "environment"] },
+                    priority: { type: "integer", minimum: 1, maximum: 60, description: "同一类别中的剧情重要性排名，1最重要且不得重复" },
                     name: { type: "string" },
                     aliases: { type: "array", items: { type: "string" } },
                     summary: { type: "string" },
@@ -88,8 +90,8 @@ export async function analyzeTextAssetBatch(input: {
     const taskPrompt = `请使用已加载的影视角色与场景资产设定板 Skill 分析下面的 Note。
 
 本次任务要求：
-- 先分析并归并实体，再输出固定 JSON；
-- 每个实体都要准备一张可直接用于生图的设定板 sheetPrompt；
+- 先分析并归并实体，再按剧情主次排序并输出固定 JSON；priority 必须在同类别内从 1 开始连续且唯一，1 最重要。人物按主线驱动者、核心对手/共同主角、主要配角、次要角色、群演排序；场景按主线核心、反复出现、高潮空间到次要空间排序；不得按名称、来源顺序或模型输出习惯随机排列；
+- 每个实体都要准备一张完整设定板的生图提示词 sheetPrompt：参考用户示例的浅暖灰底、细边框、左侧资料栏、右侧多区域视图标签和清晰分隔线；人物为左侧肖像/资料、右上四视图、右下服装/道具/细节，场景为左侧空间缩略图/资料、右上主视角/正立面/侧剖面/俯视平面、右下空间拆解/尺寸/动线/道具/材质；必须一次生成整张图，禁止只画素材供程序切图拼版；
 - 只基于 Note、用户选择的 Skill 和项目画风生成内容，不要臆造额外资产；
 - 不要返回 JSON 以外的解释或 Markdown。
 

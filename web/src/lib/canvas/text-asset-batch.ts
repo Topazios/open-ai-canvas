@@ -9,6 +9,7 @@ export type TextAssetBatchItem = {
     title: string;
     prompt: string;
     enabled: boolean;
+    priority?: number;
     /** 用于保存分析阶段生成的完整设定板提示词，生成时优先使用该提示词。 */
     sheetPrompt?: string;
     sheetType?: TextAssetSheetType;
@@ -158,6 +159,7 @@ export function parseTextAssetBatchModelJson(text: string, fallbackTitle = "文�
         try {
             const parsed = JSON.parse(candidate) as {
                 items?: unknown;
+                priority?: number;
                 sourceCount?: unknown;
                 mergedCount?: unknown;
             };
@@ -182,6 +184,7 @@ export function parseTextAssetBatchModelJson(text: string, fallbackTitle = "文�
                         title,
                         prompt,
                         enabled: true,
+                        priority: Number.isInteger(item.priority) && Number(item.priority) > 0 ? Number(item.priority) : undefined,
                         sheetPrompt,
                         sheetType,
                         negativePrompt: textValue(item.negativePrompt),
@@ -204,7 +207,13 @@ export function parseTextAssetBatchModelJson(text: string, fallbackTitle = "文�
                 seen.add(key);
                 unique.push({ ...item, id: `asset-batch-model-${unique.length + 1}` });
             }
-            const bounded = unique.slice(0, 60);
+            const bounded = unique
+                .sort((left, right) => {
+                    const categoryOrder = left.category === right.category ? 0 : left.category === "character" ? -1 : 1;
+                    return categoryOrder || (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER);
+                })
+                .slice(0, 60)
+                .map((item, index) => ({ ...item, id: `asset-batch-model-${index + 1}` }));
             const parsedSourceCount = nonNegativeInteger(parsed.sourceCount);
             const parsedMergedCount = nonNegativeInteger(parsed.mergedCount);
             const sourceCount = bounded.length ? Math.max(bounded.length, parsedSourceCount ?? bounded.length) : parsedSourceCount ?? 0;

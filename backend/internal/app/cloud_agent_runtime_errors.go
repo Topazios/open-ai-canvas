@@ -16,11 +16,16 @@ import (
 // Only expose known failure categories; raw provider errors can contain URLs and credentials.
 func cloudAgentModelFailure(task *model.Task) (string, string) {
 	detail, reason := "模型任务未成功", "model_task_failed"
+	if diagnostic := taskExecutionDiagnostic(task); diagnostic != nil && diagnostic.Severity == "warning" {
+		return diagnostic.SafeMessage + "；本轮已停止，尚未完成交付。请在任务中心检查任务 " + task.ID, diagnostic.Code
+	}
 	if diagnostic := taskExecutionDiagnostic(task); diagnostic != nil && diagnostic.Code == string(ReasonUpstreamDNSFailed) {
 		return "模型服务域名解析失败，请检查渠道域名和后端 DNS 配置；本轮已停止。请在任务中心检查模型任务 " + task.ID, string(ReasonUpstreamDNSFailed)
 	}
 	raw := strings.ToLower(task.Error)
 	switch {
+	case cloudAgentOutputLimitReached(task):
+		detail, reason = errProviderOutputLimit.Error(), providerOutputLimitCode
 	case strings.Contains(task.Error, "没有返回内容"):
 		// 思考模型的典型失败：整个输出预算被推理吃掉，正文与工具调用皆空。
 		detail, reason = "上游连续返回空内容（通常是思考占满输出预算）；已自动关思考并放大预算重试仍失败，建议换用非思考模型或调小上下文", "model_empty_output"
@@ -47,6 +52,10 @@ func cloudAgentSafeToolError(err error) string {
 	var appErr *AppError
 	if errors.As(err, &appErr) && appErr != nil {
 		message := strings.TrimSpace(appErr.Message)
+		var fieldErr *cloudAgentFieldArgumentError
+		if errors.As(err, &fieldErr) && cloudAgentSafeUserMessageWithLimit(message, 1200) {
+			return message
+		}
 		if cloudAgentSafeUserMessage(message) {
 			return message
 		}
@@ -55,7 +64,11 @@ func cloudAgentSafeToolError(err error) string {
 }
 
 func cloudAgentSafeUserMessage(message string) bool {
-	if message == "" || !utf8.ValidString(message) || strings.ContainsAny(message, "\x00\r\n") || utf8.RuneCountInString(message) > 240 {
+	return cloudAgentSafeUserMessageWithLimit(message, 240)
+}
+
+func cloudAgentSafeUserMessageWithLimit(message string, limit int) bool {
+	if message == "" || !utf8.ValidString(message) || strings.ContainsAny(message, "\x00\r\n") || utf8.RuneCountInString(message) > limit {
 		return false
 	}
 	lower := strings.ToLower(message)

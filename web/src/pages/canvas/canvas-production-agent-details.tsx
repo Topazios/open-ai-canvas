@@ -3,8 +3,9 @@ import { Button, Tooltip } from "antd";
 import { Pause, Play, Square, RefreshCw, ChevronRight, SlidersHorizontal } from "lucide-react";
 import { CanvasExecutionJournal } from "./canvas-execution-journal";
 import { getAgentRun, type AgentEvent } from "@/services/api/agent";
-import { mergeProductionEvents, productionJournalRows, productionParallelSummary } from "@/lib/canvas/production-agent-journal";
+import { mergeProductionEvents, productionJournalRows, productionParallelSummary, productionRunExternalFailure } from "@/lib/canvas/production-agent-journal";
 import { productionPlanPhaseLabels } from "@/lib/production-plan";
+import { productionPlanNeedsContinuation } from "@/lib/canvas/production-agent-state";
 import type { CanvasNodeData } from "@/types/canvas";
 import type { useProductionAgentRuns } from "./use-production-agent-runs";
 
@@ -18,42 +19,111 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
     const [earliest, setEarliest] = useState(false);
     const [order, setOrder] = useState<"desc" | "asc">("desc");
     const historyRequest = useRef<AbortController | null>(null);
-    useEffect(() => { state.refresh(); }, [node.id]);
     useEffect(() => {
-        setEvents([]); setEarliest(false); setHistoryError(""); setLoading(false);
+        state.refresh();
+    }, [node.id]);
+    useEffect(() => {
+        setEvents([]);
+        setEarliest(false);
+        setHistoryError("");
+        setLoading(false);
         if (!runId) return;
         const controller = new AbortController();
         historyRequest.current = controller;
-        void getAgentRun(runId, controller.signal, { eventLimit: 100 }).then(({ run: snapshot }) => {
-            if (!controller.signal.aborted && snapshot.id === runId && snapshot.production?.targetNodeId === node.id) setEvents((current) => mergeProductionEvents(current, (snapshot.events || []).filter((event) => event.runId === runId)));
-        }).catch((cause) => { if (!controller.signal.aborted) setHistoryError(cause instanceof Error ? cause.message : "历史记录读取失败"); });
-        return () => { controller.abort(); historyRequest.current?.abort(); };
+        void getAgentRun(runId, controller.signal, { eventLimit: 100 })
+            .then(({ run: snapshot }) => {
+                if (!controller.signal.aborted && snapshot.id === runId && snapshot.production?.targetNodeId === node.id)
+                    setEvents((current) =>
+                        mergeProductionEvents(
+                            current,
+                            (snapshot.events || []).filter((event) => event.runId === runId),
+                        ),
+                    );
+            })
+            .catch((cause) => {
+                if (!controller.signal.aborted) setHistoryError(cause instanceof Error ? cause.message : "历史记录读取失败");
+            });
+        return () => {
+            controller.abort();
+            historyRequest.current?.abort();
+        };
     }, [runId]);
-    useEffect(() => { if (run?.events) setEvents((current) => mergeProductionEvents(current, run.events!.filter((event) => event.runId === runId))); }, [run?.events, runId]);
+    useEffect(() => {
+        if (run?.events)
+            setEvents((current) =>
+                mergeProductionEvents(
+                    current,
+                    run.events!.filter((event) => event.runId === runId),
+                ),
+            );
+    }, [run?.events, runId]);
     const progress = run?.production;
     const assetGeneration = Boolean(node.metadata?.shortDrama?.assetGroup || node.metadata?.shortDrama?.mediaGroup);
+    const externalFailure = Boolean(run && ["failed", "rejected"].includes(run.status) && productionRunExternalFailure(mergeProductionEvents(events, run.events || []), run.id));
+    const terminal = run && (externalFailure || run.status === "cancelled" || (["failed", "rejected"].includes(run.status) && progress?.workKind === "plan" && progress.assetsStarted));
+    const assetExecutionIncomplete = Boolean(terminal && progress && progress.workKind === "plan" && progress.assetsStarted);
     const planPhaseLabel = progress?.phaseLabel?.trim() || (progress?.phase && productionPlanPhaseLabels[progress.phase]) || "制作方案";
     const planCurrentItem = progress?.currentItem?.trim();
+    const parallelWarnings = progress?.parallelItems?.filter((item) => item.severity === "warning" || item.status === "warning") || [];
     const planCount = progress?.documentTotal
         ? `方案文档 ${progress.documentCount || 0}/${progress.documentTotal} · 资产 ${progress.assetCount || 0}${progress.inventoryComplete ? `/${progress.assetTotal || 0}` : " · 清单登记中"}`
         : `已保存 ${progress?.processedPages || 0}${progress?.inventoryComplete && progress.totalPages > 0 ? `/${progress.totalPages}` : ""} 份`;
     const active = run?.status === "running" || run?.status === "queued";
-    const label = !run ? runId ? "正在核对后台状态" : "提交待确认"
-        : progress?.paused ? progress.waitingForBoundary ? "等待当前模型响应后暂停" : "已暂停"
-        : run.status === "failed" ? "待恢复"
-        : run.status === "completed" ? "已完成 · 待人工验收"
-        : active && progress?.waitingForSharedFacts ? progress.workKind === "storyboard" ? "等待共享制作约束" : "等待共享正文提取"
-        : active ? "后台执行中" : "已停止";
-    const error = state.nodeErrors[node.id] || run?.failureMessage || (!run ? node.metadata?.errorDetails : "");
+    // A paused production run can be persisted as waiting_user/failed while
+    // the production progress still carries the resumable checkpoint. Keep
+    // the resume control visible so a run does not become a silent dead end.
+    const planNeedsContinuation = productionPlanNeedsContinuation(run);
+    const resumable = Boolean(run && (["failed", "waiting_user"].includes(run.status) || (active && progress?.paused) || planNeedsContinuation));
+    const label = !run
+        ? runId
+            ? "正在核对后台状态"
+            : "提交待确认"
+        : progress?.paused
+          ? progress.waitingForBoundary
+              ? "等待当前模型响应后暂停"
+              : "已暂停"
+          : run.status === "waiting_user"
+            ? progress?.plansStarted
+                ? "待处理警告 · 可重试本项"
+                : "故事总纲已完成 · 等待启动其余制作方案"
+            : assetExecutionIncomplete
+              ? "方案已完成 · 资产执行未完成"
+              : ["failed", "rejected"].includes(run.status) && !externalFailure
+                ? "待恢复"
+                : externalFailure
+                  ? progress?.workKind === "plan" && progress.assetsStarted
+                      ? "方案已完成 · 资产执行未完成"
+                      : "待恢复"
+                  : run.status === "completed" && planNeedsContinuation
+                    ? "方案文档未完成 · 可继续"
+                    : run.status === "completed"
+                    ? progress?.workKind === "plan"
+                        ? progress.assetsStarted
+                            ? "所选资产已完成 · 可继续选择"
+                            : "方案已完成 · 资产待手动生成"
+                        : "已完成 · 待人工验收"
+                    : active && progress?.waitingForSharedFacts
+                      ? progress.workKind === "storyboard"
+                          ? "等待共享制作约束"
+                          : "等待共享正文提取"
+                      : active
+                        ? "后台执行中"
+                        : "已停止";
+    const error =
+        state.nodeErrors[node.id] ||
+        (externalFailure ? (progress?.assetsStarted && progress.workKind === "plan" ? node.metadata?.shortDrama?.assetExecutionError || run?.failureMessage : run?.failureMessage) : "") ||
+        (!run ? node.metadata?.errorDetails : "");
     const rows = useMemo(() => {
-        const records = productionJournalRows(events, runId);
+        const records = productionJournalRows(events, runId, { hideAssistantMessages: true });
         return order === "desc" ? records.reverse() : records;
     }, [events, runId, order]);
     const loadEarlier = async () => {
         if (!runId || loading) return;
         const controller = new AbortController();
-        historyRequest.current?.abort(); historyRequest.current = controller;
-        setLoading(true); setHistoryError("");
+        historyRequest.current?.abort();
+        historyRequest.current = controller;
+        setLoading(true);
+        setHistoryError("");
         try {
             const { run: older } = await getAgentRun(runId, controller.signal, { beforeSeq: events[0]?.seq || undefined, eventLimit: 100 });
             if (controller.signal.aborted) return;
@@ -61,35 +131,119 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
             const items = (older.events || []).filter((event) => event.runId === runId);
             setEvents((current) => mergeProductionEvents(current, items));
             setEarliest(items.length === 0 || items[0].seq <= 1);
-        } catch (cause) { if (!controller.signal.aborted) setHistoryError(cause instanceof Error ? cause.message : "历史记录读取失败"); }
-        finally { if (!controller.signal.aborted) setLoading(false); }
+        } catch (cause) {
+            if (!controller.signal.aborted) setHistoryError(cause instanceof Error ? cause.message : "历史记录读取失败");
+        } finally {
+            if (!controller.signal.aborted) setLoading(false);
+        }
     };
     const effort = agent?.request?.reasoningEffort;
-    return <section className="canvas-node-inspector-section production-agent-details" aria-label="制作任务执行记录" data-canvas-no-zoom data-canvas-wheel-scroll>
-        <div className="production-agent-overview">
-            <div className="production-agent-heading"><strong>{node.title || "制作任务"}</strong><span className="production-agent-status" role="status">{label}</span></div>
-            {run ? <div className="production-agent-note">{progress?.workKind === "plan" ? `${planCount} · ${planPhaseLabel}${!progress.concurrentItems?.length && planCurrentItem && planCurrentItem !== planPhaseLabel ? ` · ${planCurrentItem}` : ""}` : progress?.workKind === "storyboard" ? `已完成 ${progress.processedPages}/${progress.totalPages} 场 · 详情 ${progress.artifactCount}/${progress.shotTotal ?? progress.artifactCount} 镜头` : `已解析 ${progress?.processedPages || 0}/${progress?.totalPages || 0} 集正文 · 已产出 ${progress?.artifactCount || 0} 项`}</div> : <div>{runId ? "正在读取该节点的任务记录" : "尚未取得后台任务回执，可继续提交并核对原任务。"}</div>}
-            {(progress?.executionMode === "episode" || !!progress?.concurrentItems?.length) && <div className="production-agent-note" role="status">{productionParallelSummary(progress) || `${progress.paused ? "收尾中" : "并行制作"} ${progress.concurrentItems!.length}/${progress.concurrencyLimit ?? "--"} · ${progress.concurrentItems!.join("、")}`}</div>}
-        </div>
-        {error && <div className="production-agent-error" role="alert">{error}</div>}
-        {state.readErrors[node.id] && <div role="alert">状态核对失败：{state.readErrors[node.id]}</div>}
-        {state.syncError && <div role="alert">{state.syncError}</div>}
-        <div className="production-agent-actions">
-            {(active || run?.status === "failed" || (!runId && agent?.request)) && <Button type="primary" loading={!!state.busy[node.id]} icon={active && !progress?.paused ? <Pause size={14} /> : <Play size={14} />} onClick={() => void state.control(node.id, active && !progress?.paused ? "pause" : "resume")}>{active && !progress?.paused ? (assetGeneration ? "暂停生成" : "暂停任务") : !runId ? (assetGeneration ? "继续生成" : "继续提交") : (assetGeneration ? "继续生成" : "继续任务")}</Button>}
-            {active && <Button disabled={!!state.busy[node.id]} icon={<Square size={14} />} onClick={() => void state.control(node.id, "cancel")}>取消任务</Button>}
-            <Tooltip title="刷新任务状态"><Button aria-label="刷新任务状态" icon={<RefreshCw size={14} />} onClick={state.refresh} /></Tooltip>
-        </div>
-        <details className="production-agent-parameters">
-            <summary><SlidersHorizontal size={14} /><span>运行参数</span><ChevronRight size={14} className="production-agent-chevron" /></summary>
-            <dl>
-                <div><dt>模型</dt><dd>{run?.model || agent?.request?.model || "未记录"}</dd></div>
-                <div><dt>推理强度</dt><dd>{effort ? ({ low: "低", medium: "中", high: "高" })[effort] : "未记录"}</dd></div>
-                <div className="production-agent-prompt"><dt>提示词</dt><dd>{agent?.request?.prompt || node.metadata?.prompt || "未记录"}</dd></div>
-            </dl>
-        </details>
-        <CanvasExecutionJournal rows={rows} order={order} onOrder={setOrder} empty={runId ? "暂无关键进展记录" : "尚未调度模型"}>
-        {runId && !earliest && (events[0]?.seq || 0) > 1 && <Button className="production-agent-history" size="small" type="text" loading={loading} onClick={() => void loadEarlier()}>加载更早记录</Button>}
-        {historyError && <div role="alert">{historyError}<Button loading={loading} onClick={() => void loadEarlier()}>重试读取记录</Button></div>}
-        </CanvasExecutionJournal>
-    </section>;
+    return (
+        <section className="canvas-node-inspector-section production-agent-details" aria-label="制作任务执行记录" data-canvas-no-zoom data-canvas-wheel-scroll>
+            <div className="production-agent-overview">
+                <div className="production-agent-heading">
+                    <strong>{node.title || "制作任务"}</strong>
+                    <span className="production-agent-status" role="status">
+                        {label}
+                    </span>
+                </div>
+                {run ? (
+                    <div className="production-agent-note">
+                        {progress?.workKind === "plan"
+                            ? `${planCount} · ${planPhaseLabel}${!progress.concurrentItems?.length && planCurrentItem && planCurrentItem !== planPhaseLabel ? ` · ${planCurrentItem}` : ""}`
+                            : progress?.workKind === "storyboard"
+                              ? `已完成 ${progress.processedPages}/${progress.totalPages} 场 · 详情 ${progress.artifactCount}/${progress.shotTotal ?? progress.artifactCount} 镜头`
+                              : `已解析 ${progress?.processedPages || 0}/${progress?.totalPages || 0} 集正文 · 已产出 ${progress?.artifactCount || 0} 项`}
+                    </div>
+                ) : (
+                    <div>{runId ? "正在读取该节点的任务记录" : "尚未取得后台任务回执，可继续提交并核对原任务。"}</div>
+                )}
+                        {active && (progress?.executionMode === "episode" || !!progress?.concurrentItems?.length) && (
+                    <div className="production-agent-note" role="status">
+                        {productionParallelSummary(progress) || `${progress.paused ? "收尾中" : "并行制作"} ${progress.concurrentItems!.length}/${progress.concurrencyLimit ?? "--"} · ${progress.concurrentItems!.join("、")}`}
+                    </div>
+                )}
+                {assetExecutionIncomplete && progress && (
+                    <div className="production-agent-note" role="status">
+                        资产执行已停止，方案文稿仍然完成；已保存 {progress.assetCount || 0}/{progress.assetTotal || 0} 项。可在对应资产分组详情中重试，已保存内容不会重新生成。
+                    </div>
+                )}
+                {parallelWarnings.length ? (
+                    <div className="production-agent-error" role="alert">
+                        {parallelWarnings.map((item) => item.name).join("、")} 未通过本地校验，任务已暂停；点击“继续任务”会从已保存文稿继续。
+                    </div>
+                ) : null}
+            </div>
+            {error && (
+                <div className="production-agent-error" role="alert">
+                    {error}
+                </div>
+            )}
+            {state.readErrors[node.id] && <div role="alert">状态核对失败：{state.readErrors[node.id]}</div>}
+            {state.syncError && <div role="alert">{state.syncError}</div>}
+            <div className="production-agent-actions">
+                {(active || resumable || externalFailure || (!runId && agent?.request)) && (
+                    <Button type="primary" loading={!!state.busy[node.id]} icon={active && !progress?.paused ? <Pause size={14} /> : <Play size={14} />} onClick={() => void state.control(node.id, active && !progress?.paused ? "pause" : "resume")}>
+                        {active && !progress?.paused
+                            ? assetGeneration
+                                ? "暂停生成"
+                                : "暂停任务"
+                            : !runId
+                              ? assetGeneration
+                                  ? "继续生成"
+                                  : "继续提交"
+                              : progress?.assetsStarted
+                                ? `重试上次范围（${progress.selectedAssetKeys?.length || progress.assetTotal || 0}项）`
+                                : assetGeneration
+                                  ? "继续生成"
+                                  : "继续任务"}
+                    </Button>
+                )}
+                {active && (
+                    <Button disabled={!!state.busy[node.id]} icon={<Square size={14} />} onClick={() => void state.control(node.id, "cancel")}>
+                        取消任务
+                    </Button>
+                )}
+                <Tooltip title="刷新任务状态">
+                    <Button aria-label="刷新任务状态" icon={<RefreshCw size={14} />} onClick={state.refresh} />
+                </Tooltip>
+            </div>
+            <details className="production-agent-parameters">
+                <summary>
+                    <SlidersHorizontal size={14} />
+                    <span>运行参数</span>
+                    <ChevronRight size={14} className="production-agent-chevron" />
+                </summary>
+                <dl>
+                    <div>
+                        <dt>模型</dt>
+                        <dd>{run?.model || agent?.request?.model || "未记录"}</dd>
+                    </div>
+                    <div>
+                        <dt>推理强度</dt>
+                        <dd>{effort ? { low: "低", medium: "中", high: "高" }[effort] : "未记录"}</dd>
+                    </div>
+                    <div className="production-agent-prompt">
+                        <dt>提示词</dt>
+                        <dd>{agent?.request?.prompt || node.metadata?.prompt || "未记录"}</dd>
+                    </div>
+                </dl>
+            </details>
+            <CanvasExecutionJournal rows={rows} order={order} onOrder={setOrder} empty={runId ? "暂无关键进展记录" : "尚未调度模型"}>
+                {runId && !earliest && (events[0]?.seq || 0) > 1 && (
+                    <Button className="production-agent-history" size="small" type="text" loading={loading} onClick={() => void loadEarlier()}>
+                        加载更早记录
+                    </Button>
+                )}
+                {historyError && (
+                    <div role="alert">
+                        {historyError}
+                        <Button loading={loading} onClick={() => void loadEarlier()}>
+                            重试读取记录
+                        </Button>
+                    </div>
+                )}
+            </CanvasExecutionJournal>
+        </section>
+    );
 }

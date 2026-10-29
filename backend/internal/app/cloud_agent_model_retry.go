@@ -13,6 +13,10 @@ func (s *Service) cloudAgentModelTaskTransientFailure(taskID string) bool {
 	if err != nil || task == nil || task.Status != model.TaskStatusFailed {
 		return false
 	}
+	// Output limits need a changed request, not an unchanged transient retry.
+	if cloudAgentOutputLimitReached(task) {
+		return false
+	}
 	log, err := s.repo.LatestAPICallFailureForTask(taskID)
 	if err != nil {
 		return false
@@ -43,7 +47,7 @@ func (s *Service) cloudAgentModelTaskTransientFailure(taskID string) bool {
 	if status == 0 || (status >= 200 && status < 300) {
 		for _, code := range []string{log.ErrorCode, diagnosticCode} {
 			switch strings.ToLower(strings.TrimSpace(code)) {
-			case "server_error", "overloaded_error", "service_unavailable":
+			case "server_error", "overloaded_error", "service_unavailable", "unavailable", "upstream_timeout", "rate_limit_exceeded", "upstream_response_invalid":
 				return true
 			}
 		}
@@ -55,10 +59,19 @@ func (s *Service) cloudAgentModelTaskTransientFailure(taskID string) bool {
 				}
 			}
 		}
-	}
-	if status == 0 {
-		raw := strings.ToLower(task.Error)
-		return strings.Contains(raw, "timeout") || strings.Contains(raw, "deadline") || strings.Contains(raw, "connection") || strings.Contains(raw, "eof") || strings.Contains(task.Error, "超时")
+		// HTTP success only acknowledges the headers. Reading a streaming body
+		// can still fail before a usable model result has been received.
+		for _, detail := range []string{log.Error, task.Error} {
+			raw := strings.ToLower(detail)
+			if strings.Contains(raw, "agent 流式事件解析失败：unexpected end of json input") ||
+				strings.Contains(raw, "agent 流式响应不完整或 json 无效") ||
+				strings.Contains(raw, "agent 工具参数不是完整 json") {
+				return true
+			}
+			if strings.Contains(raw, "timeout") || strings.Contains(raw, "deadline") || strings.Contains(raw, "connection") || strings.Contains(raw, "eof") || strings.Contains(raw, "超时") {
+				return true
+			}
+		}
 	}
 	return false
 }

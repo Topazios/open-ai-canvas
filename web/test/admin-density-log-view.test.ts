@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { adminDensityStorageKey, normalizeAdminDensity } from "../src/pages/admin/components/admin-density";
-import { logBillingLabel, logStatus, normalizeLogView } from "../src/pages/admin/logs/log-view";
+import { logBillingLabel, logStatus, normalizeLogView, shouldPollApiLogs } from "../src/pages/admin/logs/log-view";
 
 test("后台默认紧凑，密度偏好按账号隔离且拒绝无效值", () => {
     expect(normalizeAdminDensity(null)).toBe("compact");
@@ -17,6 +17,12 @@ test("请求视图默认排障，全部字段和账务仍可单独读取", () =>
     expect(normalizeLogView("all")).toBe("all");
 });
 
+test("请求明细第一页持续检查新记录，其他页只跟踪处理中请求", () => {
+    expect(shouldPollApiLogs(1, [])).toBe(true);
+    expect(shouldPollApiLogs(2, [])).toBe(false);
+    expect(shouldPollApiLogs(2, [{ status: "running" }])).toBe(true);
+});
+
 test("供应商进行中与失败状态优先于 HTTP 成功，失败不会变绿", () => {
     expect(logStatus({ status: "succeeded", providerStatus: "RUNNING" }).tone).toBe("warning");
     for (const providerStatus of ["failed", "cancelled", "canceled", "expired"]) {
@@ -24,6 +30,8 @@ test("供应商进行中与失败状态优先于 HTTP 成功，失败不会变�
     }
     expect(logStatus({ status: "failed", providerStatus: "running" }).tone).toBe("error");
     expect(logStatus({ status: "succeeded" }).tone).toBe("success");
+    expect(logStatus({ status: "warning", providerStatus: "incomplete" })).toEqual({ label: "警告", tone: "warning" });
+    expect(logStatus({ status: "warning", providerStatus: "failed" }).tone).toBe("error");
 });
 
 test("账务视图区分不计费、未扣积分、预授权与真实结算", () => {

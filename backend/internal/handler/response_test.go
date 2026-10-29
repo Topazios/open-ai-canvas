@@ -41,6 +41,18 @@ func TestFailServiceProjectsAppError(t *testing.T) {
 	}
 }
 
+func TestFailServicePreservesBillingReviewConflict(t *testing.T) {
+	recorder, context := responseTestContext()
+	err := service.NewAppError(http.StatusConflict, "上一次调用费用仍待核对")
+	err.Reason = service.ErrorReason("task_billing_review_required")
+	failService(context, err)
+
+	response := decodeFailureEnvelope(t, recorder)
+	if recorder.Code != http.StatusConflict || response.Code != http.StatusConflict || response.Reason != "task_billing_review_required" || response.Msg != err.Message {
+		t.Fatalf("billing review response = status %d, body %#v", recorder.Code, response)
+	}
+}
+
 func TestFailServiceProjectsDNSFailureWithoutTransportDetails(t *testing.T) {
 	recorder, context := responseTestContext()
 	err := service.WrapAppError(http.StatusBadGateway, "外部服务域名解析失败，请检查渠道域名和后端 DNS 配置", errors.New("private-sentinel resolver failure"))

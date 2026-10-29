@@ -25,7 +25,7 @@ function retryIdentity(task: GenerationTask) {
 }
 
 // Workflow prompts may contain only instructions: the durable batch owns the prose.
-export async function retryWorkflowGeneration(node: CanvasNodeData, source: GenerationTask | undefined, projectId: string, config: AiConfig, api = dependencies, nodes: CanvasNodeData[] = [node], retryTask = api.retry) {
+export async function retryWorkflowGeneration(node: CanvasNodeData, source: GenerationTask | undefined, projectId: string, config: AiConfig, api = dependencies, nodes: CanvasNodeData[] = [node], retryTask = api.retry, regenerate = false) {
     const data = node.metadata?.shortDrama;
     if (!data) throw new Error("节点缺少流程信息");
     if (data.productionAgent) throw new Error("制作 Agent 请通过原作业继续，不能降级为普通文本重试");
@@ -41,7 +41,11 @@ export async function retryWorkflowGeneration(node: CanvasNodeData, source: Gene
     }
     if (original && (!data.textBatch || original.operation === "short_drama_batch")) {
         if (original.status === "queued" || original.status === "running") return original;
-        if (original.status === "failed" || original.status === "cancelled") {
+        if (regenerate && (original.status === "failed" || original.status === "cancelled") && (isContentModerationError(original.errorCode) || isContentModerationError(original.error))) {
+            const next = node.metadata?.prompt?.trim();
+            if (!next || !original.prompt || generationPromptFingerprint(next) === generationPromptFingerprint(original.prompt)) throw new Error("内容审核未通过，请先修改生成要求，不能原样重试");
+        }
+        if (!regenerate && (original.status === "failed" || original.status === "cancelled")) {
             const moderated = isContentModerationError(original.errorCode) || isContentModerationError(original.error);
             const revised = node.metadata?.prompt?.trim();
             if (!moderated && data.step !== "story.body" && !data.screenplayAudit) {
@@ -72,14 +76,14 @@ export async function retryWorkflowGeneration(node: CanvasNodeData, source: Gene
     if (data.step !== "story.body" && data.textBatch && !data.textBatch.units.some((unit) => unit.text.trim())) throw new Error("分批任务缺少正文，未提交生成");
     const retry = source ? await createGenerationRetryContext(source.id, retryIdentity(source).attemptGroupId) : { clientOperationId: data.operationId };
     if (!retry.clientOperationId) throw new Error("节点缺少提交标识，请从前置节点重新发起");
-    const mode = data.mediaKind === "image" ? "image" : "text";
+    const mode = data.mediaKind === "image" ? "image" : data.mediaKind === "audio" ? "audio" : "text";
     if (mode === "image") workflowGenerationSources(data, nodes);
     const textInput = workflowBodyTaskInput(node, nodes);
     const input = await api.prepare({ projectId, mode, prompt: mode === "text" ? textInput.prompt : prompt, workflowBatch: mode === "text" ? textInput.workflowBatch : undefined, structuredOutput: mode === "text" ? textInput.structuredOutput : undefined,
         referenceImages: mode === "image" ? workflowImageReferences(node, nodes) : undefined,
         reasoningEffort: mode === "text" ? node.metadata?.reasoningEffort || "medium" : undefined,
         config: { ...config, model: node.metadata!.model || config[`${mode}Model`] || config.model,
-            ...(mode === "image" ? { size: node.metadata?.size || config.size, quality: node.metadata?.quality || config.quality, transparentBackground: node.metadata?.transparentBackground || "false", count: "1" } : {}) }, streamText: mode === "text" && !textInput.workflowBatch, ...retry,
+            ...(mode === "image" ? { size: node.metadata?.size || config.size, quality: node.metadata?.quality || config.quality, transparentBackground: node.metadata?.transparentBackground || "false", count: "1" } : mode === "audio" ? { audioVoice: node.metadata?.audioVoice || config.audioVoice, audioFormat: node.metadata?.audioFormat || config.audioFormat, audioSpeed: node.metadata?.audioSpeed || config.audioSpeed, audioInstructions: node.metadata?.audioInstructions || "" } : {}) }, streamText: mode === "text" && !textInput.workflowBatch, ...retry,
         // 审核仍写回正文节点，节点 step 可能保持 story.body；任务元数据必须使用
         // story.audit，后端才能按审核任务进入可持久化排队和专用重试路径。
         metadata: { source: "canvas-short-drama-workflow", nodeId: node.id, pipelineId: data.pipelineId, workflowStage: data.stage, workflowStep: textInput.structuredOutput ? "story.audit" : data.step, episodeNumber: data.episodeNumber } });

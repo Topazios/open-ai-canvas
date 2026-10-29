@@ -18,7 +18,7 @@ function visibleMembers(frame: CanvasNodeData, members: CanvasNodeData[]) {
 }
 
 export function groupGridMetrics(frame: CanvasNodeData, members: CanvasNodeData[]) {
-    const images = Boolean(frame.metadata?.shortDrama?.mediaGroup);
+    const images = frame.metadata?.shortDrama?.mediaKind === "image" && Boolean(frame.metadata?.shortDrama?.mediaGroup);
     const reference = frame.metadata?.workflowKind === "reference_set";
     const referenceOrder = new Map((frame.metadata?.referenceAssetNodeIds || []).map((id, index) => [id, index]));
     const size = reference ? [...members].sort((a, b) => (referenceOrder.get(a.id) ?? Infinity) - (referenceOrder.get(b.id) ?? Infinity) || a.id.localeCompare(b.id))
@@ -37,7 +37,9 @@ export function groupGridMetrics(frame: CanvasNodeData, members: CanvasNodeData[
     const width = Math.max(cellWidth + padding * 2, Number.isFinite(available) ? available : cellWidth + padding * 2);
     const columns = Math.max(1, Math.floor((width - padding * 2 + gapX + 0.001) / (cellWidth + gapX)));
     const rows = Math.max(1, Math.ceil(members.length / columns));
-    const height = Math.max(240, top + rows * cellHeight + (rows - 1) * gapY + padding);
+    const workflow = frame.metadata?.shortDrama;
+    const footer = workflow?.step === "story.plan" && !workflow.planGroup ? 36 : 0;
+    const height = Math.max(240, top + rows * cellHeight + (rows - 1) * gapY + padding + footer);
     return { width, height, columns, cellWidth, cellHeight, gapX, gapY, padding, top, images, reference };
 }
 

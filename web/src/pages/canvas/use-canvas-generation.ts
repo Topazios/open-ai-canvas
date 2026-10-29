@@ -8,7 +8,7 @@ import { reconcileImageBatchRoot } from "@/lib/canvas/canvas-image-batch-retry";
 import { markCanvasTaskRecoveryUnconfirmed } from "@/lib/canvas/canvas-task-state";
 import { applyCanvasGenerationTaskNodeEffect, isCanvasGenerationDurableAckError } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskNode, ensureCanvasNodeAsset, retryCanvasAssetSyncAfterRateLimit } from "@/services/project-asset-sync";
-import { listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeGenerationTasks, type GenerationTask, type TaskLog } from "@/services/api/task-center";
+import { listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeCanvasGenerationTasks, subscribeGenerationTasks, type GenerationTask, type TaskLog } from "@/services/api/task-center";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { cinematicStoryboardColumns, storyboardRowsFromTask } from "@/lib/canvas/canvas-project-domain";
@@ -31,6 +31,9 @@ type UseCanvasGenerationOptions = {
     nodes: CanvasNodeData[];
     nodesRef: { current: CanvasNodeData[] };
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
+    // 任务首次绑定到节点后立即落盘，避免用户在创建任务后关闭页面时，
+    // 节点仍停留在浏览器内存而无法在下次打开画布时按 taskId 恢复。
+    persistTaskBinding?: () => Promise<void>;
 };
 
 const NODE_STATUS_LOADING = "loading" as const;
@@ -195,12 +198,14 @@ export async function recoverCanvasGenerationTaskNode(input: {
     }
 }
 
-export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded, nodes, nodesRef, setNodes }: UseCanvasGenerationOptions) {
+export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded, nodes, nodesRef, setNodes, persistTaskBinding }: UseCanvasGenerationOptions) {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const recoveringTaskIdsRef = useRef(new Set<string>());
     const autoSavedTaskIdsRef = useRef(new Set<string>());
+    const taskBindingSaveTailRef = useRef(Promise.resolve());
+    const taskBindingSaveScheduledRef = useRef(false);
     const consumerControllerRef = useRef(new AbortController());
     const recoveryCoordinatorRef = useRef<ReturnType<typeof createCanvasGenerationRecoveryCoordinator> | null>(null);
     if (!recoveryCoordinatorRef.current) recoveryCoordinatorRef.current = createCanvasGenerationRecoveryCoordinator();
@@ -253,10 +258,12 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
 
     const bindGenerationTask = useCallback(
         (targetNodeId: string, task: GenerationTask) => {
+            let newlyBound = false;
             setNodes((current) =>
                 current.map((node) => {
                     if (node.id !== targetNodeId) return node;
                     if (node.metadata?.shortDrama?.materializedTaskId === task.id) return node;
+                    newlyBound = node.metadata?.taskId !== task.id;
                     const failed = task.status === "failed" || task.status === "cancelled";
                     const hasCompletedContent = task.status === "succeeded" && Boolean(node.metadata?.content || node.metadata?.storageKey);
                     const failure = failed ? generationFailureMetadata(task.error || (task.status === "cancelled" ? "任务已取消" : "任务失败"), node.metadata?.composerContent || node.metadata?.prompt || task.prompt || "") : undefined;
@@ -271,8 +278,21 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     };
                 }),
             );
+            if (newlyBound && persistTaskBinding && !taskBindingSaveScheduledRef.current) {
+                // 同一批次可能在同一轮创建多个任务；合并到一个微任务中，
+                // 既保证 taskId 已写入 nodesRef，又避免为每个子任务重复保存整张画布。
+                taskBindingSaveScheduledRef.current = true;
+                Promise.resolve().then(() => {
+                    taskBindingSaveScheduledRef.current = false;
+                    const save = taskBindingSaveTailRef.current.then(() => persistTaskBinding());
+                    taskBindingSaveTailRef.current = save.catch(() => undefined);
+                    return save;
+                }).catch(() => {
+                    // 绑定已保存在本地；云端同步失败由常规同步重试机制接管。
+                });
+            }
         },
-        [setNodes],
+        [persistTaskBinding, setNodes],
     );
 
     const saveGeneratedAsset = useCallback(
@@ -367,10 +387,10 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 };
                 if (signal.aborted) return onAbort();
                 signal.addEventListener("abort", onAbort, { once: true });
-                unsubscribe = subscribeCanvasGenerationRecoveryTasks([taskId], onTask);
+                unsubscribe = subscribeCanvasGenerationTasks(projectId, [taskId], onTask);
                 if (settled) unsubscribe();
             }),
-        [],
+        [projectId],
     );
 
     const recoverInterruptedGenerationTasks = useCallback(

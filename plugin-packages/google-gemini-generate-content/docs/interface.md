@@ -68,11 +68,13 @@
 | 映射位置 | 上游路径或转换表达式 |
 | --- | --- |
 | `response.status` | `"succeeded"` |
-| `response.text` | `{"$map":{"from":{"$ref":"response.candidates.0.content.parts"},"as":"part","in":{"$omitEmpty":{"$ref":"part.text"}}}}` |
+| `response.text` | `{"$map":{"from":{"$ref":"response.candidates.0.content.parts"},"as":"part","in":{"$if":{"condition":{"$ref":"part.thought"},"then":null,"else":{"$omitEmpty":{"$ref":"part.text"}}}}}}` |
+| `response.reasoning` | `{"$map":{"from":{"$ref":"response.candidates.0.content.parts"},"as":"part","in":{"$if":{"condition":{"$ref":"part.thought"},"then":{"$omitEmpty":{"$ref":"part.text"}},"else":null}}}}` |
 | `response.usage` | `{"$ref":"response.usageMetadata"}` |
 | `response.errorPaths[0]` | `"error.code"` |
 | `response.messagePaths[0]` | `"error.message"` |
-| `agentResponse.textPaths[0]` | `"candidates.0.content.parts.0.text"` |
+| `agentResponse.text` | `{"$map":{"from":{"$ref":"response.candidates.0.content.parts"},"as":"part","in":{"$if":{"condition":{"$ref":"part.thought"},"then":null,"else":{"$omitEmpty":{"$ref":"part.text"}}}}}}` |
+| `agentResponse.reasoning` | `{"$map":{"from":{"$ref":"response.candidates.0.content.parts"},"as":"part","in":{"$if":{"condition":{"$ref":"part.thought"},"then":{"$omitEmpty":{"$ref":"part.text"}},"else":null}}}}` |
 | `agentResponse.toolCallsPath` | `"candidates.0.content.parts"` |
 | `agentResponse.toolCallIdPaths[0]` | `"functionCall.id"` |
 | `agentResponse.toolCallNamePaths[0]` | `"functionCall.name"` |
@@ -86,7 +88,7 @@
 
 ## 兼容边界
 
-该包只代表上述线协议 profile；同一品牌的其他 endpoint、云区域或网关包装必须使用独立插件，不能根据模型名猜测。
+thought=true 的文本片段只映射到 reasoning，其余文本片段才映射到正文；Agent 使用相同的 text/reasoning 表达式，functionCall 单独提取，不读取思考内容中的工具描述。
 
 <!-- YINGCE_MANIFEST_CONTRACT_START -->
 ## Manifest 完整接口定义
@@ -319,8 +321,37 @@
               },
               "as": "part",
               "in": {
-                "$omitEmpty": {
-                  "$ref": "part.text"
+                "$if": {
+                  "condition": {
+                    "$ref": "part.thought"
+                  },
+                  "then": null,
+                  "else": {
+                    "$omitEmpty": {
+                      "$ref": "part.text"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "reasoning": {
+            "$map": {
+              "from": {
+                "$ref": "response.candidates.0.content.parts"
+              },
+              "as": "part",
+              "in": {
+                "$if": {
+                  "condition": {
+                    "$ref": "part.thought"
+                  },
+                  "then": {
+                    "$omitEmpty": {
+                      "$ref": "part.text"
+                    }
+                  },
+                  "else": null
                 }
               }
             }
@@ -336,9 +367,48 @@
           ]
         },
         "agentResponse": {
-          "textPaths": [
-            "candidates.0.content.parts.0.text"
-          ],
+          "text": {
+            "$map": {
+              "from": {
+                "$ref": "response.candidates.0.content.parts"
+              },
+              "as": "part",
+              "in": {
+                "$if": {
+                  "condition": {
+                    "$ref": "part.thought"
+                  },
+                  "then": null,
+                  "else": {
+                    "$omitEmpty": {
+                      "$ref": "part.text"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "reasoning": {
+            "$map": {
+              "from": {
+                "$ref": "response.candidates.0.content.parts"
+              },
+              "as": "part",
+              "in": {
+                "$if": {
+                  "condition": {
+                    "$ref": "part.thought"
+                  },
+                  "then": {
+                    "$omitEmpty": {
+                      "$ref": "part.text"
+                    }
+                  },
+                  "else": null
+                }
+              }
+            }
+          },
           "toolCallsPath": "candidates.0.content.parts",
           "toolCallIdPaths": [
             "functionCall.id"

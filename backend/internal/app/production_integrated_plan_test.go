@@ -19,8 +19,9 @@ func TestProductionIntegratedPlanCompletesWithoutSpecial(t *testing.T) {
 	for _, section := range unifiedPlanSections[1:3] {
 		submitOrderedPlan(t, s, run.ID, section.Key, "", section.Title)
 	}
-	submitOrderedPlan(t, s, run.ID, "hero", "character", "林岚")
 	submitOrderedPlan(t, s, run.ID, "generation", "", "生成规范")
+	startPlanAssetsForTest(t, s, run.ID)
+	submitOrderedPlan(t, s, run.ID, "hero", "character", "林岚")
 	check := productionCall(t, s, run.ID, "production_check", map[string]any{}, false)
 	if check["valid"] != true {
 		t.Fatal(check)
@@ -35,6 +36,17 @@ func TestProductionIntegratedPlanCompletesWithoutSpecial(t *testing.T) {
 		}
 	}
 	policy := productionScopedPolicy("", m)
+	if !strings.Contains(policy, "故事地点必须影响人物关系") || !strings.Contains(policy, "不编造当地法律") {
+		t.Fatal("localized storycraft requirements missing from production plan policy")
+	}
+	for _, required := range []string{"本土化不等于日常经营", "原文故事概念", "类型冲突"} {
+		if !strings.Contains(policy, required) {
+			t.Fatal("localized genre contract missing", required)
+		}
+	}
+	if productionScopedPolicy(policy, m) != policy {
+		t.Fatal("resuming production must not repeatedly append localization policy")
+	}
 	if strings.Contains(policy, "五类") || strings.Contains(policy, "PRP/SPC") {
 		t.Fatal("legacy inventory policy leaked")
 	}
@@ -72,7 +84,15 @@ func TestProductionIntegratedEffectsPreservesHistoricalReferencesAndHeadings(t *
 
 func TestProductionIntegratedExecutionRequirementsReachSubmit(t *testing.T) {
 	for key, fields := range productionPlanExecutionRequirements {
-		tools := productionRuntimeTools(productionManifest{Plan: &productionPlan{Version: 3}}, map[string]any{"nextAction": map[string]any{"key": key}})
+		version := 3
+		if key == "story" {
+			version = 4
+		}
+		nextAction := map[string]any{
+			"key":                   key,
+			"documentSchemaVersion": productionPlanDocumentSchemaVersion(version),
+		}
+		tools := productionRuntimeTools(productionManifest{Plan: &productionPlan{Version: version}}, map[string]any{"nextAction": nextAction})
 		for _, tool := range tools {
 			fn := tool["function"].(map[string]any)
 			if fn["name"] != "production_submit" {

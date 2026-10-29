@@ -96,7 +96,7 @@ test("Create refresh subscriptions share one durable scheduler observation witho
     });
 });
 
-test("task subscription can reconnect after an observation failure", async () => {
+test("task subscription retries after an observation failure without requiring resubscription", async () => {
     let queryCalls = 0;
     const terminal: GenerationTask = {
         id: "dreamina:reconnect-task-0001",
@@ -121,17 +121,53 @@ test("task subscription can reconnect after an observation failure", async () =>
     const previousWarn = console.warn;
     console.warn = () => undefined;
     try {
-        const first = service.subscribe([terminal.id], () => undefined);
-        await new Promise((resolveTick) => setTimeout(resolveTick, 0));
-        first();
-
         const observed: GenerationTask[] = [];
-        const second = service.subscribe([terminal.id], (task) => observed.push(task));
-        await new Promise((resolveTick) => setTimeout(resolveTick, 0));
-        second();
+        const disconnect = service.subscribe([terminal.id], (task) => observed.push(task));
+        await new Promise((resolveTick) => setTimeout(resolveTick, 1_100));
+        disconnect();
 
         expect(queryCalls).toBe(2);
         expect(observed.at(-1)).toMatchObject({ id: terminal.id, status: "succeeded" });
+    } finally {
+        console.warn = previousWarn;
+    }
+});
+
+test("a timed-out client observation re-queries a long-running image task until backend completion", async () => {
+    let queryCalls = 0;
+    let waitCalls = 0;
+    const running: GenerationTask = {
+        id: "image-long-running-0001",
+        projectId: "canvas-project-0001",
+        type: "canvas_image",
+        status: "running",
+        prompt: "fixture",
+        attempts: 1,
+        createdAt: "2026-08-13T00:00:00.000Z",
+        updatedAt: "2026-08-13T00:00:00.000Z",
+    };
+    const terminal = { ...running, status: "succeeded" as const, updatedAt: "2026-08-13T00:16:00.000Z" };
+    const service = createGenerationTaskSubscriptionService({
+        async queryTask() {
+            queryCalls += 1;
+            return queryCalls === 1 ? running : terminal;
+        },
+        async waitTask() {
+            waitCalls += 1;
+            throw new Error("client-side observation timeout");
+        },
+    });
+    const previousWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+        const observed: GenerationTask[] = [];
+        const disconnect = service.subscribe([running.id], (task) => observed.push(task));
+        await new Promise((resolveTick) => setTimeout(resolveTick, 1_100));
+        disconnect();
+
+        expect(waitCalls).toBe(1);
+        expect(queryCalls).toBe(2);
+        expect(observed.at(-1)).toMatchObject({ id: running.id, status: "succeeded" });
     } finally {
         console.warn = previousWarn;
     }

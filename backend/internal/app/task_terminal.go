@@ -69,7 +69,6 @@ func (s *Service) terminalCoordinator() *taskTerminalCoordinator {
 }
 
 func (c *taskTerminalCoordinator) markPreparationFailure(task *model.Task, stage string, err error, billingUncertain bool, refundReason string) error {
-	c.ensureFailedAttemptLogged(task, err)
 	task.Status = model.TaskStatusFailed
 	task.Stage = stage
 	task.Error = c.userFacingMessage(err)
@@ -102,6 +101,8 @@ func (c *taskTerminalCoordinator) handleExecutionFailure(task *model.Task, err e
 		if latest, latestErr := c.repo.Task(task.ID); latestErr == nil && latest.Status == model.TaskStatusCancelled {
 			return c.handleAlreadyCancelled(*latest)
 		}
+	}
+	if errors.Is(err, context.Canceled) && !providerSucceeded {
 		task.Status = model.TaskStatusCancelled
 		task.Stage = "任务已取消"
 		task.Error = "任务已取消"
@@ -127,7 +128,6 @@ func (c *taskTerminalCoordinator) handleExecutionFailure(task *model.Task, err e
 	}
 
 	task.Status = model.TaskStatusFailed
-	c.ensureFailedAttemptLogged(task, err)
 	task.Stage = "任务失败"
 	task.Error = c.userFacingMessage(err)
 	outcome := taskSubmissionOutcome(task, channelSlotFailedBeforeRequest)
@@ -138,7 +138,27 @@ func (c *taskTerminalCoordinator) handleExecutionFailure(task *model.Task, err e
 	if outcome == "unknown" {
 		retryClass = "reconcile_submission"
 	}
-	recordTaskDiagnostic(task, "execution", "provider_execution_failed", outcome, retryClass, err)
+	if providerSucceeded {
+		// The provider already returned a result. Local processing must not be
+		// attributed to a channel failure or suggest another paid generation.
+		task.Stage = "生成结果本地处理失败"
+		recordTaskDiagnostic(task, "postprocess", "local_processing_failed", outcome, "inspect_local_processing", nil)
+	} else {
+		recordTaskDiagnostic(task, "execution", "provider_execution_failed", outcome, retryClass, err)
+	}
+	if diagnostic := taskExecutionDiagnostic(task); diagnostic != nil && diagnostic.Severity == "warning" {
+		switch diagnostic.Outcome {
+		case "incomplete":
+			task.Stage = "响应内容待补全"
+		case "not_submitted":
+			task.Stage = "任务尚未提交"
+		case "needs_attention":
+			task.Stage = "任务状态待核对"
+		default:
+			task.Stage = "本地处理待核对"
+		}
+	}
+	c.ensureFailedAttemptLogged(task, err)
 	if terminalErr := c.markTerminalState(task); terminalErr != nil {
 		return errors.Join(err, terminalErr)
 	}
@@ -149,7 +169,11 @@ func (c *taskTerminalCoordinator) handleExecutionFailure(task *model.Task, err e
 	} else {
 		billingErr = c.billing.RefundBilling(task.BillingOrderID, task.Error)
 	}
-	_ = c.logger.log(task.UserID, task.ID, "error", "任务处理失败", task.Error)
+	level, message := "error", "任务处理失败"
+	if diagnostic := taskExecutionDiagnostic(task); diagnostic != nil && diagnostic.Severity == "warning" {
+		level, message = "warn", "任务尚未完成，请查看处理提示"
+	}
+	_ = c.logger.log(task.UserID, task.ID, level, message, task.Error)
 	resultErr := err
 	if billingErr != nil {
 		resultErr = errors.Join(resultErr, fmt.Errorf("任务计费收尾失败：%w", billingErr))
@@ -196,7 +220,7 @@ func (c *taskTerminalCoordinator) handleResultPersistenceFailure(task *model.Tas
 	}
 	c.finalizeReplay(task, model.TaskStatusFailed, "文本回放草稿归并失败")
 	billingErr := c.billing.MarkBillingUncertain(task.BillingOrderID, "上游已成功但任务结果未保存："+task.Error)
-	_ = c.logger.log(task.UserID, task.ID, "error", "任务结果保存失败", task.Error)
+	_ = c.logger.log(task.UserID, task.ID, "warn", "任务结果尚未保存，请检查本地处理", task.Error)
 	resultErr := saveErr
 	if billingErr != nil {
 		resultErr = errors.Join(resultErr, fmt.Errorf("任务结果保存失败后的计费收尾失败：%w", billingErr))

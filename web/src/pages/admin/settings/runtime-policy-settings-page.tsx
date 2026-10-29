@@ -1,4 +1,4 @@
-import { App, Button, Form, InputNumber, Skeleton } from "antd";
+import { App, Button, Form, InputNumber, Select, Skeleton } from "antd";
 import { AlertTriangle, Bot, Database, Gauge, Infinity as InfinityIcon, Network, RefreshCw, RotateCcw, Save, ShieldCheck, TimerReset } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
@@ -11,7 +11,7 @@ import { AdminPageFrame } from "../components/admin-shell";
 import { AdminStatTile, AdminStatusBadge, SettingsSectionCard } from "../components/admin-ui";
 
 type PolicyGroup = "resource" | "storage" | "task" | "request";
-type RuntimePolicyDraft = Pick<RuntimePolicySetting, "resource" | "storage" | "task" | "request">;
+type RuntimePolicyDraft = Pick<RuntimePolicySetting, "resource" | "storage" | "task" | "request" | "canvas">;
 type PolicyField = { group: PolicyGroup; name: string; label: string; extra: string; unit: string; min?: number; max: number };
 type PolicySectionDefinition = {
     id: string;
@@ -61,6 +61,7 @@ const concurrencyFields: PolicyField[] = [
 
 const timeoutFields: PolicyField[] = [
     { group: "task", name: "imageTimeoutMinutes", label: "图片任务超时", extra: "图片任务进入失败状态前的最长执行时间。", unit: "分钟", max: 9_999 },
+    { group: "task", name: "providerRequestTimeoutSeconds", label: "单次上游请求超时", extra: "文本、音频、视频按单次请求总时长限制；图片按等待响应及接收数据的连续空闲时长限制，有数据返回则继续接收。所有任务仍受对应类型任务总超时约束。", unit: "秒", min: 10, max: 3_600 },
     { group: "task", name: "textTimeoutMinutes", label: "文本任务超时", extra: "文本任务的最长执行时间。", unit: "分钟", max: 9_999 },
     { group: "task", name: "audioTimeoutMinutes", label: "音频任务超时", extra: "音频任务的最长执行时间。", unit: "分钟", max: 9_999 },
     { group: "task", name: "videoTimeoutMinutes", label: "视频任务超时", extra: "视频任务的最长执行时间。", unit: "分钟", max: 9_999 },
@@ -96,6 +97,31 @@ const agentFields: PolicyField[] = [
         max: 64,
     },
 ];
+
+const connectionLineStyles = [
+    { value: "solid", label: "实线" },
+    { value: "dashed", label: "虚线" },
+];
+const connectionArrowStyles = [
+    { value: "arrow", label: "小箭头" },
+    { value: "dot", label: "圆点" },
+    { value: "none", label: "无" },
+];
+const connectionEffects = [
+    { value: "highlight", label: "选中时强调" },
+    { value: "none", label: "保持一致" },
+];
+const defaultCanvasPolicy: RuntimePolicySetting["canvas"] = {
+    connectionLineStyle: "solid",
+    connectionArrowStyle: "arrow",
+    connectionEffect: "highlight",
+    taskEventHeartbeatSeconds: 15,
+    taskEventMaxConnectionsPerUser: 8,
+    taskEventMaxReplayEvents: 200,
+    taskEventRetentionHours: 168,
+    taskFallbackPollMinSeconds: 3,
+    taskFallbackPollMaxSeconds: 60,
+};
 
 const rateFields: PolicyField[] = [
     { group: "request", name: "taskCreatePerMinute", label: "任务创建", extra: "每账号每分钟允许创建的任务数。", unit: "次/分钟", max: 999_999 },
@@ -151,6 +177,15 @@ const policySections: PolicySectionDefinition[] = [
         description: "画布 Agent 每一步模型调用的输出上限与等待时限；两者一起决定单步最坏耗时。",
         fields: agentFields,
         status: <AdminStatusBadge label="保存后热更新" tone="info" />,
+    },
+    {
+        id: "policy-canvas",
+        icon: <Network className="size-4" aria-hidden="true" />,
+        title: "画布连接线",
+        shortTitle: "画布连线",
+        description: "统一控制所有用户画布中的连接线外观。",
+        fields: [],
+        status: <AdminStatusBadge label="保存后即时生效" tone="info" />,
     },
     { id: "policy-rate", icon: <ShieldCheck className="size-4" aria-hidden="true" />, title: "业务频控", shortTitle: "业务频控", description: "账号与 IP 维度的固定窗口请求限制。", fields: rateFields },
     { id: "policy-relay", icon: <Network className="size-4" aria-hidden="true" />, title: "渠道中转与熔断", shortTitle: "中转与熔断", description: "请求体、响应体、并发、超时和上游故障保护。", fields: relayFields },
@@ -222,7 +257,8 @@ export default function RuntimePolicySettingsPage() {
         if (!savedSetting || !draft) return [];
         return allPolicyFields.filter((field) => readPolicyValue(savedSetting, field) !== readPolicyValue(draft, field));
     }, [draft, savedSetting]);
-    const dirty = dirtyFields.length > 0;
+    const connectionSettingsDirty = !sameCanvasPolicy(savedSetting?.canvas, draft?.canvas);
+    const dirty = dirtyFields.length > 0 || connectionSettingsDirty;
     const busy = loading || refreshing || saving || resetting || presetLoading;
     const blocker = useBlocker(dirty && !saving && !resetting);
 
@@ -296,7 +332,7 @@ export default function RuntimePolicySettingsPage() {
             content: (
                 <div className="admin-runtime-policy-confirm-copy">
                     <p>这会把配额、各类型并发、频控和超时填到允许范围的高值，并把熔断等待缩短到 1 秒。</p>
-                    <p>{dirty ? `当前 ${dirtyFields.length} 项暂存调整会被覆盖。` : "只会改动本页草稿，点击保存修改后生效。"}</p>
+                    <p>{dirty ? `当前 ${dirtyFields.length + Number(connectionSettingsDirty)} 项暂存调整会被覆盖。` : "只会改动本页草稿，点击保存修改后生效。"}</p>
                 </div>
             ),
             okText: "填入草稿",
@@ -513,14 +549,46 @@ export default function RuntimePolicySettingsPage() {
 
                     <div className="admin-runtime-policy-overview" aria-label="资源与策略配置概览">
                         <AdminStatTile label="配置来源" value={savedSetting.configured ? "管理员配置" : "系统默认"} detail={updateDetail} />
-                        <AdminStatTile label="待保存调整" value={dirtyFields.length} detail={dirty ? "仅本页暂存，尚未生效" : "当前草稿与服务端一致"} />
+                        <AdminStatTile label="待保存调整" value={dirtyFields.length + Number(connectionSettingsDirty)} detail={dirty ? "仅本页暂存，尚未生效" : "当前草稿与服务端一致"} />
                         <AdminStatTile label="生图并发" value={formatNumber(workerConcurrency)} detail={dirtyFields.some((field) => field.name === "imageConcurrency") ? "暂存状态预览" : "图片独立执行槽位"} />
                         <AdminStatTile label="账号每类活动任务" value={formatNumber(activeTaskLimit)} detail={dirtyFields.some((field) => field.name === "activeTaskLimit") ? "暂存状态预览" : "各类型分别统计排队与运行数"} />
                     </div>
 
                     {policySections.map((section) => (
                         <div key={section.id} id={section.id} className="admin-settings-anchor admin-runtime-policy-anchor">
-                            <PolicySection {...section} />
+                            {section.id === "policy-canvas" ? (
+                                <SettingsSectionCard icon={section.icon} title={section.title} description={section.description} status={section.status}>
+                                    <div className="admin-runtime-policy-field-grid">
+                                        <Form.Item label="线条样式" extra="选择更适合当前流程图的连线形式。" name={["canvas", "connectionLineStyle"]}>
+                                            <Select options={connectionLineStyles} aria-label="线条样式" />
+                                        </Form.Item>
+                                        <Form.Item label="终点标记" extra="控制连接方向的标识方式。" name={["canvas", "connectionArrowStyle"]}>
+                                            <Select options={connectionArrowStyles} aria-label="终点标记" />
+                                        </Form.Item>
+                                        <Form.Item label="选中效果" extra="只使用静态颜色强调，不启用动态动画。" name={["canvas", "connectionEffect"]}>
+                                            <Select options={connectionEffects} aria-label="选中效果" />
+                                        </Form.Item>
+                                        <Form.Item label="事件心跳" extra="SSE 保活间隔；只发送注释心跳，不触发任务刷新。" name={["canvas", "taskEventHeartbeatSeconds"]} rules={[{ required: true, type: "number", min: 5, max: 120, message: "事件心跳必须是 5-120 秒" }]}>
+                                            <InputNumber min={5} max={120} precision={0} aria-label="事件心跳" addonAfter="秒" />
+                                        </Form.Item>
+                                        <Form.Item label="事件连接上限" extra="单个账号在同一画布的 SSE 连接上限，防止重复页面造成资源泄漏。" name={["canvas", "taskEventMaxConnectionsPerUser"]} rules={[{ required: true, type: "number", min: 1, max: 32, message: "事件连接上限必须是 1-32" }]}>
+                                            <InputNumber min={1} max={32} precision={0} aria-label="事件连接上限" addonAfter="条" />
+                                        </Form.Item>
+                                        <Form.Item label="事件回放上限" extra="断线重连时最多补发的事件数量，超出部分由批量任务读取修复。" name={["canvas", "taskEventMaxReplayEvents"]} rules={[{ required: true, type: "number", min: 1, max: 1000, message: "事件回放上限必须是 1-1000" }]}>
+                                            <InputNumber min={1} max={1000} precision={0} aria-label="事件回放上限" addonAfter="条" />
+                                        </Form.Item>
+                                        <Form.Item label="事件保留时间" extra="用于断线回放和后端重启恢复；过期事件由后台清理。" name={["canvas", "taskEventRetentionHours"]} rules={[{ required: true, type: "number", min: 1, max: 720, message: "事件保留时间必须是 1-720 小时" }]}>
+                                            <InputNumber min={1} max={720} precision={0} aria-label="事件保留时间" addonAfter="小时" />
+                                        </Form.Item>
+                                        <Form.Item label="活动任务兜底刷新" extra="SSE 断线或事件丢失时的最短批量刷新间隔。" name={["canvas", "taskFallbackPollMinSeconds"]} rules={[{ required: true, type: "number", min: 1, max: 60, message: "活动任务兜底刷新必须是 1-60 秒" }]}>
+                                            <InputNumber min={1} max={60} precision={0} aria-label="活动任务兜底刷新" addonAfter="秒" />
+                                        </Form.Item>
+                                        <Form.Item label="空闲任务兜底刷新" extra="没有活动任务时的低频刷新间隔，用于发现其他页面创建的任务。" name={["canvas", "taskFallbackPollMaxSeconds"]} rules={[{ required: true, type: "number", min: 1, max: 600, message: "空闲任务兜底刷新必须是 1-600 秒" }]}>
+                                            <InputNumber min={1} max={600} precision={0} aria-label="空闲任务兜底刷新" addonAfter="秒" />
+                                        </Form.Item>
+                                    </div>
+                                </SettingsSectionCard>
+                            ) : <PolicySection {...section} />}
                         </div>
                     ))}
                 </div>
@@ -562,7 +630,7 @@ function PolicySection({ icon, title, description, fields, status }: PolicySecti
 }
 
 function toPolicyDraft(value: RuntimePolicyDraft): RuntimePolicyDraft {
-    return { resource: { ...value.resource }, storage: { ...value.storage }, task: { ...value.task }, request: { ...value.request } };
+    return { resource: { ...value.resource }, storage: { ...value.storage }, task: { ...value.task }, request: { ...value.request }, canvas: { ...value.canvas } };
 }
 
 function readPolicyValue(value: RuntimePolicyDraft, field: PolicyField) {
@@ -574,16 +642,46 @@ function readDraftNumber(value: RuntimePolicyDraft, group: PolicyGroup, name: st
 }
 
 function samePolicy(left: RuntimePolicyDraft, right: RuntimePolicyDraft) {
-    return allPolicyFields.every((field) => readPolicyValue(left, field) === readPolicyValue(right, field));
+    return allPolicyFields.every((field) => readPolicyValue(left, field) === readPolicyValue(right, field)) && sameCanvasPolicy(left.canvas, right.canvas);
+}
+
+function sameCanvasPolicy(left?: RuntimePolicySetting["canvas"], right?: RuntimePolicySetting["canvas"]) {
+    return (left?.connectionLineStyle || defaultCanvasPolicy.connectionLineStyle) === (right?.connectionLineStyle || defaultCanvasPolicy.connectionLineStyle) &&
+        (left?.connectionArrowStyle || defaultCanvasPolicy.connectionArrowStyle) === (right?.connectionArrowStyle || defaultCanvasPolicy.connectionArrowStyle) &&
+        (left?.connectionEffect || defaultCanvasPolicy.connectionEffect) === (right?.connectionEffect || defaultCanvasPolicy.connectionEffect) &&
+        (left?.taskEventHeartbeatSeconds || defaultCanvasPolicy.taskEventHeartbeatSeconds) === (right?.taskEventHeartbeatSeconds || defaultCanvasPolicy.taskEventHeartbeatSeconds) &&
+        (left?.taskEventMaxConnectionsPerUser || defaultCanvasPolicy.taskEventMaxConnectionsPerUser) === (right?.taskEventMaxConnectionsPerUser || defaultCanvasPolicy.taskEventMaxConnectionsPerUser) &&
+        (left?.taskEventMaxReplayEvents || defaultCanvasPolicy.taskEventMaxReplayEvents) === (right?.taskEventMaxReplayEvents || defaultCanvasPolicy.taskEventMaxReplayEvents) &&
+        (left?.taskEventRetentionHours || defaultCanvasPolicy.taskEventRetentionHours) === (right?.taskEventRetentionHours || defaultCanvasPolicy.taskEventRetentionHours) &&
+        (left?.taskFallbackPollMinSeconds || defaultCanvasPolicy.taskFallbackPollMinSeconds) === (right?.taskFallbackPollMinSeconds || defaultCanvasPolicy.taskFallbackPollMinSeconds) &&
+        (left?.taskFallbackPollMaxSeconds || defaultCanvasPolicy.taskFallbackPollMaxSeconds) === (right?.taskFallbackPollMaxSeconds || defaultCanvasPolicy.taskFallbackPollMaxSeconds);
 }
 
 function parseRuntimePolicySetting(value: RuntimePolicySetting): RuntimePolicySetting {
     if (!value || typeof value !== "object") throw new Error("服务端返回的资源与策略格式无效");
+    value = { ...value, canvas: { ...defaultCanvasPolicy, ...value.canvas } };
+    if (value.task?.providerRequestTimeoutSeconds == null) {
+        throw new Error("当前后端尚不支持单次上游请求超时配置，请更新并重启后端后刷新；页面不能代替后端设置实际超时");
+    }
     for (const field of allPolicyFields) {
         const fieldValue = readPolicyValue(value, field);
         const min = field.min ?? 1;
         if (!Number.isInteger(fieldValue) || fieldValue < min || fieldValue > field.max) throw new Error(`服务端返回的“${field.label}”无效`);
     }
+    const canvas = value.canvas;
+    const canvasRanges: Array<[keyof RuntimePolicySetting["canvas"], number, number, string]> = [
+        ["taskEventHeartbeatSeconds", 5, 120, "事件心跳"],
+        ["taskEventMaxConnectionsPerUser", 1, 32, "事件连接上限"],
+        ["taskEventMaxReplayEvents", 1, 1000, "事件回放上限"],
+        ["taskEventRetentionHours", 1, 720, "事件保留时间"],
+        ["taskFallbackPollMinSeconds", 1, 60, "活动任务兜底刷新"],
+        ["taskFallbackPollMaxSeconds", 1, 600, "空闲任务兜底刷新"],
+    ];
+    for (const [name, min, max, label] of canvasRanges) {
+        const fieldValue = Number(canvas[name]);
+        if (!Number.isInteger(fieldValue) || fieldValue < min || fieldValue > max) throw new Error(`服务端返回的“${label}”无效`);
+    }
+    if (canvas.taskFallbackPollMaxSeconds < canvas.taskFallbackPollMinSeconds) throw new Error("服务端返回的画布兜底刷新间隔无效");
     if (typeof value.configured !== "boolean") throw new Error("服务端未返回有效的配置来源状态");
     return value;
 }
@@ -591,7 +689,9 @@ function parseRuntimePolicySetting(value: RuntimePolicySetting): RuntimePolicySe
 function validatePolicyRelationships(value: RuntimePolicyDraft) {
     const accountCapacityMB = readDraftNumber(value, "resource", "storedFileGB") * 1024;
     const oversized = resourceFields.slice(0, 3).find((field) => readPolicyValue(value, field) > accountCapacityMB);
-    return oversized ? `${oversized.label}不能大于账号文件总量` : "";
+    if (oversized) return `${oversized.label}不能大于账号文件总量`;
+    if (value.canvas.taskFallbackPollMaxSeconds < value.canvas.taskFallbackPollMinSeconds) return "空闲任务兜底刷新不能小于活动任务兜底刷新";
+    return "";
 }
 
 function formatPolicyValue(value: number, unit: string) {

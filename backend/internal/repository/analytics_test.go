@@ -18,6 +18,71 @@ type sqlCaptureLogger struct {
 	statements []string
 }
 
+func TestAPICallLogFiltersNormalizeTimestampOffsets(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:api-log-offsets?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.AutoMigrate(&model.ApiCallLog{}); err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
+	to := from.Add(24 * time.Hour)
+	for _, item := range []model.ApiCallLog{
+		{ID: "local-midnight", RequestKind: "create", Capability: "image", Status: model.ApiCallStatusFailed, CreatedAt: time.Date(2026, 10, 24, 2, 0, 0, 123456789, time.FixedZone("local", 8*3600))},
+		{ID: "previous-day", RequestKind: "create", Capability: "text", Status: model.ApiCallStatusSucceeded, CreatedAt: time.Date(2026, 10, 22, 20, 0, 0, 0, time.FixedZone("west", -7*3600))},
+		{ID: "excluded", RequestKind: "create", CreatedAt: to},
+	} {
+		if err = db.Create(&item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(db)
+	filter := APICallLogFilter{AnalyticsFilter: AnalyticsFilter{From: from, To: to}}
+	logs, total, err := r.QueryAPICallLogs(filter)
+	if err != nil || total != 2 || len(logs) != 2 {
+		t.Fatalf("list=%d total=%d err=%v", len(logs), total, err)
+	}
+	exported, err := r.ExportAPICallLogs(filter, 100)
+	if err != nil || len(exported) != 2 {
+		t.Fatalf("export=%d err=%v", len(exported), err)
+	}
+}
+
+func TestAPICallLogCompletesDispatchedRowInPlace(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:api-log-running?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = db.AutoMigrate(&model.ApiCallLog{}); err != nil {
+		t.Fatal(err)
+	}
+	r := New(db)
+	for _, status := range []model.ApiCallStatus{model.ApiCallStatusSucceeded, model.ApiCallStatusFailed} {
+		item := model.ApiCallLog{ID: string(status), Status: model.ApiCallStatusRunning, CreatedAt: time.Now()}
+		if err = db.Create(&item).Error; err != nil {
+			t.Fatal(err)
+		}
+		item.Status, item.StatusCode, item.DurationMs = status, 200, 42
+		updated, err := r.CompletePendingAPICallLog(&item)
+		if err != nil || !updated {
+			t.Fatalf("updated=%v err=%v", updated, err)
+		}
+		var stored model.ApiCallLog
+		if err = db.First(&stored, "id = ?", item.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status != status || stored.DurationMs != 42 {
+			t.Fatalf("incorrect terminal row: %+v", stored)
+		}
+	}
+	var count int64
+	db.Model(&model.ApiCallLog{}).Count(&count)
+	if count != 2 {
+		t.Fatalf("count=%d", count)
+	}
+}
+
 func TestAPICallLogRecordTypeFiltersListAndExport(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:api-log-record-types?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

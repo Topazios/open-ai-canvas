@@ -58,10 +58,39 @@ function mergeItems<T extends { id: string }>(items: T[], changes: Change<T>[]):
     return result.length === items.length && result.every((item, index) => item === items[index]) ? items : result;
 }
 
+function mergeProductionCheckpoint(change: Change<CanvasNodeData>, current?: CanvasNodeData): Change<CanvasNodeData> {
+    const { before, after } = change;
+    const beforeRun = before?.metadata?.shortDrama?.productionAgent?.runId;
+    const afterRun = after?.metadata?.shortDrama?.productionAgent?.runId;
+    const currentRun = current?.metadata?.shortDrama?.productionAgent?.runId;
+    if (beforeRun && currentRun !== beforeRun && currentRun !== afterRun) throw new Error("画布增量冲突：制作节点已删除或绑定另一任务，不能覆盖");
+    if (!before || !after || !current || !afterRun || currentRun !== afterRun) return change;
+    // Poll receipts and canvas checkpoints describe the same run. Their status
+    // fields are server-owned; content and a replacement run still use strict merging.
+    const metadata = { ...before.metadata };
+    const afterMetadata = { ...after.metadata };
+    const localTerminal = current.metadata?.status !== before.metadata?.status && ["success", "error", "idle"].includes(current.metadata?.status || "");
+    const preserveTerminal = localTerminal && after.metadata?.status === "loading";
+    for (const key of ["status", "taskStage", "errorDetails"] as const) {
+        if (preserveTerminal || !equal(metadata[key], after.metadata?.[key])) {
+            Object.assign(metadata, { [key]: current.metadata?.[key] });
+            if (preserveTerminal) Object.assign(afterMetadata, { [key]: current.metadata?.[key] });
+        }
+    }
+    if (before.metadata?.shortDrama && after.metadata?.shortDrama && current.metadata?.shortDrama) {
+        if (preserveTerminal || before.metadata.shortDrama.submission !== after.metadata.shortDrama.submission) {
+            metadata.shortDrama = { ...before.metadata.shortDrama, submission: current.metadata.shortDrama.submission };
+            if (preserveTerminal) afterMetadata.shortDrama = { ...after.metadata.shortDrama, submission: current.metadata.shortDrama.submission };
+        }
+    }
+    return { before: { ...before, metadata }, after: { ...after, metadata: afterMetadata } };
+}
+
 export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvasPatch): CanvasProject {
     if (patch.canvasId !== project.id || !Array.isArray(patch.nodes) || !Array.isArray(patch.connections)) throw new Error("画布增量不属于当前画布或格式无效");
     const byId = new Map(project.nodes.map((node) => [node.id, node]));
-    const nodeChanges = patch.nodes.map((change) => {
+    const nodeChanges = patch.nodes.map((entry) => {
+        const change = mergeProductionCheckpoint(entry, byId.get(entry.after?.id || entry.before?.id || ""));
         if (!change.after) return change;
         const current = byId.get(change.after.id);
         const beforeTask = change.before?.metadata?.taskId;
@@ -103,6 +132,53 @@ export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvas
     const connections = mergeItems(project.connections, patch.connections);
     if (nodes === project.nodes && connections === project.connections) return project;
     return { ...project, nodes, connections, updatedAt: patch.updatedAt || project.updatedAt };
+}
+
+/** Recover completed production documents from a retained run journal after a stale canvas save removed them. */
+export function recoverCompletedProductionDocuments(project: CanvasProject, patches: AgentCanvasPatch[]): CanvasProject {
+    const nodes = [...project.nodes];
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const recovered = new Map<string, CanvasNodeData>();
+    for (const patch of patches) {
+        if (patch.canvasId !== project.id) continue;
+        for (const change of patch.nodes) {
+            const candidate = change.after;
+            const workflow = candidate?.metadata?.shortDrama;
+            const completed = candidate?.metadata?.status === "success" && Boolean(candidate.metadata.content?.trim()) &&
+                Boolean(workflow?.planSection || workflow?.planAsset || workflow?.assetIdentity || workflow?.bibleSection);
+            if (!candidate || !completed || byId.has(candidate.id) || !candidate.parentId || !byId.has(candidate.parentId)) continue;
+            recovered.set(candidate.id, candidate);
+        }
+    }
+    if (!recovered.size) return project;
+
+    for (const [id, node] of recovered) {
+        byId.set(id, node);
+        nodes.push(node);
+    }
+    for (const [parentId, parent] of byId) {
+        const additions = [...recovered.values()].filter((node) => node.parentId === parentId);
+        if (!additions.length) continue;
+        const workflow = parent.metadata?.shortDrama;
+        if (!workflow) continue;
+        const sourceNodeIds = new Set(workflow.sourceNodeIds || []);
+        for (const node of additions) sourceNodeIds.add(node.id);
+        const remoteParent = patches.flatMap((patch) => patch.nodes).map((change) => change.after)
+            .find((node) => node?.id === parentId);
+        byId.set(parentId, {
+            ...parent,
+            metadata: {
+                ...parent.metadata,
+                shortDrama: {
+                    ...workflow,
+                    sourceNodeIds: [...sourceNodeIds],
+                    ...(remoteParent?.metadata?.shortDrama?.planReady === true ? { planReady: true } : {}),
+                },
+            },
+        });
+    }
+    const updatedNodes = nodes.map((node) => byId.get(node.id) || node);
+    return { ...project, nodes: updatedNodes };
 }
 
 export function mergeCanvasSnapshot(previous: CanvasProject, current: CanvasProject, incoming: CanvasProject): CanvasProject {

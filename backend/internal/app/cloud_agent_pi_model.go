@@ -33,28 +33,6 @@ func (s *Service) cloudAgentPiModel(ctx context.Context, userID, runID string, p
 	if err := s.prepareStoryboardEpisode(ctx, userID, runID); err != nil {
 		return nil, err
 	}
-	if handled, err := s.runProductionParallel(ctx, userID, runID); handled || err != nil {
-		if err != nil {
-			return nil, err
-		}
-		run, err := s.repo.CloudAgent(userID, runID)
-		if err != nil {
-			return nil, err
-		}
-		state, err := cloudAgentDecode(run)
-		if err != nil {
-			return nil, err
-		}
-		_, manifest, _, err := productionLoad(s.repo, run, &state)
-		if err != nil {
-			return nil, err
-		}
-		nextTool := "production_status"
-		if manifest.Storyboard != nil {
-			nextTool = "production_storyboard_context"
-		}
-		return map[string]any{"text": "本批独立内容已保存，继续检查下一阶段。", "toolCalls": []map[string]any{{"id": generateID(), "name": nextTool, "arguments": map[string]any{}}}}, nil
-	}
 
 	// 上游临时故障（5xx、429、超时、连接错误、空回复）自动重试，首次失败后最多再试 3 次，
 	// 指数退避。参数/鉴权类 4xx 重试也不会变好，直接失败。
@@ -63,7 +41,7 @@ func (s *Service) cloudAgentPiModel(ctx context.Context, userID, runID string, p
 	// 纠偏上下文重做这一步，而不是把整轮判死。次数与临时故障共用同一个上限。
 	var lastErr error
 	var correction []map[string]any
-	for attempt := 0; attempt <= cloudAgentModelStepRetries; attempt++ {
+	for attempt := 0; ; {
 		if attempt > 0 {
 			delay := time.Duration(1<<(attempt-1)) * time.Second
 			log.Printf("[Agent] model step retry run=%s attempt=%d/%d after %s: %v", runID, attempt, cloudAgentModelStepRetries, delay, lastErr)
@@ -77,15 +55,26 @@ func (s *Service) cloudAgentPiModel(ctx context.Context, userID, runID string, p
 		if err == nil {
 			return result, nil
 		}
+		var continuation *productionRuntimeContinueError
+		if errors.As(err, &continuation) {
+			correction = nil
+			if continuation.Quiet {
+				return map[string]any{"text": "", "toolCalls": []any{}}, nil
+			}
+			continue
+		}
 		lastErr = err
 		if !retryable {
 			return nil, err
 		}
+		if attempt >= cloudAgentModelStepRetries {
+			return nil, lastErr
+		}
 		if errors.Is(err, errCloudAgentTruncatedToolArguments) && correction == nil {
 			correction = []map[string]any{cloudAgentRuntimeMessage(cloudAgentRuntimeContext{Kind: cloudAgentContextTruncatedArguments})}
 		}
+		attempt++
 	}
-	return nil, lastErr
 }
 
 // cloudAgentModelStepRetries 是单步模型调用首次失败后的最大重试次数。
@@ -95,10 +84,56 @@ const cloudAgentModelStepRetries = 3
 // 调用未执行，可以带纠偏上下文重做同一步。
 var errCloudAgentTruncatedToolArguments = errors.New("truncated tool arguments")
 
+func (s *Service) productionPlanSingleAttempt(userID, runID string) bool {
+	job, err := s.repo.ProductionAgentJob(userID, runID)
+	if err != nil {
+		return false
+	}
+	var manifest productionManifest
+	return json.Unmarshal([]byte(job.ManifestJSON), &manifest) == nil && manifest.Plan != nil && manifest.Plan.Version >= 5
+}
+
 // runCloudAgentModelStep 调度并等待一次模型步骤；第二个返回值表示失败是否值得重试。
 func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID string, messages []map[string]any, thinkingLevel string, correction ...map[string]any) (any, bool, error) {
 	if err := s.waitProductionAgentBoundary(ctx, userID, runID); err != nil {
 		return nil, false, err
+	}
+	// Re-enter this lane on every retry as well as after restart. An oversized
+	// serial document may have just moved to durable section work.
+	if handled, err := s.runProductionParallel(ctx, userID, runID); handled || err != nil {
+		if err != nil {
+			return nil, false, err
+		}
+		run, err := s.repo.CloudAgent(userID, runID)
+		if err != nil {
+			return nil, false, err
+		}
+		state, err := cloudAgentDecode(run)
+		if err != nil {
+			return nil, false, err
+		}
+		job, manifest, _, err := productionLoad(s.repo, run, &state)
+		if err != nil {
+			return nil, false, err
+		}
+		if manifest.Plan != nil && manifest.Plan.Version >= 5 {
+			if job.Validated {
+				text := "故事总纲与世界规则已保存。可右键创作其他制作方案。"
+				if manifest.Plan.PlansStarted {
+					text = "其他制作方案已分别保存。"
+				}
+				return map[string]any{"text": text, "toolCalls": []any{}}, false, nil
+			}
+			if productionParallelQuietHeld(state) || productionRuntimeQuietHold(&state) {
+				return map[string]any{"text": "", "toolCalls": []any{}}, false, nil
+			}
+			return nil, false, errors.New("独立制作方案调度未保存阶段完成回执")
+		}
+		nextTool := "production_status"
+		if manifest.Storyboard != nil {
+			nextTool = "production_storyboard_context"
+		}
+		return map[string]any{"text": "本批独立内容已保存，继续检查下一阶段。", "toolCalls": []map[string]any{{"id": generateID(), "name": nextTool, "arguments": map[string]any{}}}}, false, nil
 	}
 	// 运行时发起 /model 的同时会并发推送事件（message_start、session_snapshot 等），
 	// 这些事件也会推进运行 revision。调度模型步骤是 CAS 写入：冲突时重新读取
@@ -114,7 +149,25 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		if err != nil {
 			return nil, false, err
 		}
-		if cloudAgentRunTerminal(run.Status) {
+		if state.Request.Production != nil && run.Status == "waiting_user" {
+			err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+				currentState, decodeErr := cloudAgentDecode(current)
+				if decodeErr != nil {
+					return decodeErr
+				}
+				productionBlockRuntime(current, &currentState)
+				return cloudAgentSave(current, &currentState)
+			})
+			if errors.Is(err, repository.ErrCreationConflict) {
+				continue
+			}
+			if err != nil {
+				return nil, false, err
+			}
+			s.projectProductionAgentStatus(userID, runID)
+			continue
+		}
+		if cloudAgentRunTerminal(run.Status) || run.Status == "waiting_user" {
 			return nil, false, fmt.Errorf("run already terminated")
 		}
 		productionPolicy := state.Canonical.SystemPrompt
@@ -135,6 +188,9 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 				if err != nil {
 					return nil, false, err
 				}
+			}
+			if productionRuntimeQuietHold(&state) {
+				return map[string]any{"text": "", "toolCalls": []any{}}, false, nil
 			}
 			tools := productionRuntimeTools(manifest, productionWork)
 			// Refresh the durable whitelist before reusing an in-flight task or a
@@ -161,6 +217,9 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 				}
 				if productionCoverage(manifest, doc, facts, artifacts, done, total)["valid"] == true {
 					if manifest.Plan != nil {
+						if manifest.Plan.Version >= 2 && !manifest.Plan.AssetsStarted {
+							return map[string]any{"text": "制作方案与全部规范已保存，完整性检查通过。资产清单已登记，可手动点击生成资产。", "toolCalls": []any{}}, false, nil
+						}
 						return map[string]any{"text": "故事总纲与计划资产已分组保存，清单覆盖检查通过；内容质量待人工验收。", "toolCalls": []any{}}, false, nil
 					}
 					if manifest.Storyboard != nil {
@@ -186,12 +245,19 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			}
 			state.ProductionModelKey = productionRuntimeModelKey(messages, thinkingLevel, correction, productionCheckpoint)
 			if receipt := state.ProductionModelReceipts[state.ProductionModelKey]; receipt != "" {
-				state.ActiveTaskID = receipt
-				break
+				reusable, err := productionRuntimeReusableReceipt(s.repo, userID, &state, receipt)
+				if err != nil {
+					return nil, false, err
+				}
+				if reusable {
+					state.ActiveTaskID = receipt
+					break
+				}
+				delete(state.ProductionModelReceipts, state.ProductionModelKey)
 			}
 			next, _ := productionWork["nextAction"].(map[string]any)
 			if stringValue(next["blockedReason"]) != "" {
-				return nil, false, s.failProductionRuntime(userID, runID, "", "production_plan_blocked", errProductionRuntimePlanBlocked)
+				return map[string]any{"text": "", "toolCalls": []any{}}, false, nil
 			}
 		}
 		if cloudAgentStepBudgetExhausted(&state) {
@@ -217,7 +283,7 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		canonical := canonicalFromRuntimeMessages(messages, state.Canonical.Tools, state.Canonical.SystemPrompt)
 		if state.Request.Production != nil {
 			if productionRuntimeUnknownCall(canonical.Tools, productionRuntimeLatestCalls(canonical.Messages)) {
-				return nil, false, s.failProductionRuntimeTool(userID, runID, "")
+				return nil, false, s.blockProductionRuntimeTool(userID, runID, "")
 			}
 			canonical.Messages = productionCheckpointMessages(canonical.Messages, state.Request.Prompt, productionWork, productionPolicy)
 		}
@@ -237,7 +303,7 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		if state.Request.Production != nil {
 			recovery, err = s.correctProductionRuntimeCycle(userID, runID, &state, productionCheckpoint, productionWork, &canonical)
 			if errors.Is(err, errProductionRuntimeNoProgress) {
-				return nil, false, s.failProductionRuntime(userID, runID, "", "production_no_progress", err)
+				return nil, false, s.blockProductionRuntime(userID, runID, "", "production_no_progress", productionRuntimeNoProgressError(&state))
 			}
 			if err != nil {
 				return nil, false, err
@@ -247,7 +313,10 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			// 纠偏上下文只用于这一次请求，不写回运行状态，避免下一步重复出现。
 			canonical.Messages = append(append([]map[string]any(nil), canonical.Messages...), correction...)
 		}
-		requiredProductionTool := productionConstrainFinalPlan(productionWork, &canonical)
+		requiredProductionTool := productionConstrainPlan(productionWork, &canonical)
+		if recovery != nil && len(canonical.Tools) == 1 {
+			requiredProductionTool = stringValue(canonical.Tools[0]["function"].(map[string]any)["name"])
+		}
 		productionConstrainStoryboard(productionWork, &canonical)
 		input := map[string]any{
 			"mode":          "text",
@@ -302,6 +371,16 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 	if err != nil {
 		truncated := false
 		if failed, lookupErr := s.repo.Task(taskID); lookupErr == nil && failed != nil && failed.Status != model.TaskStatusSucceeded {
+			if ctx.Err() == nil && cloudAgentOutputLimitReached(failed) {
+				if s.productionPlanSingleAttempt(userID, runID) {
+					return nil, false, s.quietProductionRuntime(userID, runID, taskID, "production_output_incomplete", err)
+				}
+				recovered, recoveryErr := s.recoverCloudAgentOutputLimit(userID, runID, taskID)
+				if recoveryErr != nil {
+					return nil, false, recoveryErr
+				}
+				return nil, recovered, err
+			}
 			truncated = cloudAgentTruncatedToolArguments(failed)
 		}
 		retryable := ctx.Err() == nil && (truncated || s.cloudAgentModelTaskRetryable(taskID))
@@ -327,15 +406,23 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 	if err := s.finishCloudAgentPiModelStep(userID, runID, task.ID, result.Text, result.Reasoning); err != nil {
 		return nil, false, err
 	}
-	if state.Request.Production != nil && productionRuntimeUnknownCall(state.Canonical.Tools, result.ToolCalls) {
-		return nil, false, s.failProductionRuntimeTool(userID, runID, task.ID)
-	}
+	var instruction productionRuntimeStepInput
 	if state.Request.Production != nil {
-		var instruction productionRuntimeStepInput
-		if json.Unmarshal([]byte(task.InputJSON), &instruction) == nil && instruction.RequiredTool != "" {
-			if len(result.ToolCalls) != 1 || result.ToolCalls[0].Function.Name != instruction.RequiredTool {
-				return nil, false, s.failProductionRuntime(userID, runID, task.ID, "production_required_output_missing", errors.New("模型未提交当前指定文稿，已停止空转并保留已有成果；可继续任务重试该项"))
+		_ = json.Unmarshal([]byte(task.InputJSON), &instruction)
+	}
+	if state.Request.Production != nil && productionRuntimeUnknownCall(state.Canonical.Tools, result.ToolCalls) {
+		if instruction.Recovery != nil {
+			return nil, false, s.quietProductionRuntime(userID, runID, task.ID, "unknown_production_tool", errProductionRuntimeUnknownTool)
+		}
+		return nil, false, s.blockProductionRuntimeTool(userID, runID, task.ID)
+	}
+	if state.Request.Production != nil && instruction.RequiredTool != "" {
+		if len(result.ToolCalls) != 1 || result.ToolCalls[0].Function.Name != instruction.RequiredTool {
+			cause := fmt.Errorf("模型未执行当前步骤指定制作工具 %s", instruction.RequiredTool)
+			if instruction.Recovery != nil {
+				return nil, false, s.quietProductionRuntime(userID, runID, task.ID, "production_required_output_missing", cause)
 			}
+			return nil, false, s.blockProductionRuntime(userID, runID, task.ID, "production_required_output_missing", cause)
 		}
 	}
 	if state.Request.Production != nil && len(result.ToolCalls) > 0 {
@@ -344,43 +431,15 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			return nil, false, err
 		}
 		if ignored {
-			return nil, false, s.failProductionRuntime(userID, runID, task.ID, "production_no_progress", errProductionRuntimeNoProgress)
+			return nil, false, s.quietProductionRuntime(userID, runID, task.ID, "production_no_progress", errProductionRuntimeNoProgress)
 		}
 	}
 	if state.Request.Production != nil && len(result.ToolCalls) == 0 {
-		run, err := s.repo.CloudAgent(userID, runID)
-		if err != nil {
-			return nil, false, err
+		cause := errors.New("模型未提交当前制作步骤结果")
+		if instruction.Recovery != nil {
+			return nil, false, s.quietProductionRuntime(userID, runID, task.ID, "production_empty_output", cause)
 		}
-		job, manifest, doc, err := productionLoad(s.repo, run, &state)
-		if err != nil {
-			return nil, false, err
-		}
-		facts, done, total, err := productionFacts(s.repo, userID, manifest)
-		if err != nil {
-			return nil, false, err
-		}
-		artifacts, err := s.repo.ProductionAgentArtifacts(userID, runID)
-		if err != nil {
-			return nil, false, err
-		}
-		if !job.Validated || productionCoverage(manifest, doc, facts, artifacts, done, total)["valid"] != true {
-			checkpoint, err := productionRuntimeCheckpoint(s.repo, run, manifest)
-			if err != nil {
-				return nil, false, err
-			}
-			if productionRuntimeIgnoredRecovery(task, checkpoint, nil) {
-				return nil, false, s.failProductionRuntime(userID, runID, task.ID, "production_no_progress", errProductionRuntimeNoProgress)
-			}
-			if err := s.productionAgentRepair(userID, runID); err != nil {
-				return nil, false, err
-			}
-			call, err := s.productionRepairCall(userID, runID, task.ID)
-			if err != nil {
-				return nil, false, err
-			}
-			result.ToolCalls = []cloudAgentCall{call}
-		}
+		return nil, false, s.blockProductionRuntime(userID, runID, task.ID, "production_empty_output", cause)
 	}
 	return map[string]any{"text": result.Text, "reasoning": result.Reasoning, "toolCalls": runtimeToolCalls(result.ToolCalls)}, false, nil
 }
@@ -434,7 +493,10 @@ func (s *Service) finishCloudAgentPiModelStep(userID, runID, taskID, text, reaso
 			if reasoning != "" {
 				fresh.event(runID, "reasoning_message", map[string]any{"messageId": taskID + ":reasoning", "text": truncateRunes(reasoning, 8000)})
 			}
-			if text != "" {
+			// Production runs must persist documents through production_submit. Do
+			// not copy a model's free-form document into the execution journal;
+			// otherwise an unsubmitted answer looks like a saved canvas result.
+			if text != "" && fresh.Request.Production == nil {
 				fresh.event(runID, "assistant_message", map[string]any{"messageId": taskID, "text": text})
 			}
 			return cloudAgentSave(current, &fresh)

@@ -15,16 +15,17 @@ import (
 )
 
 type TaskExecutionStep struct {
-	ID            string           `json:"id"`
-	Label         string           `json:"label"`
-	Status        model.TaskStatus `json:"status"`
-	Stage         string           `json:"stage"`
-	Error         string           `json:"error,omitempty"`
-	CreatedAt     time.Time        `json:"createdAt"`
-	StartedAt     *time.Time       `json:"startedAt,omitempty"`
-	CompletedAt   *time.Time       `json:"completedAt,omitempty"`
-	OutputPreview string           `json:"outputPreview,omitempty"`
-	OutputChars   int              `json:"outputChars"`
+	ID            string                         `json:"id"`
+	Label         string                         `json:"label"`
+	Status        model.TaskStatus               `json:"status"`
+	Stage         string                         `json:"stage"`
+	Error         string                         `json:"error,omitempty"`
+	Diagnostic    *model.TaskExecutionDiagnostic `json:"diagnostic,omitempty"`
+	CreatedAt     time.Time                      `json:"createdAt"`
+	StartedAt     *time.Time                     `json:"startedAt,omitempty"`
+	CompletedAt   *time.Time                     `json:"completedAt,omitempty"`
+	OutputPreview string                         `json:"outputPreview,omitempty"`
+	OutputChars   int                            `json:"outputChars"`
 }
 
 type TaskExecutionDetails struct {
@@ -42,6 +43,7 @@ type TaskExecutionEvent struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	Failed    bool      `json:"failed"`
+	Warning   bool      `json:"warning,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -61,7 +63,7 @@ func (s *Service) TaskExecutionDetails(userID, id string) (*TaskExecutionDetails
 	}
 	_ = json.Unmarshal([]byte(parent.ResultJSON), &quality)
 	result.QualityWarnings = quality.Warnings
-	events, err := s.repo.TaskExecutionEvents(userID, id, []string{"任务已重新入队", "任务取消请求已保存", "文本流持久化已降级", "文本回放草稿归并失败", "积分结算失败，已进入待核对", "用户确认重新生成，原调用费用保留待核对，新调用独立记账", "已核实本轮未提交上游，补齐提交记录并继续原任务，未新增预扣"}, 101)
+	events, err := s.repo.TaskExecutionEvents(userID, id, []string{"任务已重新入队", "任务取消请求已保存", "文本流持久化已降级", "文本回放草稿归并失败", "积分结算失败，已进入待核对", "用户确认重新生成，原调用费用保留待核对，新调用独立记账", "已核实本轮未提交上游，补齐提交记录并继续原任务，未新增预扣", "任务尚未完成，请查看处理提示", "任务结果尚未保存，请检查本地处理"}, 101)
 	if err != nil {
 		return nil, err
 	}
@@ -70,9 +72,10 @@ func (s *Service) TaskExecutionDetails(userID, id string) (*TaskExecutionDetails
 		events = events[:100]
 	}
 	for _, event := range events {
-		result.Events = append(result.Events, TaskExecutionEvent{ID: event.ID, Title: event.Message, Failed: event.Level == "error", CreatedAt: event.CreatedAt})
+		result.Events = append(result.Events, TaskExecutionEvent{ID: event.ID, Title: event.Message, Failed: event.Level == "error", Warning: event.Level == "warn", CreatedAt: event.CreatedAt})
 	}
 	var input struct {
+		Mode        string             `json:"mode"`
 		Config      map[string]any     `json:"config"`
 		Batch       *workflowTextBatch `json:"workflowBatch"`
 		TextOptions struct {
@@ -82,7 +85,8 @@ func (s *Service) TaskExecutionDetails(userID, id string) (*TaskExecutionDetails
 	// Only explicitly allowed scalar parameters are returned. Shared-call lookup
 	// below uses the same private identity inputs as execution, never exposes them.
 	_ = json.Unmarshal([]byte(parent.InputJSON), &input)
-	for _, key := range []string{"interfaceType", "apiFormat", "channelModelKey", "providerModelKey", "size", "quality", "vquality", "videoSeconds", "audioVoice", "audioFormat", "audioSpeed", "reasoningEffort", "count"} {
+	keys := executionParameterKeys(input.Mode, parent.Type)
+	for _, key := range keys {
 		switch value := input.Config[key].(type) {
 		case string:
 			result.Parameters[key] = truncateRunes(value, 160)
@@ -92,7 +96,7 @@ func (s *Service) TaskExecutionDetails(userID, id string) (*TaskExecutionDetails
 			result.Parameters[key] = strconv.FormatBool(value)
 		}
 	}
-	if input.TextOptions.ReasoningEffort != "" {
+	if input.Mode == "text" && input.TextOptions.ReasoningEffort != "" {
 		result.Parameters["reasoningEffort"] = truncateRunes(input.TextOptions.ReasoningEffort, 32)
 	}
 	if parent.Operation != workflowBatchOperation {
@@ -206,7 +210,38 @@ func (s *Service) TaskExecutionDetails(userID, id string) (*TaskExecutionDetails
 		if text == "" {
 			text = strings.TrimSpace(child.TextDraft)
 		}
-		result.Steps = append(result.Steps, TaskExecutionStep{ID: child.ID, Label: label, Status: child.Status, Stage: child.Stage, Error: child.Error, CreatedAt: child.CreatedAt, StartedAt: child.StartedAt, CompletedAt: child.CompletedAt, OutputPreview: truncateRunes(text, 1200), OutputChars: len([]rune(text))})
+		result.Steps = append(result.Steps, TaskExecutionStep{ID: child.ID, Label: label, Status: child.Status, Stage: child.Stage, Error: child.Error, Diagnostic: taskExecutionDiagnostic(&child), CreatedAt: child.CreatedAt, StartedAt: child.StartedAt, CompletedAt: child.CompletedAt, OutputPreview: truncateRunes(text, 1200), OutputChars: len([]rune(text))})
 	}
 	return result, nil
+}
+
+func executionParameterKeys(mode string, taskType string) []string {
+	if mode == "" {
+		switch taskType {
+		case "canvas_image":
+			mode = "image"
+		case "canvas_video":
+			mode = "video"
+		case "canvas_audio":
+			mode = "audio"
+		case "canvas_text", "text":
+			mode = "text"
+		}
+	}
+	keys := []string{"interfaceType", "apiFormat", "channelModelKey", "providerModelKey"}
+	switch mode {
+	case "image":
+		return append(keys, "size", "quality", "transparentBackground", "count")
+	case "video":
+		return append(keys, "size", "vquality", "videoSeconds", "videoGenerateAudio", "videoWatermark")
+	case "audio":
+		return append(keys, "audioVoice", "audioFormat", "audioSpeed", "audioInstructions")
+	case "text":
+		// Older text tasks did not persist mode and may contain a harmless
+		// size field from the shared generation form; keep that legacy detail
+		// visible without reintroducing media-only parameters.
+		return append(keys, "size", "reasoningEffort")
+	default:
+		return keys
+	}
 }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, Lock, Music2, Pencil, ScanSearch, Settings2, Star, Trash2, Type, Video, WandSparkles } from "lucide-react";
+import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, Lock, Music2, Pencil, ScanSearch, Settings2, Star, Trash2, TriangleAlert, Type, Video, WandSparkles } from "lucide-react";
 
 import { useCanvasNodeActions } from "./canvas-node-action-context";
 import { recordCanvasRender } from "@/lib/canvas/canvas-performance-diagnostics";
@@ -18,9 +18,12 @@ import { getNodeDefinition, getNodeMinSize, shouldKeepAspectRatio } from "@/lib/
 import { hasCanvasCustomNodeContent } from "@/lib/canvas/canvas-custom-node-content";
 import { CanvasNodeContent, CanvasNodeImageInfo, CanvasNodeProducedModel } from "./canvas-node-content";
 import { CanvasNodeActionBar } from "./canvas-node-action-bar";
+import { groupedHeaderMetrics, nodeActionBarMode } from "@/lib/canvas/canvas-node-header-metrics";
+import { workflowAssetActions } from "@/lib/canvas/canvas-workflow-asset-actions";
 import { CanvasShotProjection } from "./canvas-shot-projection";
 import type { CanvasShotBinding } from "@/lib/canvas/canvas-shot-projection";
 import { GripVertical } from "lucide-react";
+import { canvasNodeWarning } from "@/lib/execution-warning";
 import "./canvas-image-preview.css";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -74,6 +77,7 @@ type CanvasNodeProps = {
     onCancelTask?: (node: CanvasNodeData) => void;
     onOpenVersions?: (node: CanvasNodeData) => void;
     onViewImage?: (node: CanvasNodeData) => void;
+    onMaskEdit?: (node: CanvasNodeData) => void;
     onReplaceMedia?: (node: CanvasNodeData) => void;
     onOpenTextEditor?: (node: CanvasNodeData) => void;
     onOpenDirector?: (node: CanvasNodeData) => void;
@@ -130,6 +134,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onCancelTask,
     onOpenVersions,
     onViewImage,
+    onMaskEdit,
     onOpenTextEditor,
     onOpenDirector,
     onOpenDrawing,
@@ -143,7 +148,8 @@ export const CanvasNode = React.memo(function CanvasNode({
     const [isEditingContent, setIsEditingContent] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [titleDraft, setTitleDraft] = useState(data.title);
-    const { download: downloadNode, duplicate: duplicateNode, deleteNode } = useCanvasNodeActions();
+    const { download: downloadNode, duplicate: duplicateNode, deleteNode, openAssetReview, generateAssetSound } = useCanvasNodeActions();
+    const assetActions = workflowAssetActions(data);
     const hasImageContent = data.type === CanvasNodeType.Image && Boolean(data.metadata?.content);
     const hasVideoContent = data.type === CanvasNodeType.Video && Boolean(data.metadata?.content);
     const hasAudioContent = data.type === CanvasNodeType.Audio && Boolean(data.metadata?.content || data.metadata?.storageKey);
@@ -309,6 +315,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 
     const connectionTilt = isConnectionTarget && !reduceMediaEffects && !dragOffset
         ? canvasConnectionTilt(data, connectionApproach) : undefined;
+    const warning = canvasNodeWarning(data.metadata);
 
     return (
         <div
@@ -339,6 +346,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 editable={!projectView && !readOnly && !data.metadata?.locked && Boolean(onTitleChange)}
                 editing={isEditingTitle}
                 draft={titleDraft}
+                grouped={Boolean(data.parentId)}
                 theme={theme}
                 onDraftChange={setTitleDraft}
                 onEdit={() => setIsEditingTitle(true)}
@@ -349,13 +357,13 @@ export const CanvasNode = React.memo(function CanvasNode({
                 className="canvas-node-shell relative box-border flex h-full w-full flex-col overflow-visible rounded-[var(--node-radius)]"
                 data-node-state={nodeState}
                 data-connection-tilt={connectionTilt ? "true" : undefined}
-                data-state={data.metadata?.status || (isActive ? "active" : isRelated ? "related" : "idle")}
+                data-state={warning ? "warning" : data.metadata?.status || (isActive ? "active" : isRelated ? "related" : "idle")}
                 style={{
                     background: hasImageContent && data.parentId && data.metadata?.shortDrama?.mediaKind === "image" ? theme.node.fill : hasImageContent || hasVideoContent ? "transparent" : theme.node.fill,
                     // 固定占位但不绘制描边，避免聚焦切换时边框宽度变化造成白边跳动。
                     border: isComposerNode ? "0" : "1px solid transparent",
                     boxShadow: isComposerNode || !showChrome ? "none" : isSelected || isFocusRelated ? theme.node.hoverShadow : theme.node.shadow,
-                    outline: !showChrome && isActive ? `1px solid ${theme.node.activeStroke}` : undefined,
+                    outline: warning ? "1px solid var(--status-warning)" : !showChrome && isActive ? `1px solid ${theme.node.activeStroke}` : undefined,
                     "--connection-tilt-x": `${connectionTilt?.rotateX || 0}deg`,
                     "--connection-tilt-y": `${connectionTilt?.rotateY || 0}deg`,
                     transformOrigin: connectionTilt?.origin,
@@ -383,12 +391,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onOpenDrawing?.(data);
                         return;
                     }
-                    if (!readOnly && data.type === CanvasNodeType.Text && data.metadata?.workflowKind === "character" && data.metadata.characterAssetId) {
-                        event.stopPropagation();
-                        onOpenTextEditor?.(data);
-                        return;
-                    }
-                    if (!readOnly && data.type === CanvasNodeType.Markdown) {
+                    if (!readOnly && (data.type === CanvasNodeType.Text || data.type === CanvasNodeType.Markdown)) {
                         event.stopPropagation();
                         onOpenTextEditor?.(data);
                         return;
@@ -398,9 +401,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onOpenTextEditor?.(data);
                         return;
                     }
-                    if (readOnly || data.type !== CanvasNodeType.Text) return;
-                    event.stopPropagation();
-                    setIsEditingContent(true);
+                    return;
                 }}
             >
                 <div
@@ -423,8 +424,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                             {[false, true].map((original) => <button key={String(original)} type="button" aria-pressed={original === showOriginalNode} onClick={() => onOriginalNodeView?.(data.id, original)} className="rounded px-2 py-1" style={{ background: original === showOriginalNode ? theme.toolbar.itemHover : undefined }}>{original ? "原节点" : "项目镜头"}</button>)}
                         </div>
                     </div> : null}
-                    {showChrome && !projectView && data.metadata?.status && data.metadata.status !== "idle" && data.type !== CanvasNodeType.Frame ? (
-                        <NodeStatusBadge status={data.metadata.status} />
+                    {showChrome && !projectView && (warning || data.metadata?.status && data.metadata.status !== "idle") && data.type !== CanvasNodeType.Frame ? (
+                        <NodeStatusBadge status={warning ? "warning" : data.metadata!.status as "loading" | "success" | "error"} warningMessage={warning?.message} onOpenDetails={warning && onOpenTaskDetails ? () => onOpenTaskDetails(data) : undefined} />
                     ) : null}
                     {projectView && shotBinding ? <CanvasShotProjection
                         binding={shotBinding} refresh={onRefreshShot!} node={data} theme={theme} renderLOD={effectiveRenderLOD}
@@ -453,6 +454,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onReloadResource={onReloadResource}
                         onOpenInfo={onOpenInfo}
                         onOpenTaskDetails={onOpenTaskDetails}
+                        onMaskEdit={onMaskEdit}
                         onCancelTask={onCancelTask}
                         onToggleBatch={() => onToggleBatch?.(data.id)}
                         reduceMediaEffects={reduceMediaEffects}
@@ -461,20 +463,24 @@ export const CanvasNode = React.memo(function CanvasNode({
                     />}
                 </div>
 
-                {showChrome && !projectView && !readOnly && !embeddedNodeActions && data.metadata?.status !== "error" ? (
+                {showChrome && !projectView && !readOnly && !embeddedNodeActions && data.metadata?.status !== "error" && data.metadata?.status !== "loading" && nodeActionBarMode(data.width * scale) !== "hidden" ? (
                     <CanvasNodeActionBar
                         node={data}
                         theme={theme}
+                        compact={nodeActionBarMode(data.width * scale) === "compact"}
                         onOpenInfo={onOpenInfo}
                         onOpenTaskDetails={onOpenTaskDetails}
                         onOpenTextEditor={onOpenTextEditor}
                         onOpenDrawing={onOpenDrawing}
                         onViewImage={onViewImage}
+                        onMaskEdit={onMaskEdit}
                         onMediaPlayRequest={onMediaPlayRequest}
                         onRetry={onRetry}
                         onReloadResource={onReloadResource}
                         onInlineEdit={() => setIsEditingContent(true)}
                         additionalActions={[
+                            ...(assetActions && data.type === CanvasNodeType.Text && openAssetReview ? [{ label: "资产资料", icon: <Settings2 className="size-3.5" />, onClick: () => openAssetReview(data) }] : []),
+                            ...(assetActions?.audioStep && data.type === CanvasNodeType.Text && generateAssetSound ? [{ label: "生成试听", icon: <Music2 className="size-3.5" />, onClick: () => generateAssetSound(data) }] : []),
                             ...(isBatchRoot ? [{ label: batchExpanded ? "收起图片组" : "展开图片组", icon: <ChevronRight className={`size-3.5 ${batchExpanded ? "rotate-90" : ""}`} />, onClick: () => onToggleBatch?.(data.id) }] : []),
                             ...(isBatchRoot && hasImageContent ? [{ label: "下载主图", icon: <Download className="size-3.5" />, onClick: () => downloadNode?.(data) }] : []),
                             ...(isBatchChild && hasImageContent ? [
@@ -591,6 +597,7 @@ function areCanvasNodePropsEqual(previous: CanvasNodeProps, next: CanvasNodeProp
         previous.onCancelTask === next.onCancelTask &&
         previous.onOpenVersions === next.onOpenVersions &&
         previous.onViewImage === next.onViewImage &&
+        previous.onMaskEdit === next.onMaskEdit &&
         previous.onReplaceMedia === next.onReplaceMedia &&
         previous.onOpenTextEditor === next.onOpenTextEditor &&
         previous.onOpenDirector === next.onOpenDirector &&
@@ -648,8 +655,6 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
     return <div className={`absolute z-[var(--node-z-handle)] size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
 }
 
-const NODE_EXTERNAL_HEADER_MIN_SCALE = 0.35;
-
 function formatMediaDimensionLabel(node: CanvasNodeData, hasVisualMediaContent: boolean) {
     const width = node.metadata?.naturalWidth;
     const height = node.metadata?.naturalHeight;
@@ -657,7 +662,7 @@ function formatMediaDimensionLabel(node: CanvasNodeData, hasVisualMediaContent: 
     return `${Math.round(width)}*${Math.round(height)}`;
 }
 
-function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, editing, draft, theme, onDraftChange, onEdit, onCommit, onCancel }: {
+function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, editing, draft, grouped, theme, onDraftChange, onEdit, onCommit, onCancel }: {
     node: CanvasNodeData;
     scale: number;
     dimensionLabel: string | null;
@@ -665,30 +670,35 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
     editable: boolean;
     editing: boolean;
     draft: string;
+    grouped: boolean;
     theme: CanvasTheme;
     onDraftChange: (value: string) => void;
     onEdit: () => void;
     onCommit: () => void;
     onCancel: () => void;
 }) {
-    // 标题保持屏幕尺寸只适用于近景；远景继续反向缩放会遮住节点和连线。
-    if (scale < NODE_EXTERNAL_HEADER_MIN_SCALE && !editing) return null;
+    // 普通节点:标题保持屏幕尺寸,远景隐藏。分组子节点:标题随画布一起缩小,避免盖住状态行和上一排节点。
+    const { visible, k, showMeta } = groupedHeaderMetrics({ scale, nodeWidth: node.width, grouped });
+    if (!visible && !editing) return null;
     const inverseScale = 1 / Math.max(scale, 0.05);
     const Icon = nodeTypeIcon(node.type);
-    const maxHeaderWidth = Math.min(240, node.width * scale);
+    const maxHeaderWidth = Math.min(240, node.width * scale / k);
+    const showDimension = Boolean(dimensionLabel) && showMeta;
+    const liveScale = `var(--canvas-live-scale, ${scale})`;
+    const liveK = grouped ? `min(1, ${liveScale})` : "1";
 
     return (
         <div
             className="canvas-node-external-header absolute bottom-full left-0 z-[var(--node-z-overlay)] flex h-6 items-center gap-1 overflow-hidden"
             style={{
-                width: dimensionLabel ? "calc(var(--canvas-node-width) * var(--canvas-live-scale, 1))" : undefined,
-                maxWidth: dimensionLabel ? undefined : maxHeaderWidth,
+                width: showDimension ? `calc(var(--canvas-node-width) * ${liveScale} / ${liveK})` : undefined,
+                maxWidth: showDimension ? undefined : maxHeaderWidth,
                 "--canvas-node-width": `${node.width}px`,
                 borderRadius: "var(--r-sm)",
                 background: "transparent",
                 paddingInline: "0",
                 color: active ? theme.node.text : theme.node.label,
-                transform: `scale(var(--canvas-live-inverse-scale, ${inverseScale}))`,
+                transform: `scale(calc(var(--canvas-live-inverse-scale, ${inverseScale}) * ${liveK}))`,
                 transformOrigin: "left bottom",
             } as React.CSSProperties}
             onMouseDown={(event) => event.stopPropagation()}
@@ -696,7 +706,7 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
         >
             <div className="flex min-w-0 items-center gap-1" style={{ maxWidth: maxHeaderWidth }}>
                 <Icon className="size-3 shrink-0" strokeWidth={1.8} />
-                {node.metadata?.shortDrama?.assetIdentity ? <code className="shrink-0 text-[var(--fs-micro)]" title="资产编码">{node.metadata.shortDrama.assetIdentity.code}</code> : null}
+                {showMeta && node.metadata?.shortDrama?.assetIdentity ? <code className="min-w-0 max-w-[40%] shrink truncate text-[var(--fs-micro)]" title={`资产编码：${node.metadata.shortDrama.assetIdentity.code}`}>{node.metadata.shortDrama.assetIdentity.code}</code> : null}
                 {editing ? (
                     <input
                         autoFocus
@@ -722,7 +732,7 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
                     <span className="min-w-0 flex-1 truncate text-xs font-medium" title={node.title} style={{ opacity: active ? 1 : 0.78 }}>{node.title}</span>
                 )}
             </div>
-            {dimensionLabel ? <span className="ml-auto shrink-0 whitespace-nowrap text-[var(--fs-micro)] font-medium leading-none tabular-nums" style={{ color: theme.node.muted }}>{dimensionLabel}</span> : null}
+            {showDimension ? <span className="ml-auto shrink-0 whitespace-nowrap text-[var(--fs-micro)] font-medium leading-none tabular-nums" style={{ color: theme.node.muted }}>{dimensionLabel}</span> : null}
         </div>
     );
 }
@@ -740,7 +750,15 @@ function nodeTypeIcon(type: CanvasNodeTypeId) {
 }
 
 // 节点状态徽章（对应 #97 决策2：左上角状态指示，loading/success/error）
-function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }) {
+function NodeStatusBadge({ status, warningMessage, onOpenDetails }: { status: "loading" | "success" | "error" | "warning"; warningMessage?: string; onOpenDetails?: () => void }) {
+    if (status === "warning") return (
+        <button type="button" className="absolute left-2 top-2 z-20 flex items-center gap-1 rounded-full px-2 py-0.5 backdrop-blur-sm"
+            style={{ background: "color-mix(in oklch, var(--status-warning) 20%, transparent)", color: "var(--status-warning)" }}
+            aria-label="内容待处理" title={warningMessage} onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onOpenDetails?.(); }}>
+            <TriangleAlert className="size-3" strokeWidth={2} />
+            <span className="text-[var(--fs-micro)] font-medium leading-none">待处理</span>
+        </button>
+    );
     if (status === "loading") {
         return (
             <div

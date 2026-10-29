@@ -1,8 +1,12 @@
 package runtime
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +50,43 @@ func TestSetProcessLimitDoesNotStopActiveWork(t *testing.T) {
 func noopBridge() Bridge {
 	handler := func(context.Context, map[string]json.RawMessage) (any, error) { return map[string]any{"ok": true}, nil }
 	return Bridge{Model: handler, Tool: handler, Event: handler}
+}
+
+func TestBridgeCallAcceptsCompressedSessionLargerThanLegacyLimit(t *testing.T) {
+	const payloadBytes = 34 << 20
+	payload, err := json.Marshal(map[string]string{"sessionJSONL": strings.Repeat("x", payloadBytes)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/event", &compressed)
+	request.Header.Set("Authorization", "Bearer test")
+	request.Header.Set("Content-Encoding", "gzip")
+	response := httptest.NewRecorder()
+	called := false
+	BridgeCall(response, request, "test", func(_ context.Context, body map[string]json.RawMessage) (any, error) {
+		var session struct {
+			SessionJSONL string `json:"sessionJSONL"`
+		}
+		if err := json.Unmarshal(body["sessionJSONL"], &session.SessionJSONL); err != nil {
+			return nil, err
+		}
+		called = true
+		if len(session.SessionJSONL) != payloadBytes {
+			t.Fatalf("session bytes = %d, want %d", len(session.SessionJSONL), payloadBytes)
+		}
+		return map[string]bool{"ok": true}, nil
+	})
+	if response.Code != http.StatusOK || !called {
+		t.Fatalf("bridge status=%d called=%v body=%s", response.Code, called, response.Body.String())
+	}
 }
 
 // 回归：Wait 早于读完 stdout 时，大量输出后正常退出会被判成

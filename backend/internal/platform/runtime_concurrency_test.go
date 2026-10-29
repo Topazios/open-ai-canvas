@@ -191,7 +191,7 @@ func TestPublicRuntimeConcurrencyAndAdminRoundTrip(t *testing.T) {
 		"channel": 17, "customRelay": 18, "imagePreparation": 19, "resourceDownload": 20,
 		"upload": 21, "mediaRecovery": 22, "agentSessions": 23,
 	}
-	if !reflect.DeepEqual(concurrency, want) || len(output) != 4 {
+	if !reflect.DeepEqual(concurrency, want) || len(output) != 5 {
 		t.Fatalf("public JSON contract: %s", encoded)
 	}
 	if limits.ActiveTaskLimit != policy.Task.ActiveTaskLimit || limits.ResourceUploadMB != policy.Resource.ResourceUploadMB || limits.RecycleBinRetentionDays != policy.Resource.RecycleBinRetentionDays {
@@ -212,7 +212,7 @@ func TestRuntimeConcurrencyLegacyJSONAndReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.Resource.ImagePreparationConcurrency != 4 || policy.Resource.ResourceDownloadConcurrency != 16 || policy.Resource.UploadConcurrency != 4 || policy.Resource.MediaRecoveryConcurrency != 2 || policy.Task.AgentMaxSessions != 30 {
+	if policy.Resource.ImagePreparationConcurrency != 4 || policy.Resource.ResourceDownloadConcurrency != 16 || policy.Resource.UploadConcurrency != 4 || policy.Resource.MediaRecoveryConcurrency != 2 || policy.Task.AgentMaxSessions != 30 || policy.Task.ProviderRequestTimeoutSeconds != DefaultRuntimePolicy().Task.ProviderRequestTimeoutSeconds || policy.Canvas != DefaultRuntimePolicy().Canvas {
 		t.Fatalf("legacy defaults: %+v", policy)
 	}
 	if policy.Resource.ResourceUploadMB != 77 || policy.Task.WorkerConcurrency != 9 || policy.Task.ChannelConcurrency != 7 {

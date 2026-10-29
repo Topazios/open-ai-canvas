@@ -97,7 +97,7 @@ func TestProductionPolicyExcludesUnscopedCanvasReferences(t *testing.T) {
 	if strings.Contains(scoped, "UNRELATED_CANVAS_LIBRARY") || strings.Contains(scoped, "referenceCandidates") || strings.Contains(scoped, "old policy") {
 		t.Fatal("restored production policy still carries obsolete input")
 	}
-	for _, required := range []string{"Safety policy", "keep-skill", "permissionMode", "Keep trailing policy", "按集规划清单并并发补全分镜"} {
+	for _, required := range []string{"Safety policy", "keep-skill", "permissionMode", "Keep trailing policy", "按集并发、集内连续批量"} {
 		if !strings.Contains(scoped, required) {
 			t.Fatalf("scoping removed required policy %s", required)
 		}

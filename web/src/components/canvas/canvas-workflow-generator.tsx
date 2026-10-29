@@ -4,7 +4,6 @@ import { Sparkles, X } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { workflowSourceMatches } from "@/lib/canvas/canvas-production-sources";
 import { workflowAssetActions, workflowAssetRevisionMembers } from "@/lib/canvas/canvas-workflow-asset-actions";
-import { productionPlanSections } from "@/lib/production-plan";
 import { productionAssetMentions } from "@/lib/canvas/production-asset-references";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { ModelPicker } from "@/components/model-picker";
@@ -13,7 +12,11 @@ import { mergedImageCapabilityConfig } from "@/lib/model-selection";
 import { normalizeImageValue } from "@/lib/model-capabilities";
 import { assetSheetKind, assetSheetImageSettings } from "@/lib/asset-reference-sheet";
 import { workflowAssetSheetContext } from "@/lib/canvas/canvas-asset-sheet-context";
-import { workflowImageSubjects, workflowImageShots } from "@/lib/canvas/canvas-workflow-images";
+import { workflowImageSubjectHasGeneratedResult, workflowImageSubjects, workflowImageShots } from "@/lib/canvas/canvas-workflow-images";
+import { workflowSoundSubjects } from "@/lib/canvas/canvas-workflow-sounds";
+import { ProductionSoundKind, projectVoiceCalibration } from "@/lib/production-sound";
+import { AudioSettingsPanel } from "@/components/audio-settings-panel";
+import { audioVoiceOptions } from "@/lib/audio-generation";
 import { ReasoningEffortSelect } from "@/components/reasoning-effort-select";
 import { WORKFLOW_CONTEXT_LIMIT } from "@/lib/canvas/workflow-text-batch";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -28,7 +31,7 @@ export type WorkflowGeneratorTarget = { step: ShortDramaStepId; pipelineId: stri
 type GeneratorProps = {
     globalSettings?: import("@/lib/short-drama-settings").ShortDramaGlobalSettings;
     target: WorkflowGeneratorTarget; nodes: CanvasNodeData[]; submitting: boolean;
-    onGenerate: (request: WorkflowGenerationRequest) => void; onClose: () => void;
+    onGenerate: (request: WorkflowGenerationRequest) => void | Promise<void>; onClose: () => void;
 };
 export function CanvasWorkflowGenerator(props: GeneratorProps) {
     const [selectedStep, setSelectedStep] = useState(props.target.step);
@@ -41,6 +44,11 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
     const selectableStepIds = target.stepIds?.filter((id) => !isStoryboardFrameStep(id)) || [];
     const capability = step.mediaOutput || "text";
     const isImage = capability === "image";
+    const isAudio = capability === "audio";
+    const [audioValues, setAudioValues] = useState(config);
+    const [soundVoices, setSoundVoices] = useState<Record<string, string>>({});
+    const soundKind = ProductionSoundKind.Voice;
+    const calibrationText = projectVoiceCalibration(globalSettings);
     const isAssetRevision = Boolean(target.assetRevisionSourceId);
     const isRepair = Boolean(target.auditRepairReportId);
     const revisionAnchor = nodes.find((node) => node.id === target.assetRevisionSourceId);
@@ -53,8 +61,10 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
     const isSheet = Boolean(assetSheetKind(step.id));
     const [selectedSubjectIds, setSelectedSubjectIds] = useState<string[] | null>(() => {
         const anchor = nodes.find((node) => node.id === target.anchorId);
-        return anchor && nodeWorkflow(anchor)?.role !== "collection" && workflowAssetActions(anchor)?.imageStep === step.id ? [anchor.id] : null;
+        return anchor && nodeWorkflow(anchor)?.role !== "collection" && (workflowAssetActions(anchor)?.imageStep === step.id || workflowAssetActions(anchor)?.audioStep === step.id) &&
+            !(isImage && step.stage === "assets" && workflowImageSubjectHasGeneratedResult(step.id, anchor.id, nodes)) ? [anchor.id] : null;
     });
+    const [selectedAssetTargetKeys, setSelectedAssetTargetKeys] = useState<string[] | null>(null);
     const [imagePrompt, setImagePrompt] = useState<string | null>(null);
     const [selectedShotId, setSelectedShotId] = useState<string | null>(null);
     const [instruction, setInstruction] = useState("");
@@ -62,8 +72,26 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
     const [shotDurationToleranceSeconds, setShotTolerance] = useState(3);
     const [error, setError] = useState("");
     const productionAgent = step.output === "asset-group";
-    const imageSubjects = workflowImageSubjects({ step: target.step, sourceNodeIds: sources.filter(Boolean) }, nodes);
-    const imageSubjectIds = (selectedSubjectIds || imageSubjects.slice(0, 1).map((node) => node.id)).filter((id) => imageSubjects.some((node) => node.id === id));
+    const imageSubjects = isAudio ? workflowSoundSubjects({ pipelineId: target.pipelineId, sourceNodeIds: sources.filter(Boolean) }, nodes) : workflowImageSubjects({ step: target.step, sourceNodeIds: sources.filter(Boolean) }, nodes);
+    const selectableImageSubjects = step.stage === "assets" && isImage
+        ? imageSubjects.filter((node) => !workflowImageSubjectHasGeneratedResult(step.id, node.id, nodes))
+        : imageSubjects;
+    const assetTargetOptions = isSheet ? imageSubjects.flatMap((node) => {
+        const data = nodeWorkflow(node);
+        const identity = data?.assetIdentity?.code;
+        const generated = workflowImageSubjectHasGeneratedResult(step.id, node.id, nodes);
+        const base = { key: JSON.stringify([node.id, ""]), subjectId: node.id, variantCode: "", generated, label: [[identity, node.title, "基准状态"].filter(Boolean).join(" · "), generated ? "已生成" : ""].filter(Boolean).join(" · ") };
+        return [base];
+    }) : [];
+    const selectableAssetTargetOptions = assetTargetOptions.filter((option) => !option.generated);
+    const defaultAssetTargetKeys = isSheet
+        ? (selectedAssetTargetKeys || (selectedSubjectIds?.length ? selectableAssetTargetOptions.filter((option) => selectedSubjectIds.includes(option.subjectId) && !option.variantCode).map((option) => option.key) : selectableAssetTargetOptions.slice(0, 1).map((option) => option.key))).filter((key) => selectableAssetTargetOptions.some((option) => option.key === key))
+        : [];
+    const selectedAssetTargets = defaultAssetTargetKeys.map((key) => assetTargetOptions.find((option) => option.key === key)).filter((option): option is (typeof assetTargetOptions)[number] => Boolean(option));
+    const imageSubjectIds = isSheet
+        ? [...new Set(selectedAssetTargets.map((target) => target.subjectId))]
+        : (selectedSubjectIds || selectableImageSubjects.slice(0, 1).map((node) => node.id)).filter((id) => imageSubjects.some((node) => node.id === id) && (step.stage !== "assets" || !isImage || selectableImageSubjects.some((node) => node.id === id)));
+    const imageTargetCount = isSheet ? selectedAssetTargets.length : imageSubjectIds.length;
     let ancestors: CanvasNodeData[] = [];
     let dependencyError = "";
     try { ancestors = workflowGenerationSources({ ...target, sourceNodeIds: sources.filter(Boolean), ...(isImage ? { imageSubjectIds } : {}) }, nodes); }
@@ -83,7 +111,7 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
     const imageShots = step.stage === "storyboard" ? workflowImageShots(nodes.find((node) => node.id === imageSubjectIds[0]), step.id) : [];
     const imageShotId = selectedShotId || imageShots[0]?.id;
     const effectiveImagePrompt = imagePrompt ?? imageShots.find((shot) => shot.id === imageShotId)?.prompt ?? "";
-    const imageError = isImage && !dependencyError ? !imageSubjectIds.length ? "请选择要生成的资产或镜头来源" : step.stage === "storyboard" && !effectiveImagePrompt.trim() ? "请填写本次镜头编号与画面提示词" : "" : "";
+    const imageError = (isImage || isAudio) && !dependencyError ? !imageTargetCount ? "请选择要生成的资产或镜头来源" : isAudio && (!calibrationText.trim() || !audioValues.audioVoice.trim()) ? "请填写校准文本并选择声线" : isAudio && soundKind !== ProductionSoundKind.Voice ? "当前试听入口使用语音合成；环境、道具及音乐可在资产资料关联已有音频" : step.stage === "storyboard" && !effectiveImagePrompt.trim() ? "请填写镜头编号与画面提示词" : "" : "";
     const parameters = workflowParameters(ancestors, globalSettings);
     const total = parameters.episodeCount;
     const outlineId = ancestors.find((node) => nodeWorkflow(node)?.step === ShortDramaStep.Episodes)?.id;
@@ -123,7 +151,7 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
         <Select allowClear={step.optionalRequires?.includes(required)} aria-label={`${shortDramaStep(required)!.label}来源`} value={sources[index] || undefined} placeholder="选择来源节点" disabled={submitting}
             onChange={(id) => {
                 setSources((current) => current.map((value, i) => i === index ? id || "" : value));
-                setSelectedSubjectIds(null); setImagePrompt(null); setSelectedShotId(null);
+                setSelectedSubjectIds(null); setSelectedAssetTargetKeys(null); setImagePrompt(null); setSelectedShotId(null);
                 if (step.id === ShortDramaStep.Body) {
                     const next = workflowEpisodeProgress(nodes, target.pipelineId, id);
                     const range = workflowContinuationRange(next);
@@ -147,20 +175,35 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
             <header><strong>{isRepair ? "依据诊断修复正文" : isAssetRevision ? "重做另一版" : `${target.aggregate ? "跨集汇总 · " : ""}${step.label}`}</strong><Button type="text" icon={<X size={17} />} aria-label="关闭生成设置" onClick={onClose} /></header>
             <fieldset disabled={submitting} className="canvas-workflow-generator-fields">
                 {isAssetRevision ? <div className="canvas-workflow-generator-progress" role="status"><strong>{revisionAnchor?.title}</strong><span>本次重做 {revisionCount} 项资产 · 保留原版与资产编码</span></div> : null}
-                {step.id === ShortDramaStep.Plan ? <div className="canvas-workflow-generator-progress" aria-label="制作方案产物"><strong>总纲 · 共用规范 · 资产设计</strong><span>{productionPlanSections.map((section) => section.label).join(" · ")}</span></div> : null}
+                {step.id === ShortDramaStep.Plan ? <div className="canvas-workflow-generator-progress" aria-label="故事总纲产物"><strong>故事总纲与世界规则</strong><span>保存总纲后停止；完成后可右键创作其他制作方案。</span></div> : null}
                 {selectableStepIds.length > 1 ? <label>制作项目<Select aria-label="制作项目" value={step.id} onChange={onStepChange} options={selectableStepIds.map((id) => ({ value: id, label: `${shortDramaStep(id)!.label}${shortDramaStep(id)!.optional ? "（按需）" : ""}` }))} /></label> : null}
-                <label>{isImage ? "生图模型" : "文本模型"}<ModelPicker config={config} value={model} capability={capability} onChange={setModel} fullWidth /></label>
+                <label>{isImage ? "生图模型" : isAudio ? "音频模型" : "文本模型"}<ModelPicker config={config} value={model} capability={capability} onChange={setModel} fullWidth /></label>
+                {isAudio ? <>
+                    <label>项目统一校准文本<Input.TextArea aria-label="项目统一校准文本" value={calibrationText} readOnly autoSize={{ minRows: 3, maxRows: 6 }} /></label>
+                    <AudioSettingsPanel config={audioValues} onConfigChange={(key, value) => setAudioValues(current => ({ ...current, [key]: value }))} theme={theme} />
+                </> : null}
                 {capability === "text" ? <ReasoningEffortSelect disabled={submitting} /> : null}
                 {isImage && imageSettings && model ? <details className="canvas-workflow-image-settings"><summary>{isSheet ? "统一设定板" : "图片规格"} · {imageSettings.size} · {imageSettings.quality}</summary><ImageSettingsPanel config={{ ...config, model, imageModel: model, ...imageSettings }} onConfigChange={(key, value) => setImageValues((current) => ({ ...current, [key]: value }))} theme={theme} showTitle={false} showCount={false} showSize={!isSheet} showTransparent={!isSheet} className="min-w-0 space-y-3" /></details> : null}
                 {requirements.map((required, index) => isImage && step.optionalRequires?.includes(required) ? null : sourceField(required, index))}
                 {optionalSources.length ? <details className="canvas-workflow-image-settings"><summary>参考画面（可选） · 已选 {optionalSources.filter(({ index }) => sources[index]).length}</summary><div className="canvas-workflow-optional-sources">{optionalSources.map(({ required, index }) => sourceField(required, index))}</div></details> : null}
-                {isImage ? <>
+                {isImage || isAudio ? <>
                     {step.stage === "assets" ? <div className="canvas-workflow-asset-selection">
-                        <Checkbox disabled={submitting || !imageSubjects.length} checked={imageSubjects.length > 0 && imageSubjectIds.length === imageSubjects.length} indeterminate={imageSubjectIds.length > 0 && imageSubjectIds.length < imageSubjects.length}
-                            onChange={(event) => setSelectedSubjectIds(event.target.checked ? imageSubjects.map((node) => node.id) : [])}>全选当前组</Checkbox>
-                        <span role="status" aria-label="资产选择数量">已选 {imageSubjectIds.length} / {imageSubjects.length} 项</span>
+                        <Checkbox disabled={submitting || !(isSheet ? selectableAssetTargetOptions.length : selectableImageSubjects.length)} checked={(isSheet ? defaultAssetTargetKeys.length === selectableAssetTargetOptions.length : imageSubjectIds.length === selectableImageSubjects.length) && (isSheet ? selectableAssetTargetOptions.length > 0 : selectableImageSubjects.length > 0)} indeterminate={isSheet ? defaultAssetTargetKeys.length > 0 && defaultAssetTargetKeys.length < selectableAssetTargetOptions.length : imageSubjectIds.length > 0 && imageSubjectIds.length < selectableImageSubjects.length}
+                            onChange={(event) => {
+                                if (isSheet) setSelectedAssetTargetKeys(event.target.checked ? selectableAssetTargetOptions.map((option) => option.key) : []);
+                                else setSelectedSubjectIds(event.target.checked ? selectableImageSubjects.map((node) => node.id) : []);
+                            }}>{isSheet ? "全选资产与状态" : "全选当前组"}</Checkbox>
+                        <span role="status" aria-label="资产选择数量">已选 {isSheet ? defaultAssetTargetKeys.length : imageSubjectIds.length} / {isSheet ? selectableAssetTargetOptions.length : selectableImageSubjects.length} 项{imageSubjects.length > selectableImageSubjects.length ? ` · 已生成 ${imageSubjects.length - selectableImageSubjects.length} 项` : ""}</span>
                     </div> : null}
-                    <label>{step.stage === "assets" ? "生成资产" : "镜头来源"}<Select aria-label="图片生成对象" showSearch optionFilterProp="label" mode={step.stage === "assets" ? "multiple" : undefined} value={step.stage === "assets" ? imageSubjectIds : imageSubjectIds[0]} onChange={(value: string | string[]) => { setSelectedSubjectIds(Array.isArray(value) ? value : [value]); setImagePrompt(null); setSelectedShotId(null); }} options={imageSubjects.map((node) => ({ value: node.id, label: [nodeWorkflow(node)?.assetIdentity?.code, node.title].filter(Boolean).join(" · ") }))} /></label>
+                    <label>{step.stage === "assets" ? "生成资产" : "镜头来源"}<Select aria-label="图片生成对象" showSearch optionFilterProp="label" mode={step.stage === "assets" ? "multiple" : undefined} value={step.stage === "assets" ? (isSheet ? defaultAssetTargetKeys : imageSubjectIds) : imageSubjectIds[0]} onChange={(value: string | string[]) => {
+                        if (isSheet) setSelectedAssetTargetKeys(Array.isArray(value) ? value : [value]);
+                        else setSelectedSubjectIds(Array.isArray(value) ? value : [value]);
+                        setImagePrompt(null); setSelectedShotId(null);
+                    }} options={isSheet ? assetTargetOptions.map((option) => ({ value: option.key, label: option.label, disabled: option.generated })) : imageSubjects.map((node) => {
+                        const generated = step.stage === "assets" && isImage && workflowImageSubjectHasGeneratedResult(step.id, node.id, nodes);
+                        return { value: node.id, label: [[nodeWorkflow(node)?.assetIdentity?.code, node.title].filter(Boolean).join(" · "), generated ? "已生成" : ""].filter(Boolean).join(" · "), disabled: generated };
+                    })} /></label>
+                    {isAudio ? imageSubjects.filter(node => imageSubjectIds.includes(node.id)).map(node => <label key={node.id}>{node.title} · 声线<Select aria-label={`${node.title}声线`} value={soundVoices[node.id] || audioValues.audioVoice} options={audioVoiceOptions.map(option => ({ value: option.value, label: option.label }))} onChange={value => setSoundVoices(current => ({ ...current, [node.id]: value }))} /></label>) : null}
                     {imageShots.length ? <label>镜头<Select aria-label="生成镜头" value={imageShotId} onChange={(id) => { setSelectedShotId(id); setImagePrompt(null); }} options={imageShots.map((shot) => ({ value: shot.id, label: shot.title }))} /></label> : null}
                     {step.stage === "storyboard" ? <label>镜头编号与画面提示词<CanvasResourceMentionTextarea aria-label="镜头编号与画面提示词" value={effectiveImagePrompt} onChange={setImagePrompt} references={assetMentions} rows={4} sendOnEnter={false} /></label> : null}
                 </> : null}
@@ -179,9 +222,12 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
                 {dependencyError || error || imageError || auditRangeError ? <span role="alert">{error || dependencyError || imageError || auditRangeError}</span> : null}
                 <Button type="primary" icon={<Sparkles size={15} />} loading={submitting} disabled={submitting || Boolean(dependencyError || imageError || auditRangeError) || !selectableModelsByCapability(config, capability).includes(model)} onClick={() => {
                     setError("");
-                    try { onGenerate({ ...target, globalSettings, sourceNodeIds: sources.filter(Boolean), model, ...(step.id === ShortDramaStep.Shots ? { shotDurationSeconds, shotDurationToleranceSeconds } : {}), ...(isImage ? { imageSubjectIds, imagePrompt: effectiveImagePrompt, imageShotId, imageSettings } : { reasoningEffort: config.textReasoningEffort || "medium" }), instruction, episodeCount: step.id === ShortDramaStep.Plan && !globalSettings ? episodeCount : total, minutesPerEpisode: step.id === ShortDramaStep.Plan && !globalSettings ? minutes : parameters.minutesPerEpisode, start, count }); onClose(); }
+                    try {
+                        void onGenerate({ ...target, globalSettings, sourceNodeIds: sources.filter(Boolean), model, ...(step.id === ShortDramaStep.Shots ? { shotDurationSeconds, shotDurationToleranceSeconds } : {}), ...(isImage ? { imageSubjectIds, ...(isSheet ? { assetImageTargets: selectedAssetTargets.map((asset) => ({ subjectId: asset.subjectId, variantCode: asset.variantCode || undefined })) } : {}), imagePrompt: effectiveImagePrompt, imageShotId, imageSettings } : isAudio ? { imageSubjectIds, soundVoices, soundSettings: { kind: soundKind, text: calibrationText, voice: audioValues.audioVoice, format: audioValues.audioFormat, speed: audioValues.audioSpeed, instructions: audioValues.audioInstructions } } : { reasoningEffort: config.textReasoningEffort || "medium" }), instruction, episodeCount: step.id === ShortDramaStep.Plan && !globalSettings ? episodeCount : total, minutesPerEpisode: step.id === ShortDramaStep.Plan && !globalSettings ? minutes : parameters.minutesPerEpisode, start, count });
+                        onClose();
+                    }
                     catch (failure) { setError(failure instanceof Error ? failure.message : "生成提交失败"); }
-                }}>{isRepair ? "修复正文并生成新版" : step.id === ShortDramaStep.Audit ? `诊断第 ${start}–${auditEnd} 集` : isAssetRevision ? `重做 ${revisionCount} 项资产` : isImage ? `生成 ${imageSubjectIds.length} 张图片` : step.id === ShortDramaStep.Episodes ? "生成全剧集纲" : target.aggregate ? "生成跨集汇总" : step.id === ShortDramaStep.Body ? `生成 ${count} 集正文` : `生成${step.label}`}</Button>
+                }}>{isRepair ? "修复正文并生成新版" : step.id === ShortDramaStep.Audit ? `诊断第 ${start}–${auditEnd} 集` : isAssetRevision ? `重做 ${revisionCount} 项资产` : isImage ? `生成 ${imageTargetCount} 张图片` : isAudio ? `生成 ${imageTargetCount} 份试听` : step.id === ShortDramaStep.Episodes ? "生成全剧集纲" : target.aggregate ? "生成跨集汇总" : step.id === ShortDramaStep.Body ? `生成 ${count} 集正文` : `生成${step.label}`}</Button>
             </fieldset>
         </section>
     </AppModal>;

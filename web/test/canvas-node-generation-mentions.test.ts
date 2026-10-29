@@ -33,6 +33,21 @@ function connection(fromNodeId: string): CanvasConnection {
 }
 
 describe("canvas node generation position mentions", () => {
+    test("视频节点拒绝把带文字和多视图的资产设定板当作直接参考图", () => {
+        const target = targetNode();
+        target.metadata = { generationMode: "video", composerContent: "让 @图片1 进入画面" };
+        const sheet = node("sheet", CanvasNodeType.Image, "data:image/png;base64,AA==");
+        sheet.metadata = {
+            content: "data:image/png;base64,AA==",
+            status: "success",
+            storageKey: "resource:sheet",
+            shortDrama: {
+                assetSheet: { version: 4, kind: "character", size: "1536x1024", styleSignatures: {} },
+            },
+        };
+        expect(() => buildNodeGenerationContext(target.id, [sheet, target], [connection("sheet")], "参考 @图片1", [], true)).toThrow("不能直接使用");
+    });
+
     test("角色卡三视图可解析图片别名，编辑器与生成统一显示角色引用", () => {
         const target = targetNode();
         const character = node("character", CanvasNodeType.Text, "");

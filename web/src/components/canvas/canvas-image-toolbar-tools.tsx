@@ -117,8 +117,8 @@ const imageToolDefinitions: ImageToolDefinition[] = [
     },
     {
         id: "maskEdit",
-        label: "局部重绘",
-        description: "涂抹要修改的区域，生成新图片",
+        label: "重绘",
+        description: "修改提示词整体重新生成，或涂抹区域局部重绘",
         icon: () => <Brush className="size-3.5" />,
         group: "primary",
         order: 10,

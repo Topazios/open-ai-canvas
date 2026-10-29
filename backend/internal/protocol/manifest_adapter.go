@@ -52,7 +52,14 @@ func (a manifestAdapter) ParseAgent(_ context.Context, body []byte) (AgentResult
 		return AgentResult{}, err
 	}
 	response := a.manifest.AgentResponse
-	result := AgentResult{Text: firstPathValue(payload, response.TextPaths...), Reasoning: firstPathValue(payload, response.ReasoningPaths...)}
+	env := map[string]any{"response": payload}
+	result := AgentResult{Text: manifestResponseString(response.Text, env), Reasoning: manifestResponseString(response.Reasoning, env)}
+	if response.Text == nil {
+		result.Text = firstPathValue(payload, response.TextPaths...)
+	}
+	if response.Reasoning == nil {
+		result.Reasoning = firstPathValue(payload, response.ReasoningPaths...)
+	}
 	if response.ToolCallsPath == "" {
 		return result, nil
 	}
@@ -180,10 +187,10 @@ func (a manifestAdapter) parse(payload map[string]any, c PollContext) CreateResu
 		Text:      manifestResponseString(response.Text, env),
 		Reasoning: manifestResponseString(response.Reasoning, env),
 	}
-	if result.Text == "" {
+	if response.Text == nil {
 		result.Text = firstPathValue(payload, response.TextPaths...)
 	}
-	if result.Reasoning == "" {
+	if response.Reasoning == nil {
 		result.Reasoning = firstPathValue(payload, response.ReasoningPaths...)
 	}
 	result.Images = manifestResponseMedia(response.Images, env, "image", response.ResultEphemeral)
@@ -246,7 +253,7 @@ func manifestResponseString(template any, env map[string]any) string {
 	items := manifestArray(value)
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
-		if text := strings.TrimSpace(manifestString(item)); text != "" {
+		if text := manifestString(item); strings.TrimSpace(text) != "" {
 			parts = append(parts, text)
 		}
 	}

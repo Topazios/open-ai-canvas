@@ -9,7 +9,7 @@
 - 鉴权驱动：`bearer`。
 - 创建：`POST /responses`。
 - Agent：`POST /responses`。
-- 生命周期：同步响应。
+- 生命周期：优先处理同步响应；上游返回处理中状态时，按 response ID 查询至完成。
 
 ## 配置字段
 
@@ -347,8 +347,23 @@
             ]
           }
         },
+        "poll": {
+          "method": "GET",
+          "path": "/responses/{{taskId}}",
+          "contentType": "application/json"
+        },
         "response": {
-          "status": "succeeded",
+          "taskIdPaths": [
+            "id"
+          ],
+          "status": {
+            "$coalesce": [
+              {
+                "$ref": "response.status"
+              },
+              "succeeded"
+            ]
+          },
           "textPaths": [
             "output_text"
           ],
@@ -359,10 +374,12 @@
             "$ref": "response.usage"
           },
           "errorPaths": [
-            "error.code"
+            "error.code",
+            "incomplete_details.reason"
           ],
           "messagePaths": [
-            "error.message"
+            "error.message",
+            "incomplete_details.reason"
           ]
         },
         "agentResponse": {

@@ -17,7 +17,7 @@ import { isCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import { audioFileExtension } from "@/lib/character-voice-formats";
 import type { ModelReferenceLimits } from "@/lib/model-selection";
 import type { Asset } from "@/stores/use-asset-store";
-import { assetSheetSubjectMaterial } from "@/lib/asset-sheet-material";
+import { assetSheetShotMaterial } from "@/lib/asset-sheet-material";
 import { AssetSheetKind } from "@/lib/asset-reference-sheet";
 import { episodeShotBoundaryImages, resolveEpisodeShotAssets, storyboardFrameHash } from "@/lib/canvas/workflow-episode-storyboard";
 import { applyStoryboardFrameComposition } from "@/lib/canvas/storyboard-frame-composition";
@@ -73,6 +73,30 @@ export type NodeGenerationInput = {
     character?: CharacterGenerationReference;
 };
 
+/**
+ * 资产设定板包含文字、尺寸线和多个小视图，不能作为视频模型的直接画面参考。
+ * 设定板仍然可以用于生成单幅首帧；视频阶段应只接收已确认的干净首尾帧或普通单图。
+ */
+export function isAnnotatedAssetSheetNode(node: CanvasNodeData | undefined) {
+    return Boolean(node?.type === CanvasNodeType.Image && node.metadata?.shortDrama?.assetSheet);
+}
+
+function isVideoGenerationSource(node: CanvasNodeData | undefined) {
+    return Boolean(node && (node.type === CanvasNodeType.Video || node.metadata?.generationMode === "video"));
+}
+
+function assertVideoReferenceSafety(sourceNode: CanvasNodeData | undefined, nodes: CanvasNodeData[], inputs: NodeGenerationInput[]) {
+    if (!isVideoGenerationSource(sourceNode)) return;
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const sheets = inputs
+        .filter((input) => input.type === "image")
+        .map((input) => byId.get(input.nodeId))
+        .filter((node): node is CanvasNodeData => Boolean(node && isAnnotatedAssetSheetNode(node)));
+    if (sheets.length) {
+        throw new Error("视频生成不能直接使用带文字和多视图的资产设定板。请先为当前镜头生成并选择单幅首帧/尾帧，再提交视频生成。");
+    }
+}
+
 export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string, assets: Asset[], promptOnly = false, storyboardRowId?: string): NodeGenerationContext {
     const sourceNode = nodes.find((node) => node.id === nodeId);
     if (sourceNode?.type === CanvasNodeType.Script && storyboardRowId) {
@@ -83,20 +107,27 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         const start = boundaryImages.find(item => item.kind === "start");
         const end = boundaryImages.find(item => item.kind === "end");
         const frameReferences = [start?.node, end?.node].filter((item): item is CanvasNodeData => Boolean(item)).map(nodeReferenceImage).filter((item): item is ReferenceImage => Boolean(item));
+        if (!frameReferences.length) {
+            const annotatedSheets = resolved.media.filter((node) => isAnnotatedAssetSheetNode(node));
+            if (annotatedSheets.length) {
+                throw new Error("当前镜头还没有可用的单幅首帧/尾帧，不能把资产设定板直接送入视频模型。请先生成当前镜头的首帧或尾帧。");
+            }
+        }
         const assetReferences = resolved.media.map(nodeReferenceImage).filter((item): item is ReferenceImage => Boolean(item));
         const referenceImages = [...new Map((frameReferences.length ? frameReferences : assetReferences).map(image => [image.id, image])).values()];
+        const referenceAudios = resolved.media.map(readReferenceAudio).filter((item): item is ReferenceAudio => Boolean(item));
         return {
             prompt,
             referenceImages,
             referenceVideos: [],
-            referenceAudios: [],
+            referenceAudios,
             characterReferences: [],
             resolvedCharacterVersions: [],
             resolvedCharacterVoices: [],
             textCount: 0,
             imageCount: referenceImages.length,
             videoCount: 0,
-            audioCount: 0,
+            audioCount: referenceAudios.length,
             videoStartFrameNodeId: frameReferences.length ? start?.node.id : undefined,
             videoEndFrameNodeId: frameReferences.length > 1 ? end?.node.id : undefined,
         };
@@ -109,37 +140,47 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         const savedFrame = row.frames?.find(item => item.id === frame.frameId && item.imageNodeId === nodeId);
         if (savedFrame) prompt = applyStoryboardFrameComposition(prompt, row, savedFrame);
         const references = resolveEpisodeShotAssets(script, row, nodes);
-        // Execution-only inputs: frame media lives in storyboard rows, without canvas edges.
-        connections = [...connections.filter(edge => edge.toNodeId !== nodeId), ...references.referenceNodeIds.map(fromNodeId => ({
-            id: `frame-input:${nodeId}:${fromNodeId}`, fromNodeId, toNodeId: nodeId,
-            relation: "storyboard-asset-reference" as const, storyboardRowId: row.id,
-        }))];
         const continuity = storyboardContinuityReference(sourceNode!, nodes);
-        if (continuity) {
-            prompt += `\n\n${storyboardContinuityPrompt(continuity)}`;
-            if (!connections.some(edge => edge.toNodeId === nodeId && edge.fromNodeId === continuity.id)) {
-                connections = [...connections, { id: `continuity:${nodeId}`, fromNodeId: continuity.id, toNodeId: nodeId, relation: "storyboard-asset-reference", storyboardRowId: row.id }];
-            }
-        }
-        const imageRoles = references.media.flatMap(image => {
-            const owners = references.nodes.filter(subject => image.metadata?.shortDrama?.mediaSubjectId === subject.id || subject.metadata?.shortDrama?.assetProfile?.references.some(ref => ref.selected && ref.nodeId === image.id));
-            return owners.length ? [`@[node:${image.id}]：${owners.map(subject => [subject.metadata?.shortDrama?.assetIdentity?.code, subject.title].filter(Boolean).join(" ")).join("、")}的外观参考`] : [];
+        const assetImages = references.media.map(nodeReferenceImage).filter((item): item is ReferenceImage => Boolean(item));
+        const continuityImage = continuity ? nodeReferenceImage(continuity) : null;
+        // The continuity frame is the primary visual anchor; put it first so
+        // providers that weight the first image more strongly keep the shot
+        // identity stable. Asset sheets follow as appearance supplements.
+        const referenceImages = dedupeStoryboardFrameImages([...(continuityImage ? [continuityImage] : []), ...assetImages]);
+        const imageRoles = references.media.flatMap(imageNode => {
+            const image = nodeReferenceImage(imageNode);
+            if (!image) return [];
+            const index = referenceImages.findIndex(reference => reference.id === image.id || Boolean(reference.storageKey && reference.storageKey === image.storageKey) || Boolean(reference.url && reference.url === image.url));
+            if (index < 0) return [];
+            const owners = references.nodes.filter(subject => imageNode.metadata?.shortDrama?.mediaSubjectId === subject.id || subject.metadata?.shortDrama?.assetProfile?.references.some(ref => ref.selected && ref.nodeId === imageNode.id));
+            if (!owners.length) return [];
+            const kind = imageNode.metadata?.shortDrama?.assetSheet?.kind;
+            const role = kind === AssetSheetKind.Character
+                ? "人物外观参考；左侧肖像是唯一脸部身份基准，四视图只校对服装、体态和比例"
+                : kind === AssetSheetKind.Environment
+                    ? "场景固定布局参考；以主平面坐标、固定物尺寸和朝向为准，只改变镜头投影"
+                    : "外观与尺度参考";
+            return [`@图片${index + 1}：${owners.map(subject => [subject.metadata?.shortDrama?.assetIdentity?.code, subject.title].filter(Boolean).join(" ")).join("、")}的${role}`];
         });
-        if (imageRoles.length) prompt += `\n\n参考图与资产对应（只取外观，不采用参考图构图）：\n${imageRoles.join("\n")}`;
-        const subjects = new Set(references.nodes.map(node => node.id));
-        const allowed = new Set(references.referenceNodeIds);
-        if (continuity) allowed.add(continuity.id);
-        connections = connections.filter(connection => connection.toNodeId !== nodeId || allowed.has(connection.fromNodeId));
-        // Frame images need appearance and spatial design, not an asset's full story/voice dossier.
-        nodes = nodes.map(node => {
-            if (!subjects.has(node.id)) return node;
-            const identity = node.metadata?.shortDrama?.assetIdentity;
-            const kind = identity?.kind || node.metadata?.shortDrama?.planAsset?.kind;
-            const visualKind = Object.values(AssetSheetKind).find(value => value === kind);
-            const content = visualKind ? assetSheetSubjectMaterial(node.metadata?.content || "", visualKind) : "";
-            const variants = node.metadata?.shortDrama?.assetProfile?.variants.filter(variant => variant.code && references.codes.includes(variant.code)).map(variant => `${variant.code} ${variant.name}：${variant.description}`) || [];
-            return { ...node, metadata: { ...node.metadata, content: [identity?.code, node.title, content, ...variants].filter(Boolean).join("\n"), richText: undefined } };
-        });
+        const visualFallback = references.nodes
+            .map(node => compactStoryboardAssetFallback(node, references.codes, references.media.some(image => image.metadata?.shortDrama?.mediaSubjectId === node.id || node.metadata?.shortDrama?.assetProfile?.references.some(ref => ref.selected && ref.nodeId === image.id))))
+            .filter(Boolean);
+        const framePrompt = compactStoryboardFramePrompt(prompt, imageRoles, visualFallback, continuity ? storyboardContinuityPrompt(continuity) : "");
+        // Frame media lives in storyboard rows, not as ordinary text/image edges. Return
+        // here so the generic canvas-input collector cannot append full asset dossiers.
+        return {
+            prompt: framePrompt,
+            referenceImages,
+            referenceVideos: [],
+            referenceAudios: [],
+            characterReferences: [],
+            resolvedCharacterVersions: [],
+            resolvedCharacterVoices: [],
+            textCount: 0,
+            imageCount: referenceImages.length,
+            videoCount: 0,
+            audioCount: 0,
+        };
     }
     const pendingConversion = findPendingMediaConversionInput(nodeId, nodes, connections);
     if (pendingConversion) {
@@ -148,6 +189,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         throw new Error(`转换节点「${pendingConversion.title || pendingConversion.id}」${reason}，完成后才能执行下游生成`);
     }
     const connectedInputs = withArkAssetReferenceInputs(buildNodeGenerationInputs(nodeId, nodes, connections), nodes, assets);
+    assertVideoReferenceSafety(sourceNode, nodes, connectedInputs);
     const portraitTextureInput = sourceNode?.type === CanvasNodeType.Image && sourceNode.metadata?.content && sourceNode.metadata?.portraitTexture
         ? (() => {
               const image = readReferenceImage(sourceNode, nodes, connections);
@@ -172,6 +214,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
             promptOnly,
             autoIncludeWorkflowMedia || (promptOnly && hasConnectedMedia),
             connectedInputs,
+            { sourceNode, nodes },
         );
     }
 
@@ -200,6 +243,42 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         videoCount: referenceVideos.length,
         audioCount: referenceAudios.length,
     };
+}
+
+function dedupeStoryboardFrameImages(images: ReferenceImage[]) {
+    const seen = new Set<string>();
+    return images.filter((image) => {
+        const key = image.storageKey || image.url || image.id;
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function compactStoryboardFramePrompt(prompt: string, imageRoles: string[], visualFallback: string[], continuityPrompt: string) {
+    // composerContent may contain a display-only reference header. It is not a
+    // model instruction and keeping it makes retries re-expand stale references.
+    const base = prompt.replace(/^\s*参考资产：[^\r\n]*(?:\r?\n|$)/u, "").trim();
+    const continuity = continuityPrompt.replace(/@\[[^\]]+\]/gu, "连续性首帧").trim();
+    return [
+        base,
+        imageRoles.length ? `参考图对应（只取外观，不复制参考图构图）：${imageRoles.join("；")}` : "",
+        visualFallback.length ? `资产固定尺度与外观锚点：\n${visualFallback.join("\n")}` : "",
+        continuity ? `${continuity}\n连续性参考图为本次参考图中的第一张。` : "",
+    ].filter(Boolean).join("\n\n");
+}
+
+function compactStoryboardAssetFallback(node: CanvasNodeData, codes: string[], hasReference: boolean) {
+    const identity = node.metadata?.shortDrama?.assetIdentity;
+    const kind = identity?.kind || node.metadata?.shortDrama?.planAsset?.kind;
+    const visualKind = Object.values(AssetSheetKind).find(value => value === kind);
+    if (!visualKind) return "";
+    const material = assetSheetShotMaterial(node.metadata?.content || "", visualKind, hasReference);
+    const variants = node.metadata?.shortDrama?.assetProfile?.variants
+        .filter(variant => variant.code && codes.includes(variant.code))
+        .map(variant => `${variant.code} ${variant.name}：${variant.description}`) || [];
+    const value = [identity?.code, node.title, material, ...variants].filter(Boolean).join("；").replace(/\s+/gu, " ").trim();
+    return value;
 }
 
 /**
@@ -261,6 +340,7 @@ function buildComposerGenerationContext(
     promptOnly = false,
     autoIncludeWorkflowMedia = false,
     workflowMediaInputs: NodeGenerationInput[] = [],
+    videoGuard?: { sourceNode?: CanvasNodeData; nodes: CanvasNodeData[] },
 ): NodeGenerationContext {
     const normalizedPrompt = normalizeGenerationNodeMentionTokens(prompt, inputs);
     const slotInputByToken = new Map(generationSlotEntries(inputs).map(({ token, input }) => [token, input]));
@@ -336,6 +416,8 @@ function buildComposerGenerationContext(
     const referenceVideos = selectedInputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
     const referenceAudios = selectedInputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
     const characterReferences = selectedInputs.map((input) => input.character).filter((item): item is CharacterGenerationReference => Boolean(item));
+
+    if (videoGuard) assertVideoReferenceSafety(videoGuard.sourceNode, videoGuard.nodes, selectedInputs);
 
     if (!hasToken && !textBlocks.length && !selectedInputs.length) {
         return {

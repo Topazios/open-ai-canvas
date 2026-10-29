@@ -3,6 +3,17 @@ import { useUserStore, type RuntimeConcurrency, type RuntimeLimits } from "@/sto
 
 export const RUNTIME_LIMITS_TTL_MS = 15_000;
 const keys: Array<keyof RuntimeConcurrency> = ["image", "text", "agent", "video", "audio", "other", "channel", "customRelay", "imagePreparation", "resourceDownload", "upload", "mediaRecovery", "agentSessions"];
+const defaultCanvasPolicy = {
+    connectionLineStyle: "solid" as const,
+    connectionArrowStyle: "arrow" as const,
+    connectionEffect: "highlight" as const,
+    taskEventHeartbeatSeconds: 15,
+    taskEventMaxConnectionsPerUser: 8,
+    taskEventMaxReplayEvents: 200,
+    taskEventRetentionHours: 168,
+    taskFallbackPollMinSeconds: 3,
+    taskFallbackPollMaxSeconds: 60,
+};
 export type ResolvedRuntimeLimits = RuntimeLimits & { concurrency: RuntimeConcurrency };
 let pending: Promise<ResolvedRuntimeLimits> | undefined;
 let revision = 0;
@@ -67,9 +78,10 @@ export function readRuntimeLimits(force = false): Promise<ResolvedRuntimeLimits>
     const request = http.get<{ user: { id: string } | null; runtimeLimits?: RuntimeLimits }>("/auth/session").then((payload) => {
         if (requestRevision !== revision || payload.user?.id !== userId) throw new RuntimeLimitsError("账号或系统策略已变化，请重新读取");
         if (!validRuntimeLimits(payload.runtimeLimits)) throw new RuntimeLimitsError("系统并发策略缺失或无效，已暂停新增任务");
-        useUserStore.getState().setRuntimeLimits(payload.runtimeLimits);
+        const limits = { ...payload.runtimeLimits, canvas: { ...defaultCanvasPolicy, ...payload.runtimeLimits.canvas } };
+        useUserStore.getState().setRuntimeLimits(limits);
         retryAt = 0;
-        return payload.runtimeLimits;
+        return limits;
     }).catch((cause: unknown) => {
         const error = cause instanceof RuntimeLimitsError ? cause : new RuntimeLimitsError(undefined, { cause });
         if (requestRevision === revision) {

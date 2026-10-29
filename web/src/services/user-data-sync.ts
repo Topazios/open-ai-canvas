@@ -19,7 +19,8 @@ import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { useCanvasHistoryStore } from "@/stores/canvas/use-canvas-history-store";
 import { repairMissingCanvasAssets, repairMissingCanvasVideoPreviews, collectCanvasMediaAssetIds, rebindInconsistentCanvasAssets, type CanvasAssetRebindResult } from "@/services/canvas-asset-repair";
 import { canvasNodeToAsset } from "@/lib/canvas/canvas-node-asset";
-import { applyAgentCanvasPatch, mergeCanvasSnapshot, type AgentCanvasPatch } from "@/lib/canvas/agent-canvas-patch";
+import { applyAgentCanvasPatch, mergeCanvasSnapshot, recoverCompletedProductionDocuments, type AgentCanvasPatch } from "@/lib/canvas/agent-canvas-patch";
+import { hasMissingCompletedProductionOutput } from "@/lib/canvas/production-agent-state";
 import { persistCanvasSyncBaseline, readCanvasSyncBaseline } from "./canvas-sync-baseline";
 import { collectLocalMediaKeys, ensureRemoteResourceReferences } from "./user-data-sync-media";
 
@@ -59,7 +60,7 @@ export async function initializeRemoteUserDataSession(userId: string, options: {
 
 async function ensureRemoteUserDataSession() {
     if (sessionRecovery) return sessionRecovery;
-    if (activeRemoteUserId) return;
+    if (activeRemoteUserId && remoteUserDataPhase === "ready") return;
     const user = useUserStore.getState();
     const userId = user.user?.id;
     const scope = getActiveUserScope();
@@ -108,6 +109,62 @@ function liveCanvasIfUnchanged(id: string, snapshot: CanvasProject | null | unde
     return live && sameCanvasContent(live, snapshot) ? live : undefined;
 }
 
+function mergeCompletedProductionAdditions(local: CanvasProject, remote: CanvasProject): CanvasProject | undefined {
+    const localIds = new Set(local.nodes.map((node) => node.id));
+    const imported = new Map<string, (typeof remote.nodes)[number]>();
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const node of remote.nodes) {
+            if (localIds.has(node.id) || imported.has(node.id)) continue;
+            const workflow = node.metadata?.shortDrama;
+            const isProductionDocument = Boolean(workflow?.planSection || workflow?.planAsset || workflow?.assetIdentity || workflow?.bibleSection);
+            if (!isProductionDocument || node.metadata?.status !== "success" || !node.metadata?.content?.trim()) continue;
+            if (node.parentId && !localIds.has(node.parentId) && !imported.has(node.parentId)) continue;
+            imported.set(node.id, node);
+            changed = true;
+        }
+    }
+    if (!imported.size) return undefined;
+
+    const nodes = local.nodes.map((node) => {
+        const remoteParent = remote.nodes.find((candidate) => candidate.id === node.id);
+        const remoteIds = remoteParent?.metadata?.shortDrama?.sourceNodeIds;
+        if (!Array.isArray(remoteIds)) return node;
+        const localWorkflow = node.metadata?.shortDrama;
+        if (!localWorkflow) return node;
+        const additions = remoteIds.filter((id): id is string => typeof id === "string" && imported.has(id));
+        if (!additions.length) return node;
+        return {
+            ...node,
+            metadata: {
+                ...node.metadata,
+                shortDrama: {
+                    ...localWorkflow,
+                    sourceNodeIds: [...new Set([...(localWorkflow.sourceNodeIds || []), ...additions])],
+                    ...(remoteParent?.metadata?.shortDrama?.planReady === true ? { planReady: true } : {}),
+                },
+            },
+        };
+    });
+    nodes.push(...imported.values());
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const edgeIds = new Set(local.connections.map((edge) => edge.id));
+    const connections = [
+        ...local.connections,
+        ...remote.connections.filter((edge) => !edgeIds.has(edge.id) && nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId)),
+    ];
+    return {
+        ...local,
+        nodes,
+        connections,
+        revision: remote.revision,
+        updatedAt: remote.updatedAt,
+        remoteContentHash: remote.remoteContentHash,
+        viewport: local.viewport,
+    };
+}
+
 async function canvasMergeBaseline(local: CanvasProject, remote: CanvasProject, scope: string) {
     if (!Number.isSafeInteger(local.revision) || remote.revision! < local.revision!) return undefined;
     const known = acknowledgedProjects.get(local.id);
@@ -129,18 +186,28 @@ async function canvasMergeBaseline(local: CanvasProject, remote: CanvasProject, 
 
 // All callers hold the remote operation queue. Publish editor and store together,
 // and never acknowledge the merged local document as already saved remotely.
-async function reconcileCanvasSnapshot(remote: CanvasProject, onLoad?: (project: CanvasProject) => void) {
+async function reconcileCanvasSnapshot(remote: CanvasProject, onLoad?: (project: CanvasProject) => void, options: { allowExistingConflict?: boolean } = {}) {
     const epoch = sessionEpoch;
     const scope = getActiveUserScope();
     const local = useCanvasStore.getState().openProject(remote.id);
-    if (!local || hasCanvasStorePersistenceConflict(scope, remote.id)) return undefined;
+    if (!local || (hasCanvasStorePersistenceConflict(scope, remote.id) && !options.allowExistingConflict)) return undefined;
     if (!Number.isSafeInteger(remote.revision) || remote.revision! < 0 || (local.revision !== undefined && remote.revision! < local.revision)) return undefined;
     const hash = await canvasContentHash(remote);
     const baseline = sameCanvasContent(local, remote) ? remote : await canvasMergeBaseline(local, remote, scope);
-    if (!baseline || epoch !== sessionEpoch || scope !== getActiveUserScope()) return undefined;
+    let recovered: CanvasProject | undefined;
+    if (!baseline) {
+        recovered = mergeCompletedProductionAdditions(local, remote);
+        if (!recovered) return undefined;
+        const draftCount = await preserveCanvasSyncDraft(local, scope);
+        if (epoch !== sessionEpoch || scope !== getActiveUserScope() || liveCanvasIfUnchanged(local.id, local) === undefined) return undefined;
+        useSyncProgressStore.getState().setProjectProgress(remote.id, { draftCount });
+    }
+    if (epoch !== sessionEpoch || scope !== getActiveUserScope()) return undefined;
     const current = useCanvasStore.getState().openProject(remote.id);
     if (!current || current.revision !== local.revision) return undefined;
-    const projected = { ...mergeCanvasSnapshot(baseline, current, remote), remoteContentHash: hash };
+    const projected = recovered
+        ? { ...recovered, remoteContentHash: hash }
+        : { ...mergeCanvasSnapshot(baseline!, current, remote), remoteContentHash: hash };
     if (onLoad) onLoad(projected);
     else if (!sameCanvasContent(current, projected)) {
         for (const listener of agentCanvasListeners) listener(projected, current);
@@ -207,9 +274,34 @@ export async function loadCanvasProjectForEditing(id: string, options: { latest?
         await loadReferencedAssets(collectAssetIds(remote));
         const hash = await canvasContentHash(remote);
         if (epoch !== sessionEpoch || getActiveUserScope() !== scope) throw new Error("账号已切换，请重新打开画布");
-        const local = useCanvasStore.getState().openProject(id);
+        let local = useCanvasStore.getState().openProject(id) || undefined;
         const cachedClean = local?.remoteContentHash && local.remoteContentHash === await canvasContentHash(local);
         const dirty = local && (!verifiedProjects.has(id) && incrementalSession ? !cachedClean : !sameCanvasContent(acknowledgedProjects.get(id), local));
+        if (!local) {
+            const project = { ...remote, remoteContentHash: hash };
+            options.onLoad?.(project);
+            acknowledgedProjects.set(id, project);
+            verifiedProjects.add(id);
+            replaceCanvasProjectFromRemote(project);
+            await flushCanvasStorePersistence();
+            await persistCanvasSyncBaseline(project, scope);
+            useSyncProgressStore.getState().setProjectProgress(id, { phase: "done", message: "已加载云端最新版本" });
+            return project;
+        }
+        if (dirty && hasMissingCompletedProductionOutput(local.nodes, remote.nodes)) {
+            const draftCount = await preserveCanvasSyncDraft(local, scope);
+            local = requireUnchangedLocal(local, "画布仍在更新，已保留本地草稿，请重新加载云端结果") || undefined;
+            if (!local) throw new Error("画布已关闭，已保留本地草稿");
+            const recovered = { ...remote, viewport: local.viewport || remote.viewport || { x: 0, y: 0, k: 1 }, remoteContentHash: hash };
+            options.onLoad?.(recovered);
+            acknowledgedProjects.set(id, recovered);
+            verifiedProjects.add(id);
+            replaceCanvasProjectFromRemote(recovered);
+            await flushCanvasStorePersistence();
+            await persistCanvasSyncBaseline(recovered, scope);
+            useSyncProgressStore.getState().setProjectProgress(id, { phase: "done", draftCount, message: "已加载云端已完成的制作内容，本地修改已保留为草稿" });
+            return recovered;
+        }
         if (dirty && !options.latest && !options.historyRestore && local.revision !== remote.revision) {
             try {
                 const reconciled = await reconcileCanvasSnapshot(remote, options.onLoad);
@@ -274,6 +366,7 @@ export function subscribeAgentCanvasRefresh(listener: (project: CanvasProject, p
 }
 
 export async function refreshCanvasAfterAgent(id: string) {
+    await ensureRemoteUserDataSession();
     const epoch = sessionEpoch;
     return withRemoteUserDataSyncExclusive(async () => {
         if (epoch !== sessionEpoch || !activeRemoteUserId) throw new Error("账号已切换或未登录，已停止 Agent 画布同步");
@@ -286,14 +379,16 @@ export async function refreshCanvasAfterAgent(id: string) {
         const cachedDirty = current && incrementalSession && !verifiedProjects.has(id) && current.remoteContentHash !== await canvasContentHash(current);
         if (epoch !== sessionEpoch) throw new Error("账号已切换");
         if (!current) throw new Error("画布已关闭或删除，已停止 Agent 画布同步");
-        if (hasCanvasStorePersistenceConflict(getActiveUserScope(), id)) throw new Error("其他标签页存在未同步编辑，已保留草稿");
         if (current && !cachedDirty && baseline?.revision === project.revision && current.revision === project.revision && sameCanvasContent(baseline, project) && !sameCanvasContent(current, project)) {
             useSyncProgressStore.getState().setProjectProgress(id, { phase: "pending", message: "本地修改等待保存到云端" });
             scheduleRemoteUserDataSync();
             return current;
         }
         try {
-            const reconciled = await reconcileCanvasSnapshot(project);
+            // Agent completion/failure is a server-side update for this canvas.
+            // A stale local conflict flag must not hide that result; merge the
+            // server delta while preserving unrelated local edits and drafts.
+            const reconciled = await reconcileCanvasSnapshot(project, undefined, { allowExistingConflict: true });
             if (reconciled) return reconciled;
             throw new Error("Agent 已更新服务端画布，但本地存在未同步编辑。已保留本地草稿，请加载云端最新版本。");
         } catch (error) {
@@ -306,7 +401,8 @@ export async function refreshCanvasAfterAgent(id: string) {
 export async function applyAgentCanvasPatches(id: string, patches: AgentCanvasPatch[]) {
     const epoch = sessionEpoch;
     const scope = getActiveUserScope();
-    return withRemoteUserDataSyncExclusive(async () => {
+    let recoveredDocuments = false;
+    const result = await withRemoteUserDataSyncExclusive(async () => {
         if (epoch !== sessionEpoch || !activeRemoteUserId) throw new Error("账号已切换或未登录，已停止 Agent 画布同步");
         const baseline = acknowledgedProjects.get(id);
         const current = useCanvasStore.getState().projects.find((project) => project.id === id);
@@ -324,6 +420,11 @@ export async function applyAgentCanvasPatches(id: string, patches: AgentCanvasPa
             remote = { ...applyAgentCanvasPatch(remote, patch), revision: patch.revision };
             projected = { ...applyAgentCanvasPatch(projected, patch), revision: patch.revision };
         }
+        const recovered = recoverCompletedProductionDocuments(projected, patches);
+        if (recovered !== projected) {
+            recoveredDocuments = true;
+            projected = recovered;
+        }
         if (projected === current) return current;
         const hash = await canvasContentHash(remote);
         if (epoch !== sessionEpoch || useCanvasStore.getState().openProject(id) !== current) throw new Error("画布仍在更新，请重新同步 Agent 结果");
@@ -340,9 +441,11 @@ export async function applyAgentCanvasPatches(id: string, patches: AgentCanvasPa
         if (epoch !== sessionEpoch || scope !== getActiveUserScope()) throw new Error("账号已切换");
         await persistCanvasSyncBaseline(remote, scope);
         if (epoch !== sessionEpoch || scope !== getActiveUserScope()) throw new Error("账号已切换");
-        useSyncProgressStore.getState().setProjectProgress(id, { phase: sameCanvasContent(remote, projected) ? "done" : "pending", message: "已同步 Agent 画布结果" });
+        useSyncProgressStore.getState().setProjectProgress(id, { phase: sameCanvasContent(remote, projected) ? "done" : "pending", message: recoveredDocuments ? "已从任务记录恢复完成的方案文稿，正在保存" : "已同步 Agent 画布结果" });
         return projected;
     });
+    if (recoveredDocuments) await saveRemoteUserDataNow(id);
+    return result;
 }
 
 async function preserveAgentConflict(project: CanvasProject) {
@@ -794,6 +897,7 @@ export async function deleteCanvasProjectsWithRemoteSync(ids: string[]) {
 
 export async function saveRemoteUserDataNow(input?: string | readonly string[] | { force?: boolean; repairMissingResources?: boolean }) {
     const projectId = typeof input === "string" || Array.isArray(input) ? input as string | readonly string[] : undefined;
+    const projectIds = projectId === undefined ? undefined : new Set(typeof projectId === "string" ? [projectId] : projectId);
     const options = input && typeof input === "object" && !Array.isArray(input) ? input as { force?: boolean; repairMissingResources?: boolean } : {};
     await ensureRemoteUserDataSession();
     const epoch = sessionEpoch;
@@ -808,13 +912,18 @@ export async function saveRemoteUserDataNow(input?: string | readonly string[] |
     await waitForRemoteProjectLoads();
     if (syncPromise) {
         syncQueued = true;
-        await syncPromise;
-        assertNoConflict();
-        // The in-flight drain may have started before this explicit repair/force
-        // request. Re-enter after it settles so the user's intent is not lost.
-        if (options.force || options.repairMissingResources) {
+        try {
+            await syncPromise;
+        } catch (error) {
+            // A global save can fail on a different canvas. A scoped caller must
+            // run its own checked save, including reconciliation, before deciding.
+            if (!projectIds) throw error;
+        }
+        if (epoch !== sessionEpoch) throw new Error("账号已切换，已停止旧会话保存");
+        if (projectIds || options.force || options.repairMissingResources) {
             return saveRemoteUserDataNow(input);
         }
+        assertNoConflict();
         return;
     }
     syncPromise = withRemoteUserDataSyncExclusive(async () => {
@@ -834,7 +943,7 @@ export async function saveRemoteUserDataNow(input?: string | readonly string[] |
         }
         if (epoch !== sessionEpoch) throw new Error("账号已切换，已停止旧会话保存");
         if (projectId !== undefined) assertNoConflict();
-        await drainRemoteUserDataChanges(options);
+        await drainRemoteUserDataChanges(options, projectIds);
     });
     let syncFailed = false;
     let syncError: unknown;
@@ -888,23 +997,23 @@ export async function forceOverwriteRemoteCanvasSync(): Promise<CanvasAssetRebin
     return rebind;
 }
 
-async function drainRemoteUserDataChanges(options: { force?: boolean; repairMissingResources?: boolean } = {}) {
+async function drainRemoteUserDataChanges(options: { force?: boolean; repairMissingResources?: boolean } = {}, projectIds?: ReadonlySet<string>) {
     const uploaded = new Map<string, string>();
     const reconciliations = new Map<string, number>();
     do {
         syncQueued = false;
-        await saveRemoteUserDataBatch(uploaded, options, reconciliations);
+        await saveRemoteUserDataBatch(uploaded, options, reconciliations, projectIds);
     } while (syncQueued);
 }
 
-async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: { force?: boolean; repairMissingResources?: boolean } = {}, reconciliations = new Map<string, number>()) {
+async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: { force?: boolean; repairMissingResources?: boolean } = {}, reconciliations = new Map<string, number>(), projectIds?: ReadonlySet<string>) {
     const epoch = sessionEpoch;
     const scope = getActiveUserScope();
     // Detect local cross-tab conflicts before selecting whole-project cloud payloads.
     await flushCanvasStorePersistence();
     // 中央兜底：任何调用方只要把持久媒体写进画布，提交前都会先补齐素材记录与 assetId。
     // 页面级入口仍主动入库，以便立即反馈；这里负责阻止遗漏入口形成远端幽灵资源。
-    const changedProjectIds = new Set(useCanvasStore.getState().projects.filter((project) => !sameCanvasContent(acknowledgedProjects.get(project.id), project)).map((project) => project.id));
+    const changedProjectIds = new Set(useCanvasStore.getState().projects.filter((project) => (!projectIds || projectIds.has(project.id)) && !sameCanvasContent(acknowledgedProjects.get(project.id), project)).map((project) => project.id));
     // A partial library is not evidence that a node's claimed asset exists on
     // the server. Resolve references before repair, then upload assets first.
     const claimedIds = [...collectCanvasMediaAssetIds(useCanvasStore.getState().projects.filter(project => changedProjectIds.has(project.id)))]
@@ -918,10 +1027,11 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
         for (const id of ids) if (!present.has(id)) acknowledgedAssets.delete(id);
     }
     repairMissingCanvasAssets(changedProjectIds);
-    const currentProjects = useCanvasStore.getState().projects;
+    const currentProjects = useCanvasStore.getState().projects.filter(project => !projectIds || projectIds.has(project.id));
     const currentAssets = useAssetStore.getState().assets;
+    const referencedAssetIds = projectIds ? collectAssetIds(currentProjects) : undefined;
     const dirtyProjects = currentProjects.filter((project) => !sameCanvasContent(acknowledgedProjects.get(project.id), project) && useSyncProgressStore.getState().syncingProjects[project.id]?.phase !== "conflict");
-    const dirtyAssets = currentAssets.filter((asset) => !sameEntitySnapshot(acknowledgedAssets.get(asset.id), asset));
+    const dirtyAssets = currentAssets.filter((asset) => (!referencedAssetIds || referencedAssetIds.has(asset.id)) && !sameEntitySnapshot(acknowledgedAssets.get(asset.id), asset));
     if (!dirtyProjects.length && !dirtyAssets.length) return;
 
     if (incrementalSession) {

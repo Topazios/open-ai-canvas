@@ -22,6 +22,10 @@ type providerError struct {
 	Message string `json:"message"`
 }
 
+const providerOutputLimitCode = "output_limit_exceeded"
+
+var errProviderOutputLimit = errors.New("模型输出达到本次上限，生成未完成；请拆分当前文稿或调整输出上限后继续")
+
 // providerPayloadError 在进程内保留上游原始原因，供协议兼容分支做机器判断；
 // 对调用方只暴露经过过滤的错误原因。Provider 正文可能包含密钥或内部诊断，
 // 禁止原样进入用户错误和日志。
@@ -184,6 +188,10 @@ func providerPayloadErrorCategory(raw string) (string, bool) {
 		return "", false
 	}
 	switch {
+	case strings.Contains(normalized, "media url could not be downloaded"),
+		strings.Contains(normalized, "media url could not be downloaded or did not return valid supported media"),
+		strings.Contains(normalized, "source_unavailable"):
+		return "上游无法下载参考媒体，请配置可被上游直接访问且持续有效的 HTTPS 媒体地址；本地地址、需登录地址或证书不受信任的地址均不可用", true
 	// 真人肖像类目只匹配供应商错误码里的稳定标识，不扫描自然语言。
 	// 正文常常回显用户提示词，"likeness"、"肖像"这类词单独出现并不能证明
 	// 上游是因为真人形象拒绝，按词判断会把普通参数错误误报成肖像问题。

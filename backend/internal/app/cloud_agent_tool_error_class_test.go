@@ -35,7 +35,8 @@ func TestCloudAgentToolErrorClass(t *testing.T) {
 		{"画布已变化", canvasRequest, call("canvas_apply_ops"), cloudAgentFieldError("snapshotHash", "stale_snapshot", "画布已变化"), true, cloudAgentToolErrorStateConflict, true, "reread_canvas"},
 		{"上游 5xx", canvasRequest, call("task_get"), providerHTTPError{StatusCode: 503}, true, cloudAgentToolErrorUpstream, true, "report_to_user"},
 		{"上游 4xx", canvasRequest, call("task_get"), providerHTTPError{StatusCode: 400}, true, cloudAgentToolErrorUpstream, false, "report_to_user"},
-		{"超时", canvasRequest, call("task_get"), context.DeadlineExceeded, true, cloudAgentToolErrorUpstream, true, "report_to_user"},
+		{"未确认来源的执行超时", canvasRequest, call("task_get"), context.DeadlineExceeded, true, cloudAgentToolErrorExecution, false, "inspect_execution"},
+		{"本地执行取消", canvasRequest, call("task_get"), context.Canceled, true, cloudAgentToolErrorExecution, false, "inspect_execution"},
 		{"其它", canvasRequest, call("task_get"), errors.New("说不清"), true, cloudAgentToolErrorUnknown, false, "report_to_user"},
 		{"媒体准入失败", canvasRequest, call("generate_media"), &cloudAgentMediaAdmissionError{
 			error:          errors.New("model admission rejected"),

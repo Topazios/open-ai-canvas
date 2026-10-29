@@ -17,13 +17,16 @@ import (
 // 其余可读的供应商原因原样保留，而不是统一成"生成失败"。
 
 const (
-	taskErrorModerationMessage = "内容审核未通过，本次平台积分未扣除或已退还。请修改提示词后重新生成。"
-	taskErrorDefaultMessage    = "生成失败，请稍后重试。"
-	taskErrorNetworkMessage    = "网络异常。"
+	taskErrorModerationMessage  = "内容审核未通过，本次平台积分未扣除或已退还。请修改提示词后重新生成。"
+	taskErrorDefaultMessage     = "生成失败，请稍后重试。"
+	taskErrorNetworkMessage     = "网络异常。"
+	taskErrorServiceMessage     = "生成服务处理异常，请在任务中心查看诊断。"
+	taskErrorProcessingMessage  = "生成链路处理异常，请在任务中心查看诊断。"
+	taskErrorInterruptedMessage = "执行已超时或中断，请在任务中心核对任务状态。"
 )
 
 var (
-	taskErrorNetworkPattern        = regexp.MustCompile(`(?i)\b(?:dial tcp|connection refused|connection reset|no such host|i/o timeout|context deadline exceeded|network error|failed to fetch|fetch failed|socket hang up|econnrefused|econnreset|etimedout|broken pipe|unexpected eof|tls handshake timeout)\b`)
+	taskErrorNetworkPattern        = regexp.MustCompile(`(?i)\b(?:dial tcp|connection refused|connection reset|no such host|i/o timeout|network error|failed to fetch|fetch failed|socket hang up|econnrefused|econnreset|etimedout|tls handshake timeout)\b`)
 	taskErrorInfrastructurePattern = regexp.MustCompile(`(?i)(?:接口请求失败|Request failed with status code|https?://|\b(?:GET|POST|PUT|PATCH|DELETE)\s+["']?|Bad Gateway|Service Unavailable|Gateway Timeout|upstream_error|\bread tcp\b|\bwrite tcp\b)`)
 	taskErrorWrappedInterface      = regexp.MustCompile(`(?s)^接口请求失败[:：]\s*(.*)$`)
 	taskErrorWrappedRequest        = regexp.MustCompile(`(?is)^Request failed with status code \d{3}\s*[:：-]?\s*(.+)$`)
@@ -61,6 +64,13 @@ func userFacingTaskError(raw string) string {
 	if taskErrorNetworkPattern.MatchString(display) {
 		return taskErrorNetworkMessage
 	}
+	lower := strings.ToLower(display)
+	if strings.Contains(lower, "context deadline exceeded") || strings.Contains(lower, "context canceled") {
+		return taskErrorInterruptedMessage
+	}
+	if strings.Contains(lower, "unexpected eof") || strings.Contains(lower, "broken pipe") {
+		return taskErrorProcessingMessage
+	}
 	if providerMessage == "" {
 		if !strings.Contains(display, "；上游：") {
 			switch {
@@ -71,11 +81,11 @@ func userFacingTaskError(raw string) string {
 			case taskErrorHasStatus(raw, "404"):
 				return "生成服务地址不可用，请检查渠道配置。"
 			case taskErrorHasStatus(raw, "500", "502", "503", "504"):
-				return taskErrorNetworkMessage
+				return taskErrorServiceMessage
 			}
 		}
 		if taskErrorInfrastructurePattern.MatchString(raw) {
-			return taskErrorNetworkMessage
+			return taskErrorProcessingMessage
 		}
 	}
 	return truncateRunes(display, 240)
@@ -115,6 +125,9 @@ func userFacingTaskKind(task *model.Task) string {
 func cloudAgentUserFailureMessage(runID string, cause error) string {
 	if cause == nil {
 		return "Agent 执行中断，请重新发送消息"
+	}
+	if errors.Is(cause, errProviderOutputLimit) || strings.Contains(cause.Error(), "Responses 输出达到 token 上限") || strings.Contains(cause.Error(), errProviderOutputLimit.Error()) {
+		return errProviderOutputLimit.Error()
 	}
 	var appErr *AppError
 	if errors.As(cause, &appErr) && appErr != nil && cloudAgentReadableMessage(appErr.Message) {

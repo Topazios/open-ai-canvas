@@ -27,6 +27,7 @@
 .production-agent-actions .ant-select { width: 88px; }
 .production-agent-note { color: var(--muted-foreground); }
 .production-agent-error { color: var(--destructive); }
+.production-agent-warning { color: var(--status-warning); }
 .production-agent-parameters > summary, .production-agent-event > summary, .production-agent-event-line { display: flex; align-items: center; gap: 8px; list-style: none; color: var(--muted-foreground); }
 .production-agent-parameters > summary, .production-agent-event > summary { cursor: pointer; }
 .production-agent-parameters > summary::-webkit-details-marker, .production-agent-event > summary::-webkit-details-marker { display: none; }
@@ -45,6 +46,7 @@
 .production-agent-event > summary > span, .production-agent-event-line > span { flex: 1; min-width: 0; }
 .production-agent-event > summary:hover { color: var(--foreground); }
 .production-agent-event.production-agent-error > summary { color: var(--destructive); }
+.production-agent-event.production-agent-warning > summary, .production-agent-event.production-agent-warning > .production-agent-event-line { color: var(--status-warning); }
 .production-agent-event time { flex-shrink: 0; color: var(--muted-foreground); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
 .production-agent-event-detail { margin: 8px 0 4px 6px; padding: 4px 12px 4px 16px; border-left: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted-foreground); }
 .production-agent-commentary { margin: 16px 0; font-size: var(--fs-body); line-height: 1.8; }

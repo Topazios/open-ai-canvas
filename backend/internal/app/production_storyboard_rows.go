@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"infinite-canvas/backend/internal/model"
 )
 
-var storyboardAssetCode = regexp.MustCompile(`^(CHR|SCN|PRP|SPC|AUD)-[0-9]+(-V[0-9]+)?$`)
-var storyboardAssetMentions = regexp.MustCompile(`\b(CHR|SCN|PRP|SPC|AUD)-[0-9]+(-V[0-9]+)?\b`)
-var regexpStoryboardVariant = regexp.MustCompile(`-V[0-9]+$`)
+var storyboardAssetCode = regexp.MustCompile(`^` + model.ProductionAssetReferencePattern + `$`)
+var storyboardAssetMentions = regexp.MustCompile(`\b` + model.ProductionAssetReferencePattern + `\b`)
+var regexpStoryboardVariant = regexp.MustCompile(model.ProductionAssetVariantSuffixPattern + `$`)
 
 // Persist one editable episode table at each checkpoint. Task receipts and media
 // links survive an unchanged shot; regenerated shots never reuse stale videos.

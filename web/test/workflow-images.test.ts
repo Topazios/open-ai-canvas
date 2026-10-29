@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { productionRuleBlock } from "../src/lib/production-rules";
 import { workflowImageFixture } from "./fixtures/workflow-image-project";
-import { createWorkflowImages, workflowImageSubjects, workflowImageReferences, workflowImageShots } from "@/lib/canvas/canvas-workflow-images";
-import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowAncestors, workflowSignature, workflowSignatureMatches } from "@/lib/canvas/canvas-short-drama-workflow";
+import { createWorkflowImages, refreshPendingWorkflowImage, workflowImageSubjectHasGeneratedResult, workflowImageSubjects, workflowImageReferences, workflowImageShots } from "@/lib/canvas/canvas-workflow-images";
+import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowAncestors, workflowSignature, workflowSignatureMatches, workflowSourceSignaturesMatch } from "@/lib/canvas/canvas-short-drama-workflow";
 import { deriveShortDramaProgress } from "@/lib/canvas/canvas-short-drama";
 import { assetMediaSignature } from "@/lib/canvas/canvas-workflow-asset-profile";
 import { createCanvasNode } from "@/lib/canvas/canvas-project-domain";
@@ -48,6 +48,34 @@ describe("direct workflow image generation", () => {
         expect(() => workflowAncestors([image.id], result.nodes, f.request.pipelineId, [])).toThrow("连线");
         subject.metadata!.content += " changed";
         expect(() => workflowAncestors([image.id], result.nodes, f.request.pipelineId, result.connections)).toThrow("前文已更新");
+    });
+
+    test("explicit retry rebuilds a pending asset image from current source content", () => {
+        const f = workflowImageFixture();
+        const subject = workflowImageSubjects(f.request, f.nodes)[0];
+        const result = createWorkflowImages({ ...f.request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 });
+        const pending = result.created[0];
+        subject.metadata!.content = `${subject.metadata!.content}\n人物服装更新为深绿色外套`;
+
+        expect(workflowSourceSignaturesMatch(nodeWorkflow(pending)!, result.nodes)).toBe(false);
+        const refreshed = refreshPendingWorkflowImage(pending, result.nodes, result.connections);
+
+        expect(refreshed?.metadata?.prompt).toContain("深绿色外套");
+        expect(workflowSourceSignaturesMatch(nodeWorkflow(refreshed)!, result.nodes)).toBe(true);
+    });
+
+    test("generated asset images are recognized until their output node is deleted", () => {
+        const f = workflowImageFixture();
+        const subject = workflowImageSubjects(f.request, f.nodes)[0];
+        const result = createWorkflowImages({ ...f.request, imageSubjectIds: [subject.id] }, f.nodes, f.connections, { x: 0, y: 0 });
+        const image = result.created[0];
+        image.metadata!.status = "success";
+        image.metadata!.content = "generated-image-data";
+
+        expect(workflowImageSubjectHasGeneratedResult(f.request.step, subject.id, result.nodes)).toBe(true);
+        const afterDeletion = result.nodes.filter((node) => node.id !== image.id);
+        expect(workflowImageSubjectHasGeneratedResult(f.request.step, subject.id, afterDeletion)).toBe(false);
+        expect(createWorkflowImages({ ...f.request, imageSubjectIds: [subject.id] }, afterDeletion, result.connections.filter((edge) => edge.fromNodeId !== image.id && edge.toNodeId !== image.id), { x: 0, y: 0 }).created).toHaveLength(1);
     });
 
     test("reference images are signed, passed as media and invalidated on replacement", () => {

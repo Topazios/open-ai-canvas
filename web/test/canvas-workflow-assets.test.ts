@@ -146,6 +146,18 @@ describe("production guidelines and reusable asset outputs", () => {
         expect(nodes.find((node) => node.id === before.id)?.metadata?.errorDetails).toContain("未提供");
         expect(nodes.filter((node) => node.parentId === before.parentId)).toHaveLength(1);
     });
+    test("asset groups materialize in explicit story-priority order regardless of response order", () => {
+        const f = bodyFixture();
+        const generated = createWorkflowDocuments({ ...f.request, step: "assets.props", sourceNodeIds: [f.body.id, f.bible.id] }, f.nodes, f.connections, center);
+        const before = generated.created[0];
+        const content = JSON.stringify({ summary: "ordered", items: [
+            { ...assetItem("普通道具", "一般功能物"), priority: 3 },
+            { ...assetItem("主线钥匙", "主线关键物件"), priority: 1 },
+            { ...assetItem("关键证据", "推动调查的线索"), priority: 2 },
+        ] });
+        const nodes = commitCanvasGenerationResult(generated.nodes, before, { ...before, metadata: { ...before.metadata, content, status: "success" } }, "priority-order");
+        expect(nodes.filter((node) => node.parentId === before.parentId && node.id !== before.id).map((node) => node.title)).toEqual(["主线钥匙", "关键证据", "普通道具"]);
+    });
     test("episode consumers omit unrelated indexed assets but include unknown or edited ones", () => {
         const f = groupFixture();
         const env = createWorkflowDocuments({ ...f.request, step: "assets.environments", sourceNodeIds: [f.body.id, f.bible.id] }, f.nodes, f.connections, center);
@@ -212,7 +224,8 @@ describe("production guidelines and reusable asset outputs", () => {
         const f = bodyFixture();
         const steps = activeShortDramaSteps.filter((step) => step.stage === "assets");
         expect(steps.filter((step) => !step.optional).map((step) => step.label)).toEqual(["人物参考图生成", "场景参考图生成", "道具参考图生成"]);
-        expect(steps).toHaveLength(3);
+        expect(steps).toHaveLength(4);
+        expect(steps.find(step => step.id === "assets.voice_samples")).toMatchObject({ mediaOutput: "audio", optional: true });
         expect(steps.filter((step) => !step.mediaOutput)).toHaveLength(0);
         expect(nextShortDramaSteps("story.body").filter((step) => step.stage === "assets").map((step) => step.id)).toEqual([]);
         expect(nextShortDramaSteps("assets.characters").map((step) => step.id)).toContain("assets.character_references");

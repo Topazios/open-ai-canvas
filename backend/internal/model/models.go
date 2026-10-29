@@ -79,12 +79,15 @@ const (
 	ChannelInterfaceGeminiVeo                   ChannelInterfaceType = "gemini-veo"
 	ChannelInterfaceNovitaVideo                 ChannelInterfaceType = "novita-video"
 	ChannelInterfaceMiniMaxVideo                ChannelInterfaceType = "minimax-video"
+	ChannelInterfaceAgnesImage                  ChannelInterfaceType = "agnes-image"
 	ChannelInterfaceAgnesVideo                  ChannelInterfaceType = "agnes-video"
 	ChannelInterfaceRunningHubImage             ChannelInterfaceType = "runninghub-workflow-image"
 	ChannelInterfaceRunningHubVideo             ChannelInterfaceType = "runninghub-workflow-video"
 	ChannelInterfaceRunningHubAudio             ChannelInterfaceType = "runninghub-workflow-audio"
 
 	ApiCallStatusSucceeded ApiCallStatus = "succeeded"
+	ApiCallStatusWarning   ApiCallStatus = "warning"
+	ApiCallStatusRunning   ApiCallStatus = "running"
 	ApiCallStatusFailed    ApiCallStatus = "failed"
 
 	ResourceStatusPending ResourceStatus = "pending"

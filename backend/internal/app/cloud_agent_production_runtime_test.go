@@ -199,6 +199,10 @@ func TestProductionRuntimeCanonicalToolsFollowManifest(t *testing.T) {
 					if fixture.name == "storyboard" {
 						expected = []string{"production_storyboard_plan"}
 					}
+					if fixture.name == "plan v2" {
+						expected = []string{"production_read"}
+						call = productionRuntimeCall("production_read")
+					}
 					productionRuntimeAssertTools(t, canonical.Tools, expected)
 					if got := productionRuntimeFinish(t, db, task.ID, done, call); got.err != nil {
 						t.Fatal(got.err)
@@ -228,7 +232,7 @@ func TestProductionRuntimeCanonicalToolsFollowManifest(t *testing.T) {
 	}
 }
 
-func TestProductionRuntimeUnknownToolFailsOnceAndResumes(t *testing.T) {
+func TestProductionRuntimeUnknownToolBlocksOnceAndResumes(t *testing.T) {
 	for _, name := range []string{"production_unknown", "production_storyboard_context", "production_facts", "canvas_get_state"} {
 		t.Run(name, func(t *testing.T) {
 			s, db, run := planFixture(t)
@@ -250,18 +254,45 @@ func TestProductionRuntimeUnknownToolFailsOnceAndResumes(t *testing.T) {
 			if !errors.Is(got.err, errProductionRuntimeUnknownTool) || got.result != nil {
 				t.Fatalf("unsupported result was not rejected: %+v", got)
 			}
-			stored, failed := productionRuntimeState(t, s, run.ID)
-			if stored.Status != "failed" || failed.ActiveTaskID != "" || failed.LastError != errProductionRuntimeUnknownTool.Error() {
-				t.Fatalf("not a recoverable failure: status=%s active=%s error=%s", stored.Status, failed.ActiveTaskID, failed.LastError)
+			var revision *productionRuntimeContinueError
+			if !errors.As(got.err, &revision) {
+				t.Fatalf("local block was not identified as a revision: %v", got.err)
 			}
-			failures := 0
+			stored, failed := productionRuntimeState(t, s, run.ID)
+			if stored.Status != "waiting_user" || stored.FailureMessage != "" || failed.ActiveTaskID != "" || failed.LastError != "" {
+				t.Fatalf("local block was recorded as failure: status=%s active=%s error=%s", stored.Status, failed.ActiveTaskID, failed.LastError)
+			}
+			blocks := 0
 			for _, event := range failed.Events {
-				if event.Type == "run_failed" && event.Payload["reason"] == "unknown_production_tool" {
-					failures++
+				if event.Type == "run_failed" {
+					t.Fatal("local validation emitted a run failure")
+				}
+				if event.Type == "production_control" && event.Payload["action"] == "needs_revision" {
+					blocks++
+					if event.Payload["reason"] != "unknown_production_tool" || event.Payload["severity"] != "warning" || event.Payload["errorSource"] != "application" || event.Payload["phase"] != "validation" {
+						t.Fatal("local block lost its classification", event.Payload)
+					}
 				}
 			}
-			if failures != 1 {
-				t.Fatalf("got %d failure events; want one", failures)
+			if blocks != 1 {
+				t.Fatalf("got %d revision events; want one", blocks)
+			}
+			canvas, err := s.repo.CanvasProjectForUser("user", failed.Request.CanvasID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc, err := creationDocument(canvas.PayloadJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			node := productionNode(doc, failed.Request.Production.TargetNodeID)
+			if node == nil {
+				t.Fatal("production target disappeared")
+			}
+			meta, _ := node["metadata"].(map[string]any)
+			warning, _ := meta["generationWarning"].(map[string]any)
+			if meta["status"] != "idle" || warning["severity"] != "warning" || warning["errorSource"] != "application" || warning["outcome"] != "needs_revision" {
+				t.Fatal("blocked production was not projected as a local warning", meta)
 			}
 			for _, receipt := range failed.ProductionModelReceipts {
 				if receipt == task.ID {
@@ -275,6 +306,17 @@ func TestProductionRuntimeUnknownToolFailsOnceAndResumes(t *testing.T) {
 			defer cancel()
 			if _, err := s.cloudAgentPiModel(ctx, "user", run.ID, productionRuntimePayload(messages)); err == nil {
 				t.Fatal("failed run accepted another model request")
+			}
+			if _, err := s.executeCloudAgentRuntimeTool(ctx, "user", run.ID, productionRuntimeCall("production_status")); err == nil {
+				t.Fatal("blocked run accepted another tool call")
+			}
+			s.failPiRunner(run.ID, "user", errors.New("old Pi callback ended after the local block"))
+			if err := s.completeCloudAgentPiRun("user", run.ID); err != nil {
+				t.Fatal(err)
+			}
+			stored, failed = productionRuntimeState(t, s, run.ID)
+			if stored.Status != "waiting_user" || stored.FailureMessage != "" || failed.LastError != "" {
+				t.Fatal("old Pi callback overwrote the local block", stored.Status, stored.FailureMessage, failed.LastError)
 			}
 			var tasks int64
 			if err := db.Model(&model.Task{}).Count(&tasks).Error; err != nil || tasks != 2 {
@@ -350,7 +392,7 @@ func TestProductionRuntimePlanV2ScopesCanonicalSubmitSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	canonical := stateCanonicalFromInput(input)
-	productionRuntimeAssertTools(t, canonical.Tools, productionRuntimePlanNames)
+	productionRuntimeAssertTools(t, canonical.Tools, []string{"production_submit"})
 	found := false
 	for _, tool := range canonical.Tools {
 		fn, _ := tool["function"].(map[string]any)
@@ -376,7 +418,7 @@ func TestProductionRuntimePlanV2ScopesCanonicalSubmitSchema(t *testing.T) {
 	if !found {
 		t.Fatal("missing production_submit")
 	}
-	if got := productionRuntimeFinish(t, db, task.ID, done, productionRuntimeCall("production_status")); got.err != nil {
+	if got := productionRuntimeFinish(t, db, task.ID, done, productionRuntimeCall("production_submit")); got.err != nil {
 		t.Fatal(got.err)
 	}
 }
@@ -408,7 +450,7 @@ func TestProductionRuntimeRejectsUnsupportedResumedResult(t *testing.T) {
 			}
 			stored, state := productionRuntimeState(t, s, run.ID)
 			productionRuntimeAssertTools(t, state.Canonical.Tools, productionRuntimePlanNames)
-			if stored.Status != "failed" || state.ActiveTaskID != "" || len(state.ProductionModelReceipts) != 0 {
+			if stored.Status != "waiting_user" || stored.FailureMessage != "" || state.LastError != "" || state.ActiveTaskID != "" || len(state.ProductionModelReceipts) != 0 {
 				t.Fatalf("stale replay was not released: status=%s active=%s receipts=%v", stored.Status, state.ActiveTaskID, state.ProductionModelReceipts)
 			}
 			var tasks int64
@@ -454,7 +496,7 @@ func TestProductionRuntimeBlockedPlanDoesNotEnqueue(t *testing.T) {
 				t.Fatalf("blocked plan must fail without model retry: retry=%v err=%v", retryable, err)
 			}
 			stored, _ := productionRuntimeState(t, s, run.ID)
-			if stored.Status != "failed" {
+			if stored.Status != "waiting_user" || stored.FailureMessage != "" {
 				t.Fatalf("blocked run status = %s", stored.Status)
 			}
 			var tasks int64
@@ -574,7 +616,7 @@ func TestProductionRuntimeResumeKeepsSuccessfulModelReceipt(t *testing.T) {
 	s, db, run := planFixture(t, 2)
 	messages := []map[string]any{{"role": "user", "content": "continue current plan"}}
 	task, done := productionRuntimeStart(t, s, run.ID, messages)
-	if got := productionRuntimeFinish(t, db, task.ID, done, productionRuntimeCall("production_status")); got.err != nil {
+	if got := productionRuntimeFinish(t, db, task.ID, done, productionRuntimeCall("production_read")); got.err != nil {
 		t.Fatal(got.err)
 	}
 	_, beforeResume := productionRuntimeState(t, s, run.ID)
@@ -643,7 +685,7 @@ func TestProductionRuntimeRepeatedProseCorrectsBeforeStopping(t *testing.T) {
 					t.Fatalf("ignored corrective instruction did not stop: %+v", got)
 				}
 				stored, state := productionRuntimeState(t, s, run.ID)
-				if stored.Status != "failed" || state.ActiveTaskID != "" {
+				if stored.Status != "waiting_user" || stored.FailureMessage != "" || state.LastError != "" || state.ActiveTaskID != "" {
 					t.Fatalf("no-progress failure state: %s %s", stored.Status, state.ActiveTaskID)
 				}
 				if err := s.ControlProductionAgent("user", run.ID, "resume"); err != nil {

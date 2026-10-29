@@ -112,6 +112,50 @@ func TestTaskBillingCoordinatorRetryEligibility(t *testing.T) {
 	}
 }
 
+func TestTaskBillingCoordinatorManualRetryAllowsOnlyConfiguredZeroExposure(t *testing.T) {
+	freeOrder := &model.BillingOrder{
+		ID: "free", Status: model.BillingStatusUncertain, BillingMode: "fixed_request", ChargeLimitSet: true,
+		BillingCostSnapshot: model.BillingCostSnapshot{
+			CostBillingMode: "fixed_request", CostPricing: model.CreditCostPricing{Configured: true},
+		},
+	}
+	t.Run("manual retry permits confirmed zero exposure without mutating old order", func(t *testing.T) {
+		repo := &taskBillingRepositoryStub{order: freeOrder}
+		billing := newTaskBillingCoordinator(repo)
+		if err := billing.CheckManualRetryEligibility("free"); err != nil {
+			t.Fatalf("CheckManualRetryEligibility() error = %v", err)
+		}
+		if freeOrder.Status != model.BillingStatusUncertain {
+			t.Fatalf("retry eligibility mutated the old order: %s", freeOrder.Status)
+		}
+		if err := billing.CheckRetryEligibility("free"); !errors.Is(err, errTaskBillingReview) {
+			t.Fatalf("automatic retry should keep the billing review guard: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		order model.BillingOrder
+	}{
+		{name: "positive sale price", order: model.BillingOrder{BillingMode: "fixed_request", ChargeLimitSet: true, UnitPriceMicrocredits: 1, BillingCostSnapshot: freeOrder.BillingCostSnapshot}},
+		{name: "positive reserved amount", order: model.BillingOrder{BillingMode: "fixed_request", ChargeLimitSet: true, ReservedAmountMicrocredits: 1, BillingCostSnapshot: freeOrder.BillingCostSnapshot}},
+		{name: "unknown cost", order: model.BillingOrder{BillingMode: "fixed_request"}},
+		{name: "usage based cost", order: model.BillingOrder{BillingMode: "fixed_request", ChargeLimitSet: true, BillingCostSnapshot: model.BillingCostSnapshot{CostBillingMode: "token", CostPricing: model.CreditCostPricing{Configured: true}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.order.ID, tc.order.Status = "review", model.BillingStatusUncertain
+			err := newTaskBillingCoordinator(&taskBillingRepositoryStub{order: &tc.order}).CheckManualRetryEligibility("review")
+			if !errors.Is(err, errTaskBillingReview) {
+				t.Fatalf("manual retry should require review: %v", err)
+			}
+			var appErr *AppError
+			if !errors.As(err, &appErr) || appErr.Status != 409 || appErr.Reason != "task_billing_review_required" {
+				t.Fatalf("billing review error lost its actionable conflict contract: %#v", appErr)
+			}
+		})
+	}
+}
+
 func TestTaskBillingCoordinatorTruncatesFailureText(t *testing.T) {
 	repo := &taskBillingRepositoryStub{}
 	billing := newTaskBillingCoordinator(repo)

@@ -172,7 +172,7 @@ func cloudAgentContextFacts(events []CloudAgentEvent) []map[string]any {
 	facts := make([]map[string]any, 0, len(events)-start)
 	for _, event := range events[start:] {
 		switch event.Type {
-		case "tool_completed", "tool_failed", "generation_task_created", "approval_decided", "run_failed", "canvas_updated":
+		case "tool_completed", "tool_failed", "production_validation", "generation_task_created", "approval_decided", "run_failed", "canvas_updated":
 		default:
 			continue
 		}

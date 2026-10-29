@@ -2,7 +2,7 @@ import { CanvasWorkspacePanel } from "@/components/canvas/canvas-workspace-panel
 import { CanvasGlobalSettingsDialog } from "@/components/canvas/canvas-global-settings-dialog";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { layoutWorkflowImageGroups } from "@/lib/canvas/canvas-workflow-image-layout";
-import { assetReferenceStep } from "@/lib/asset-reference-sheet";
+import { AssetSheetKind, assetReferenceStep, assetSheetLayoutInstruction } from "@/lib/asset-reference-sheet";
 import { CanvasProjectAssociation } from "./canvas-project-association";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { createCanvasStateWriter } from "@/lib/canvas/canvas-editor-state";
@@ -13,8 +13,10 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router";
 import { loadAssetsForUse, saveCanvasGlobalSettingsWithRemoteSync, saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { reserveProductionVariantCode } from "@/services/api/user-data";
 import { canvasAssetHandoffIds } from "@/lib/canvas/canvas-asset-handoff";
-import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { logicalModelIDForConfig, modelOptionName, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import type { ProductionAssetModelSelection } from "@/services/api/agent";
 import { createCanvasGenerationLiveProjectAdapter, registerCanvasGenerationLiveProject } from "@/services/canvas-generation-consumer";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { getResourceAccess, resolveResourceAccessURL, resourceFileUrl, resourceIdFromStorageKey, syncResourceToArkPrivateAsset } from "@/services/api/resources";
@@ -26,7 +28,6 @@ import { nanoid } from "nanoid";
 import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanvasAppearance, resolveCanvasAppearance, writeCanvasAppearanceDefault, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { persistCanvasMediaPerformanceMode, readCanvasMediaPerformanceMode } from "@/lib/canvas/canvas-performance-mode";
-import { filterCanvasDisplayConnections, persistCanvasHideNodeConnections, readCanvasHideNodeConnections } from "@/lib/canvas/canvas-connection-visibility";
 import { summarizeCanvasContext } from "@/lib/canvas/canvas-context-summary";
 import { refreshCanvasCharacterReferenceNodes } from "@/lib/canvas/canvas-character-reference";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -34,8 +35,11 @@ import { flushCanvasStorePersistence } from "@/stores/canvas/use-canvas-store";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
 import { useCanvasThemeStore, useCanvasThemeScope } from "@/stores/canvas/use-canvas-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
-import { App, Button } from "antd";
-import { ArrowLeftRight } from "lucide-react";
+import { App, Button, Checkbox, Input, Modal } from "antd";
+import { ArrowLeftRight, Users, MapPin, Package, AudioLines, Sparkles } from "lucide-react";
+import { ModelPicker } from "@/components/model-picker";
+import { ReasoningEffortSelect } from "@/components/reasoning-effort-select";
+import { normalizeReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-effort";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
@@ -52,7 +56,7 @@ import { createStyleProfileSnapshot, resolveStyleProfile, serializeStyleProfile 
 import { CanvasNodeToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-toolbar";
 import { CanvasWorkflowTaskDetails } from "./canvas-workflow-task-details";
 import { CanvasGroupTaskDetails } from "./canvas-group-task-details";
-import { groupSessionOwner } from "@/lib/canvas/canvas-group-session";
+import { nodeDetailsTarget } from "@/lib/canvas/canvas-group-session";
 import { CanvasGenerationTaskDetails } from "./canvas-generation-task-details";
 import { emptyWorkflowAssetManifest } from "@/lib/canvas/canvas-workflow-assets";
 import { CanvasSubtitleDialog } from "@/components/canvas/canvas-subtitle-dialog";
@@ -70,11 +74,13 @@ import { latestBodyAudit, screenplayAuditState } from "@/lib/canvas/workflow-scr
 import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-task-state";
 import { workflowAssetActions, workflowAssetRevisionMembers } from "@/lib/canvas/canvas-workflow-asset-actions";
 import { CanvasWorkflowAssetReview } from "./canvas-workflow-asset-review";
-import { nodeWorkflow, workflowEpisodeProgress, workflowSignature, workflowGroupingProblem } from "@/lib/canvas/canvas-short-drama-workflow";
+import { nodeWorkflow, restoreWorkflowSourceConnections, workflowEpisodeProgress, workflowSignature, workflowGroupingProblem } from "@/lib/canvas/canvas-short-drama-workflow";
 import { isStoryboardFrameStep, nextShortDramaStepGroups, nextShortDramaSteps, shortDramaStep, ShortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
 import { useShortDramaWorkflowGeneration } from "./use-short-drama-workflow-generation";
 import { useProductionAgentRuns } from "./use-production-agent-runs";
 import { CanvasProductionAgentDetails } from "./canvas-production-agent-details";
+import { productionPlanAssetMenu, productionPlanInventoryRecoveryAvailable } from "@/lib/canvas/production-plan-asset-menu";
+import { PlannedAssetKind } from "@/lib/production-plan";
 import { useLegacyStoryRecovery } from "./use-legacy-story-recovery";
 import { createNextStoryEpisode, prepareStoryEpisodeBatch, saveStoryDevelopmentNode } from "@/lib/canvas/canvas-story-development";
 import { CanvasNodeSearchModal } from "@/components/canvas/canvas-node-search-modal";
@@ -123,6 +129,7 @@ import { CanvasLeaferGraphicsLayer } from "@/components/canvas/canvas-leafer-gra
 import { CanvasFreeformEmptyState, CanvasLinkedProjectEmptyState, CanvasShortDramaEmptyState, CanvasShortDramaGuide, CanvasStoryInputNodeContent, CanvasStylePlaceholderNodeContent } from "@/components/canvas/canvas-short-drama-entry";
 import { resolveCanvasEmptyStateKind } from "@/lib/canvas/canvas-starter";
 import { failedImageBatchChildren, markImageBatchRetrying, reconcileImageBatchRoot, restoreUnsubmittedImageBatchChild } from "@/lib/canvas/canvas-image-batch-retry";
+import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@/lib/generation-error";
 import { cinematicStoryboardColumns, createCanvasNode, isHiddenBatchChild } from "@/lib/canvas/canvas-project-domain";
 import { bindStoryboardKeyframes, storyboardKeyframeTime, storyboardRowsFromBatchTable } from "@/lib/canvas/canvas-batch-storyboard";
 import { stampCanvasNodeChanges } from "@/lib/canvas/canvas-node-timestamps";
@@ -215,6 +222,7 @@ const CanvasDirectorWorkbench = lazy(() => import("@/components/canvas/director/
 const CanvasDrawingEditorModal = lazy(() => import("@/components/canvas/canvas-drawing-editor-modal").then((module) => ({ default: module.CanvasDrawingEditorModal })));
 const CanvasVersionPreview = lazy(() => import("./canvas-version-preview").then((module) => ({ default: module.CanvasVersionPreview })));
 
+const RETRY_FAILED_CONCURRENCY = 3;
 const REFERENCE_ASSET_GRID_GAP = 72;
 const REFERENCE_ASSET_GRID_PADDING = 40;
 const REFERENCE_ASSET_GRID_COLUMNS = 3;
@@ -295,7 +303,7 @@ function InfiniteCanvasPage() {
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [canvasTool, setCanvasTool] = useState<CanvasToolMode>("box-select");
     const [mediaPerformanceMode, setMediaPerformanceMode] = useState<CanvasMediaPerformanceMode>(readCanvasMediaPerformanceMode);
-    const [hideNodeConnections, setHideNodeConnections] = useState(readCanvasHideNodeConnections);
+    const canvasConnectionPolicy = useUserStore((state) => state.runtimeLimits.canvas);
     const [projectLoaded, setProjectLoaded] = useState(false);
     useCanvasPerformanceDiagnostics(projectLoaded && searchParams.get("canvasDiagnostics") === "1", containerRef, nodesRef, connectionsRef);
     const workspaceMode: CanvasWorkspaceMode = "professional";
@@ -310,6 +318,7 @@ function InfiniteCanvasPage() {
     const [textBatchSourceNodeId, setTextBatchSourceNodeId] = useState<string | null>(null);
     const [textEditorNodeId, setTextEditorNodeId] = useState<string | null>(null);
     const [workflowGenerator, setWorkflowGenerator] = useState<WorkflowGeneratorTarget | null>(null);
+    const [assetModelDialog, setAssetModelDialog] = useState<{ targetId: string; kinds: string[]; label: string; model: string; reasoningEffort: ReasoningEffort; instruction: string; continueAppend: boolean } | null>(null);
     const [screenplayAuditDetailId, setScreenplayAuditDetailId] = useState<string | null>(null);
     const [assetReviewId, setAssetReviewId] = useState<string | null>(null);
     const textEditorOriginalRef = useRef<CanvasNodeData | null>(null);
@@ -350,10 +359,6 @@ function InfiniteCanvasPage() {
     useEffect(() => {
         persistCanvasMediaPerformanceMode(mediaPerformanceMode);
     }, [mediaPerformanceMode]);
-
-    useEffect(() => {
-        persistCanvasHideNodeConnections(hideNodeConnections);
-    }, [hideNodeConnections]);
 
     useEffect(() => {
         didInitialCenterRef.current = false;
@@ -462,6 +467,13 @@ function InfiniteCanvasPage() {
     });
 
     const versions = useCanvasVersionHistory(projectId, restoreCanvasProjectVersion);
+    useEffect(() => {
+        if (!projectLoaded || versions.preview) return;
+        const repaired = restoreWorkflowSourceConnections(nodes, connections);
+        if (repaired === connections) return;
+        setConnections(repaired);
+        void saveCanvasProject({ requireRemote: true }).catch(() => message.warning("工作流来源连线已在本地恢复，云端保存待重试"));
+    }, [connections, message, nodes, projectLoaded, saveCanvasProject, setConnections, versions.preview]);
     const openVersions = () => { closeAgent(); setVersionCompareRootId(null); versions.show(); };
     const openAgent = useCallback(() => { versions.close(); openAssistant(); }, [versions.close, openAssistant]);
 
@@ -571,6 +583,12 @@ function InfiniteCanvasPage() {
     // 取上游复用 canvas-resource-references 的实现，别在这里另写一份。必须 memo——
     // 每帧新对象会让所有节点跟着重渲染，错题本里多条崩溃都出在画布高频更新。
 
+    const persistCanvasTaskBinding = useCallback(async () => {
+        // 任务 ID 是刷新恢复的唯一稳定关联。创建任务后立即把绑定写入
+        // 本地持久层和云端，页面关闭不依赖普通自动同步窗口。
+        await persistLocalEdits();
+        await saveRemoteUserDataNow(projectId);
+    }, [persistLocalEdits, projectId]);
     const { applyGenerationTaskResult, bindGenerationTask, finishGenerationRequest, runningNodeId, setRunningNodeId, setTaskDetail, startGenerationRequest, taskDetail, taskDetailLoading, taskDetailLogs } = useCanvasGeneration({
         projectId,
         domainProjectId: linkedProjectId,
@@ -578,6 +596,7 @@ function InfiniteCanvasPage() {
         nodes,
         nodesRef,
         setNodes,
+        persistTaskBinding: persistCanvasTaskBinding,
     });
 
     const cancelCanvasTask = useCallback(
@@ -1487,16 +1506,7 @@ function InfiniteCanvasPage() {
         dialogNodeId,
     });
 
-    const visibleDisplayConnections = useMemo(
-        () => filterCanvasDisplayConnections(displayConnections, {
-            enabled: hideNodeConnections,
-            hoveredNodeId,
-            selectedNodeIds,
-            activeNodeId,
-            selectedConnectionId,
-        }),
-        [activeNodeId, displayConnections, hideNodeConnections, hoveredNodeId, selectedConnectionId, selectedNodeIds],
-    );
+    const visibleDisplayConnections = displayConnections;
     useEffect(() => {
         setNodes((current) => {
             let changed = false;
@@ -1591,6 +1601,11 @@ function InfiniteCanvasPage() {
             download: downloadNodeImage,
             duplicate: duplicateNodeFromContent,
             deleteNode: deleteNodeFromContent,
+            openAssetReview: node => setAssetReviewId(node.id),
+            generateAssetSound: node => {
+                const data = nodeWorkflow(node);
+                if (data) setWorkflowGenerator({ step: ShortDramaStep.VoiceSamples, pipelineId: data.pipelineId, anchorId: node.id });
+            },
             updateMetadata: updateNodeMetadataFromContent,
             updateNode: updateNodeFromContent,
             updateMediaNode: updateMediaNodeFromContent,
@@ -1661,7 +1676,7 @@ function InfiniteCanvasPage() {
     }, [message, nodesRef]);
 
     const workflowGeneration = useShortDramaWorkflowGeneration({ projectId, config: effectiveConfig, nodesRef, connectionsRef, setNodes, setConnections,
-        save: () => saveCanvasProject({ requireRemote: true }), center: getCanvasCenter, focus: focusCanvasNode, bindTask: bindGenerationTask, applyResult: applyGenerationTaskResult });
+        save: (options) => saveCanvasProject({ requireRemote: true, quiet: options?.quiet }), center: getCanvasCenter, focus: focusCanvasNode, bindTask: bindGenerationTask, applyResult: applyGenerationTaskResult });
     const runSingleScreenplayAudit = useCallback(async (body: CanvasNodeData) => {
         const data = nodeWorkflow(body);
         if (!data?.episodeNumber || data.step !== ShortDramaStep.Body) { message.warning("请选择已完成的分集正文"); return; }
@@ -2133,7 +2148,10 @@ function InfiniteCanvasPage() {
         frame.height = frameHeight;
         const targets = items.map((item, index) => {
             const promptPrefix = item.sheetPrompt?.trim() || item.prompt.trim();
-            const skillPrompt = [promptPrefix, item.negativePrompt?.trim() ? `避免：${item.negativePrompt.trim()}` : ""].filter(Boolean).join("\n\n");
+            const kind = item.category === "character" ? AssetSheetKind.Character : AssetSheetKind.Environment;
+            const skillPrompt = [assetSheetLayoutInstruction(kind, settings.size || "横向画幅"), promptPrefix,
+                "最终必须一次生成一张完整设定板原图，包含完整资料栏、视图布局、中文标签和已有尺寸标注；不要只生成视图素材，不要裁切、切图或交由程序重新拼版。",
+                item.negativePrompt?.trim() ? `避免：${item.negativePrompt.trim()}` : ""].filter(Boolean).join("\n\n");
             const prompt = settings.styleTool
                 ? applyToolMention(skillPrompt, { id: settings.styleTool.id, label: settings.styleTool.label, type: "style" }, "Palette")
                 : skillPrompt;
@@ -2361,12 +2379,12 @@ function InfiniteCanvasPage() {
         [setNodes],
     );
     const retryImageBatchChildren = useCallback(
-        (rootId: string, children: CanvasNodeData[]) => {
+        (rootId: string, children: CanvasNodeData[], options?: CanvasNodeRetryOptions) => {
             const childIds = children.map((child) => child.id);
             setNodes((current) => markImageBatchRetrying(rootId, childIds, current));
-            void Promise.allSettled(
+            return Promise.allSettled(
                 children.map(async (child) => {
-                    await handleRetryNode(child);
+                    await handleRetryNode(child, options);
                     setNodes((current) => current.map((item) => (item.id === child.id ? restoreUnsubmittedImageBatchChild(item, child) : item)));
                 }),
             ).finally(() => reconcileImageBatchRootNode(rootId));
@@ -2758,13 +2776,93 @@ function InfiniteCanvasPage() {
         },
         [extractStoryboardKeyframes, retryStoryboardFrame, generateScriptRows, handleRetryNode, message, nodesRef, retryImageBatchChildren],
     );
-    const infoNode = groupSessionOwner(rawInfoNode, nodes);
+    const retryingFailedRef = useRef(false);
+    const retryFailedFrameNodes = useCallback(
+        (_frame: CanvasNodeData, failedNodes: CanvasNodeData[]) => {
+            if (retryingFailedRef.current) {
+                message.info("正在重试失败任务，请稍候");
+                return;
+            }
+            const latest = new Map(nodesRef.current.map((item) => [item.id, item]));
+            const candidates = failedNodes.map((item) => latest.get(item.id) ?? item).filter((item) => item.metadata?.status === "error");
+            const batches = new Map<string, CanvasNodeData[]>();
+            const singles: CanvasNodeData[] = [];
+            let moderated = 0;
+            let skipped = 0;
+            for (const node of candidates) {
+                const meta = node.metadata;
+                if (meta?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(meta?.errorDetails)) { moderated += 1; continue; }
+                if (meta?.shortDrama?.submission === "planned") { skipped += 1; continue; }
+                if (node.type === CanvasNodeType.Image && meta?.batchRootId && !meta.storyboardFrame && !meta.storyboardFramePlan) {
+                    batches.set(meta.batchRootId, [...(batches.get(meta.batchRootId) ?? []), node]);
+                } else {
+                    singles.push(node);
+                }
+            }
+            const total = singles.length + [...batches.values()].reduce((sum, children) => sum + children.length, 0);
+            if (!total) {
+                message.info(moderated ? `${moderated} 个失败任务因内容审核未通过，需要先修改提示词` : "没有可以直接重试的失败任务");
+                return;
+            }
+            const run = async () => {
+                retryingFailedRef.current = true;
+                let failedToSubmit = skipped;
+                const acknowledged: CanvasNodeRetryOptions = { billingAcknowledged: true };
+                const jobs: Array<() => Promise<unknown>> = [
+                    ...[...batches].map(([rootId, children]) => () => retryImageBatchChildren(rootId, children, acknowledged)),
+                    ...singles.map((node) => async () => {
+                        const meta = node.metadata;
+                        try {
+                            if (meta?.storyboardFramePlan) {
+                                await extractStoryboardKeyframes(meta.storyboardFramePlan.scriptId, meta.storyboardFramePlan.rowId);
+                            } else if (meta?.storyboardFrame) {
+                                await retryStoryboardFrame(node);
+                            } else if (node.type === CanvasNodeType.Script) {
+                                const prompt = (meta?.composerContent || meta?.prompt || "").trim();
+                                if (!prompt) { failedToSubmit += 1; return; }
+                                await generateScriptRows(node.id, prompt);
+                            } else {
+                                await handleRetryNode(node, acknowledged);
+                            }
+                        } catch {
+                            failedToSubmit += 1;
+                        }
+                    }),
+                ];
+                message.info(`已加入队列 ${total} 个失败任务，将自动依次提交`);
+                try {
+                    // 按并发上限从队列取任务，确认只在入口做一次。
+                    const queue = [...jobs];
+                    const workers = Array.from({ length: Math.min(RETRY_FAILED_CONCURRENCY, queue.length) }, async () => {
+                        for (let job = queue.shift(); job; job = queue.shift()) {
+                            try { await job(); } catch { failedToSubmit += 1; }
+                        }
+                    });
+                    await Promise.all(workers);
+                } finally {
+                    retryingFailedRef.current = false;
+                }
+                const notes = [failedToSubmit ? `${failedToSubmit} 个未能提交` : "", moderated ? `${moderated} 个因内容审核未通过已跳过` : ""].filter(Boolean);
+                if (notes.length) message.info(`失败任务重试完成，${notes.join("，")}`);
+            };
+            modal.confirm({
+                title: "重试失败任务",
+                content: `将重新提交 ${total} 个失败任务并自动排队，确认后不再逐个询问。其中上次请求未返回结果的任务费用仍待核对，重新提交会发起新的调用，原调用仍可能产生费用。${moderated ? `另有 ${moderated} 个因内容审核未通过的任务不会重试。` : ""}`,
+                okText: "确认并全部重试",
+                cancelText: "取消",
+                onOk: () => { void run(); },
+            });
+        },
+        [extractStoryboardKeyframes, generateScriptRows, handleRetryNode, message, modal, nodesRef, retryImageBatchChildren, retryStoryboardFrame],
+    );
+    const infoNode = nodeDetailsTarget(rawInfoNode, nodes);
     const openCanvasNodeTaskDetails = useCallback(
         (node: CanvasNodeData) => setInfoNodeId(node.id),
         [],
     );
     const openCanvasNodeVersions = useCallback((node: CanvasNodeData) => setVersionCompareRootId(node.metadata?.versionOfNodeId || node.id), []);
     const viewCanvasNodeImage = useCallback((node: CanvasNodeData) => setPreviewNodeId(node.id), []);
+    const maskEditCanvasNodeImage = useCallback((node: CanvasNodeData) => setMaskEditNodeId(node.id), [setMaskEditNodeId]);
     const editCanvasDirector = useCallback((node: CanvasNodeData) => openDirectorWorkbench(node.id), [openDirectorWorkbench]);
     const locateProjectStyleNode = useCallback(() => {
         const styleNode = nodesRef.current.find((node) => node.type === CanvasNodeType.Text && node.metadata?.workflowKind === "styleboard");
@@ -2950,6 +3048,7 @@ function InfiniteCanvasPage() {
                                             viewport={viewport}
                                             theme={theme}
                                             displayConnections={visibleDisplayConnections}
+                                            connectionPolicy={canvasConnectionPolicy}
                                             selectedConnectionId={selectedConnectionId}
                                             relatedConnectionIds={relatedHighlight.connectionIds}
                                             scriptScrollTopById={scriptScrollTopById}
@@ -2978,6 +3077,9 @@ function InfiniteCanvasPage() {
                                 >
                                     <CanvasNodeActionContext.Provider value={canvasNodeActions}>
                                             <CanvasProjectWorldLayers
+                                                productionRuns={productionAgentRuns.runs}
+                                                productionBusy={productionAgentRuns.busy}
+                                                onGeneratePlanAssets={(id) => setInfoNodeId(id)}
                                                 shotBindings={shotProjection.bindings}
                                                 originalNodeIds={shotProjection.originalNodeIds}
                                                 onOriginalNodeView={shotProjection.setOriginalView}
@@ -2987,6 +3089,7 @@ function InfiniteCanvasPage() {
                                                 viewportScale={viewport.k}
                                                 connectionLayerBounds={connectionLayerBounds}
                                                 displayConnections={visibleDisplayConnections}
+                                                connectionPolicy={canvasConnectionPolicy}
                                                 selectedConnectionId={selectedConnectionId}
                                                 relatedConnectionIds={relatedHighlight.connectionIds}
                                                 scriptScrollTopById={scriptScrollTopById}
@@ -3049,11 +3152,13 @@ function InfiniteCanvasPage() {
                                                 onSetBatchPrimary={setBatchPrimary}
                                                 onRetry={retryCanvasNode}
                                                 onReloadResource={reloadCanvasNodeResource}
+                                                onRetryFailed={retryFailedFrameNodes}
                                                 onOpenInfo={(node) => (node.metadata?.workflowKind === "character" && node.metadata.characterAssetId ? openTextNodeEditor(node) : setInfoNodeId(node.id))}
                                                 onOpenTaskDetails={openCanvasNodeTaskDetails}
                                                 onCancelTask={cancelCanvasNodeTask}
                                                 onOpenVersions={openCanvasNodeVersions}
                                                 onViewImage={viewCanvasNodeImage}
+                                                onMaskEdit={maskEditCanvasNodeImage}
                                                 onReplaceMedia={replaceCanvasNodeMedia}
                                                 onOpenTextEditor={openTextNodeEditor}
                                                 onOpenDirector={editCanvasDirector}
@@ -3063,7 +3168,7 @@ function InfiniteCanvasPage() {
                                     </CanvasNodeActionContext.Provider>
                                 </InfiniteCanvas>
 
-                                <CanvasActiveTaskPanel tasks={activeTasks} nodes={nodes} onOpenNode={setInfoNodeId} onCancelTask={cancelCanvasTask} topInset={focusMode ? "var(--space-3)" : "var(--canvas-topbar-offset)"} />
+                                <CanvasActiveTaskPanel tasks={activeTasks} agentRuns={productionAgentRuns.runs} nodes={nodes} onOpenNode={setInfoNodeId} onCancelTask={cancelCanvasTask} workflowSubmitting={workflowGeneration.submitting} onCancelWorkflowSubmission={workflowGeneration.cancel} topInset={focusMode ? "var(--space-3)" : "var(--canvas-topbar-offset)"} />
 
                                 {focusMode ? (
                                     <CanvasFocusModeBar
@@ -3357,8 +3462,6 @@ function InfiniteCanvasPage() {
                                     onScaleChange={setZoomScale}
                                     onFitContent={fitCanvasContent}
                                     onAutoArrange={autoArrangeCanvasNodes}
-                                    hideNodeConnections={hideNodeConnections}
-                                    onHideNodeConnectionsChange={setHideNodeConnections}
                                     isMiniMapOpen={isMiniMapOpen}
                                     onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)}
                                     onOpenShortcuts={() => setShortcutRequestNonce((value) => value + 1)}
@@ -3391,13 +3494,44 @@ function InfiniteCanvasPage() {
                                 if (!data || !contextMenuNode) return [];
                                 const anchorId = contextMenuNode.id;
                                 if (data.step === ShortDramaStep.Reconcile) return [{ label: "正文质量审核（替代旧资产校核）", run: () => openWorkflowGenerator(ShortDramaStep.Audit, anchorId) }];
+                                const planOwner = data.role === "collection" ? contextMenuNode : nodes.find(node => node.id === contextMenuNode.parentId);
+                                const planTargetId = data.assetKey === "$summary" ? anchorId : (data.assetGroup?.manifestId || nodeWorkflow(planOwner)?.assetGroup?.manifestId);
+                                const planRun = productionAgentRuns.runs.find(run => run.production?.targetNodeId === planTargetId && run.production?.workKind === "plan");
+                                const categoryIcons = { [PlannedAssetKind.Character]: Users, [PlannedAssetKind.Environment]: MapPin, [PlannedAssetKind.Prop]: Package, [PlannedAssetKind.Sound]: AudioLines, [PlannedAssetKind.Special]: Sparkles };
+                                const planSelectionActions = data.step === ShortDramaStep.Plan && planTargetId ? [
+                                    ...(planRun && productionPlanInventoryRecoveryAvailable(planRun) ? [{ label: "重新生成资产总表", detail: "当前资产总表为 0 项；重建清单后即可选择并生成资产", disabled: productionAgentRuns.busy[planTargetId] || !["completed", "failed", "cancelled", "waiting_user"].includes(planRun.status) && !planRun.production?.paused, run: () => {
+                                        void productionAgentRuns.control(planTargetId, "generate_plans", undefined, undefined, ["inventory"]).then(result => {
+                                            if (result?.error) message.error(result.error);
+                                            else if (result?.success) message.success("已启动资产总表重建");
+                                        });
+                                    } }] : []),
+                                    ...(data.role === "collection" && planRun?.production?.planReady && !planRun.production.plansStarted ? [{ label: "创作其余制作方案", detail: "资产总表、视觉与美术、导演与视听、生成与一致性规范将作为独立任务并发生成", disabled: productionAgentRuns.busy[planTargetId] || !["completed", "failed"].includes(planRun.status), run: () => {
+                                        void productionAgentRuns.control(planTargetId, "generate_plans", undefined, undefined, ["inventory", "visual", "direction", "generation"]).then(result => {
+                                            if (result?.error) message.error(result.error);
+                                            else if (result?.success) message.success("已并发启动其余独立制作方案");
+                                        });
+                                    } }] : []),
+                                    ...productionPlanAssetMenu(planRun, productionAgentRuns.busy[planTargetId]).map(action => {
+                                        const Icon = categoryIcons[action.kind];
+                                        return { label: action.label, detail: action.detail, icon: <Icon />, disabled: action.disabled, run: () => {
+                                            setContextMenu(null);
+                                            const textModels = selectableModelsByCapability(effectiveConfig, "text");
+                                            const preferredModel = effectiveConfig.textModel || effectiveConfig.model;
+                                            const model = textModels.includes(preferredModel) ? preferredModel : textModels[0] || "";
+                                              setAssetModelDialog({ targetId: planTargetId, kinds: action.kinds, label: action.label, model, reasoningEffort: normalizeReasoningEffort(effectiveConfig.textReasoningEffort), instruction: "", continueAppend: false });
+                                        } };
+                                    }),
+                                    ...(!planRun || productionAgentRuns.readErrors[planTargetId] ? [{ label: "刷新资产状态", detail: productionAgentRuns.readErrors[planTargetId], run: productionAgentRuns.refresh }] : []),
+                                ] : [];
                                 const assetActions = workflowAssetActions(contextMenuNode);
                                 if (assetActions) {
                                     let ready = true;
                                     try { workflowAssetRevisionMembers(contextMenuNode, nodes); } catch { ready = false; }
                                     return [
+                                        ...planSelectionActions,
                                         { label: "重做另一版", disabled: !ready || workflowGeneration.submitting, run: () => { setContextMenu(null); setWorkflowGenerator({ step: assetActions.step, pipelineId: data.pipelineId, anchorId, assetRevisionSourceId: anchorId }); } },
                                         ...(assetActions.imageStep ? [{ label: "生图", disabled: workflowGeneration.submitting || (data.role !== "collection" && !ready), run: () => openWorkflowGenerator(assetActions.imageStep!, anchorId) }] : []),
+                                        ...(assetActions.audioStep ? [{ label: "生成试听", disabled: workflowGeneration.submitting || (data.role !== "collection" && !ready), run: () => openWorkflowGenerator(assetActions.audioStep!, anchorId) }] : []),
                                     ];
                                 }
                                 const stepDefinition = shortDramaStep(data.step);
@@ -3407,6 +3541,7 @@ function InfiniteCanvasPage() {
                                 const reportNode = data.screenplayAudit ? contextMenuNode : data.step === ShortDramaStep.Body && data.role === "document" ? latestBodyAudit(contextMenuNode, nodes) : undefined;
                                 const auditState = screenplayAuditState(reportNode, nodes, currentProject?.globalSettings);
                                 return [
+                                    ...planSelectionActions,
                                     ...(reportNode ? [{ label: "查看正文诊断报告", run: () => { setContextMenu(null); setScreenplayAuditDetailId(reportNode.id); } }] : []),
                                     ...(reportNode && auditState.report?.findings.length && !auditState.stale ? [{ label: "依据诊断修复正文（保留原稿）", disabled: workflowGeneration.submitting, run: () => openScreenplayRepair(reportNode.id) }] : []),
                                     ...(emptyManifest?.metadata?.taskId ? [{ label: "重新提取空资产分组", disabled: emptyManifest.metadata.status === "loading", run: () => retryCanvasNode(emptyManifest) }] : []),
@@ -3424,6 +3559,12 @@ function InfiniteCanvasPage() {
                                     ...(data.mediaGroup ? [{ label: "追加生成图片", disabled: workflowGeneration.submitting, run: () => openWorkflowGenerator(data.step, data.mediaGroup!.sourceNodeId) }] : []),
                                     ...(data.mediaGroup ? [{ label: "整理图片排列", run: () => setNodes((current) => layoutWorkflowImageGroups(current, new Set([anchorId]))) }] : []),
                                     ...(data.role === "collection" && !data.assetGroup && !data.mediaGroup && data.step !== ShortDramaStep.Audit && data.step !== ShortDramaStep.Body && data.step !== ShortDramaStep.Extract ? [{ label: "汇总分集文稿", run: () => setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId, aggregate: true }) }] : []),
+                                    ...(data.step === ShortDramaStep.Plan && data.role === "document" && data.planSection === "story" ? [{ label: "创作其余制作方案", disabled: !planRun?.production?.planReady || Boolean(planRun?.production?.plansStarted) || workflowGeneration.submitting, run: () => {
+                                        if (planTargetId) void productionAgentRuns.control(planTargetId, "generate_plans", undefined, undefined, ["inventory", "visual", "direction", "generation"]).then(result => {
+                                            if (result?.error) message.error(result.error);
+                                            else if (result?.success) message.success("已并发启动其余独立制作方案");
+                                        });
+                                    } }] : []),
                                     ...(data.assetGroup ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => openWorkflowGenerator(data.step, anchorId) }] : []),
                                     ...(data.submission === "planned" ? [{ label: "继续提交此节点", disabled: workflowGeneration.submitting, run: () => void workflowGeneration.resume(anchorId) }] : []),
                                     ...(data.step !== ShortDramaStep.Topic && data.role !== "collection" && !supportingDocument ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => data.aggregate ? setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId: data.sourceNodeIds[0], aggregate: true }) : openWorkflowGenerator(data.step, anchorId) }] : []),
@@ -3559,12 +3700,63 @@ function InfiniteCanvasPage() {
                             if (!syncError) message.success("全局设定已保存，将用于后续生成");
                             else message.warning("设定已更新到本地，云端保存待重试");
                         }} /> : null}
+                        <Modal
+                            title={`选择${assetModelDialog?.label.slice(2) || "资产"}生成模型`}
+                            open={Boolean(assetModelDialog)}
+                            okText="开始生成"
+                            cancelText="取消"
+                            confirmLoading={Boolean(assetModelDialog && productionAgentRuns.busy[assetModelDialog.targetId])}
+                            okButtonProps={{ disabled: !assetModelDialog || !selectableModelsByCapability(effectiveConfig, "text").includes(assetModelDialog.model) }}
+                            onCancel={() => { if (!assetModelDialog || !productionAgentRuns.busy[assetModelDialog.targetId]) setAssetModelDialog(null); }}
+                            onOk={() => {
+                                if (!assetModelDialog) return;
+                                const model = modelOptionName(assetModelDialog.model);
+                                const selectedConfig = { ...effectiveConfig, model: assetModelDialog.model };
+                                const logicalModelId = logicalModelIDForConfig(selectedConfig);
+                                const resolved = resolveModelRequestConfig(selectedConfig, assetModelDialog.model);
+                                const modelSelection: ProductionAssetModelSelection = {
+                                    ...(logicalModelId ? { logicalModelId } : { channelId: resolved.channelId, channelModelKey: model }),
+                                    model,
+                                    reasoningEffort: assetModelDialog.reasoningEffort,
+                                    instruction: assetModelDialog.instruction.trim(),
+                                    continueAppend: assetModelDialog.continueAppend,
+                                };
+                                if (!logicalModelId && !resolved.channelId) {
+                                    message.error("请选择后端受管文本模型");
+                                    return;
+                                }
+                                void productionAgentRuns.control(assetModelDialog.targetId, "generate_assets", undefined, undefined, undefined, modelSelection, assetModelDialog.kinds).then(result => {
+                                    if (result?.error) message.error(result.error);
+                                    else if (result?.success) {
+                                        message.success(`已提交${assetModelDialog.label.slice(2)}生成任务，可在对应容器详情查看进度和重试`);
+                                        setAssetModelDialog(null);
+                                    }
+                                });
+                            }}
+                        >
+                            <div className="space-y-2 py-2">
+                                <label className="block text-sm">文本模型</label>
+                                <ModelPicker config={effectiveConfig} value={assetModelDialog?.model} capability="text" fullWidth placeholder="选择文本模型" onChange={model => setAssetModelDialog(current => current ? { ...current, model } : current)} />
+                                <ReasoningEffortSelect value={assetModelDialog?.reasoningEffort} onChange={reasoningEffort => setAssetModelDialog(current => current ? { ...current, reasoningEffort } : current)} />
+                                <Checkbox checked={assetModelDialog?.continueAppend || false} onChange={event => setAssetModelDialog(current => current ? { ...current, continueAppend: event.target.checked } : current)}>
+                                    继续追加到当前资产生成批次
+                                </Checkbox>
+                                <label className="block text-sm" htmlFor="production-asset-instruction">补充要求</label>
+                                <Input.TextArea id="production-asset-instruction" aria-label="补充要求" value={assetModelDialog?.instruction || ""} maxLength={2000} rows={4} placeholder="填写本次资产生成需要遵守的注意事项" onChange={event => setAssetModelDialog(current => current ? { ...current, instruction: event.target.value } : current)} />
+                                <p className="text-xs text-neutral-500">模型、推理强度和补充要求会用于本次所选资产及其后续重试。</p>
+                            </div>
+                        </Modal>
                         {workflowGenerator ? <CanvasWorkflowGenerator key={`${projectId}:${workflowGenerator.step}:${workflowGenerator.anchorId || ""}:${currentProject?.globalSettings?.revision || 0}`} globalSettings={currentProject?.globalSettings} target={workflowGenerator} nodes={nodes} submitting={workflowGeneration.submitting} onGenerate={workflowGeneration.run} onClose={() => setWorkflowGenerator(null)} /> : null}
                         {screenplayAuditDetailId && nodes.some(node => node.id === screenplayAuditDetailId) ? <CanvasScreenplayAuditDetails node={nodes.find(node => node.id === screenplayAuditDetailId)!} nodes={nodes} settings={currentProject?.globalSettings} onClose={() => setScreenplayAuditDetailId(null)} onRepair={openScreenplayRepair} onRestore={restoreScreenplayBeforeRepair} onReaudit={bodyId => { setScreenplayAuditDetailId(null); openWorkflowGenerator(ShortDramaStep.Audit, bodyId); }} onBody={bodyId => { setScreenplayAuditDetailId(null); const body = nodesRef.current.find(node => node.id === bodyId); if (body) openTextNodeEditor(body); }} /> : null}
                         {assetReviewId && nodes.some((node) => node.id === assetReviewId) ? <CanvasWorkflowAssetReview key={`${projectId}:${assetReviewId}`} node={nodes.find((node) => node.id === assetReviewId)!} nodes={nodes} onClose={() => setAssetReviewId(null)} onEdit={openTextNodeEditor}
-                            onSave={(id, assetProfile, expected) => {
+                            onSave={async (id, assetProfile, expected) => {
                                 const current = nodesRef.current.find((node) => node.id === id);
                                 if (!current || workflowSignature(current) !== expected) throw new Error("资产正文或资料已变化，请关闭后重新核对");
+                                const variants = [];
+                                for (const variant of assetProfile.variants) variants.push(variant.code ? variant : { ...variant, code: (await reserveProductionVariantCode(projectId, id)).code });
+                                const latest = nodesRef.current.find(node => node.id === id);
+                                if (getActiveUserScope() !== canvasStorageScope || !latest || workflowSignature(latest) !== expected) throw new Error("资产或账号已变化，未覆盖资料");
+                                assetProfile = { ...assetProfile, variants };
                                 handleConfigNodeChange(id, { shortDrama: { ...nodeWorkflow(current)!, assetProfile } });
                             }} /> : null}
                         {textEditorNode?.metadata?.storyDevelopment?.stage === "topic" ? <CanvasStoryDevelopmentEditor
@@ -3624,7 +3816,7 @@ function InfiniteCanvasPage() {
                                 const currentNode = nodesRef.current.find((node) => node.id === nodeId);
                                 const original = textEditorOriginalRef.current;
                                 if (nodeWorkflow(original || undefined) && (!currentNode || workflowSignature(currentNode) !== workflowSignature(original!))) throw new Error("节点已被其他操作修改，请保留当前文本并重新打开后合并");
-                                setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, title, metadata: { ...node.metadata, content, richText } } : node)));
+                                setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, title, metadata: { ...node.metadata, content, richText: richText || undefined } } : node)));
                                 textEditorOriginalRef.current = nodesRef.current.find((node) => node.id === nodeId) || null;
                             }}
                         />}
@@ -3775,6 +3967,14 @@ function InfiniteCanvasPage() {
                             onAnnotate={(node, dataUrl) => void saveAnnotatedImageNode(node, dataUrl)}
                             onAnnotationEdit={(node, payload) => void editAnnotatedImageNode(node, payload)}
                             onMaskEdit={(node, payload) => void maskEditImageNode(node, payload)}
+                            onRegeneratePrompt={(node, prompt) => {
+                                setMaskEditNodeId(null);
+                                void handleRetryNode(node, { editPrompt: true, prompt });
+                            }}
+                            onAutoAdjustPrompt={(node) => {
+                                setMaskEditNodeId(null);
+                                void handleRetryNode(node, { editPrompt: true, autoAdjustPrompt: true });
+                            }}
                             onImageOperation={(node, payload) => void editImageNode(node, payload)}
                             onLayerDecomposition={(node, payload) => void decomposeImageLayers(node, payload)}
                             onDetectText={() => {

@@ -188,8 +188,18 @@ add({
     cachedContent: omit(ref("request.providerOptions.gemini-generate-content.cachedContent"))
   }),
   agent: jsonCreate("/v1beta/models/{{model}}:generateContent", ref("request.extra.agent.gemini")),
-  agentResponse: { textPaths: ["candidates.0.content.parts.0.text"], toolCallsPath: "candidates.0.content.parts", toolCallIdPaths: ["functionCall.id"], toolCallNamePaths: ["functionCall.name"], toolCallArgumentsPaths: ["functionCall.args"], toolCallThoughtSignaturePaths: ["thoughtSignature", "thought_signature"] },
-  response: { status: "succeeded", text: map(ref("response.candidates.0.content.parts"), "part", omit(ref("part.text"))), usage: ref("response.usageMetadata"), errorPaths: ["error.code"], messagePaths: ["error.message"] }
+  agentResponse: {
+    text: map(ref("response.candidates.0.content.parts"), "part", conditional(ref("part.thought"), null, omit(ref("part.text")))),
+    reasoning: map(ref("response.candidates.0.content.parts"), "part", conditional(ref("part.thought"), omit(ref("part.text")))),
+    toolCallsPath: "candidates.0.content.parts", toolCallIdPaths: ["functionCall.id"], toolCallNamePaths: ["functionCall.name"], toolCallArgumentsPaths: ["functionCall.args"], toolCallThoughtSignaturePaths: ["thoughtSignature", "thought_signature"]
+  },
+  response: {
+    status: "succeeded",
+    text: map(ref("response.candidates.0.content.parts"), "part", conditional(ref("part.thought"), null, omit(ref("part.text")))),
+    reasoning: map(ref("response.candidates.0.content.parts"), "part", conditional(ref("part.thought"), omit(ref("part.text")))),
+    usage: ref("response.usageMetadata"), errorPaths: ["error.code"], messagePaths: ["error.message"]
+  },
+  notes: "thought=true 的文本片段只映射到 reasoning，其余文本片段才映射到正文；Agent 使用相同的 text/reasoning 表达式，functionCall 单独提取，不读取思考内容中的工具描述。"
 });
 
 add({

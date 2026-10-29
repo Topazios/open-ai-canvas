@@ -15,7 +15,7 @@ import { exportAdminApiLogs, listAdminApiLogs, type ApiCallLog } from "@/service
 import { ApiLogDetailDrawer } from "../components/api-log-detail-drawer";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminBatchBar, AdminDataTable, AdminExportButton, AdminFilterChip, AdminStatusBadge, AdminTableEmpty } from "../components/admin-ui";
-import { logBillingLabel, logStatus, normalizeLogView } from "./log-view";
+import { logBillingLabel, logStatus, normalizeLogView, shouldPollApiLogs } from "./log-view";
 import "./logs-page.css";
 import { Select } from "@/components/ui/base/select";
 
@@ -77,6 +77,34 @@ export default function LogsPage() {
         return () => { requestSequence.current += 1; };
     }, [debouncedKeyword, status, recordType, rangePreset, page, pageSize, retry]);
 
+    useEffect(() => {
+        if (!shouldPollApiLogs(page, logs)) return;
+        const sequence = requestSequence.current;
+        let stopped = false;
+        let inFlight = false;
+        const refreshPendingLogs = async () => {
+            if (stopped || inFlight || sequence !== requestSequence.current) return;
+            inFlight = true;
+            try {
+                const currentRange = recentRange(rangePreset);
+                const result = await listAdminApiLogs({ recordType, keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status, from: currentRange?.from, to: currentRange?.to, page, pageSize });
+                if (!stopped && sequence === requestSequence.current) {
+                    setLogs(result.logs);
+                    setTotal(result.total);
+                }
+            } catch {
+                // Keep the last readable snapshot; the next poll or manual refresh can recover.
+            } finally {
+                inFlight = false;
+            }
+        };
+        const timer = window.setInterval(() => { void refreshPendingLogs(); }, 5_000);
+        return () => {
+            stopped = true;
+            window.clearInterval(timer);
+        };
+    }, [logs, debouncedKeyword, status, recordType, rangePreset, page, pageSize]);
+
     const fullColumns: ColumnsType<ApiCallLog> = [
         { title: "时间", width: 168, render: (_, log) => <button type="button" className="admin-log-detail-link" aria-label={`查看请求 ${log.id} 详情`} onClick={() => setDetailLogId(log.id)}>{formatTime(log.startedAt || log.createdAt)}</button> },
         {
@@ -110,8 +138,8 @@ export default function LogsPage() {
             render: (_, log) =>
                 log.status === "failed" || log.error || log.errorCode ? (
                     <div className="min-w-0" title={[log.errorCode, log.error].filter(Boolean).join(" · ")}>
-                        <div className="truncate text-xs font-medium text-red-500">{log.errorCode || `HTTP ${log.statusCode || "失败"}`}</div>
-                        <div className="line-clamp-2 text-xs leading-5 text-foreground/55">{log.error || "上游未返回错误详情"}</div>
+                        <div className={`truncate text-xs font-medium ${logStatus(log).tone === "error" ? "text-[var(--status-error)]" : logStatus(log).tone === "warning" ? "text-[var(--status-warning)]" : "text-foreground/75"}`}>{log.errorCode || `HTTP ${log.statusCode || "未记录"}`}</div>
+                        <div className="line-clamp-2 text-xs leading-5 text-foreground/55">{log.error || (logStatus(log).tone === "error" ? "上游未返回错误详情" : "请查看请求详情")}</div>
                     </div>
                 ) : (
                     <span className="text-foreground/30">--</span>
@@ -160,7 +188,7 @@ export default function LogsPage() {
         ...identityColumns,
         { title: "阶段", key: "kind", width: 90, render: (_, log) => requestKindText(log.requestKind) },
         { title: "耗时", dataIndex: "durationMs", align: "right", width: 90, render: formatDuration },
-        { title: "错误摘要", key: "error", ellipsis: true, render: (_, log) => <span className={logStatus(log).tone === "error" ? "admin-log-error" : undefined} title={[log.errorCode, log.error].filter(Boolean).join(" · ")}>{[log.errorCode, log.error].filter(Boolean).join(" · ") || (logStatus(log).tone === "error" ? `HTTP ${log.statusCode || "失败"} · 未返回详情` : "—")}</span> },
+        { title: "提示信息", key: "error", ellipsis: true, render: (_, log) => <span className={logStatus(log).tone === "error" ? "admin-log-error" : log.status === "warning" ? "text-[var(--status-warning)]" : undefined} title={[log.errorCode, log.error].filter(Boolean).join(" · ")}>{[log.errorCode, log.error].filter(Boolean).join(" · ") || (logStatus(log).tone === "error" ? `HTTP ${log.statusCode || "失败"} · 未返回详情` : "—")}</span> },
     ];
     const columns = view === "all" ? fullColumns : compactColumns;
 
@@ -213,7 +241,7 @@ export default function LogsPage() {
                 toolbarActiveFilters={
                     <>
                         {keyword ? <AdminFilterChip label={`搜索：${keyword}`} onRemove={() => updateUrl({ filter: "", page: 1 })} /> : null}
-                        {status !== "all" ? <AdminFilterChip label={`结果：${status === "succeeded" ? "成功" : "失败"}`} onRemove={() => updateUrl({ status: "all", page: 1 })} /> : null}
+                        {status !== "all" ? <AdminFilterChip label={`结果：${status === "running" ? "处理中" : status === "succeeded" ? "成功" : status === "warning" ? "警告" : "失败"}`} onRemove={() => updateUrl({ status: "all", page: 1 })} /> : null}
                         {rangePreset !== "all" ? <AdminFilterChip label={`时间：${rangeLabel(rangePreset)}`} onRemove={() => updateUrl({ range: "all", page: 1 })} /> : null}
                     </>
                 }
@@ -228,6 +256,8 @@ export default function LogsPage() {
                         options={[
                             { label: "全部结果", value: "all" },
                             { label: "成功", value: "succeeded" },
+                            { label: "处理中", value: "running" },
+                            { label: "警告", value: "warning" },
                             { label: "失败", value: "failed" },
                         ]}
                     />
@@ -305,11 +335,12 @@ function positiveInt(value: string | null, fallback: number) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
-type QuickFilter = "all" | "failed" | "succeeded" | "24h" | "7d" | "timeout" | "tls";
+type QuickFilter = "all" | "failed" | "warning" | "succeeded" | "24h" | "7d" | "timeout" | "tls";
 type RangePreset = "all" | "24h" | "7d";
 const QUICK_FILTERS: Array<[QuickFilter, string]> = [
     ["all", "全部"],
     ["failed", "失败"],
+    ["warning", "警告"],
     ["succeeded", "成功"],
     ["24h", "近 24 小时"],
     ["7d", "近 7 天"],
@@ -329,16 +360,16 @@ function recentRange(value: RangePreset) {
 function rangeLabel(value: RangePreset) {
     return value === "24h" ? "近 24 小时" : value === "7d" ? "近 7 天" : "全部时间";
 }
-function quickFilterActive(value: QuickFilter, current: { keyword: string; status: "all" | "succeeded" | "failed"; rangePreset: RangePreset }) {
+function quickFilterActive(value: QuickFilter, current: { keyword: string; status: "all" | "running" | "succeeded" | "warning" | "failed"; rangePreset: RangePreset }) {
     if (value === "all") return !current.keyword && current.status === "all" && current.rangePreset === "all";
-    if (value === "failed" || value === "succeeded") return !current.keyword && current.rangePreset === "all" && current.status === value;
+    if (value === "failed" || value === "succeeded" || value === "warning") return !current.keyword && current.rangePreset === "all" && current.status === value;
     if (value === "24h" || value === "7d") return !current.keyword && current.status === "all" && current.rangePreset === value;
     if (value === "timeout") return current.keyword === "超时" && current.status === "failed" && current.rangePreset === "all";
     return current.keyword === "tls" && current.status === "failed" && current.rangePreset === "all";
 }
 function applyQuickFilter(value: QuickFilter, updateUrl: (patch: Record<string, string | number>, replace?: boolean) => void) {
     if (value === "all") return updateUrl({ filter: "", status: "all", range: "all", page: 1 });
-    if (value === "failed" || value === "succeeded") return updateUrl({ filter: "", status: value, range: "all", page: 1 });
+    if (value === "failed" || value === "succeeded" || value === "warning") return updateUrl({ filter: "", status: value, range: "all", page: 1 });
     if (value === "24h" || value === "7d") return updateUrl({ filter: "", status: "all", range: value, page: 1 });
     if (value === "timeout") return updateUrl({ filter: "超时", status: "failed", range: "all", page: 1 });
     return updateUrl({ filter: "tls", status: "failed", range: "all", page: 1 });
@@ -347,8 +378,8 @@ function normalizePageSize(value: string | null) {
     const parsed = positiveInt(value, 20);
     return [20, 50, 100].includes(parsed) ? parsed : 20;
 }
-function normalizeStatus(value: string | null): "all" | "succeeded" | "failed" {
-    return value === "succeeded" || value === "failed" ? value : "all";
+export function normalizeStatus(value: string | null): "all" | "running" | "succeeded" | "warning" | "failed" {
+    return value === "running" || value === "succeeded" || value === "warning" || value === "failed" ? value : "all";
 }
 function formatTime(value?: string) {
     return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "--";

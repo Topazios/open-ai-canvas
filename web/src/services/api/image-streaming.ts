@@ -10,6 +10,7 @@ import {
     parseToolResponse,
     readFetchError,
     readJsonPayload,
+    requireToolResponseOutput,
     validateResponsePayload,
 } from "@/services/api/image-response";
 import { aiApiUrl, aiHeaders, geminiApiUrl, geminiHeaders } from "@/services/api/image-transport";
@@ -27,8 +28,7 @@ export async function requestStreamingResponse(config: AiConfig, body: Record<st
     if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
         const payload = await readJsonPayload<ResponseApiPayload>(response, "请求失败");
         validateResponsePayload(payload);
-        const result = parseToolResponse(payload);
-        if (!result.content && !result.toolCalls.length) throw new Error("Responses 接口没有返回文本或工具调用");
+        const result = requireToolResponseOutput(parseToolResponse(payload));
         if (result.content) onDelta?.(result.content);
         if (result.reasoning) options?.onReasoning?.(result.reasoning);
         return result;
@@ -55,8 +55,7 @@ export async function requestStreamingResponse(config: AiConfig, body: Record<st
     if (!state.payload) throw new Error("Responses 流中断或缺少完成事件，生成未完成");
     validateResponsePayload(state.payload);
     const result = parseToolResponse(state.payload);
-    if (!state.text && !result.content && !result.toolCalls.length) throw new Error("Responses 接口没有返回文本或工具调用");
-    return { ...result, content: result.content || state.text, ...(state.reasoning ? { reasoning: state.reasoning } : {}) };
+    return requireToolResponseOutput({ ...result, content: result.content || state.text, ...(state.reasoning ? { reasoning: state.reasoning } : {}) });
 }
 
 export async function requestStreamingChatCompletion(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
@@ -71,7 +70,7 @@ export async function requestStreamingChatCompletion(config: AiConfig, body: Rec
     if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
     const contentType = response.headers.get("content-type") || "";
     if (!response.body || !contentType.includes("text/event-stream")) {
-        const result = parseChatCompletionPayload(await readJsonPayload<ChatCompletionPayload>(response, "请求失败"));
+        const result = requireToolResponseOutput(parseChatCompletionPayload(await readJsonPayload<ChatCompletionPayload>(response, "请求失败")));
         if (result.reasoning) options?.onReasoning?.(result.reasoning);
         return result;
     }
@@ -91,7 +90,7 @@ export async function requestStreamingChatCompletion(config: AiConfig, body: Rec
         .sort(([left], [right]) => left - right)
         .map(([, call]) => ({ id: call.id, type: "function" as const, function: { name: call.name, arguments: call.arguments || "{}" } }))
         .filter((call) => call.id && call.function.name);
-    return { content: state.text, toolCalls, ...(state.reasoning ? { reasoning: state.reasoning } : {}) };
+    return requireToolResponseOutput({ content: state.text, toolCalls, ...(state.reasoning ? { reasoning: state.reasoning } : {}) });
 }
 
 export async function requestStreamingClaude(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
@@ -106,12 +105,15 @@ export async function requestStreamingClaude(config: AiConfig, body: Record<stri
     if (!response.ok) throw new Error(await readFetchError(response, "Claude 请求失败"));
     if (!response.body || !(response.headers.get("content-type") || "").includes("text/event-stream")) {
         const payload = (await readJsonPayload<Record<string, unknown>>(response, "Claude 请求失败")) as Record<string, unknown>;
-        return parseClaudeResult(payload);
+        const result = parseClaudeResult(payload);
+        if (result.reasoning) options?.onReasoning?.(result.reasoning);
+        return result;
     }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let text = "";
+    let reasoning = "";
     const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
     let blockIndex = -1;
     const consume = (chunk: string, final = false) => {
@@ -134,6 +136,7 @@ export async function requestStreamingClaude(config: AiConfig, body: Record<stri
             } else if (payload.type === "content_block_delta") {
                 const delta = payload.delta as Record<string, unknown> | undefined;
                 if (delta?.type === "text_delta" && typeof delta.text === "string") { text += delta.text; onDelta?.(delta.text); }
+                if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") { reasoning += delta.thinking; options?.onReasoning?.(reasoning); }
                 if (delta?.type === "input_json_delta" && blockIndex >= 0) toolCalls.get(blockIndex)!.arguments += String(delta.partial_json || "");
             }
         }
@@ -144,20 +147,21 @@ export async function requestStreamingClaude(config: AiConfig, body: Record<stri
         consume(decoder.decode(value, { stream: true }));
     }
     consume(decoder.decode(), true);
-    return { content: text, toolCalls: Array.from(toolCalls.values()).filter((call) => call.id && call.name).map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments || "{}" } })) };
+    return requireToolResponseOutput({ content: text, ...(reasoning ? { reasoning } : {}), toolCalls: Array.from(toolCalls.values()).filter((call) => call.id && call.name).map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments || "{}" } })) });
 }
 
 function parseClaudeResult(payload: Record<string, unknown>): ToolResponseResult {
     const content = Array.isArray(payload.content) ? payload.content : [];
     let text = "";
+    let reasoning = "";
     const toolCalls: ToolResponseResult["toolCalls"] = [];
     for (const item of content) {
         const block = item as Record<string, unknown>;
         if (block.type === "text") text += String(block.text || "");
+        if (block.type === "thinking") reasoning += String(block.thinking || "");
         if (block.type === "tool_use") toolCalls.push({ id: String(block.id || ""), type: "function", function: { name: String(block.name || ""), arguments: JSON.stringify(block.input || {}) } });
     }
-    if (!text && !toolCalls.length) throw new Error("Claude 接口没有返回内容");
-    return { content: text, toolCalls };
+    return requireToolResponseOutput({ content: text, toolCalls, ...(reasoning ? { reasoning } : {}) });
 }
 
 export async function requestGeminiStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
@@ -172,7 +176,7 @@ export async function requestGeminiStreamingResponse(config: AiConfig, body: Rec
     if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
     if (!response.body) {
         const payload = (await response.json()) as GeminiPayload;
-        const result = parseGeminiToolResponse(payload);
+        const result = requireToolResponseOutput(parseGeminiToolResponse(payload));
         if (result.reasoning) options?.onReasoning?.(result.reasoning);
         return result;
     }
@@ -188,5 +192,5 @@ export async function requestGeminiStreamingResponse(config: AiConfig, body: Rec
     }
     consumeGeminiStreamText(state, decoder.decode(), onDelta, options?.onReasoning, true);
     if (state.error) throw new Error(state.error);
-    return { content: state.text, toolCalls: state.toolCalls, ...(state.reasoning ? { reasoning: state.reasoning } : {}) };
+    return requireToolResponseOutput({ content: state.text, toolCalls: state.toolCalls, ...(state.reasoning ? { reasoning: state.reasoning } : {}) });
 }

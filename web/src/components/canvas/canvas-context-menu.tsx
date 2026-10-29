@@ -19,6 +19,8 @@ type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["
 
 const assetCategoryOptions: Array<{ value: CanvasAssetCategory; label: string }> = ASSET_CATEGORY_OPTIONS;
 
+export type CanvasWorkflowMenuAction = { label: string; detail?: string; icon?: ReactNode; disabled?: boolean; run: () => void };
+
 type CanvasNodeContextMenuProps = {
     menu: ContextMenuState;
     node?: CanvasNodeData | null;
@@ -58,7 +60,7 @@ type CanvasNodeContextMenuProps = {
     onCopySelection?: () => void;
     onDeleteSelection?: () => void;
     onSendToAgent?: () => void;
-    workflowActions?: Array<{ label: string; disabled?: boolean; run: () => void }>;
+    workflowActions?: CanvasWorkflowMenuAction[];
 };
 
 export function CanvasNodeContextMenu({
@@ -154,7 +156,7 @@ export function CanvasNodeContextMenu({
     const { ref: menuRef, position } = useCanvasMenuPosition({ left: menu.x, top: menu.y }, 224);
     const workflowMenu = workflowActions?.length ? <>
         <MenuSection label="短剧流程" />
-        {workflowActions.map((action) => <MenuButton key={action.label} icon={<ChevronRight />} label={action.label} disabled={action.disabled} onClick={() => runAction(action.run)} />)}
+        {workflowActions.map((action) => <MenuButton key={action.label} icon={action.icon || <ChevronRight />} label={action.label} detail={action.detail} disabled={action.disabled} onClick={() => runAction(action.run)} />)}
         <MenuDivider />
     </> : null;
 
@@ -383,6 +385,7 @@ function MenuButton({ icon, label, detail, shortcut, badge, chevron = false, act
             className="canvas-menu-item group flex min-h-9 w-full items-center gap-2 rounded-lg border border-transparent px-1.5 py-1 text-left outline-none enabled:hover:border-black/10 enabled:hover:bg-black/5 focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-35 dark:enabled:hover:border-white/10 dark:enabled:hover:bg-white/8"
             style={{ color, background: active ? theme.toolbar.activeBg : undefined, "--tw-ring-color": theme.node.muted } as CSSProperties}
             disabled={disabled}
+            title={detail}
             onClick={onClick}
         >
             <span className="canvas-menu-item-icon grid size-7 shrink-0 place-items-center rounded-md border opacity-75 group-hover:opacity-100 [&_svg]:size-3.5" style={{ background: danger ? `${theme.accent.danger}12` : theme.spatial.surface, borderColor: danger ? `${theme.accent.danger}33` : theme.toolbar.border, color: danger ? theme.accent.danger : theme.node.text }}>{icon}</span>

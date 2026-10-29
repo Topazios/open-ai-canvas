@@ -225,6 +225,22 @@ func TestOfficialAgentProfilesMapToolRequestsAndResponses(t *testing.T) {
 	}
 }
 
+func TestOfficialOpenAIResponsesMapsStatusAndBuildsPollRequest(t *testing.T) {
+	adapter := officialPackageAdapter(t, "openai-responses.yingce-plugin", "openai-response")
+	created, err := adapter.ParseCreate(context.Background(), []byte(`{"id":"resp_123","status":"in_progress"}`))
+	if err != nil || created.TaskID != "resp_123" || created.Status != StatusProcessing {
+		t.Fatalf("create result = %#v, error = %v", created, err)
+	}
+	poll, err := adapter.BuildPoll(context.Background(), PollContext{Model: "gpt-test", TaskID: created.TaskID})
+	if err != nil || poll.Method != "GET" || poll.Path != "/responses/resp_123" {
+		t.Fatalf("poll request = %#v, error = %v", poll, err)
+	}
+	completed, err := adapter.ParsePoll(context.Background(), PollContext{TaskID: created.TaskID}, []byte(`{"id":"resp_123","status":"completed","output_text":"episode body"}`))
+	if err != nil || completed.Status != StatusSucceeded || completed.Result == nil || completed.Result.Text != "episode body" {
+		t.Fatalf("poll result = %#v, error = %v", completed, err)
+	}
+}
+
 func TestOfficialVideoProfilesPreserveExplicitMediaRoles(t *testing.T) {
 	tests := []struct {
 		packageName string

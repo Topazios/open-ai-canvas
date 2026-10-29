@@ -10,6 +10,8 @@ export type CanvasNodeActionContextValue = {
     download?: (node: CanvasNodeData) => void;
     duplicate?: (node: CanvasNodeData) => void;
     deleteNode?: (node: CanvasNodeData) => void;
+    openAssetReview?: (node: CanvasNodeData) => void;
+    generateAssetSound?: (node: CanvasNodeData) => void;
     /** 合并式更新节点 metadata；扩展节点（如调色）在自己的面板里改参数时用。 */
     updateMetadata?: (nodeId: string, patch: CanvasNodeMetadata) => void;
     /** 更新单个节点；媒体尺寸回写使用它，避免触发全量节点时间戳归并。 */

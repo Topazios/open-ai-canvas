@@ -83,6 +83,8 @@ func OfficialDeclarativeVideoInterface(interfaceType string) (string, bool) {
 
 func OfficialDeclarativeImageInterface(interfaceType string) (string, bool) {
 	switch strings.TrimSpace(interfaceType) {
+	case string(model.ChannelInterfaceAgnesImage):
+		return "Agnes Image", true
 	case string(model.ChannelInterfaceGeminiImage):
 		return "Gemini Images", true
 	case string(model.ChannelInterfaceOpenAIImage):

@@ -13,6 +13,7 @@ import (
 	"log"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -25,7 +26,41 @@ import (
 	"infinite-canvas/backend/internal/platform"
 )
 
-const imageProviderRequestTimeout = 3 * time.Minute
+const providerRequestPendingStatus = -1
+
+type providerRequestLogKey struct{}
+type providerRequestLogIdentity struct {
+	ID          string
+	StartedAt   time.Time
+	RequestBody string
+}
+
+type providerRequestTimeoutError struct {
+	timeout       time.Duration
+	cause         error
+	receiving     bool
+	receivedBytes int64
+}
+
+func (e providerRequestTimeoutError) Error() string {
+	if e.receiving {
+		return fmt.Sprintf("模型已响应，但图片结果接收连续 %s 无进展（已收到 %d 字节）；结果不完整，请先核对渠道任务和扣费状态", e.timeout.Round(time.Second), e.receivedBytes)
+	}
+	return fmt.Sprintf("等待模型响应超过单次上游请求超时（%s），本地已停止等待；请先核对渠道任务和扣费状态", e.timeout.Round(time.Second))
+}
+
+func (e providerRequestTimeoutError) Unwrap() error { return e.cause }
+
+func preserveProviderRequestTimeout(err error, ctx context.Context, timeout time.Duration) error {
+	var existing providerRequestTimeoutError
+	if errors.As(err, &existing) {
+		return err
+	}
+	if err != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return providerRequestTimeoutError{timeout: timeout, cause: err}
+	}
+	return err
+}
 
 func postGeminiJSON(ctx context.Context, config providerConfig, path string, body interface{}, target interface{}) error {
 	data, err := json.Marshal(body)
@@ -88,7 +123,7 @@ func geminiVeoURL(baseURL string, path string) string {
 	return apiURLWithDefaultPrefix(baseURL, path, "/v1beta")
 }
 
-func postStreamingBinary(ctx context.Context, config providerConfig, path string, body interface{}, onChunk func(string, []byte)) ([]byte, string, error) {
+func postStreamingBinary(ctx context.Context, config providerConfig, path string, body interface{}, onChunk func(string, []byte), validators ...func([]byte, string) error) ([]byte, string, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, "", fmt.Errorf("序列化上游请求失败：%w", err)
@@ -101,10 +136,10 @@ func postStreamingBinary(ctx context.Context, config providerConfig, path string
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	ApplyOutboundHeaders(req, config.Headers)
-	return doBinaryWithConsumer(req, onChunk)
+	return doBinaryWithConsumer(req, onChunk, validators...)
 }
 
-func postJSON(ctx context.Context, config providerConfig, path string, body interface{}, target interface{}) error {
+func postJSON(ctx context.Context, config providerConfig, path string, body interface{}, target interface{}, validators ...func([]byte, string) error) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("序列化上游请求失败：%w", err)
@@ -116,7 +151,7 @@ func postJSON(ctx context.Context, config providerConfig, path string, body inte
 	applyProviderAuth(req, config)
 	req.Header.Set("Content-Type", "application/json")
 	ApplyOutboundHeaders(req, config.Headers)
-	return doJSON(req, target)
+	return doJSON(req, target, validators...)
 }
 
 func applyProviderAuth(req *http.Request, config providerConfig) {
@@ -207,8 +242,8 @@ func sameProviderOrigin(baseURL string, rawURL string) bool {
 	return strings.EqualFold(base.Scheme, target.Scheme) && strings.EqualFold(base.Host, target.Host)
 }
 
-func doJSON(req *http.Request, target interface{}) error {
-	data, mimeType, err := doBinary(req)
+func doJSON(req *http.Request, target interface{}, validators ...func([]byte, string) error) error {
+	data, mimeType, err := doBinaryWithConsumer(req, nil, validators...)
 	if err != nil {
 		return err
 	}
@@ -245,9 +280,10 @@ func doBinary(req *http.Request) ([]byte, string, error) {
 // doBinaryWithConsumer 是 Provider 出站响应的统一安全边界。JSON、SSE 和媒体下载最终都在这里执行
 // 渠道并发/熔断、SSRF、超时、响应大小、HTTP 状态和审计检查；onChunk 仅观察已读取的流片段，
 // 不会绕过完整响应的大小上限或错误判定。
-func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]byte, string, error) {
+func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte), validators ...func([]byte, string) error) ([]byte, string, error) {
 	startedAt := time.Now()
-	requestTimeout := providerHTTPTimeout
+	requestTimeout := time.Duration(platform.DefaultRuntimePolicy().Task.ProviderRequestTimeoutSeconds) * time.Second
+	requestKind := providerRequestKindFromContext(req.Context())
 	if deadline, ok := req.Context().Deadline(); ok {
 		if remaining := time.Until(deadline); remaining > 0 {
 			requestTimeout = remaining
@@ -256,7 +292,6 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 	var release func()
 	var coordinator *platform.Coordinator
 	var runtimeService *Service
-	requestKind := providerRequestKindFromContext(req.Context())
 	cacheManagementRequest := requestKind == "cache-create" || requestKind == "cache-delete"
 	responseLimit := maxProviderResponseBytes
 	channelID := ""
@@ -295,16 +330,22 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 		}
 	}
 	// Channel-slot wait is scheduling time, not provider execution time. Start
-	// request analytics and the image generation deadline only after admission.
+	// request analytics and the configured upstream deadline only after admission.
 	startedAt = time.Now()
-	if requestKind == "create" && metadataCapability(req.Context()) == "image" {
-		imageCtx, cancel := context.WithTimeout(req.Context(), imageProviderRequestTimeout)
-		defer cancel()
-		req = req.WithContext(imageCtx)
-		requestTimeout = imageProviderRequestTimeout
-		if deadline, ok := imageCtx.Deadline(); ok {
-			if remaining := time.Until(deadline); remaining > 0 {
-				requestTimeout = remaining
+	// The worker deadline caps the total task. This independent setting limits
+	// one upstream HTTP call, so a stuck request can fail before the whole task.
+	if deadline, ok := req.Context().Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			requestTimeout = remaining
+		}
+	}
+	if metadata, ok := req.Context().Value(providerAnalyticsKey{}).(providerAnalyticsContext); ok && metadata.Service != nil {
+		if policy, err := metadata.Service.RuntimePolicy(); err == nil && policy.Task.ProviderRequestTimeoutSeconds > 0 {
+			requestTimeout = time.Duration(policy.Task.ProviderRequestTimeoutSeconds) * time.Second
+			if deadline, ok := req.Context().Deadline(); ok {
+				if remaining := time.Until(deadline); remaining > 0 && remaining < requestTimeout {
+					requestTimeout = remaining
+				}
 			}
 		}
 	}
@@ -313,9 +354,22 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 		return nil, "", err
 	}
 	ApplyDefaultOutboundHeaders(req)
-	client := OutboundHTTPClient(requestTimeout)
-	resp, err := client.Do(req)
+	// Polls keep their existing aggregation on the accepted video request.
+	// Only model submissions acquire a durable in-flight audit row.
+	if metadata, ok := req.Context().Value(providerAnalyticsKey{}).(providerAnalyticsContext); ok && metadata.Service != nil && providerRequestIsBillable(req.Method, requestKind) {
+		req = req.WithContext(context.WithValue(req.Context(), providerRequestLogKey{}, providerRequestLogIdentity{ID: newID(), StartedAt: startedAt, RequestBody: requestPayloadForLog(req)}))
+		if err := recordProviderRequest(req, startedAt, providerRequestPendingStatus, nil, nil); err != nil {
+			return nil, "", fmt.Errorf("请求日志写入失败，尚未向模型发送请求：%w", err)
+		}
+	}
+	resp, err := doProviderHTTPRequest(req, requestTimeout)
 	if err != nil {
+		// http.Client.Timeout also unwraps to context.DeadlineExceeded. Preserve
+		// its source when the task's own context is still live; the worker's task
+		// deadline is a separate, larger limit and must not mask this cause.
+		if metadataCapability(req.Context()) != "image" {
+			err = preserveProviderRequestTimeout(err, req.Context(), requestTimeout)
+		}
 		err = providerConnectionError(err)
 		if runtimeService != nil && !cacheManagementRequest {
 			_ = runtimeService.RecordChannelResult(req.Context(), channelID, !errors.Is(err, context.Canceled))
@@ -345,11 +399,21 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 			if onChunk != nil {
 				onChunk(mimeType, chunk[:readCount])
 			}
+			// A few image relays send a complete JSON document and keep the
+			// connection open. Once the document is valid, the result is already
+			// usable; waiting for EOF would turn a successful HTTP 200 into a local
+			// deadline warning after several minutes.
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 && providerResponseBodyComplete(resp, mimeType, buffered.Bytes()) {
+				break
+			}
 		}
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
 		if readErr != nil {
+			if metadataCapability(req.Context()) != "image" {
+				readErr = preserveProviderRequestTimeout(readErr, req.Context(), requestTimeout)
+			}
 			readErr = providerConnectionError(readErr)
 			// Some gateways write a complete JSON result and keep the upstream
 			// connection open without sending EOF. Once the payload is complete,
@@ -376,6 +440,14 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 		recordProviderRequest(req, startedAt, resp.StatusCode, data, httpErr)
 		return nil, "", httpErr
 	}
+	// Protocol validation belongs to the same request receipt as transport.
+	// HTTP 200 headers alone cannot prove a streaming model call succeeded.
+	for _, validate := range validators {
+		if err := validate(data, mimeType); err != nil {
+			recordProviderRequest(req, startedAt, resp.StatusCode, data, err)
+			return nil, mimeType, err
+		}
+	}
 	recordProviderRequest(req, startedAt, resp.StatusCode, data, nil)
 	if runtimeService != nil && !cacheManagementRequest {
 		_ = runtimeService.RecordChannelResult(req.Context(), channelID, false)
@@ -390,7 +462,86 @@ func providerResponseBodyComplete(resp *http.Response, mimeType string, data []b
 	if resp.ContentLength >= 0 && int64(len(data)) >= resp.ContentLength {
 		return true
 	}
-	return strings.Contains(strings.ToLower(mimeType), "json") && json.Valid(data)
+	if providerSSEBodyComplete(mimeType, data) {
+		return true
+	}
+	// Some relays return a complete JSON response with text/plain or no
+	// Content-Type and keep the connection alive. The payload itself is the
+	// reliable completion signal; otherwise image jobs wait for EOF and leave
+	// their in-flight audit row open until the idle timeout fires.
+	return providerJSONBodyComplete(data)
+}
+
+// providerJSONBodyComplete 在每读一块数据后被调用。大图的 base64 响应可达数十 MB，
+// 对未完成的 JSON 每次都整段扫描会让读取变成 O(n²)，拖慢读取并让连接窗口回收变慢。
+// 大响应只有首个非空白字节是对象或数组起点，且末尾非空白字节是对应的闭合符时才做完整校验。
+func providerJSONBodyComplete(data []byte) bool {
+	const smallBody = 64 << 10
+	if len(data) <= smallBody {
+		return json.Valid(data)
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) < 2 {
+		return false
+	}
+	switch {
+	case trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}':
+	case trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']':
+	default:
+		return false
+	}
+	return json.Valid(trimmed)
+}
+
+// SSE responses are often kept open by gateways after the model has emitted
+// its terminal frame. Stop reading at that protocol boundary instead of
+// turning a complete result into a local read timeout while waiting for EOF.
+func providerSSEBodyComplete(mimeType string, data []byte) bool {
+	if !strings.Contains(strings.ToLower(mimeType), "text/event-stream") {
+		return false
+	}
+	var eventName string
+	var eventData []string
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		if line == "" {
+			if isTerminalProviderSSEEvent(eventName, strings.Join(eventData, "\n")) {
+				return true
+			}
+			eventName = ""
+			eventData = eventData[:0]
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			eventData = append(eventData, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		}
+	}
+	return false
+}
+
+func isTerminalProviderSSEEvent(eventName, data string) bool {
+	if isTerminalProviderSSEEventName(eventName) {
+		return true
+	}
+	if strings.TrimSpace(data) == "[DONE]" {
+		return true
+	}
+	var payload struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(data), &payload) == nil && isTerminalProviderSSEEventName(payload.Type) {
+		return true
+	}
+	return false
+}
+
+func isTerminalProviderSSEEventName(eventName string) bool {
+	switch strings.TrimSpace(eventName) {
+	case "response.completed", "response.failed", "response.incomplete", "message_stop", "error":
+		return true
+	}
+	return false
 }
 
 func metadataCapability(ctx context.Context) string {
@@ -428,22 +579,26 @@ func providerPollingDeadline(ctx context.Context) time.Time {
 	if deadline, ok := ctx.Deadline(); ok {
 		return deadline
 	}
-	return time.Now().Add(videoPollTimeout)
+	return time.Now().Add(time.Duration(platform.DefaultRuntimePolicy().Task.VideoTimeoutMinutes) * time.Minute)
 }
 
-func recordProviderRequest(req *http.Request, startedAt time.Time, statusCode int, responseBody []byte, requestErr error) {
+func recordProviderRequest(req *http.Request, startedAt time.Time, statusCode int, responseBody []byte, requestErr error) error {
 	metadata, ok := req.Context().Value(providerAnalyticsKey{}).(providerAnalyticsContext)
 	if !ok || metadata.Service == nil {
-		return
+		return nil
 	}
 	status := model.ApiCallStatusSucceeded
 	errorCode := ""
 	errorText := ""
-	if requestErr != nil || statusCode < 200 || statusCode >= 300 {
-		status = model.ApiCallStatusFailed
+	errorSource := ""
+	if statusCode == providerRequestPendingStatus {
+		status, statusCode = model.ApiCallStatusRunning, 0
+	} else if requestErr != nil || statusCode < 200 || statusCode >= 300 {
+		status, errorSource = providerRequestFailureOutcome(statusCode, requestErr)
 		errorCode, errorText = providerRequestErrorDetails(requestErr)
 	} else if businessCode, businessMessage, failed := providerResponseBusinessFailure(responseBody); failed {
 		status = model.ApiCallStatusFailed
+		errorSource = "upstream"
 		errorCode = businessCode
 		errorText = businessMessage
 	}
@@ -458,14 +613,25 @@ func recordProviderRequest(req *http.Request, startedAt time.Time, statusCode in
 	if req.Header.Get("x-goog-api-key") != "" {
 		apiFormat = "gemini"
 	}
+	requestBody := ""
+	identity, hasIdentity := req.Context().Value(providerRequestLogKey{}).(providerRequestLogIdentity)
+	if hasIdentity {
+		requestBody = identity.RequestBody
+	} else {
+		requestBody = requestPayloadForLog(req)
+	}
 	callLog := model.ApiCallLog{
 		UserID: metadata.UserID, TraceID: metadata.TraceID, RequestID: metadata.RequestID, ChannelID: metadata.ChannelID, TaskID: metadata.TaskID, BillingOrderID: metadata.BillingOrderID,
 		Source: "backend-task", Capability: metadata.Capability, Operation: metadata.Operation,
 		RequestKind: requestKind, Billable: providerRequestIsBillable(req.Method, requestKind),
 		APIFormat: apiFormat, Method: req.Method, Path: req.URL.Path, Model: metadata.Model,
 		Status: status, StatusCode: statusCode, DurationMs: time.Since(startedAt).Milliseconds(),
-		ErrorCode: errorCode, Error: errorText, ConcurrencyLimit: metadata.ConcurrencyLimit, UpstreamURL: req.URL.Scheme + "://" + req.URL.Host + req.URL.Path,
-		ProviderRequestID: metadata.ProviderRequestID, RequestContentType: req.Header.Get("Content-Type"), RequestBody: requestPayloadForLog(req), ResponseBody: SanitizeAPICallPayload(responseBody, ""),
+		ErrorCode: errorCode, ErrorSource: errorSource, Error: errorText, ConcurrencyLimit: metadata.ConcurrencyLimit, UpstreamURL: req.URL.Scheme + "://" + req.URL.Host + req.URL.Path,
+		ProviderRequestID: metadata.ProviderRequestID, RequestContentType: req.Header.Get("Content-Type"), RequestBody: requestBody, ResponseBody: SanitizeAPICallPayload(responseBody, ""),
+	}
+	if hasIdentity {
+		callLog.ID, callLog.StartedAt, callLog.CreatedAt = identity.ID, identity.StartedAt, identity.StartedAt
+		callLog.RequestBody = identity.RequestBody
 	}
 	channelSlotFailure := false
 	if code, message := ChannelSlotFailureDetails(requestErr); code != "" {
@@ -485,13 +651,44 @@ func recordProviderRequest(req *http.Request, startedAt time.Time, statusCode in
 	}
 	metadata.Service.EnrichAPICallLog(&callLog, responseBody)
 	if err := metadata.Service.LogAPICall(callLog); err != nil {
-		if !channelSlotFailure && metadata.Billing != nil {
+		log.Printf("provider request audit write failed: task_id=%s request_log_id=%s status=%s error=%v", metadata.TaskID, callLog.ID, callLog.Status, err)
+		if status != model.ApiCallStatusRunning && !channelSlotFailure && metadata.Billing != nil {
 			if uncertainErr := metadata.Billing.MarkBillingUncertain(metadata.BillingOrderID, "上游调用日志写入失败，费用状态待核对"); uncertainErr != nil {
 				// 这里无法把日志落库错误返回给已完成的 HTTP 请求，只能把计费边界失败写入进程日志，交给待核对审计继续处理。
 				log.Printf("provider billing uncertainty update failed: task_id=%s billing_order_id=%s error=%v", metadata.TaskID, metadata.BillingOrderID, uncertainErr)
 			}
 		}
+		return err
 	}
+	return nil
+}
+
+// HTTP/API failures have direct upstream evidence. Local context interruption
+// and unknown errors must not be presented as a channel failure merely because
+// the request has no response status yet.
+func providerRequestFailureOutcome(statusCode int, err error) (model.ApiCallStatus, string) {
+	var httpErr providerHTTPError
+	var payloadErr providerPayloadError
+	var networkErr *net.OpError
+	var decodeErr providerResponseDecodeError
+	var requestTimeoutErr providerRequestTimeoutError
+	switch {
+	case errors.As(err, &requestTimeoutErr):
+		return model.ApiCallStatusWarning, "application"
+	case (statusCode > 0 && (statusCode < 200 || statusCode >= 300)), errors.As(err, &httpErr), errors.As(err, &payloadErr):
+		return model.ApiCallStatusFailed, "upstream"
+	case errors.As(err, &networkErr):
+		return model.ApiCallStatusFailed, "network"
+	case errors.Is(err, errProviderOutputLimit), errors.As(err, &decodeErr):
+		return model.ApiCallStatusWarning, "content"
+	}
+	if code, _ := ChannelSlotFailureDetails(err); code != "" {
+		return model.ApiCallStatusWarning, "application"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return model.ApiCallStatusWarning, "application"
+	}
+	return model.ApiCallStatusWarning, "unknown"
 }
 
 func providerRequestIsBillable(method, requestKind string) bool {
@@ -510,11 +707,25 @@ func providerRequestErrorDetails(err error) (string, string) {
 	if err == nil {
 		return "", ""
 	}
+	var requestTimeoutErr providerRequestTimeoutError
+	if errors.As(err, &requestTimeoutErr) {
+		if requestTimeoutErr.receiving {
+			return "provider_response_read_timeout", requestTimeoutErr.Error()
+		}
+		return "provider_request_timeout", requestTimeoutErr.Error()
+	}
+	if errors.Is(err, errProviderOutputLimit) {
+		return providerOutputLimitCode, errProviderOutputLimit.Error()
+	}
+	var decodeErr providerResponseDecodeError
+	if errors.As(err, &decodeErr) {
+		return "upstream_response_invalid", safeProviderLogError(err)
+	}
 	if errors.Is(err, context.Canceled) {
-		return "request_cancelled", "任务取消，中断上游请求"
+		return "request_cancelled", "执行上下文已取消，请核对任务状态"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return "upstream_timeout", "等待上游响应超时"
+		return "upstream_timeout", "执行等待时间已到，请核对任务状态"
 	}
 	return "", safeProviderLogError(err)
 }

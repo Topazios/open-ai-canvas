@@ -244,6 +244,63 @@ func TestCloudAgentStepTimeoutRetriesThenFailsWithReadableReason(t *testing.T) {
 	}
 }
 
+func TestCloudAgentOutputLimitRetriesOnceWithoutIncreasingBudget(t *testing.T) {
+	s, db, root := reliableAgentRoot(t)
+	if !cloudAgentOutputLimitReached(&model.Task{Status: model.TaskStatusFailed, Error: "Responses 输出达到 token 上限，生成未完成"}) {
+		t.Fatal("explicit Responses output-limit failure must be recoverable")
+	}
+	if cloudAgentOutputLimitReached(&model.Task{Status: model.TaskStatusFailed, Error: "上游 503"}) {
+		t.Fatal("unrelated failures must not use output-limit recovery")
+	}
+	if err := db.Model(&model.Task{}).Where("id = ?", root.ID).Updates(map[string]any{
+		"status": model.TaskStatusFailed,
+		"error":  "Responses 输出达到 token 上限，生成未完成",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.advanceCloudAgentByID("user", root.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, state := agentInterjectionState(t, s, root.ID)
+	if run.Status != "running" || state.OutputLimitEscalated != 1 || !state.ForceThinkingOff {
+		t.Fatalf("output cap should trigger one bounded retry: status=%s escalated=%d thinkingOff=%v", run.Status, state.OutputLimitEscalated, state.ForceThinkingOff)
+	}
+	if !agentHasEventWithReason(state, "model_failure_recovered", "output_limit_retried") {
+		t.Fatal("missing output-limit recovery event")
+	}
+	if err := s.advanceCloudAgentByID("user", root.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, retried := agentInterjectionState(t, s, root.ID)
+	if retried.ActiveTaskID == "" {
+		t.Fatal("recovery did not enqueue another model step")
+	}
+	task, err := s.repo.TaskForUser("user", retried.ActiveTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := stepTaskTextOptions(t, s, task)
+	if options["thinking"] != false || options["reasoningDisabled"] != true {
+		t.Fatalf("recovery request did not disable reasoning: %+v", options)
+	}
+	if options["maxOutputTokens"] != float64(platform.DefaultRuntimeAgentStepOutputTokens) {
+		t.Fatalf("recovery must keep original output budget, got %v", options["maxOutputTokens"])
+	}
+	if err := db.Model(&model.Task{}).Where("id = ?", task.ID).Updates(map[string]any{
+		"status": model.TaskStatusFailed,
+		"error":  "Responses 输出达到 token 上限，生成未完成",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.advanceCloudAgentByID("user", root.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, state = agentInterjectionState(t, s, root.ID)
+	if run.Status != "failed" {
+		t.Fatalf("second output-limit failure must stop after one retry, got %s", run.Status)
+	}
+}
+
 func failStepTask(t *testing.T, db *gorm.DB, taskID string) {
 	t.Helper()
 	if err := db.Model(&model.Task{}).Where("id = ?", taskID).Updates(map[string]any{

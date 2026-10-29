@@ -5,7 +5,7 @@ import type { GenerationTask, TaskStatus } from "@/services/api/task-center";
 import type { CanvasNodeData, StoryDevelopmentData } from "@/types/canvas";
 import type { StoryTopicSettingsPatch } from "@/lib/story-topic-settings";
 
-export type StoryPreview = { text: string; draft: string; signatures: Record<string, string>; topicCount?: number; error?: string };
+export type StoryPreview = { text: string; draft: string; signatures: Record<string, string>; topicCount?: number; requireLocalization?: boolean; error?: string };
 type StoryRevision = Pick<StorySession, "content" | "data">;
 export type StoryJob = {
     operationId: string;
@@ -13,6 +13,7 @@ export type StoryJob = {
     status: TaskStatus | "pending" | "submitting" | "unknown";
     draw: boolean;
     topicCount: number;
+    requireLocalization?: boolean;
     draft: string;
     signatures: Record<string, string>;
     error?: string;
@@ -46,10 +47,10 @@ export function newStorySession(node: CanvasNodeData, model: string): StorySessi
 }
 
 const storyRevision = (session: StorySession): StoryRevision => ({ content: session.content, data: structuredClone(session.data) });
-export function applyStoryResult(session: StorySession, result: Pick<StoryPreview, "text" | "signatures" | "topicCount">): StorySession {
+export function applyStoryResult(session: StorySession, result: Pick<StoryPreview, "text" | "signatures" | "topicCount" | "requireLocalization">): StorySession {
     if (!result.text.trim()) throw new Error("AI 未返回内容，原稿已保留");
     const data = result.topicCount !== undefined
-        ? { ...session.data, candidates: parseStoryTopics(result.text, result.topicCount) }
+        ? { ...session.data, candidates: parseStoryTopics(result.text, result.topicCount, result.requireLocalization) }
         : { ...session.data, sourceSignatures: { ...result.signatures } };
     // Capture the latest draft, including edits made while the task was running.
     return { ...session, content: result.topicCount !== undefined ? session.content : result.text, data, previousVersion: storyRevision(session), redoVersion: undefined, dirty: true, preview: null };
@@ -86,7 +87,7 @@ export function receiveStoryTask(session: StorySession, task: GenerationTask): S
         const text = parseBackendGenerationResult(task).text;
         if (!text?.trim()) throw new Error("AI 未返回内容，原稿已保留");
         next.job.partialText = undefined;
-        return applyStoryResult(next, { text, signatures: job.signatures, ...(job.draw ? { topicCount: job.topicCount } : {}) });
+        return applyStoryResult(next, { text, signatures: job.signatures, ...(job.draw ? { topicCount: job.topicCount, requireLocalization: job.requireLocalization } : {}) });
     } catch (error) {
         next.job.status = "failed";
         next.job.partialText = task.textDraft || job.partialText;

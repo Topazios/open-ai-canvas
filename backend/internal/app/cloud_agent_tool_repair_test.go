@@ -66,6 +66,34 @@ func TestCloudAgentToolRepairSuccessResetsOnlyItsOwnBudget(t *testing.T) {
 	}
 }
 
+func TestProductionToolRepairIdentityUsesServerCheckpoint(t *testing.T) {
+	state := &cloudAgentRuntime{ProductionProgressStep: 23}
+	state.Request.Production = &ProductionAgentRequest{TargetNodeID: "target"}
+	run := &model.CloudAgentExecution{ID: "run", Status: "running"}
+	err := cloudAgentFieldError("document.voice", "required", "请补齐配音信息")
+	first := cloudAgentCall{ID: "call-1"}
+	first.Function.Name, first.Function.Arguments = "production_submit", "{}"
+	second := cloudAgentCall{ID: "call-2"}
+	second.Function.Name, second.Function.Arguments = "production_asset_write", "{}"
+	calls := []cloudAgentCall{first, second}
+	for attempt, call := range calls {
+		cloudAgentRecordToolResult(run, state, call, nil, err)
+		if state.ToolRepairs[call.Function.Name].Attempt != attempt+1 {
+			t.Fatalf("model-selected tool reset checkpoint budget: %+v", state.ToolRepairs)
+		}
+	}
+	if len(state.ToolRepairs) != 1 {
+		t.Fatalf("checkpoint has multiple repair identities: %+v", state.ToolRepairs)
+	}
+	state.ProductionProgressStep++
+	call := cloudAgentCall{ID: "call-3"}
+	call.Function.Name, call.Function.Arguments = "production_submit", "{}"
+	cloudAgentRecordToolResult(run, state, call, nil, err)
+	if state.ToolRepairs[call.Function.Name].Attempt != 1 {
+		t.Fatalf("new server checkpoint inherited old budget: %+v", state.ToolRepairs)
+	}
+}
+
 // Exercise scheduler checkpoints and real canvas admission, not a second
 // implementation of the retry loop. Model outputs are injected at the task seam.
 func TestCloudAgentEmptyCanvasRepairAcrossCheckpoints(t *testing.T) {

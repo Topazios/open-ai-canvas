@@ -15,6 +15,8 @@ export function CanvasStoryboardImageStack({ label, items, onPreview, onManage }
     const layers = [cover, ...items.filter(item => item.id !== cover.id)].slice(0, 3);
     const summary = ready.length === items.length ? `${items.length} 张` : `${ready.length}/${items.length} 已生成`;
     const pending = items.filter(item => !ready.includes(item));
+    const failed = pending.filter(item => item.error || item.status === "生成失败");
+    const active = pending.filter(item => item.status && item.status !== "待生成" && item.status !== "已暂停" && !failed.includes(item));
     return <figure className="canvas-storyboard-image-stack" aria-label={label}>
         <button type="button" className="canvas-storyboard-image-stack-trigger" aria-label={`${ready.length ? "放大预览" : "管理"} ${label}`} title={`${label} · ${summary}`} onClick={() => cover.node && ready.length ? onPreview(cover.node, ready.map(item => item.node!)) : onManage?.()}>
             {[...layers].reverse().map((item, reverseIndex) => {
@@ -29,8 +31,8 @@ export function CanvasStoryboardImageStack({ label, items, onPreview, onManage }
         <figcaption className="canvas-storyboard-image-stack-caption">
             <span className="font-medium">{label}</span>
             <span role="status" className="opacity-70">{summary}</span>
-            {pending.length ? <button type="button" className="canvas-storyboard-image-stack-pending" onClick={onManage} title={pending.map(item => `${item.label}：${item.error || item.status || "待生成"}`).join("\n")}>
-                {pending.some(item => item.error || item.status === "生成失败") ? `失败 ${pending.filter(item => item.error || item.status === "生成失败").length}` : `待处理 ${pending.length}`}
+            {pending.length ? <button type="button" className="canvas-storyboard-image-stack-pending" data-failed={failed.length > 0} onClick={onManage} title={pending.map(item => `${item.label}：${item.error || item.status || "待生成"}`).join("\n")}>
+                {failed.length ? `失败 ${failed.length}` : active.length ? `处理中 ${active.length}` : pending.every(item => item.status === "已暂停") ? `已暂停 ${pending.length}` : `待生成 ${pending.length}`}
             </button> : null}
         </figcaption>
     </figure>;

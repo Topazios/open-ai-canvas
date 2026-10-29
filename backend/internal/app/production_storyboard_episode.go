@@ -23,7 +23,9 @@ scene：同一集仅一个持久执行通道，连续补全plannedShots中的1�
 已有错误时：未完成场用production_storyboard_reset并说明具体问题，保留旧稿；已完成场用review指定repairSceneIds。canRebudget=true且返修要求改变场次预算时，先production_storyboard_plan保存完整新预算并保留场次ID和原文范围，再layout；不能直接提交与现有预算不符的镜头清单。只返修真正有问题的场次，不因固定措辞或格式标题反复重做。
 review：已直接提供当前集完整正文、全部镜头及简报，在一次审查中核对剧情、逐字对白、动作可执行性、时长、原文覆盖、空间构图与跨镜连续性。无需逐场重新读取。通过时提交当前hash、空repairSceneIds与具体结论；有真实矛盾时只返修对应场次。不伪称成片已经人工验收。
 任务以检查点与内容校验完成为结束条件，真实调用正常计费。来源变化停止混用，目标删除不可复活。失败只修当前批次，保留已完成结果。
-` + storyboardCompositionPolicy
+` + storyboardCompositionPolicy + `
+资产状态按本集正文的编号和来源落实；只有重大形态、结构或身份变化才引用变体编号，疲惫、受伤、污渍、湿润、开关灯、日夜天气、持物、开合、运行、位置和普通换装写入本镜的camera/continuity状态。沿用场景物理尺寸、地标、门窗与道具相对人体尺度，改变景别、焦距或视角只改变投影，不改变真实世界。普通状态有前态、触发和后态，延续至明确结束；重大形态变体还需独立参考图或独立资产码。只在camera/continuity中写本镜所需锚点，不读取全库。声音事件在sound列保留AUD编号和动作/说话人，不混进静态生图描述；人物情绪不更换声纹。前尾帧仅在场景状态、机位景别和动作接点兼容时直接复用为后首帧；明确切镜时保留身份和空间继承但另生成画面。
+`
 
 func storyboardRepairCanRebudget(s *productionStoryboard) bool {
 	if s.Version != storyboardEpisodeVersion || s.Review == "" || s.ReviewHash != "" {

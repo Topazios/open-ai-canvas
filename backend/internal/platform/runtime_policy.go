@@ -107,20 +107,21 @@ type RuntimeStoragePolicy struct {
 }
 
 type RuntimeTaskPolicy struct {
-	WorkerConcurrency        int `json:"workerConcurrency"`
-	ImageConcurrency         int `json:"imageConcurrency"`
-	TextConcurrency          int `json:"textConcurrency"`
-	AgentConcurrency         int `json:"agentConcurrency"`
-	VideoConcurrency         int `json:"videoConcurrency"`
-	AudioConcurrency         int `json:"audioConcurrency"`
-	ChannelConcurrency       int `json:"channelConcurrency"`
-	ActiveTaskLimit          int `json:"activeTaskLimit"`
-	ImageTimeoutMinutes      int `json:"imageTimeoutMinutes"`
-	TextTimeoutMinutes       int `json:"textTimeoutMinutes"`
-	AudioTimeoutMinutes      int `json:"audioTimeoutMinutes"`
-	VideoTimeoutMinutes      int `json:"videoTimeoutMinutes"`
-	StoryboardTimeoutMinutes int `json:"storyboardTimeoutMinutes"`
-	DefaultTimeoutMinutes    int `json:"defaultTimeoutMinutes"`
+	WorkerConcurrency             int `json:"workerConcurrency"`
+	ImageConcurrency              int `json:"imageConcurrency"`
+	TextConcurrency               int `json:"textConcurrency"`
+	AgentConcurrency              int `json:"agentConcurrency"`
+	VideoConcurrency              int `json:"videoConcurrency"`
+	AudioConcurrency              int `json:"audioConcurrency"`
+	ChannelConcurrency            int `json:"channelConcurrency"`
+	ActiveTaskLimit               int `json:"activeTaskLimit"`
+	ImageTimeoutMinutes           int `json:"imageTimeoutMinutes"`
+	TextTimeoutMinutes            int `json:"textTimeoutMinutes"`
+	AudioTimeoutMinutes           int `json:"audioTimeoutMinutes"`
+	VideoTimeoutMinutes           int `json:"videoTimeoutMinutes"`
+	StoryboardTimeoutMinutes      int `json:"storyboardTimeoutMinutes"`
+	DefaultTimeoutMinutes         int `json:"defaultTimeoutMinutes"`
+	ProviderRequestTimeoutSeconds int `json:"providerRequestTimeoutSeconds"`
 	// AgentStepMaxOutputTokens 是画布 Agent 单步模型调用的输出上限（思考 + 正文 + 工具调用参数）。
 	// 0 表示不限制输出，此时单步最坏耗时只由 AgentStepTimeoutSeconds 兜底。
 	AgentStepMaxOutputTokens int `json:"agentStepMaxOutputTokens"`
@@ -128,6 +129,18 @@ type RuntimeTaskPolicy struct {
 	AgentStepTimeoutSeconds int `json:"agentStepTimeoutSeconds"`
 	// AgentMaxSessions 是同时进行中的画布 Agent 轮次上限。审批等待不占用名额。
 	AgentMaxSessions int `json:"agentMaxSessions"`
+}
+
+type RuntimeCanvasPolicy struct {
+	ConnectionLineStyle            string `json:"connectionLineStyle"`
+	ConnectionArrowStyle           string `json:"connectionArrowStyle"`
+	ConnectionEffect               string `json:"connectionEffect"`
+	TaskEventHeartbeatSeconds      int    `json:"taskEventHeartbeatSeconds"`
+	TaskEventMaxConnectionsPerUser int    `json:"taskEventMaxConnectionsPerUser"`
+	TaskEventMaxReplayEvents       int    `json:"taskEventMaxReplayEvents"`
+	TaskEventRetentionHours        int    `json:"taskEventRetentionHours"`
+	TaskFallbackPollMinSeconds     int    `json:"taskFallbackPollMinSeconds"`
+	TaskFallbackPollMaxSeconds     int    `json:"taskFallbackPollMaxSeconds"`
 }
 
 type RuntimeRequestPolicy struct {
@@ -157,6 +170,7 @@ type RuntimePolicySetting struct {
 	Storage  RuntimeStoragePolicy  `json:"storage"`
 	Task     RuntimeTaskPolicy     `json:"task"`
 	Request  RuntimeRequestPolicy  `json:"request"`
+	Canvas   RuntimeCanvasPolicy   `json:"canvas"`
 }
 
 type PublicRuntimePolicySetting struct {
@@ -172,6 +186,7 @@ type PublicRuntimeLimits struct {
 	ActiveTaskLimit         int                      `json:"activeTaskLimit"`
 	ResourceUploadMB        int64                    `json:"resourceUploadMB"`
 	RecycleBinRetentionDays int                      `json:"recycleBinRetentionDays"`
+	Canvas                  RuntimeCanvasPolicy      `json:"canvas"`
 }
 
 type PublicRuntimeConcurrency struct {
@@ -221,23 +236,24 @@ func DefaultRuntimePolicy() RuntimePolicySetting {
 			ErrorBodyKB:                 1,
 		},
 		Task: RuntimeTaskPolicy{
-			WorkerConcurrency:        defaultWorkerConcurrencyLimit(),
-			ImageConcurrency:         6,
-			TextConcurrency:          3,
-			AgentConcurrency:         3,
-			VideoConcurrency:         2,
-			AudioConcurrency:         3,
-			ChannelConcurrency:       defaultChannelConcurrencyLimit(),
-			ActiveTaskLimit:          5,
-			ImageTimeoutMinutes:      20,
-			TextTimeoutMinutes:       8,
-			AudioTimeoutMinutes:      8,
-			VideoTimeoutMinutes:      60,
-			StoryboardTimeoutMinutes: 20,
-			DefaultTimeoutMinutes:    10,
-			AgentStepMaxOutputTokens: agentStepMaxOutputTokensDefault(),
-			AgentStepTimeoutSeconds:  agentStepTimeoutSecondsDefault(),
-			AgentMaxSessions:         DefaultRuntimeAgentSessions,
+			WorkerConcurrency:             defaultWorkerConcurrencyLimit(),
+			ImageConcurrency:              6,
+			TextConcurrency:               3,
+			AgentConcurrency:              3,
+			VideoConcurrency:              2,
+			AudioConcurrency:              3,
+			ChannelConcurrency:            defaultChannelConcurrencyLimit(),
+			ActiveTaskLimit:               5,
+			ImageTimeoutMinutes:           20,
+			TextTimeoutMinutes:            8,
+			AudioTimeoutMinutes:           8,
+			VideoTimeoutMinutes:           60,
+			StoryboardTimeoutMinutes:      20,
+			DefaultTimeoutMinutes:         10,
+			ProviderRequestTimeoutSeconds: 300,
+			AgentStepMaxOutputTokens:      agentStepMaxOutputTokensDefault(),
+			AgentStepTimeoutSeconds:       agentStepTimeoutSecondsDefault(),
+			AgentMaxSessions:              DefaultRuntimeAgentSessions,
 		},
 		Request: RuntimeRequestPolicy{
 			TaskCreatePerMinute:        30,
@@ -260,6 +276,17 @@ func DefaultRuntimePolicy() RuntimePolicySetting {
 			ChannelCircuitFailureCount: min(envInt("CANVAS_CHANNEL_CIRCUIT_FAILURES", 5), maxRuntimeConcurrency),
 			ChannelCircuitOpenSeconds:  min(envInt("CANVAS_CHANNEL_CIRCUIT_SECONDS", 60), 86_400),
 		},
+		Canvas: RuntimeCanvasPolicy{
+			ConnectionLineStyle:            "solid",
+			ConnectionArrowStyle:           "arrow",
+			ConnectionEffect:               "highlight",
+			TaskEventHeartbeatSeconds:      15,
+			TaskEventMaxConnectionsPerUser: 8,
+			TaskEventMaxReplayEvents:       200,
+			TaskEventRetentionHours:        168,
+			TaskFallbackPollMinSeconds:     3,
+			TaskFallbackPollMaxSeconds:     60,
+		},
 	}
 }
 
@@ -280,7 +307,7 @@ func selfUseRuntimePolicy() RuntimePolicySetting {
 		VideoConcurrency: maxRuntimeConcurrency, AudioConcurrency: maxRuntimeConcurrency,
 		ImageTimeoutMinutes: maxRuntimeTimeoutMinutes, TextTimeoutMinutes: maxRuntimeTimeoutMinutes,
 		AudioTimeoutMinutes: maxRuntimeTimeoutMinutes, VideoTimeoutMinutes: maxRuntimeTimeoutMinutes,
-		StoryboardTimeoutMinutes: maxRuntimeTimeoutMinutes, DefaultTimeoutMinutes: maxRuntimeTimeoutMinutes,
+		StoryboardTimeoutMinutes: maxRuntimeTimeoutMinutes, DefaultTimeoutMinutes: maxRuntimeTimeoutMinutes, ProviderRequestTimeoutSeconds: 3_600,
 		AgentStepMaxOutputTokens: MaxRuntimeAgentStepOutputTokens, AgentStepTimeoutSeconds: MaxRuntimeAgentStepTimeoutSeconds,
 		AgentMaxSessions: MaxRuntimeAgentSessions,
 	}
@@ -348,6 +375,7 @@ func (s *Service) PublicRuntimeLimits() (*PublicRuntimeLimits, error) {
 		},
 		ActiveTaskLimit: policy.Task.ActiveTaskLimit, ResourceUploadMB: policy.Resource.ResourceUploadMB,
 		RecycleBinRetentionDays: policy.Resource.RecycleBinRetentionDays,
+		Canvas:                  policy.Canvas,
 	}, nil
 }
 
@@ -438,6 +466,39 @@ func (s *Service) readRuntimePolicy() (*model.SystemSetting, RuntimePolicySettin
 	if strings.TrimSpace(setting.ValueJSON) == "" || json.Unmarshal([]byte(setting.ValueJSON), &value) != nil {
 		return nil, RuntimePolicySetting{}, errors.New("资源与请求策略配置格式无效")
 	}
+	// Newly added fields inherit their defaults when older saved policy JSON
+	// omits them; keep a configured request ceiling valid during rollout.
+	if value.Task.ProviderRequestTimeoutSeconds == 0 {
+		value.Task.ProviderRequestTimeoutSeconds = DefaultRuntimePolicy().Task.ProviderRequestTimeoutSeconds
+	}
+	defaultCanvas := DefaultRuntimePolicy().Canvas
+	if value.Canvas.ConnectionLineStyle == "" {
+		value.Canvas.ConnectionLineStyle = defaultCanvas.ConnectionLineStyle
+	}
+	if value.Canvas.ConnectionArrowStyle == "" {
+		value.Canvas.ConnectionArrowStyle = defaultCanvas.ConnectionArrowStyle
+	}
+	if value.Canvas.ConnectionEffect == "" {
+		value.Canvas.ConnectionEffect = defaultCanvas.ConnectionEffect
+	}
+	if value.Canvas.TaskEventHeartbeatSeconds == 0 {
+		value.Canvas.TaskEventHeartbeatSeconds = defaultCanvas.TaskEventHeartbeatSeconds
+	}
+	if value.Canvas.TaskEventMaxConnectionsPerUser == 0 {
+		value.Canvas.TaskEventMaxConnectionsPerUser = defaultCanvas.TaskEventMaxConnectionsPerUser
+	}
+	if value.Canvas.TaskEventMaxReplayEvents == 0 {
+		value.Canvas.TaskEventMaxReplayEvents = defaultCanvas.TaskEventMaxReplayEvents
+	}
+	if value.Canvas.TaskEventRetentionHours == 0 {
+		value.Canvas.TaskEventRetentionHours = defaultCanvas.TaskEventRetentionHours
+	}
+	if value.Canvas.TaskFallbackPollMinSeconds == 0 {
+		value.Canvas.TaskFallbackPollMinSeconds = defaultCanvas.TaskFallbackPollMinSeconds
+	}
+	if value.Canvas.TaskFallbackPollMaxSeconds == 0 {
+		value.Canvas.TaskFallbackPollMaxSeconds = defaultCanvas.TaskFallbackPollMaxSeconds
+	}
 	if err := validateRuntimePolicy(value); err != nil {
 		return nil, RuntimePolicySetting{}, err
 	}
@@ -523,6 +584,33 @@ func validateRuntimePolicy(value RuntimePolicySetting) error {
 		if item < 1 || item > maxRuntimeTimeoutMinutes {
 			return kernel.BadAuthRequest(fmt.Sprintf("%s必须是 1-%d 分钟的整数", label, maxRuntimeTimeoutMinutes))
 		}
+	}
+	if task.ProviderRequestTimeoutSeconds < 10 || task.ProviderRequestTimeoutSeconds > 3_600 {
+		return kernel.BadAuthRequest("单次上游请求超时必须是 10-3600 秒的整数")
+	}
+	if value.Canvas.ConnectionLineStyle != "solid" && value.Canvas.ConnectionLineStyle != "dashed" {
+		return kernel.BadAuthRequest("画布连接线样式无效")
+	}
+	if value.Canvas.ConnectionArrowStyle != "arrow" && value.Canvas.ConnectionArrowStyle != "dot" && value.Canvas.ConnectionArrowStyle != "none" {
+		return kernel.BadAuthRequest("画布连接线箭头样式无效")
+	}
+	if value.Canvas.ConnectionEffect != "none" && value.Canvas.ConnectionEffect != "highlight" {
+		return kernel.BadAuthRequest("画布连接线效果无效")
+	}
+	if value.Canvas.TaskEventHeartbeatSeconds < 5 || value.Canvas.TaskEventHeartbeatSeconds > 120 {
+		return kernel.BadAuthRequest("画布任务事件心跳必须是 5-120 秒的整数")
+	}
+	if value.Canvas.TaskEventMaxConnectionsPerUser < 1 || value.Canvas.TaskEventMaxConnectionsPerUser > 32 {
+		return kernel.BadAuthRequest("画布任务事件连接上限必须是 1-32 的整数")
+	}
+	if value.Canvas.TaskEventMaxReplayEvents < 1 || value.Canvas.TaskEventMaxReplayEvents > 1000 {
+		return kernel.BadAuthRequest("画布任务事件回放上限必须是 1-1000 的整数")
+	}
+	if value.Canvas.TaskEventRetentionHours < 1 || value.Canvas.TaskEventRetentionHours > 720 {
+		return kernel.BadAuthRequest("画布任务事件保留时间必须是 1-720 小时的整数")
+	}
+	if value.Canvas.TaskFallbackPollMinSeconds < 1 || value.Canvas.TaskFallbackPollMinSeconds > 60 || value.Canvas.TaskFallbackPollMaxSeconds < value.Canvas.TaskFallbackPollMinSeconds || value.Canvas.TaskFallbackPollMaxSeconds > 600 {
+		return kernel.BadAuthRequest("画布任务兜底轮询间隔无效")
 	}
 	if task.AgentStepMaxOutputTokens != 0 && (task.AgentStepMaxOutputTokens < MinRuntimeAgentStepOutputTokens || task.AgentStepMaxOutputTokens > MaxRuntimeAgentStepOutputTokens) {
 		return kernel.BadAuthRequest(fmt.Sprintf("Agent 单步输出上限必须是 0 或 %d-%d 的整数 (0 表示不限制)", MinRuntimeAgentStepOutputTokens, MaxRuntimeAgentStepOutputTokens))

@@ -38,11 +38,26 @@ export function generationBatchReservations(nodes: CanvasNodeData[], projectId: 
 }
 
 export function generationBatchCandidates(nodes: CanvasNodeData[], projectId: string, limits: RuntimeLimits & { concurrency: RuntimeConcurrency }, tasks: Array<{ type: string; operation?: string; status: string }>, pending: { image: number; video: number; text?: number }) {
-    const capacity = (kind: "image" | "video" | "text") => availableTaskSlots(limits.activeTaskLimit > 0 ? Math.min(limits.activeTaskLimit, limits.concurrency[kind]) : limits.concurrency[kind], kind, tasks, pending[kind] || 0);
-    const slots = { image: capacity("image"), video: capacity("video"), text: capacity("text") };
+    return selectGenerationBatchCandidates(nodes, projectId, (kind) => availableTaskSlots(limits.activeTaskLimit > 0 ? Math.min(limits.activeTaskLimit, limits.concurrency[kind]) : limits.concurrency[kind], kind, tasks, pending[kind] || 0));
+}
+
+export function generationBatchQueueCandidates(nodes: CanvasNodeData[], projectId: string) {
+    return selectGenerationBatchCandidates(nodes, projectId, () => Number.POSITIVE_INFINITY);
+}
+
+function selectGenerationBatchCandidates(nodes: CanvasNodeData[], projectId: string, slotsFor: (kind: "image" | "video" | "text") => number) {
+    const slots = { image: slotsFor("image"), video: slotsFor("video"), text: slotsFor("text") };
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const candidates: Array<{ batch: CanvasGenerationBatch; item: CanvasGenerationBatchItem; node: CanvasNodeData }> = [];
     const selected = new Set<string>();
+    // Reserve targets as soon as a batch item enters submission. The actual
+    // task is bound to a node, so reservations must not be scoped to item IDs.
+    for (const source of nodes) for (const batch of source.metadata?.generationBatches || []) {
+        if (batch.projectId !== projectId || batch.paused) continue;
+        for (const item of batch.items) {
+            if (["submitting", "queued", "running"].includes(item.status)) selected.add(generationBatchTargetKey(item));
+        }
+    }
     for (const source of nodes) {
         const latest = new Map((source.metadata?.generationBatches || []).flatMap(batch => batch.items.map(item => [generationBatchTargetKey(item), batch.id] as const)));
         for (const batch of source.metadata?.generationBatches || []) {
@@ -77,14 +92,14 @@ export function generationBatchRetryItems(nodes: CanvasNodeData[], sourceNodeId:
     const batch = batches.find(entry => entry.id === batchId);
     const nodeById = new Map(nodes.map(node => [node.id, node]));
     return (batch?.items || []).filter(item => {
-        if (item.status !== "failed" || itemId && item.id !== itemId || batches.findLast(entry => entry.items.some(target => generationBatchTargetKey(target) === generationBatchTargetKey(item)))?.id !== batchId) return false;
+        if ((item.status !== "failed" && item.status !== "cancelled") || itemId && item.id !== itemId || batches.findLast(entry => entry.items.some(target => generationBatchTargetKey(target) === generationBatchTargetKey(item)))?.id !== batchId) return false;
         const node = nodeById.get(item.nodeId);
         const metadata = node?.metadata;
         const inline = node ? inlineStoryboardVideoState(node, item) : undefined;
         const isInlineStoryboardVideo = item.targetKind === "storyboard_video";
         const targetTaskId = inline?.taskId || (isInlineStoryboardVideo ? undefined : metadata?.taskId);
         if (!node || inline?.content || inline?.storageKey || !isInlineStoryboardVideo && (metadata?.content || metadata?.storageKey || metadata?.taskReceiptRecorded && !metadata.taskId) || item.taskId && item.taskId !== targetTaskId) return false;
-        if (["queued", "running", "succeeded", "cancelled"].includes(inline?.taskStatus || (!isInlineStoryboardVideo ? metadata?.taskStatus : "") || "") || !isInlineStoryboardVideo && metadata?.status === "loading" && metadata.taskStatus !== "failed") return false;
+        if (["queued", "running", "succeeded"].includes(inline?.taskStatus || (!isInlineStoryboardVideo ? metadata?.taskStatus : "") || "") || !isInlineStoryboardVideo && metadata?.status === "loading" && metadata.taskStatus !== "failed" && metadata.taskStatus !== "cancelled") return false;
         return batch?.mode !== "storyboard_image" || storyboardFrameWaitingReason(node, nodes) === undefined;
     });
 }

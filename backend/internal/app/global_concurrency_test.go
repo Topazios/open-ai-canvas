@@ -26,6 +26,8 @@ func TestProductionParallelFollowsPolicyChangesAndRestoresLargerCheckpoint(t *te
 	s, db, runID := parallelPlanFixture(t)
 	submitOrderedPlan(t, s, runID, "visual", "", "美术规范")
 	submitOrderedPlan(t, s, runID, "direction", "", "导演规范")
+	submitOrderedPlan(t, s, runID, "generation", "", "生成规范")
+	startPlanAssetsForTest(t, s, runID)
 	updateTestGlobalConcurrency(t, s, func(p *RuntimePolicySetting) {
 		p.Task.AgentConcurrency = 1
 		p.Task.TextConcurrency = 9

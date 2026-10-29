@@ -37,6 +37,9 @@ func finishProtocolResult(ctx context.Context, config providerConfig, mode strin
 		return nil, errors.New("声明式协议已完成但没有返回结果")
 	}
 	if mode == "text" {
+		if strings.TrimSpace(result.Text) == "" {
+			return nil, missingProviderTextError(result.Reasoning)
+		}
 		output := map[string]interface{}{"mode": "text", "text": result.Text}
 		if strings.TrimSpace(result.Reasoning) != "" {
 			output["reasoning"] = result.Reasoning

@@ -32,7 +32,7 @@ export function workflowAssetSheetContext(ancestors: CanvasNodeData[], nodes: Ca
     const sameStyle = (other: Record<string, string>) => Object.keys(other).length === guidelines.length && guidelines.every((node) => other[node.id] === styleSignatures[node.id]);
     const existing = nodes.filter((node) => {
         const data = nodeWorkflow(node);
-        return data?.pipelineId === pipelineId && data.mediaKind === "image" && data.assetSheet?.version === 1 && sameStyle(data.assetSheet.styleSignatures);
+        return data?.pipelineId === pipelineId && data.mediaKind === "image" && Boolean(data.assetSheet) && sameStyle(data.assetSheet!.styleSignatures);
     });
     const size = existing[0]?.metadata?.shortDrama?.assetSheet?.size;
     if (size && existing.some((node) => Math.abs(assetSheetRatio(node.metadata!.shortDrama!.assetSheet!.size) / assetSheetRatio(size) - 1) >= 0.025)) {

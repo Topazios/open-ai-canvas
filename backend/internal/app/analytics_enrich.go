@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 
 	"gorm.io/gorm"
@@ -14,7 +15,10 @@ import (
 )
 
 func (s *Service) estimateCallCost(log *model.ApiCallLog) {
-	if log.Status == model.ApiCallStatusFailed && !log.UsageAvailable {
+	if log.Status == model.ApiCallStatusRunning {
+		return
+	}
+	if (log.Status == model.ApiCallStatusFailed || log.Status == model.ApiCallStatusWarning) && !log.UsageAvailable {
 		return
 	}
 	pricing, err := s.repo.ModelPricing(log.ChannelID, log.Model, log.Capability)
@@ -46,10 +50,34 @@ func (s *Service) EnrichAPICallLog(log *model.ApiCallLog, responseBody []byte) {
 		log.ProviderRequestID = providerRequestIDFromPath(log.Path)
 	}
 	payloads := providerResponsePayloads(responseBody)
+	explicitProviderFailure := false
+	explicitProviderCode, explicitProviderMessage := "", ""
 	for _, payload := range payloads {
 		s.enrichAPICallLogPayload(log, payload)
+		if apiCallPayloadExplicitFailure(payload) {
+			explicitProviderFailure = true
+			code, message := providerFailureDetails(payload)
+			explicitProviderCode = firstNonEmpty(explicitProviderCode, code)
+			explicitProviderMessage = firstNonEmpty(explicitProviderMessage, message)
+		}
+	}
+	if explicitProviderFailure || model.APICallResponseHasExplicitFailure(string(responseBody)) {
+		log.Status = model.ApiCallStatusFailed
+		log.ErrorSource = "upstream"
+		log.ErrorCode = firstNonEmpty(explicitProviderCode, log.ErrorCode)
+		log.Error = firstNonEmpty(explicitProviderMessage, log.Error)
 	}
 	s.enrichAPICallLogFailureSummary(log, responseBody)
+	log.Status = log.DisplayStatus()
+	if log.Status == model.ApiCallStatusWarning && log.ErrorSource == "" {
+		log.ErrorSource = "content"
+	}
+}
+
+func apiCallPayloadExplicitFailure(payload map[string]any) bool {
+	_, _, businessFailure := providerPayloadBusinessFailure(payload)
+	providerError, _ := payload["error"].(map[string]any)
+	return businessFailure || len(providerError) > 0 || strings.TrimSpace(stringField(payload, "error")) != "" || stringField(payload, "type") == "error" || stringField(payload, "type") == "response.failed"
 }
 
 func (s *Service) enrichAPICallLogFailureSummary(log *model.ApiCallLog, responseBody []byte) {
@@ -93,9 +121,9 @@ func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[str
 			}
 		}
 	}
-	if log.Status == model.ApiCallStatusFailed {
+	if log.Status == model.ApiCallStatusFailed || log.Status == model.ApiCallStatusWarning {
 		errorCode, errorMessage := providerFailureDetails(payload)
-		log.ErrorCode = errorCode
+		log.ErrorCode = firstNonEmpty(errorCode, log.ErrorCode)
 		if errorMessage != "" {
 			log.Error = errorMessage
 		}
@@ -113,6 +141,7 @@ func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[str
 		}
 		if outputAvailable {
 			log.OutputTokens = outputTokens
+			log.ReasoningTokens = reportedReasoningTokens(usage, outputTokens)
 		}
 		if inputAvailable || outputAvailable {
 			log.UsageAvailable = true
@@ -147,8 +176,20 @@ func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[str
 		log.ProviderRequestID = firstNonEmpty(nestedTaskID, log.ProviderRequestID)
 	}
 	log.ProviderStatus = strings.ToLower(firstNonEmpty(stringField(payload, "status"), log.ProviderStatus))
-	if log.ProviderStatus == "failed" || log.ProviderStatus == "cancelled" || log.ProviderStatus == "expired" || log.ProviderStatus == "incomplete" {
+	// A provider error object or explicit failed event takes precedence over an
+	// incomplete response while retaining its original provider error code.
+	if apiCallPayloadExplicitFailure(payload) {
 		log.Status = model.ApiCallStatusFailed
+		log.ErrorSource = "upstream"
+		code, message := providerFailureDetails(payload)
+		log.ErrorCode = firstNonEmpty(code, log.ErrorCode)
+		log.Error = firstNonEmpty(message, log.Error)
+	}
+	if log.ProviderStatus == "failed" || log.ProviderStatus == "cancelled" || log.ProviderStatus == "canceled" || log.ProviderStatus == "expired" || log.ProviderStatus == "incomplete" {
+		log.Status = model.ApiCallStatusFailed
+		if log.ProviderStatus != "incomplete" {
+			log.ErrorSource = "upstream"
+		}
 		errorCode, errorMessage := providerFailureDetails(payload)
 		log.ErrorCode = firstNonEmpty(errorCode, log.ErrorCode)
 		log.Error = firstNonEmpty(errorMessage, log.Error)
@@ -160,6 +201,41 @@ func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[str
 			log.MediaCount = len(images)
 		}
 	}
+}
+
+// Reasoning is a reported subset of output tokens, never an additional charge.
+// A missing or invalid breakdown stays unknown instead of being inferred from text.
+func reportedReasoningTokens(usage map[string]any, outputTokens int64) *int64 {
+	for _, key := range []string{"output_tokens_details", "completion_tokens_details"} {
+		details, _ := usage[key].(map[string]any)
+		value, exists := details["reasoning_tokens"]
+		if !exists {
+			continue
+		}
+		var tokens int64
+		switch v := value.(type) {
+		case json.Number:
+			var err error
+			tokens, err = v.Int64()
+			if err != nil {
+				return nil
+			}
+		case float64:
+			if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v >= math.MaxInt64 || math.Trunc(v) != v {
+				return nil
+			}
+			tokens = int64(v)
+		case int64:
+			tokens = v
+		default:
+			return nil
+		}
+		if tokens < 0 || tokens > outputTokens {
+			return nil
+		}
+		return &tokens
+	}
+	return nil
 }
 
 func videoCompletionTokens(payload map[string]any, arkProtocol bool) (int64, bool) {
@@ -204,13 +280,19 @@ func providerResponsePayloads(responseBody []byte) []map[string]any {
 	scanner := bufio.NewScanner(bytes.NewReader(responseBody))
 	scanner.Buffer(make([]byte, 64<<10), max(len(responseBody)+1, 64<<10))
 	dataLines := make([]string, 0, 1)
+	eventName := ""
 	flush := func() {
 		raw := strings.TrimSpace(strings.Join(dataLines, "\n"))
 		dataLines = dataLines[:0]
+		name := eventName
+		eventName = ""
 		if raw == "" || raw == "[DONE]" {
 			return
 		}
 		if event, ok := decodeProviderResponsePayload([]byte(raw)); ok {
+			if _, exists := event["type"]; !exists && name != "" {
+				event["type"] = name
+			}
 			result = append(result, event)
 		}
 	}
@@ -222,6 +304,9 @@ func providerResponsePayloads(responseBody []byte) []map[string]any {
 		}
 		if strings.HasPrefix(line, "data:") {
 			dataLines = append(dataLines, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		}
 	}
 	flush()

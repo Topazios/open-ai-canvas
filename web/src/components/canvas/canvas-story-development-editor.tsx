@@ -7,7 +7,8 @@ import { changeStoryTopicSettings, type StoryTopicSettingsPatch } from "@/lib/st
 import { AppModal } from "@/components/ui/product/app-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { buildStoryDevelopmentPrompt, defaultStoryBrief, nextStoryDevelopmentStage, storyDocumentSignature, storyEpisodeCount, storySourceState, storyStageLabel, storyTopicCount, storyTopicText } from "@/lib/canvas/canvas-story-development";
+import { buildStoryDevelopmentPrompt, defaultStoryBrief, nextStoryDevelopmentStage, storyDocumentSignature, storyEpisodeCount, storySourceState, storyStageLabel, storyTopicCount, storyTopicText, storyTopicLocalizationText } from "@/lib/canvas/canvas-story-development";
+import { requiresLocalizedTopic } from "@/lib/drama-storycraft";
 import { prepareBackendGenerationTask } from "@/services/api/generation-task";
 import { ApiError } from "@/services/api/request";
 import { createGenerationTask } from "@/services/api/task-center";
@@ -104,7 +105,7 @@ export function CanvasStoryDevelopmentEditor({ node, nodes, canvasId, onSave, on
         catch { message.error("本地草稿未保存，暂未关闭，请保留文本后重试"); }
     };
     const selectTopic = (candidate: StoryTopicCandidate) => {
-        change({ content: storyTopicText(candidate), data: { ...data, selectedTopicId: candidate.id }, dirty: true, preview: null });
+        change({ content: storyTopicText(candidate), data: { ...data, selectedTopicId: candidate.id, topicSourceKind: undefined }, dirty: true, preview: null });
     };
     const importStoryText = async (file: File) => {
         if (file.size > 2 * 1024 * 1024) { setError("文本文件不能超过 2 MB"); return; }
@@ -115,7 +116,7 @@ export function CanvasStoryDevelopmentEditor({ node, nodes, canvasId, onSave, on
             change({
                 ...(heading ? { title: heading } : {}),
                 content: imported,
-                data: { ...data, selectedTopicId: undefined, candidates: data.candidates },
+                data: { ...data, selectedTopicId: undefined, topicSourceKind: isTopic ? "imported" : undefined, candidates: data.candidates },
                 dirty: true,
                 preview: null,
             });
@@ -144,7 +145,7 @@ export function CanvasStoryDevelopmentEditor({ node, nodes, canvasId, onSave, on
                 streamText: true, clientOperationId: operationId,
                 metadata: { source: "canvas-story-development", stage: data.stage, storyNodeId: node.id, pipelineId: data.pipelineId },
             });
-            const pending: StoryJob = { operationId, status: "submitting", draw, topicCount: storyTopicCount(brief.topicCount), draft: draftKey, signatures: { ...source.signatures } };
+            const pending: StoryJob = { operationId, status: "submitting", draw, topicCount: storyTopicCount(brief.topicCount), requireLocalization: draw && isTopic && requiresLocalizedTopic(generationBrief.globalSettings?.region), draft: draftKey, signatures: { ...source.signatures } };
             // Persist the operation BEFORE POST. Lost acknowledgements are recovered by metadata, never reposted automatically.
             await update({ job: pending, data: generationData });
             submitted = true;
@@ -197,7 +198,7 @@ export function CanvasStoryDevelopmentEditor({ node, nodes, canvasId, onSave, on
                         <div className="story-development-results-heading"><strong>选题结果</strong><span>{data.candidates?.length ? `${data.candidates.length} 个候选` : "等待生成"}</span></div>
                         {data.candidates?.length ? <div className="story-development-result-list">
                             {data.candidates.map((candidate) => <article key={candidate.id} data-selected={data.selectedTopicId === candidate.id}>
-                                <div className="story-development-result-copy"><strong>{candidate.title}</strong><p>{candidate.logline}</p><p><b>核心冲突</b>{candidate.conflict}</p><p><b>观看吸引力</b>{candidate.appeal}</p></div>
+                                <div className="story-development-result-copy"><strong>{candidate.title}</strong><p>{candidate.logline}</p><p><b>核心冲突</b>{candidate.conflict}</p><p><b>观看吸引力</b>{candidate.appeal}</p>{candidate.localization ? <details><summary>本土创作依据 · {candidate.localization.nativeTitle}</summary><p style={{ whiteSpace: "pre-line" }}>{storyTopicLocalizationText(candidate.localization)}</p></details> : null}</div>
                                 <Button size="small" disabled={busy} aria-pressed={data.selectedTopicId === candidate.id} onClick={() => selectTopic(candidate)}>{data.selectedTopicId === candidate.id ? "已采用" : "采用此选题"}</Button>
                             </article>)}
                         </div> : <div className="story-development-results-empty">暂无候选选题</div>}
@@ -207,7 +208,7 @@ export function CanvasStoryDevelopmentEditor({ node, nodes, canvasId, onSave, on
                         {source.upstreamStale ? <span role="status">前序节点待复核，请先更新上游</span> : null}
                         {source.stale && !source.missing ? <Button size="small" disabled={busy || source.upstreamStale} onClick={() => changeData({ sourceSignatures: source.signatures })}>已核对上游</Button> : null}
                     </div>}
-                    {source.references.map((reference) => <details key={reference.id} className="story-development-sources">
+                    {data.stage !== "plan" && source.references.map((reference) => <details key={reference.id} className="story-development-sources">
                         <summary>历史粗纲参考 · {reference.title}</summary>
                         <Input.TextArea aria-label="历史粗纲参考" readOnly value={reference.metadata?.content || ""} autoSize={{ minRows: 3, maxRows: 6 }} />
                         {data.stage === "plan" ? <Button size="small" disabled={!ready || busy || Boolean(preview)} onClick={() => change({ content: [current.current.content, `## 待整合的历史粗纲\n${reference.metadata?.content}`].filter(Boolean).join("\n\n"), dirty: true })}>补入制作方案草稿</Button> : null}
@@ -278,7 +279,7 @@ export function CanvasStoryDevelopmentEditor({ node, nodes, canvasId, onSave, on
                     </div>
                     <div className="story-development-ai-actions">
                         {isTopic ? <Button type="primary" icon={<Dice5 size={15} />} loading={submitting} disabled={!ready || Boolean(storageError) || !canGenerate || busy || Boolean(preview)} onClick={() => { setTopicView("candidates"); void generate(true); }}>生成选题</Button> : null}
-                        {!isTopic || content.trim() ? <Button icon={<Sparkles size={15} />} disabled={!ready || Boolean(storageError) || !canGenerate || busy || Boolean(preview) || source.upstreamStale || (data.stage !== "topic" && source.missing)} onClick={() => { if (isTopic) setTopicView("draft"); void generate(); }}>{content.trim() ? data.stage === "plan" ? "完善制作方案" : "AI 调整" : `生成${stage}`}</Button> : null}
+                        {!isTopic || content.trim() ? <Button icon={<Sparkles size={15} />} disabled={!ready || Boolean(storageError) || !canGenerate || busy || Boolean(preview) || source.upstreamStale || (data.stage !== "topic" && source.missing)} onClick={() => { if (isTopic) setTopicView("draft"); void generate(); }}>{content.trim() ? data.stage === "plan" ? "按当前选题重新生成" : "AI 调整" : `生成${stage}`}</Button> : null}
                         {busy || batchActive ? <Button icon={<Clock3 size={15} />} onClick={() => void close()}>后台运行</Button> : null}
                         {busy && job?.taskId ? <Button icon={<Square size={13} />} loading={stopping} onClick={() => void cancel()}>停止</Button> : null}
                     </div>

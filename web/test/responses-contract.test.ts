@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { defaultConfig, createModelChannel, buildApiUrl } from "../src/stores/use-config-store";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 import { resolveTextRequestConfig } from "../src/services/api/text-protocol-routing";
-import { requestStreamingResponse } from "../src/services/api/image-streaming";
+import { requestStreamingResponse, requestStreamingClaude, requestStreamingChatCompletion } from "../src/services/api/image-streaming";
 import { requestImageQuestion, requestToolResponse } from "../src/services/api/image";
 import { toResponseTool } from "../src/services/api/image-protocols";
 import type { ModelProtocolConfig } from "../src/lib/model-protocols";
@@ -18,6 +18,36 @@ function configuration(protocols?: ModelProtocolConfig) {
 const completed = {status:"completed", output:[{type:"message", content:[{type:"output_text",text:"complete"}]}]};
 
 describe("Responses text call sites", () => {
+    for (const stream of [false, true]) {
+        test(`Claude 分离思考回调与正文，stream=${stream}`, async () => {
+            const payload = {content:[{type:"thinking",thinking:"reasoning"},{type:"text",text:"answer"},{type:"tool_use",id:"call-1",name:"read",input:{}}]};
+            globalThis.fetch = (async () => stream
+                ? new Response([
+                    {type:"content_block_delta",index:0,delta:{type:"thinking_delta",thinking:"reasoning"}},
+                    {type:"content_block_delta",index:1,delta:{type:"text_delta",text:"answer"}},
+                    {type:"content_block_start",index:2,content_block:{type:"tool_use",id:"call-1",name:"read"}},
+                    {type:"content_block_delta",index:2,delta:{type:"input_json_delta",partial_json:"{}"}},
+                ].map((event)=>`data: ${JSON.stringify(event)}\n\n`).join(""),{headers:{"content-type":"text/event-stream"}})
+                : Response.json(payload)) as typeof fetch;
+            const text:string[]=[];
+            const reasoning:string[]=[];
+            const result=await requestStreamingClaude({...defaultConfig,baseUrl:"https://example.com"},{model:"fixture"},(s)=>text.push(s),{onReasoning:(s)=>reasoning.push(s)});
+            expect(result).toMatchObject({content:"answer",reasoning:"reasoning",toolCalls:[{id:"call-1",function:{name:"read",arguments:"{}"}}]});
+            expect(reasoning).toEqual(["reasoning"]);
+            expect(text.join("")).not.toContain("reasoning");
+        });
+        test(`Chat 只有思考不能作为完成结果，工具调用仍可完成，stream=${stream}`, async () => {
+            for (const tools of [false,true]) {
+                const message={reasoning_content:'{"toolCalls":[{"name":"fake"}]}',tool_calls:tools?[{index:0,id:"call-1",function:{name:"read",arguments:"{}"}}]:[]};
+                globalThis.fetch=(async()=>stream
+                    ? new Response(`data: ${JSON.stringify({choices:[{delta:message}]})}\n\n`,{headers:{"content-type":"text/event-stream"}})
+                    : Response.json({choices:[{message}]})) as typeof fetch;
+                const request=requestStreamingChatCompletion({...defaultConfig,baseUrl:"https://example.com"},{model:"fixture"});
+                if (tools) expect((await request).toolCalls).toMatchObject([{id:"call-1",function:{name:"read"}}]);
+                else await expect(request).rejects.toThrow("仅返回思考");
+            }
+        });
+    }
     test("relay URLs preserve proxy paths, explicit versions and query parameters", () => {
         expect(buildApiUrl("https://example.com", "/responses")).toBe("https://example.com/v1/responses");
         expect(buildApiUrl("https://example.com/proxy/v4?tenant=one", "/responses?mode=test")).toBe("https://example.com/proxy/v4/responses?tenant=one&mode=test");

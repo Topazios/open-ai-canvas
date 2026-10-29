@@ -2,12 +2,13 @@
 
 import { type GenerationTask } from "@/services/api/task-center";
 import { generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel, isGenerationTaskSubmissionUncertain } from "@/lib/generation-task-display";
-import { AlertCircle, Clock3, Download, Info, Pencil, RefreshCw, Square, WandSparkles } from "lucide-react";
+import { AlertCircle, Clock3, Download, Info, Pencil, RefreshCw, Square } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { idleTaskTickerSubscribe, subscribeTaskTicker, taskTickerSnapshot } from "@/lib/canvas/task-ticker";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@/lib/generation-error";
 import type { CanvasNodeContentProps } from "./canvas-node-content";
 import { CanvasNodeActionButton } from "./canvas-node-action-bar";
+import { canRedrawFailedImage } from "@/lib/canvas/canvas-image-redraw";
 
 export function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }: Pick<CanvasNodeContentProps, "node" | "theme" | "onOpenTaskDetails" | "onCancelTask">) {
     const production = node.metadata?.shortDrama?.productionAgent;
@@ -54,7 +55,7 @@ export function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }:
                 ) : null}
             </div>
             <div className="flex min-h-10 w-full shrink-0 flex-wrap items-center justify-start gap-1 border-t px-3 py-1.5" style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel }} data-canvas-no-zoom onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
-                {onOpenTaskDetails && taskId ? <CanvasNodeActionButton theme={theme} label="详情" icon={<Info className="size-3.5" />} onClick={() => onOpenTaskDetails(node)} /> : null}
+                {onOpenTaskDetails && displayTaskId ? <CanvasNodeActionButton theme={theme} label="详情" icon={<Info className="size-3.5" />} onClick={() => onOpenTaskDetails(node)} /> : null}
                 {canRequestCancel ? <CanvasNodeActionButton theme={theme} label="停止任务" icon={<Square className="size-3.5" />} onClick={() => onCancelTask?.(node)} /> : null}
             </div>
         </div>
@@ -77,7 +78,8 @@ export function shortTaskId(id: string) {
     return `${id.slice(0, 14)}...${id.slice(-4)}`;
 }
 
-export function ErrorContent({ node, theme, onRetry, onReloadResource, onOpenInfo, onOpenTaskDetails }: Pick<CanvasNodeContentProps, "node" | "theme" | "onRetry" | "onReloadResource" | "onOpenInfo" | "onOpenTaskDetails">) {
+export function ErrorContent({ node, theme, onRetry, onReloadResource, onOpenInfo, onOpenTaskDetails, onMaskEdit }: Pick<CanvasNodeContentProps, "node" | "theme" | "onRetry" | "onReloadResource" | "onOpenInfo" | "onOpenTaskDetails" | "onMaskEdit">) {
+    const canRedraw = Boolean(onMaskEdit) && canRedrawFailedImage(node);
     const moderationFailure = node.metadata?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(node.metadata?.errorDetails);
     const errorDisplayTask = {
         provider: node.metadata?.taskProvider,
@@ -109,14 +111,14 @@ export function ErrorContent({ node, theme, onRetry, onReloadResource, onOpenInf
                 <div className="flex min-h-10 w-full shrink-0 flex-wrap items-center justify-start gap-1 border-t px-3 py-1.5" style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel }} data-canvas-no-zoom onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
                     {openDetails ? <CanvasNodeActionButton theme={theme} label="详情" icon={<Info className="size-3.5" />} onClick={openDetails} /> : null}
                     {moderationFailure ? (
-                        node.metadata?.shortDrama?.mediaKind === "image" ? <>
-                            {node.metadata.shortDrama.assetSheet ? <CanvasNodeActionButton theme={theme} label="自动调整并重试" icon={<WandSparkles className="size-3.5" />} onClick={() => onRetry?.(node, { adjustPrompt: true })} primary /> : null}
-                            <CanvasNodeActionButton theme={theme} label="修改生成要求" icon={<Pencil className="size-3.5" />} onClick={() => onRetry?.(node)} />
-                        </> : <span className="px-2 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>修改节点提示词后，可重新点击生成。</span>
+                        canRedraw ? <CanvasNodeActionButton theme={theme} label="重绘" icon={<Pencil className="size-3.5" />} onClick={() => onMaskEdit?.(node)} primary /> : <span className="px-2 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>修改节点提示词后，可重新点击生成。</span>
                     ) : node.metadata?.resourceReloadAvailable ? <>
                         <CanvasNodeActionButton theme={theme} label="重新加载资源" icon={<Download className="size-3.5" />} onClick={() => onReloadResource?.(node)} primary />
                         <CanvasNodeActionButton theme={theme} label="重新生成" icon={<RefreshCw className="size-3.5" />} onClick={() => onRetry?.(node)} />
-                    </> : <CanvasNodeActionButton theme={theme} label={node.metadata?.shortDrama?.submission === "planned" ? "查看详情并继续" : node.metadata?.shortDrama?.productionAgent ? "查看详情并重试" : node.metadata?.taskCanRecoverMedia ? "重试保存（不重新生成）" : node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"} icon={<RefreshCw className="size-3.5" />} onClick={() => onRetry?.(node)} />}
+                        {canRedraw ? <CanvasNodeActionButton theme={theme} label="重绘" icon={<Pencil className="size-3.5" />} onClick={() => onMaskEdit?.(node)} /> : null}
+                    </> : <><CanvasNodeActionButton theme={theme} label={node.metadata?.shortDrama?.submission === "planned" ? "查看详情并继续" : node.metadata?.shortDrama?.productionAgent ? "查看详情并重试" : node.metadata?.taskCanRecoverMedia ? "重试保存（不重新生成）" : node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"} icon={<RefreshCw className="size-3.5" />} onClick={() => onRetry?.(node)} />
+                        {canRedraw ? <CanvasNodeActionButton theme={theme} label="重绘" icon={<Pencil className="size-3.5" />} onClick={() => onMaskEdit?.(node)} /> : null}
+                    </>}
                 </div>
             ) : null}
         </div>

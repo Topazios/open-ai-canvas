@@ -11,6 +11,11 @@ func (r *Repository) ProductionAgentJob(userID, runID string) (*model.Production
 	err := r.db.First(&row, "user_id = ? AND run_id = ?", userID, runID).Error
 	return &row, err
 }
+func (r *Repository) ProductionAgentJobsForCanvas(userID, canvasID string) ([]model.ProductionAgentJob, error) {
+	var rows []model.ProductionAgentJob
+	err := r.db.Where("user_id = ? AND canvas_id = ?", userID, canvasID).Order("created_at, run_id").Find(&rows).Error
+	return rows, err
+}
 func (r *Repository) CreateProductionAgentJob(row *model.ProductionAgentJob) error {
 	return r.db.Create(row).Error
 }
@@ -103,4 +108,8 @@ func (r *Repository) ProductionAgentArtifacts(userID, runID string) ([]model.Pro
 }
 func (r *Repository) CreateProductionAgentArtifact(row *model.ProductionAgentArtifact) error {
 	return r.db.Create(row).Error
+}
+
+func (r *Repository) DeleteProductionAgentArtifact(userID, runID, key, nodeID string) error {
+	return r.db.Where("user_id = ? AND run_id = ? AND key = ? AND node_id = ?", userID, runID, key, nodeID).Delete(&model.ProductionAgentArtifact{}).Error
 }

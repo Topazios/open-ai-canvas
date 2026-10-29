@@ -128,6 +128,7 @@ type ApiCallLog struct {
 	ProviderStatus         string        `json:"providerStatus,omitempty" gorm:"size:32"`
 	InputTokens            int64         `json:"inputTokens"`
 	OutputTokens           int64         `json:"outputTokens"`
+	ReasoningTokens        *int64        `json:"reasoningTokens,omitempty"`
 	CachedTokens           int64         `json:"cachedTokens"`
 	UsageAvailable         bool          `json:"usageAvailable"`
 	MediaCount             int           `json:"mediaCount"`
@@ -139,6 +140,7 @@ type ApiCallLog struct {
 	CostAvailable          bool          `json:"costAvailable"`
 	Currency               string        `json:"currency" gorm:"size:12"`
 	ErrorCode              string        `json:"errorCode,omitempty" gorm:"index;size:80"`
+	ErrorSource            string        `json:"errorSource,omitempty" gorm:"size:24"`
 	Error                  string        `json:"error"`
 	ConcurrencyLimit       int           `json:"concurrencyLimit"`
 	UpstreamURL            string        `json:"upstreamUrl"`

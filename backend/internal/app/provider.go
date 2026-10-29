@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	"infinite-canvas/backend/internal/kernel"
 	"infinite-canvas/backend/internal/model"
@@ -106,10 +105,6 @@ type providerConfig struct {
 	RunningHubWalletKey   string                 `json:"runningHubWalletApiKey"`
 	RunningHubUploadKey   string                 `json:"runningHubUploadApiKey"`
 }
-
-const providerHTTPTimeout = 5 * time.Minute
-
-const videoPollTimeout = time.Hour
 
 const maxProviderResponseBytes int64 = 64 << 20
 
@@ -251,6 +246,9 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 	if resumedProviderRequestID(ctx) == "" {
 		mediaPolicy := providerMediaHydrationPolicyFor(ctx, input)
 		if err := s.hydrateGenerationMedia(userID, &input, mediaPolicy); err != nil {
+			return nil, err
+		}
+		if err := prepareStoryboardReferenceImages(&input); err != nil {
 			return nil, err
 		}
 		if err := s.prepareArkPrivateAssetReferences(ctx, userID, &input); err != nil {

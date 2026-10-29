@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -29,7 +28,8 @@ type taskBillingRepository interface {
 
 var (
 	// errTaskBillingReview 表示订单状态已经不能由重试流程安全推断，必须先完成费用核对。
-	errTaskBillingReview = errors.New("上一次调用的费用仍待核对，已停止自动重试以免重复扣费；请在任务中心核对上游结果和账单，已完成结果及草稿保留")
+	errTaskBillingReview = &AppError{Status: 409, Code: 409, Reason: "task_billing_review_required",
+		Message: "上一次调用的费用仍待核对，请先在任务中心核对上游结果和账单，再重试；已完成结果及草稿保留"}
 )
 
 func newTaskBillingCoordinator(repo taskBillingRepository) *taskBillingCoordinator {
@@ -76,6 +76,17 @@ func (c *taskBillingCoordinator) MarkBillingUncertain(orderID string, errorText 
 // 计费订单读取失败不能被当作“没有待核对订单”继续放行，否则重试可能重复扣费。
 // 只有明确读到订单且订单不是 uncertain 时，才允许进入后续的重新计费流程。
 func (c *taskBillingCoordinator) CheckRetryEligibility(orderID string) error {
+	return c.checkRetryEligibility(orderID, false)
+}
+
+// Explicit retries may proceed without changing the old order when both its
+// fixed sale price and configured cost are zero. A zero reserve alone is not
+// proof: usage-based, unknown-cost and priced calls still require review.
+func (c *taskBillingCoordinator) CheckManualRetryEligibility(orderID string) error {
+	return c.checkRetryEligibility(orderID, true)
+}
+
+func (c *taskBillingCoordinator) checkRetryEligibility(orderID string, manual bool) error {
 	if strings.TrimSpace(orderID) == "" {
 		return nil
 	}
@@ -87,9 +98,22 @@ func (c *taskBillingCoordinator) CheckRetryEligibility(orderID string) error {
 		return fmt.Errorf("任务计费订单不存在：%s", orderID)
 	}
 	if order.Status == model.BillingStatusUncertain {
+		if manual && billingOrderHasNoFinancialExposure(order) {
+			return nil
+		}
 		return errTaskBillingReview
 	}
 	return nil
+}
+
+func billingOrderHasNoFinancialExposure(order *model.BillingOrder) bool {
+	return order.BillingMode == "fixed_request" && order.ChargeLimitSet && order.ChargeLimitMicrocredits == 0 &&
+		order.CostBillingMode == "fixed_request" &&
+		order.CostPricing.Configured && order.UnitPriceMicrocredits == 0 &&
+		order.AmountMicrocredits == 0 && order.ReservedAmountMicrocredits == 0 && order.ActualAmountMicrocredits == 0 && order.RefundedAmountMicrocredits == 0 &&
+		order.InputTokenPriceMicrocredits == 0 && order.OutputTokenPriceMicrocredits == 0 && order.CachedTokenPriceMicrocredits == 0 &&
+		order.CostPricing.UnitPriceMicrocredits == 0 && order.CostPricing.InputTokenPriceMicrocredits == 0 &&
+		order.CostPricing.OutputTokenPriceMicrocredits == 0 && order.CostPricing.CachedTokenPriceMicrocredits == 0
 }
 
 func (c *taskBillingCoordinator) BillingFailureRequiresReview(orderID string, taskID string, err error) bool {

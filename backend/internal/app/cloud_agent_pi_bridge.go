@@ -221,7 +221,7 @@ func (s *Service) executeCloudAgentRuntimeTool(ctx context.Context, userID, runI
 		if err != nil {
 			return nil, err
 		}
-		if cloudAgentRunTerminal(run.Status) {
+		if cloudAgentRunTerminal(run.Status) || run.Status == "waiting_user" {
 			return nil, fmt.Errorf("run already terminated")
 		}
 		state, err := cloudAgentDecode(run)

@@ -84,17 +84,49 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 	if err != nil {
 		return false, err
 	}
-	_, m, _, err := productionLoad(s.repo, run, &state)
+	_, m, doc, err := productionLoad(s.repo, run, &state)
 	if err != nil {
 		return false, err
 	}
 	if m.Plan == nil || m.Plan.Version < 2 || !m.Plan.Complete || len(m.Plan.Assets) == 0 {
 		return false, nil
 	}
+	if !m.Plan.AssetsStarted {
+		return false, nil
+	}
+	rows, err := s.repo.ProductionAgentArtifacts(userID, runID)
+	if err != nil {
+		return false, err
+	}
+	if !productionPlanStandardsReady(m, doc, rows) {
+		return false, nil
+	}
 	forceLayout := len(relayout) > 0 && relayout[0]
 	needed := forceLayout
 	for _, item := range m.Plan.Assets {
+		if !productionPlanAssetSelected(m, item.Key) {
+			continue
+		}
 		if m.Plan.Groups[productionPlanGroupKind(item)] == "" {
+			needed = true
+			continue
+		}
+		if productionPlanArtifactValid(m, doc, rows, item.Key) {
+			continue
+		}
+		placeholderExists := false
+		for _, node := range creationMaps(doc["nodes"]) {
+			workflow := productionWorkflow(node)
+			placeholder, _ := workflow["planGeneration"].(map[string]any)
+			if workflow["assetKey"] == item.Key && placeholder["runId"] == runID {
+				_, placeholderExists = workflow["sourceNodeIds"].([]any)
+				if !placeholderExists {
+					needed = true
+				}
+				break
+			}
+		}
+		if !placeholderExists {
 			needed = true
 		}
 	}
@@ -112,9 +144,6 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		if err != nil {
 			return err
 		}
-		if len(fresh.ProductionParallel) > 0 || fresh.ActiveTaskID != "" {
-			return repository.ErrCreationConflict
-		}
 		_, m, doc, err := productionLoad(repo, current, &fresh)
 		if err != nil {
 			return err
@@ -123,10 +152,77 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		if err != nil {
 			return err
 		}
+		selectedGroupKinds := map[string]bool{}
+		for _, item := range m.Plan.Assets {
+			kind := productionPlanGroupKind(item)
+			if m.Plan.Groups[kind] == "" && productionPlanAssetSelected(m, item.Key) {
+				selectedGroupKinds[kind] = true
+			}
+		}
+		regroup := false
+		rehashKeys := map[string]bool{}
 		for _, a := range rows {
 			node := productionNode(doc, a.NodeID)
-			if node == nil || node["parentId"] != productionPlanParent(m, a.Key) || !productionArtifactMatches(node, a.ContentHash) {
+			if node == nil {
 				return BadAuthRequest("已有文稿被修改或移动，未自动重新分组：" + a.Key)
+			}
+			item := productionPlanItem(m, a.Key)
+			kind := ""
+			if item != nil {
+				kind = productionPlanGroupKind(*item)
+			}
+			willMove := node["parentId"] != productionPlanParent(m, a.Key) || selectedGroupKinds[kind]
+			if !willMove {
+				continue
+			}
+			if !productionArtifactMatches(node, a.ContentHash) {
+				return BadAuthRequest("已有文稿被修改或移动，未自动重新分组：" + a.Key)
+			}
+			regroup = true
+			rehashKeys[a.Key] = true
+		}
+		// Moving a receipt changes the dependency hash of its descendants. Keep
+		// their receipts consistent, while leaving unrelated edited documents alone.
+		for changed := true; changed; {
+			changed = false
+			for _, a := range rows {
+				if rehashKeys[a.Key] {
+					continue
+				}
+				for dependency := range productionPlanDependencies(m, rows, a.Key) {
+					if rehashKeys[dependency] {
+						rehashKeys[a.Key] = true
+						changed = true
+						break
+					}
+				}
+			}
+		}
+		for _, a := range rows {
+			if !rehashKeys[a.Key] {
+				continue
+			}
+			if !productionArtifactMatches(productionNode(doc, a.NodeID), a.ContentHash) {
+				return BadAuthRequest("已有文稿被修改或移动，未自动重新分组：" + a.Key)
+			}
+		}
+		// New sibling groups do not change asset receipts. Only migrating
+		// existing assets must wait for all responses to be committed.
+		if regroup {
+			if fresh.ActiveTaskID != "" {
+				return repository.ErrCreationConflict
+			}
+			for _, work := range fresh.ProductionParallel {
+				if work.TaskID == "" {
+					continue
+				}
+				task, err := repo.TaskForUser(userID, work.TaskID)
+				if err != nil {
+					return err
+				}
+				if !cloudAgentTaskTerminal(task.Status) || (task.Status == model.TaskStatusSucceeded && work.Error == "") {
+					return repository.ErrCreationConflict
+				}
 			}
 		}
 		canvas, err := repo.CanvasProjectForUser(userID, fresh.Request.CanvasID)
@@ -146,9 +242,11 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		columnBottom := [2]float64{y, y}
 		for i, kind := range productionPlanGroupKinds {
 			count := 0
+			selected := false
 			for _, item := range m.Plan.Assets {
 				if productionPlanGroupKind(item) == kind {
 					count++
+					selected = selected || productionPlanAssetSelected(m, item.Key)
 				}
 			}
 			if count == 0 {
@@ -161,7 +259,10 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 				columnBottom[i%2] += float64(124 + ((count+2)/3)*productionPlanRowPitch + 96)
 				continue
 			}
-			id := "pg-" + productionHash([]string{m.FrameID, kind})[:28]
+			if !selected {
+				continue
+			}
+			id := "pg-" + newID()
 			if productionNode(doc, id) != nil {
 				return BadAuthRequest("分组标识已占用，未覆盖")
 			}
@@ -181,13 +282,72 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		for _, a := range rows {
 			node := productionNode(doc, a.NodeID)
 			parent := productionPlanParent(m, a.Key)
+			previousParent := node["parentId"]
 			node["parentId"] = parent
 			ids[parent] = append(ids[parent], a.NodeID)
-			if parent != m.FrameID {
+			if regroup && previousParent != parent && parent != m.FrameID {
 				wd := productionWorkflow(node)
 				wd["sourceNodeIds"], wd["sourceSignatures"], wd["sourceSteps"] = []string{m.FrameID}, map[string]string{}, []string{"story.plan"}
 			}
 		}
+		for _, item := range m.Plan.Assets {
+			if !productionPlanAssetSelected(m, item.Key) || productionPlanArtifactValid(m, doc, rows, item.Key) {
+				continue
+			}
+			placeholderExists := false
+			for _, node := range nodes {
+				workflow := productionWorkflow(node)
+				placeholder, _ := workflow["planGeneration"].(map[string]any)
+				if workflow["assetKey"] == item.Key && placeholder["runId"] == runID {
+					workflow["sourceNodeIds"] = []string{m.FrameID}
+					workflow["sourceSignatures"] = map[string]string{}
+					workflow["sourceSteps"] = []string{"story.plan"}
+					workflow["pipelineId"] = data["pipelineId"]
+					workflow["parameters"] = data["parameters"]
+					workflow["version"] = data["version"]
+					placeholderExists = true
+					break
+				}
+			}
+			if placeholderExists {
+				continue
+			}
+			parent := productionPlanParent(m, item.Key)
+			frame := productionNode(doc, parent)
+			if frame == nil {
+				return BadAuthRequest("资产目标分组已删除，未创建排队节点")
+			}
+			framePosition, _ := frame["position"].(map[string]any)
+			index := 0
+			for _, existing := range nodes {
+				if existing["parentId"] == parent && productionWorkflow(existing)["assetKey"] != "$summary" {
+					index++
+				}
+			}
+			id := "pap-" + productionHash([]string{runID, item.Key})[:32]
+			if productionNode(doc, id) != nil {
+				id = "pap-" + newID()
+			}
+			workflow := map[string]any{
+				"stage": "story", "step": "story.plan", "pipelineId": data["pipelineId"],
+				"role": "document", "assetKey": item.Key, "sourceNodeIds": []string{m.FrameID},
+				"sourceSignatures": map[string]string{}, "sourceSteps": []string{"story.plan"},
+				"parameters": data["parameters"], "version": data["version"],
+				"planVersion":    m.Plan.Version,
+				"planAsset":      map[string]any{"key": item.Key, "kind": item.Kind, "name": item.Name, "episodes": item.Episodes, "purpose": item.Purpose, "plannedRange": item.PlannedRange},
+				"planGeneration": map[string]any{"runId": runID, "status": "queued"},
+			}
+			node := map[string]any{
+				"id": id, "type": "text", "title": item.Name, "parentId": parent,
+				"width": 400, "height": 280,
+				"position":  map[string]any{"x": numberValue(framePosition["x"], 0) + 24 + float64(index%3)*424, "y": numberValue(framePosition["y"], 0) + 100 + float64(index/3)*productionPlanRowPitch},
+				"createdAt": time.Now().UnixMilli(),
+				"metadata":  map[string]any{"content": "等待生成", "status": "processing", "generationMode": "text", "shortDrama": workflow},
+			}
+			nodes = append(nodes, node)
+			ids[parent] = append(ids[parent], id)
+		}
+		doc["nodes"] = nodes
 		for id, members := range ids {
 			productionWorkflow(productionNode(doc, id))["sourceNodeIds"] = members
 		}
@@ -202,6 +362,9 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 			}
 			done[a.Key] = true
 			for dependency := range productionPlanDependencies(m, rows, a.Key) {
+				if !rehashKeys[dependency] {
+					continue
+				}
 				for j := range rows {
 					if rows[j].Key == dependency {
 						if err := rehash(j); err != nil {
@@ -216,8 +379,10 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 			return repo.UpdateProductionAgentArtifact(a)
 		}
 		for i := range rows {
-			if err := rehash(i); err != nil {
-				return err
+			if rehashKeys[rows[i].Key] {
+				if err := rehash(i); err != nil {
+					return err
+				}
 			}
 		}
 		productionLayoutPlanGroup(m, root, nodes)

@@ -2,6 +2,7 @@ import { CanvasNodeType, StoryboardStartFrameMode, type StoryboardFrame, type Ca
 import { resolveProductionAssetReferences } from "./production-asset-references";
 import { assetContentSignature, assetMediaSignature, isAssetReference } from "./canvas-workflow-asset-profile";
 import { workflowSignatureMatches } from "./canvas-short-drama-workflow";
+import { productionAssetBaseCode, productionAssetCodes } from "../production-asset-code";
 
 export const EPISODE_STORYBOARD_SIZE = { width: 1120, height: 640 };
 export function storyboardRowIsReady(row: StoryboardRow) {
@@ -32,9 +33,21 @@ export function storyboardPreviousFrameSource(row: StoryboardRow, rows: Storyboa
     const previous = rows[rows.findIndex(item => item.id === row.id) - 1];
     if (!previous || row.startFrameMode === StoryboardStartFrameMode.Independent) return undefined;
     if (row.startFrameMode === StoryboardStartFrameMode.ReusePrevious) return previous;
-    const scenes = (item: StoryboardRow) => [...new Set([...(item.assetKeys || []), ...episodeStoryboardCodes(item.videoMotionPrompt || item.plotDescription)].filter(code => code.startsWith("SCN-")).map(code => code.replace(/-V\d+$/, "")))];
+    const scenes = (item: StoryboardRow) => [...new Set([...(item.assetKeys || []), ...episodeStoryboardCodes(item.videoMotionPrompt || item.plotDescription)].filter(code => code.startsWith("SCN-")).map(productionAssetBaseCode))];
     const before = scenes(previous), after = scenes(row);
     if (before.length && after.length && !before.some(code => after.includes(code))) return undefined;
+    const states = (item: StoryboardRow) => {
+        const codes = episodeStoryboardCodes([...(item.assetKeys || []), item.videoMotionPrompt, item.plotDescription].join("\n"));
+        const result = new Map(codes.map(code => [productionAssetBaseCode(code), productionAssetBaseCode(code)]));
+        for (const code of codes) if (productionAssetBaseCode(code) !== code) result.set(productionAssetBaseCode(code), code);
+        return result;
+    };
+    const previousStates = states(previous), nextStates = states(row);
+    if ([...nextStates].some(([base, code]) => previousStates.has(base) && previousStates.get(base) !== code)) return undefined;
+    // A cut keeps the world and identity, but cannot reuse the exact pixels
+    // of an incompatible camera angle or shot size.
+    if (previous.camera?.trim() && row.camera?.trim() && previous.camera.trim() !== row.camera.trim()) return undefined;
+    if (previous.shotSize && row.shotSize && previous.shotSize !== row.shotSize) return undefined;
     const continuity = (previous.continuityOut || "").replace(/(?:无需|无须|不需要|没有|无|不)(?:转场|闪回|时间跳跃|黑场|淡入|淡出|叠化)/g, "");
     if (/(?:转场|闪回|时间跳跃|黑场|淡入|淡出|叠化|切至|切到)/.test(continuity)) return undefined;
     return previous;
@@ -72,7 +85,7 @@ export function isEpisodeStoryboardVideo(nodeId: string, nodes: CanvasNodeData[]
 }
 
 export function episodeStoryboardCodes(text: string) {
-    return [...new Set(Array.from(text.matchAll(/\b(?:CHR|SCN|PRP|SPC|AUD)-\d+(?:-V\d+)?\b/g), match => match[0]))];
+    return productionAssetCodes(text);
 }
 
 export function episodeStoryboardPromptPatch(row: StoryboardRow, prompt: string) {
@@ -93,7 +106,7 @@ export function episodeStoryboardRows(node: CanvasNodeData): StoryboardRow[] {
         const dialogue = fields.get("对白") || "";
         const sound = fields.get("声音") || "";
         const continuity = fields.get("连续性/剪辑") || "";
-        const assetKeys = episodeStoryboardCodes([visual, fields.get("资产"), dialogue].join("\n"));
+        const assetKeys = episodeStoryboardCodes([visual, fields.get("资产"), dialogue, sound].join("\n"));
         return {
             id: `${node.id}:${match[1]}`, shotCode: match[1], shotNumber: index + 1, durationSeconds: Number(match[2]),
             plotDescription: visual, camera, dialogue, audioEffects: sound, continuityOut: continuity, assetKeys,
@@ -140,7 +153,7 @@ export function episodeStoryboardImages(script: CanvasNodeData, nodes: CanvasNod
 export function resolveEpisodeShotAssets(script: CanvasNodeData, row: StoryboardRow, nodes: CanvasNodeData[]) {
     if (!storyboardRowIsReady(row)) throw new Error("镜头详情尚未完成，请等待分镜信息和资产引用生成");
     const codes = [...new Set([...(row.assetKeys || []), ...episodeStoryboardCodes(row.videoMotionPrompt || row.plotDescription)])];
-    const bases = new Set(codes.map(code => code.replace(/-V\d+$/, "")));
+    const bases = new Set(codes.map(productionAssetBaseCode));
     const sources = episodeStoryboardSources(script, nodes).filter(node => bases.has(node.metadata?.shortDrama?.assetIdentity?.code || node.metadata?.shortDrama?.assetKey || ""));
     const resolved = resolveProductionAssetReferences("", sources, codes);
     const media = new Map<string, CanvasNodeData>();
@@ -148,15 +161,19 @@ export function resolveEpisodeShotAssets(script: CanvasNodeData, row: Storyboard
         const data = source.metadata!.shortDrama!;
         const refs = data.assetProfile?.references.filter(ref => ref.selected) || [];
         if (refs.length && data.assetProfile?.indexContent !== assetContentSignature(source.metadata?.content || "")) throw new Error(`资产 ${data.assetIdentity?.code} 已修改，请核对参考图`);
-        const variants = codes.filter(code => code.replace(/-V\d+$/, "") === data.assetIdentity?.code && /-V\d+$/.test(code));
+        const variants = codes.filter(code => productionAssetBaseCode(code) === data.assetIdentity?.code && productionAssetBaseCode(code) !== code);
         const selected = refs.filter(ref => {
             const variant = data.assetProfile?.variants.find(variant => variant.code === ref.variant || variant.name === ref.variant);
-            return !variant || variants.includes(variant.code || "");
+            const mediaVariant = nodes.find(node => node.id === ref.nodeId)?.metadata?.shortDrama?.mediaVariantCode;
+            const requested = mediaVariant || variant?.code;
+            return variants.length ? Boolean(requested && variants.includes(requested)) : !requested;
         });
         // Generated sheets already identify their exact source asset. Explicit
         // user selections take priority; otherwise use that source's latest sheet.
-        if (!refs.length) {
-            const images = nodes.filter(node => node.type === CanvasNodeType.Image && node.metadata?.shortDrama?.pipelineId === data.pipelineId && node.metadata.shortDrama.mediaSubjectId === source.id && isAssetReference(node));
+        if (!selected.length) {
+            const mediaType = data.assetIdentity?.kind === "sound" ? CanvasNodeType.Audio : CanvasNodeType.Image;
+            const images = nodes.filter(node => node.type === mediaType && node.metadata?.shortDrama?.pipelineId === data.pipelineId && node.metadata.shortDrama.mediaSubjectId === source.id && isAssetReference(node) &&
+                (variants.length ? variants.includes(node.metadata.shortDrama.mediaVariantCode || "") : !node.metadata.shortDrama.mediaVariantCode));
             const current = images.filter(node => {
                 const signature = node.metadata!.shortDrama!.sourceSignatures[source.id];
                 return Boolean(signature && workflowSignatureMatches(source, signature));

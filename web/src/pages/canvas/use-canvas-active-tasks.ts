@@ -1,42 +1,78 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { listGenerationTasks, subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
+import { listGenerationTasks, subscribeCanvasTaskEvents, type CanvasTaskEvent, type GenerationTask } from "@/services/api/task-center";
+import { useUserStore } from "@/stores/use-user-store";
 
 export function useCanvasActiveTasks(projectId: string, enabled: boolean) {
     const queryClient = useQueryClient();
+    const fallbackPollMinSeconds = useUserStore((state) => state.runtimeLimits.canvas?.taskFallbackPollMinSeconds ?? 3);
+    const fallbackPollMaxSeconds = useUserStore((state) => state.runtimeLimits.canvas?.taskFallbackPollMaxSeconds ?? 60);
     const query = useQuery<GenerationTask[]>({
         queryKey: ["canvas-active-tasks", projectId],
-        // Agent 的持久化执行仍复用任务队列/计费生命周期，但不应占据画布右上角的“生成任务”浮层。
-        // 多取一页再过滤，避免 Agent 排在前面时把真正的画布生成任务挤掉。
+        // Agent 由面板按持久 run 展示，内部模型调用不重复占据任务卡片。
         queryFn: ({ signal }) => listGenerationTasks(100, { projectId, activeOnly: true }, undefined, signal).then((tasks) => tasks.filter((task) => !isInternalAgentTask(task))),
         enabled: enabled && Boolean(projectId),
-        // Shared task observers provide live updates. Lists only discover missed/new tasks.
-        refetchInterval: 10_000,
+        // The canvas event stream provides live updates. This slower batch
+        // refresh repairs missed events and discovers tasks created in another tab.
+        refetchInterval: (current) => {
+            const hasActive = (current.state.data || []).some((task) => task.status === "queued" || task.status === "running");
+            return (hasActive ? fallbackPollMinSeconds : fallbackPollMaxSeconds) * 1000;
+        },
         refetchIntervalInBackground: false,
         refetchOnWindowFocus: true,
     });
+    const { refetch } = query;
 
-    const taskIds = JSON.stringify((query.data || []).map((task) => task.id).sort());
     useEffect(() => {
         if (!enabled || !projectId) return;
-        return subscribeGenerationTasks(JSON.parse(taskIds) as string[], (task) => {
-            if (task.projectId !== projectId || isInternalAgentTask(task)) return;
+        let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+        const scheduleRefresh = () => {
+            if (refreshTimer) return;
+            refreshTimer = globalThis.setTimeout(() => {
+                refreshTimer = undefined;
+                void refetch();
+            }, 150);
+        };
+        const applyEvent = (event: CanvasTaskEvent) => {
+            if (event.projectId !== projectId) return;
+            if (event.eventType === "task.removed") {
+                queryClient.setQueryData<GenerationTask[]>(["canvas-active-tasks", projectId], (current) => current?.filter((item) => item.id !== event.taskId));
+                return;
+            }
             queryClient.setQueryData<GenerationTask[]>(["canvas-active-tasks", projectId], (current) => {
                 if (!current) return current;
-                const previous = current.find((item) => item.id === task.id);
-                if (!previous || previous.updatedAt > task.updatedAt) return current;
-                if (task.status !== "queued" && task.status !== "running") return current.filter((item) => item.id !== task.id);
-                return current.map((item) => item.id === task.id ? { ...task, clientContext: task.clientContext ?? item.clientContext } : item);
+                const previous = current.find((item) => item.id === event.taskId);
+                if (!previous) {
+                    scheduleRefresh();
+                    return current;
+                }
+                if (event.updatedAt && previous.updatedAt > event.updatedAt) return current;
+                if (event.status !== "queued" && event.status !== "running") {
+                    scheduleRefresh();
+                    return current.filter((item) => item.id !== event.taskId);
+                }
+                return current.map((item) => item.id === event.taskId ? {
+                    ...item,
+                    status: event.status,
+                    ...(event.stage !== undefined ? { stage: event.stage } : {}),
+                    ...(event.progress !== undefined ? { progress: event.progress } : {}),
+                    updatedAt: event.updatedAt || item.updatedAt,
+                } : item);
             });
-        });
-    }, [enabled, projectId, queryClient, taskIds]);
+        };
+        const unsubscribe = subscribeCanvasTaskEvents(projectId, applyEvent);
+        return () => {
+            unsubscribe();
+            if (refreshTimer) globalThis.clearTimeout(refreshTimer);
+        };
+    }, [enabled, projectId, queryClient, refetch]);
 
     useEffect(() => {
         if (!enabled || !projectId) return;
         const handleTaskChanged = (event: Event) => {
             const task = (event as CustomEvent<{ task?: GenerationTask }>).detail?.task;
-            if (task?.projectId === projectId) void query.refetch();
+            if (task?.projectId === projectId) void refetch();
         };
         window.addEventListener("canvas:task-created", handleTaskChanged);
         window.addEventListener("canvas:task-cancelled", handleTaskChanged);
@@ -44,7 +80,7 @@ export function useCanvasActiveTasks(projectId: string, enabled: boolean) {
             window.removeEventListener("canvas:task-created", handleTaskChanged);
             window.removeEventListener("canvas:task-cancelled", handleTaskChanged);
         };
-    }, [enabled, projectId, query.refetch]);
+    }, [enabled, projectId, refetch]);
 
     return {
         tasks: query.data || [],

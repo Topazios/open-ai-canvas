@@ -3,6 +3,7 @@ import { withRuntimeConcurrency } from "@/services/runtime-limits";
 import { http, apiBaseURL, type BackendEnvelope } from "@/services/api/request";
 import { consumeTaskTextStream, createTaskTextStreamParser, type TaskTextStreamEvent } from "@/services/api/task-text-stream";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
+import type { ExecutionDiagnostic } from "@/lib/execution-warning";
 
 export type { BackendEnvelope } from "@/services/api/request";
 
@@ -41,6 +42,7 @@ export type GenerationTask = {
     providerCancelRequestedAt?: string;
     providerCancelledAt?: string;
     errorCode?: string;
+    diagnostic?: ExecutionDiagnostic;
     officialStatus?: "pending" | "processing" | "completed" | "failed" | "cancelled";
     receiptRecorded?: boolean;
     previewUrl?: string;
@@ -152,6 +154,18 @@ export type GenerationTaskPageRequest = {
 
 type GenerationTaskPage<T> = { tasks: T[]; nextCursor?: string };
 type GenerationTaskListOptions = { projectId?: string; activeOnly?: boolean };
+
+export type CanvasTaskEvent = {
+    seq: number;
+    projectId: string;
+    taskId: string;
+    eventType: "task.changed" | "task.removed";
+    status: TaskStatus;
+    stage?: string;
+    progress?: number;
+    updatedAt: string;
+    createdAt: string;
+};
 type GenerationTaskListDependencies = {
     listBackend?(limit: number, options?: GenerationTaskListOptions, signal?: AbortSignal): Promise<GenerationTask[]>;
     listBackendPage?(request: GenerationTaskPageRequest, signal?: AbortSignal): Promise<GenerationTaskPage<GenerationTask>>;
@@ -196,6 +210,171 @@ export async function listGenerationTasks(limit = 30, options?: { projectId?: st
         .slice(0, boundedLimit);
 }
 
+type CanvasTaskEventEntry = {
+    listeners: Set<(event: CanvasTaskEvent) => void>;
+    controller: AbortController;
+    cursor: number;
+    reconnectDelay: number;
+    loop: Promise<void>;
+};
+
+const canvasTaskEventEntries = new Map<string, CanvasTaskEventEntry>();
+
+/**
+ * A canvas has one bounded event stream. The stream carries only compact task
+ * state notifications; consumers use the batch task endpoint for the safe
+ * read model and for recovery after a missed event.
+ */
+export function subscribeCanvasTaskEvents(projectId: string, listener: (event: CanvasTaskEvent) => void) {
+    const key = projectId.trim();
+    if (!key) return () => undefined;
+    let entry = canvasTaskEventEntries.get(key);
+    if (!entry) {
+        const controller = new AbortController();
+        entry = {
+            listeners: new Set(),
+            controller,
+            cursor: 0,
+            reconnectDelay: 1_000,
+            loop: Promise.resolve(),
+        };
+        entry.loop = runCanvasTaskEventStream(key, entry);
+        canvasTaskEventEntries.set(key, entry);
+    }
+    entry.listeners.add(listener);
+    return () => {
+        const current = canvasTaskEventEntries.get(key);
+        if (!current) return;
+        current.listeners.delete(listener);
+        if (current.listeners.size > 0) return;
+        current.controller.abort();
+        canvasTaskEventEntries.delete(key);
+    };
+}
+
+async function runCanvasTaskEventStream(projectId: string, entry: CanvasTaskEventEntry) {
+    while (!entry.controller.signal.aborted) {
+        try {
+            const base = String(apiBaseURL).replace(/\/+$/, "");
+            const cursor = entry.cursor > 0 ? `?after=${encodeURIComponent(String(entry.cursor))}` : "";
+            const response = await fetch(`${base}/canvas-projects/${encodeURIComponent(projectId)}/task-events${cursor}`, {
+                headers: { Accept: "text/event-stream" },
+                credentials: "include",
+                signal: entry.controller.signal,
+            });
+            if (!response.ok) throw new Error(`画布任务事件连接失败（HTTP ${response.status}）`);
+            if (!(response.headers.get("content-type") || "").toLowerCase().includes("text/event-stream")) {
+                throw new Error("画布任务事件接口未返回事件流");
+            }
+            if (!response.body) throw new Error("画布任务事件流不可用");
+            entry.reconnectDelay = 1_000;
+            await consumeCanvasTaskEventStream(response.body, entry);
+        } catch (error) {
+            if (entry.controller.signal.aborted) return;
+            console.warn("画布任务事件流暂时不可用，将使用批量状态同步", { projectId, error });
+            await abortableDelay(withJitter(entry.reconnectDelay), entry.controller.signal);
+            entry.reconnectDelay = Math.min(entry.reconnectDelay * 2, 30_000);
+        }
+    }
+}
+
+async function consumeCanvasTaskEventStream(body: ReadableStream<Uint8Array>, entry: CanvasTaskEventEntry) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            buffer = consumeCanvasTaskEventBlocks(buffer, entry);
+        }
+        buffer += decoder.decode();
+        consumeCanvasTaskEventBlocks(`${buffer}\n\n`, entry);
+    } finally {
+        reader.releaseLock();
+    }
+}
+
+function consumeCanvasTaskEventBlocks(input: string, entry: CanvasTaskEventEntry) {
+    const blocks = input.split(/\r?\n\r?\n/);
+    const remainder = blocks.pop() || "";
+    for (const block of blocks) {
+        const event = parseCanvasTaskEventBlock(block);
+        if (!event || event.seq <= entry.cursor) continue;
+        entry.cursor = event.seq;
+        for (const listener of [...entry.listeners]) {
+            try {
+                listener(event);
+            } catch (error) {
+                console.error("画布任务事件处理失败", { projectId: event.projectId, taskId: event.taskId, error });
+            }
+        }
+    }
+    return remainder;
+}
+
+function parseCanvasTaskEventBlock(block: string): CanvasTaskEvent | undefined {
+    let eventName = "message";
+    let id = "";
+    const data: string[] = [];
+    for (const line of block.split(/\r?\n/)) {
+        if (line.startsWith(":")) continue;
+        const separator = line.indexOf(":");
+        const field = separator >= 0 ? line.slice(0, separator) : line;
+        const value = separator >= 0 ? line.slice(separator + 1).replace(/^ /, "") : "";
+        if (field === "event") eventName = value;
+        else if (field === "id") id = value;
+        else if (field === "data") data.push(value);
+    }
+    const seq = Number(id);
+    if (!Number.isSafeInteger(seq) || seq <= 0 || !data.length || eventName === "error") return undefined;
+    try {
+        const payload = JSON.parse(data.join("\n")) as Partial<CanvasTaskEvent>;
+        const eventType = payload.eventType === "task.changed" || payload.eventType === "task.removed"
+            ? payload.eventType
+            : eventName === "task.changed" || eventName === "task.removed" ? eventName : undefined;
+        if (!eventType || typeof payload.projectId !== "string" || typeof payload.taskId !== "string" || !isTaskStatus(payload.status)) return undefined;
+        return {
+            seq,
+            projectId: payload.projectId,
+            taskId: payload.taskId,
+            eventType,
+            status: payload.status as TaskStatus,
+            ...(typeof payload.stage === "string" ? { stage: payload.stage } : {}),
+            ...(typeof payload.progress === "number" && Number.isFinite(payload.progress) ? { progress: payload.progress } : {}),
+            updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : new Date().toISOString(),
+            createdAt: typeof payload.createdAt === "string" ? payload.createdAt : new Date().toISOString(),
+        };
+    } catch {
+        return undefined;
+    }
+}
+
+function withJitter(delayMs: number) {
+    return Math.max(250, Math.round(delayMs * (0.8 + Math.random() * 0.4)));
+}
+
+function abortableDelay(ms: number, signal: AbortSignal) {
+    return new Promise<void>((resolve) => {
+        if (signal.aborted) {
+            resolve();
+            return;
+        }
+        const timer = globalThis.setTimeout(done, ms);
+        const onAbort = () => {
+            globalThis.clearTimeout(timer);
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+        };
+        function done() {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
 async function collectGenerationTaskPages<T>(readPage: (request: GenerationTaskPageRequest, signal?: AbortSignal) => Promise<GenerationTaskPage<T>>, baseRequest: GenerationTaskPageRequest, limit: number, signal?: AbortSignal) {
     const items: T[] = [];
     const seenCursors = new Set<string>();
@@ -216,8 +395,8 @@ export function queryGenerationTask(id: string, options?: { signal?: AbortSignal
     return http.get<GenerationTask>(`/tasks/${encodeURIComponent(id)}`, { signal: options?.signal });
 }
 
-export type TaskExecutionStep = Pick<GenerationTask, "id" | "status" | "stage" | "error" | "createdAt" | "startedAt" | "completedAt"> & { label: string; outputPreview?: string; outputChars: number };
-export type TaskExecutionDetails = { task: GenerationTask; firstStartedAt?: string; qualityWarnings?: string[]; steps: TaskExecutionStep[]; unitCount: number; truncated: boolean; parameters: Record<string, string>; events: { id: string; title: string; failed: boolean; createdAt: string }[] };
+export type TaskExecutionStep = Pick<GenerationTask, "id" | "status" | "stage" | "error" | "diagnostic" | "createdAt" | "startedAt" | "completedAt"> & { label: string; outputPreview?: string; outputChars: number };
+export type TaskExecutionDetails = { task: GenerationTask; firstStartedAt?: string; qualityWarnings?: string[]; steps: TaskExecutionStep[]; unitCount: number; truncated: boolean; parameters: Record<string, string>; events: { id: string; title: string; failed: boolean; warning?: boolean; createdAt: string }[] };
 export function queryTaskExecutionDetails(id: string, signal?: AbortSignal) {
     return http.get<TaskExecutionDetails>(`/tasks/${encodeURIComponent(id)}/execution`, { signal });
 }
@@ -241,19 +420,28 @@ export function createGenerationTaskSubscriptionService(dependencies: Generation
     const observe = (id: string, entry: Entry) => {
         if (entry.observation) return;
         entry.observation = (async () => {
-            const initial = await dependencies.queryTask(id);
-            publish(entry, initial);
-            if (initial.status === "succeeded" || initial.status === "failed" || initial.status === "cancelled") return;
-            const terminal = await dependencies.waitTask(id, {
-                initialTask: initial,
-                onTaskUpdate: (task) => publish(entry, task),
-            });
-            publish(entry, terminal);
-        })().catch((error) => {
-            // 观察失败不能永久占住 entry，否则页面重新订阅时也不会再查询任务。
-            entry.observation = undefined;
-            console.warn("生成任务观察中断，后续订阅将重新建立连接", { taskId: id, error });
-        });
+            let retryDelay = 1_000;
+            for (;;) {
+                try {
+                    const initial = await dependencies.queryTask(id);
+                    publish(entry, initial);
+                    if (isTerminalTask(initial)) return;
+                    const latest = await dependencies.waitTask(id, {
+                        initialTask: initial,
+                        onTaskUpdate: (task) => publish(entry, task),
+                    });
+                    publish(entry, latest);
+                    if (isTerminalTask(latest)) return;
+                    retryDelay = 1_000;
+                } catch (error) {
+                    // The backend owns task deadlines. A browser-side wait timeout or
+                    // temporary network failure must re-query, not strand the node.
+                    console.warn("生成任务观察暂不可用，将重新查询任务状态", { taskId: id, error });
+                    await new Promise((resolve) => globalThis.setTimeout(resolve, retryDelay));
+                    retryDelay = Math.min(retryDelay * 2, 30_000);
+                }
+            }
+        })();
     };
     return {
         subscribe(ids: readonly string[], listener: (task: GenerationTask) => void) {
@@ -272,6 +460,10 @@ export function createGenerationTaskSubscriptionService(dependencies: Generation
     };
 }
 
+function isTerminalTask(task: GenerationTask) {
+    return task.status === "succeeded" || task.status === "failed" || task.status === "cancelled";
+}
+
 const generationTaskSubscriptionService = createGenerationTaskSubscriptionService({
     queryTask: (id) => queryGenerationTask(id),
     waitTask: (id, options) => waitForGenerationTask(id, options),
@@ -279,6 +471,58 @@ const generationTaskSubscriptionService = createGenerationTaskSubscriptionServic
 
 export function subscribeGenerationTasks(ids: readonly string[], listener: (task: GenerationTask) => void) {
     return generationTaskSubscriptionService.subscribe(ids, listener);
+}
+
+/** Observe selected canvas tasks through the shared project event stream. */
+export function subscribeCanvasGenerationTasks(projectId: string, ids: readonly string[], listener: (task: GenerationTask) => void) {
+    const wanted = new Set(ids.filter(Boolean));
+    if (!projectId || wanted.size === 0) return () => undefined;
+    const latest = new Map<string, GenerationTask>();
+    const initialController = new AbortController();
+    let disposed = false;
+    const emit = (task: GenerationTask) => {
+        if (disposed || !wanted.has(task.id)) return;
+        latest.set(task.id, task);
+        listener(task);
+    };
+    for (const id of wanted) {
+        void queryGenerationTask(id, { signal: initialController.signal }).then(emit).catch((error) => {
+            if (!disposed && !(error instanceof DOMException && error.name === "AbortError")) {
+                console.warn("画布任务初始状态读取失败", { projectId, taskId: id, error });
+            }
+        });
+    }
+    const unsubscribe = subscribeCanvasTaskEvents(projectId, (event) => {
+        if (!wanted.has(event.taskId)) return;
+        const previous = latest.get(event.taskId);
+        const partial: GenerationTask = previous ? {
+            ...previous,
+            status: event.status,
+            ...(event.stage !== undefined ? { stage: event.stage } : {}),
+            ...(event.progress !== undefined ? { progress: event.progress } : {}),
+            updatedAt: event.updatedAt || previous.updatedAt,
+        } : {
+            id: event.taskId,
+            projectId: event.projectId,
+            type: "canvas_task",
+            status: event.status,
+            stage: event.stage,
+            progress: event.progress,
+            prompt: "",
+            attempts: 0,
+            createdAt: event.createdAt,
+            updatedAt: event.updatedAt,
+        };
+        emit(partial);
+        if (event.status === "succeeded" || event.status === "failed" || event.status === "cancelled") {
+            void queryGenerationTask(event.taskId, { signal: initialController.signal }).then(emit).catch(() => undefined);
+        }
+    });
+    return () => {
+        disposed = true;
+        initialController.abort();
+        unsubscribe();
+    };
 }
 
 export function appendTaskTextDelta(id: string, content: string) {
@@ -550,9 +794,14 @@ async function taskTextStreamHTTPError(response: Response) {
 
 function taskWaitTimeoutMs(task?: GenerationTask) {
     const type = task?.type || "";
+    // 画布任务由后端 Worker 持久执行，前端等待只是观察连接。业务截止时间
+    // 由后端资源与策略控制；浏览器不能把观察窗口结束误报成任务超时。
+    if (type.startsWith("canvas_")) return Number.POSITIVE_INFINITY;
     if (type.includes("storyboard")) return 13 * 60 * 1000;
     if (type.includes("video")) return 32 * 60 * 1000;
-    if (type.includes("image")) return 10 * 60 * 1000;
+    // Image timeout is configurable on the backend; a shorter browser timeout
+    // can abandon a valid generation before the backend reaches its own deadline.
+    if (type.includes("image")) return Number.POSITIVE_INFINITY;
     if (type.includes("text") || type.includes("audio")) return 12 * 60 * 1000;
     return 10 * 60 * 1000;
 }

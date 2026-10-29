@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 46
+const CurrentSchemaVersion int64 = 49
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -166,6 +166,27 @@ var schemaMigrations = []migration{
 			return tx.Migrator().CreateIndex(&model.Task{}, "RemovedAt")
 		}
 		return nil
+	}},
+	{version: 47, name: "api_call_reasoning_tokens", checksum: "sha256:api-call-reasoning-tokens-v47-20261025", apply: func(tx *gorm.DB) error {
+		if !tx.Migrator().HasTable(&model.ApiCallLog{}) {
+			return tx.AutoMigrate(&model.ApiCallLog{})
+		}
+		if tx.Migrator().HasColumn(&model.ApiCallLog{}, "ReasoningTokens") {
+			return nil
+		}
+		return tx.Migrator().AddColumn(&model.ApiCallLog{}, "ReasoningTokens")
+	}},
+	{version: 48, name: "api_call_error_source", checksum: "sha256:api-call-error-source-v48-20261025", apply: func(tx *gorm.DB) error {
+		if !tx.Migrator().HasTable(&model.ApiCallLog{}) {
+			return tx.AutoMigrate(&model.ApiCallLog{})
+		}
+		if tx.Migrator().HasColumn(&model.ApiCallLog{}, "ErrorSource") {
+			return nil
+		}
+		return tx.Migrator().AddColumn(&model.ApiCallLog{}, "ErrorSource")
+	}},
+	{version: 49, name: "canvas_task_events", checksum: "sha256:canvas-task-events-v49-20261028", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.CanvasTaskEvent{})
 	}},
 }
 

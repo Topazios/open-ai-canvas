@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"infinite-canvas/backend/internal/model"
 )
 
 type bodyWritingSpec struct {
@@ -22,7 +24,7 @@ func (b bodyWritingSpec) valid() bool {
 }
 
 var bodyBeatDuration = regexp.MustCompile(`^[ \t]*【节拍时长[：:]\s*([0-9]{1,4})\s*秒】[ \t]*$`)
-var bodyAssetCode = regexp.MustCompile(`\b(?:CHR|SCN|PRP|SPC|AUD)-[0-9]+(?:-V[0-9]+)?\b`)
+var bodyAssetCode = regexp.MustCompile(`\b` + model.ProductionAssetReferencePattern + `\b`)
 var bodyAppendixHeading = regexp.MustCompile(`^(?:本集)?(?:资产(?:应用|清单|引用)|新增资产|连续性(?:检查|核对)|制作附录|状态衔接|补充说明)`)
 
 // This catches obvious underdevelopment, not artistic quality or actual runtime.

@@ -52,7 +52,11 @@ export type ResponseApiToolDefinition = {
     parameters: Record<string, unknown>;
     strict?: boolean;
 };
-export type ResponseApiOutputItem = ({ type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string }) & { status?: string };
+export type ResponseApiOutputItem = (
+    { type?: "message"; content?: Array<{ type?: string; text?: string }> }
+    | { type: "reasoning"; summary?: Array<{ type?: string; text?: string }>; content?: Array<{ type?: string; text?: string }> }
+    | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string }
+) & { status?: string };
 export type ResponseApiPayload = {
     id?: string;
     status?: string;
@@ -66,7 +70,7 @@ export type ResponseApiPayload = {
 export type ResponseStreamState = { buffer: string; text: string; reasoning: string; payload?: ResponseApiPayload; error?: string };
 export type ChatCompletionToolCall = { id?: string; type?: "function"; function?: { name?: string; arguments?: string } };
 export type ChatCompletionPayload = {
-    choices?: Array<{ message?: { content?: string | null; reasoning_content?: string | null; tool_calls?: ChatCompletionToolCall[] } }>;
+    choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string; thought?: boolean }> | null; reasoning_content?: string | null; reasoning?: string | null; reasoning_text?: string | null; tool_calls?: ChatCompletionToolCall[] } }>;
     error?: { message?: string };
     code?: number;
     msg?: string;

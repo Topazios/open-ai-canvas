@@ -352,6 +352,8 @@ export function useCanvasRenderModel({
     const connectionById = useMemo(() => new Map(connections.map((connection) => [connection.id, connection])), [connections]);
     const displayConnections = useMemo(() => {
         const candidateIds = new Set(connectionSpatialIndex.index.query(renderBounds.retain, CANVAS_MAX_RENDERED_CONNECTIONS));
+        // Keep links to the active node visible even when the viewport query hits its budget.
+        relatedHighlight.connectionIds.forEach((connectionId) => candidateIds.add(connectionId));
         dragPreview?.nodeIds.forEach((nodeId) => {
             connectionSpatialIndex.connectionIdsByNodeId.get(nodeId)?.forEach((connectionId) => candidateIds.add(connectionId));
         });
@@ -373,7 +375,7 @@ export function useCanvasRenderModel({
             if (connectionRight <= renderBounds.retain.left || connectionLeft >= renderBounds.retain.right || connectionBottom <= renderBounds.retain.top || connectionTop >= renderBounds.retain.bottom) return [];
             return [{ connection, from, to }];
         });
-    }, [assetManifestFrameById, connectionSpatialIndex, connectionById, nodeById, dragPreview, renderBounds]);
+    }, [assetManifestFrameById, connectionSpatialIndex, connectionById, nodeById, dragPreview, relatedHighlight.connectionIds, renderBounds]);
 
     const configInputsById = useMemo(() => {
         const map = new Map<string, NodeGenerationInput[]>();

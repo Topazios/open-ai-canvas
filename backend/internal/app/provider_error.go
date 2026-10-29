@@ -33,6 +33,13 @@ func providerFailureDetails(payload map[string]any) (string, string) {
 			}
 		}
 	}
+	if stringField(payload, "status") == "incomplete" {
+		details, _ := payload["incomplete_details"].(map[string]any)
+		if stringField(details, "reason") == "max_output_tokens" {
+			code = firstNonEmpty(code, providerOutputLimitCode)
+			message = firstNonEmpty(message, errProviderOutputLimit.Error())
+		}
+	}
 	return code, truncateRunes(message, 500)
 }
 

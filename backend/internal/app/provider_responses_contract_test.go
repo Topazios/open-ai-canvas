@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/platform"
@@ -68,6 +69,150 @@ func TestResponsesContractTextOptionsAndVision(t *testing.T) {
 				t.Fatalf("result=%v err=%v calls=%d", result, err, calls)
 			}
 		})
+	}
+}
+
+func TestDeclarativeResponsesPollsUntilTextIsComplete(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/responses":
+			fmt.Fprint(w, `{"id":"resp_async_1","status":"in_progress"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/responses/resp_async_1":
+			fmt.Fprint(w, `{"id":"resp_async_1","status":"completed","output_text":"completed episode"}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	registry := loadOfficialFallbackRegistry()
+	adapter, ok := registry.Resolve("openai-response")
+	if !ok {
+		t.Fatal("official OpenAI Responses adapter is unavailable")
+	}
+	policy := declarativeProtocolPollPolicy("text")
+	policy.InitialDelay = 0
+	policy.Interval = 0
+	policy.Sleep = func(context.Context, time.Duration) error { return nil }
+	result, err := runProtocolAdapterTaskWithPolicy(context.Background(), canvasGenerationInput{
+		Mode: "text", Prompt: "write an episode", Config: providerConfig{InterfaceType: "openai-response", Model: "gpt-test", BaseURL: server.URL, APIKey: "fixture"},
+	}, adapter, policy)
+	if err != nil || result["text"] != "completed episode" {
+		t.Fatalf("result = %#v, error = %v", result, err)
+	}
+}
+
+func TestDeclarativeResponsesAgentPollsExistingResponse(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	var creates, polls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/responses":
+			creates++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body["stream"] != true || body["background"] != nil || body["store"] != false {
+				t.Errorf("Responses Agent should stream without enabling background/storage: %#v", body)
+			}
+			fmt.Fprint(w, `{"id":"resp_agent_async_1","status":"in_progress"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/responses/resp_agent_async_1":
+			polls++
+			fmt.Fprint(w, `{"id":"resp_agent_async_1","status":"completed","output_text":"completed plan","output":[{"type":"message","status":"completed","content":[{"type":"output_text","text":"completed plan"}]}]}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	var streamed strings.Builder
+	ctx := withProtocolRegistry(context.Background(), loadOfficialFallbackRegistry())
+	result, err := runAgentToolTask(ctx, canvasGenerationInput{
+		Config:        providerConfig{InterfaceType: "openai-response", Model: "gpt-test", BaseURL: server.URL, APIKey: "fixture"},
+		AgentRequests: &agentToolRequests{Responses: map[string]any{"input": []any{}}},
+		StreamText:    true,
+		OnTextDelta:   func(delta string) { _, _ = streamed.WriteString(delta) },
+	})
+	if err != nil || result["text"] != "completed plan" || streamed.String() != "completed plan" {
+		t.Fatalf("result = %#v, streamed = %q, error = %v", result, streamed.String(), err)
+	}
+	if creates != 1 || polls != 1 {
+		t.Fatalf("expected one create and one poll for the same response, got creates=%d polls=%d", creates, polls)
+	}
+}
+
+func TestDeclarativeResponsesAgentUsesSynchronousRequestByDefault(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	var creates int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		creates++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if body["background"] != nil || body["store"] != false || body["stream"] == true {
+			t.Errorf("Responses Agent request should use the synchronous-compatible form: %#v", body)
+		}
+		fmt.Fprint(w, `{"id":"resp_sync_1","status":"completed","output_text":"completed plan","output":[{"type":"message","status":"completed","content":[{"type":"output_text","text":"completed plan"}]}]}`)
+	}))
+	defer server.Close()
+
+	result, err := runAgentToolTask(withProtocolRegistry(context.Background(), loadOfficialFallbackRegistry()), canvasGenerationInput{
+		Config:        providerConfig{InterfaceType: "openai-response", Model: "gpt-test", BaseURL: server.URL, APIKey: "fixture"},
+		AgentRequests: &agentToolRequests{Responses: map[string]any{"input": []any{}}},
+	})
+	if err != nil || result["text"] != "completed plan" || creates != 1 {
+		t.Fatalf("result = %#v, error = %v, creates = %d", result, err, creates)
+	}
+}
+
+func TestDeclarativeResponsesAgentStreamsTextAndToolCalls(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	var deltas strings.Builder
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		if body["stream"] != true || body["background"] != nil {
+			t.Errorf("Responses Agent should stream synchronously: %#v", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("test server does not support streaming")
+		}
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"draft\"}\n\n")
+		flusher.Flush()
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"draft\"}]},{\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"call-1\",\"name\":\"production_submit\",\"arguments\":\"{\\\"key\\\":\\\"story\\\"}\"}]}}\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	ctx := withProtocolRegistry(context.Background(), loadOfficialFallbackRegistry())
+	result, err := runAgentToolTask(ctx, canvasGenerationInput{
+		Config: providerConfig{InterfaceType: "openai-response", Model: "fixture", BaseURL: server.URL, APIKey: "fixture"},
+		AgentRequests: &agentToolRequests{Responses: map[string]any{
+			"input":       []any{map[string]any{"role": "user", "content": "generate"}},
+			"tools":       []any{map[string]any{"type": "function", "name": "production_submit", "parameters": map[string]any{"type": "object", "properties": map[string]any{}}}},
+			"tool_choice": "auto",
+		}},
+		StreamText:  true,
+		OnTextDelta: func(text string) { deltas.WriteString(text) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deltas.String() != "draft" || result["text"] != "draft" || len(interfaceSlice(result["toolCalls"])) != 1 {
+		t.Fatalf("stream result = %#v, deltas = %q", result, deltas.String())
 	}
 }
 
@@ -174,11 +319,9 @@ func TestResponsesContractRelayCompletionValidation(t *testing.T) {
 
 func TestResponsesContractAdminTestMatchesGeneration(t *testing.T) {
 	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
-	s, db := newChannelModelTestService(t)
+	s, db, _, _ := creationTestService(t)
 	s.coordinator = platform.NewCoordinatorWithRedis(nil, "responses-test")
-	if err := db.AutoMigrate(&model.SystemSetting{}, &model.ApiCallLog{}); err != nil {
-		t.Fatal(err)
-	}
+	s.platform = platform.New(s.repo, s.coordinator, platformHost{svc: s})
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -195,8 +338,8 @@ func TestResponsesContractAdminTestMatchesGeneration(t *testing.T) {
 	}
 	profile := DefaultModelCapabilityConfig("chat-completion")
 	profile.Protocols = &ModelProtocolConfig{Policy: ModelProtocolAuto, Supported: []string{"openai-response"}}
-	_, err := s.TestAdminChannelModel(context.Background(), &model.User{Role: model.UserRoleAdmin}, channel.ID, ChannelModelRequest{ModelKey: "fixture", Capability: "text", Protocol: "chat-completion", CapabilityConfig: profile})
+	_, err := s.TestAdminChannelModel(context.Background(), &model.User{ID: "user", Role: model.UserRoleAdmin}, channel.ID, ChannelModelRequest{ModelKey: "fixture", Capability: "text", Protocol: "chat-completion", CapabilityConfig: profile})
 	if err != nil || calls != 1 {
-		t.Fatalf("admin test: %v calls=%d", err, calls)
+		t.Fatalf("admin test: %v cause=%s calls=%d", err, cloudAgentInnermostMessage(err), calls)
 	}
 }

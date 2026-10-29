@@ -98,6 +98,7 @@ func (s *Service) createTaskWithinStorageQuota(task *model.Task, billingOrder *m
 	}()
 	if err == nil {
 		s.wakeTaskDispatcher()
+		s.publishCanvasTaskEvent(task.ID)
 	}
 	return err
 }

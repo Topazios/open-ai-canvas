@@ -81,6 +81,7 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string, acknowled
 			return nil, err
 		}
 		s.wakeTaskDispatcher()
+		s.publishCanvasTaskEvent(resumed.ID)
 		return taskForOutput(*resumed), nil
 	}
 	if task.ProviderCancelStatus == model.ProviderCancelStatusRequested {
@@ -122,6 +123,29 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string, acknowled
 	if err := json.Unmarshal([]byte(decryptedInput), &billingInput); err != nil {
 		return nil, err
 	}
+	// System-channel tasks persist the selected protocol for reproducibility, but
+	// an administrator may correct that protocol after the original attempt.
+	// Rebuild the selection from the current channel-model contract before
+	// quoting or dispatching a retry; never replay a stale client-side protocol.
+	if taskInputUsesSystemChannel(billingInput) {
+		billingInput, err = s.resolveSystemChannelModelSelection(billingInput, task.Type, task.Operation)
+		if err != nil {
+			return nil, err
+		}
+		config, _ := billingInput["config"].(map[string]any)
+		if config != nil {
+			channelID := strings.TrimSpace(stringValue(config["channelId"]))
+			modelKey := strings.TrimPrefix(strings.TrimSpace(stringValue(config["model"])), "models/")
+			if channelID != "" && modelKey != "" {
+				channelModel, lookupErr := s.repo.ChannelModelByKey(channelID, modelKey)
+				if lookupErr != nil {
+					return nil, InvalidModelSelection("指定的模型不存在")
+				}
+				task.ChannelModelID = channelModel.ID
+				task.Model = channelModel.ModelKey
+			}
+		}
+	}
 	if err := s.prepareLogicalTaskRetry(task, billingInput); err != nil {
 		return nil, err
 	}
@@ -149,15 +173,29 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string, acknowled
 		}
 		_ = s.log(userID, task.ID, "info", "已核实本轮未提交上游，补齐提交记录并继续原任务，未新增预扣", "")
 		s.wakeTaskDispatcher()
+		s.publishCanvasTaskEvent(resumed.ID)
 		return taskForOutput(*resumed), nil
 	}
 	billingOrder, err := s.taskBillingOrder(userID, task, billingInput)
 	if err != nil {
 		return nil, err
 	}
+	if taskInputUsesSystemChannel(billingInput) {
+		if err := s.protectTaskSecrets(billingInput); err != nil {
+			return nil, err
+		}
+		encoded, encodeErr := json.Marshal(billingInput)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		task.InputJSON = string(encoded)
+	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return nil, err
+	}
+	if canvasGenerationUsesDurableQueue(task.Type, task.Operation) {
+		policy.Task.ActiveTaskLimit = 0
 	}
 	if err := s.ensureTaskProjectActive(userID, task.ProjectID); err != nil {
 		return nil, err
@@ -188,6 +226,7 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string, acknowled
 	}
 	_ = s.log(userID, task.ID, "info", "任务已重新入队", "")
 	s.wakeTaskDispatcher()
+	s.publishCanvasTaskEvent(task.ID)
 	return taskForOutput(*task), nil
 }
 
@@ -261,6 +300,7 @@ func (w *taskLifecycleCoordinator) cancelTaskWithIntent(_ context.Context, userI
 		_ = s.log(task.UserID, task.ID, "error", "取消任务后归并文本回放失败", err.Error())
 	}
 	_ = s.log(task.UserID, task.ID, "warn", "任务取消请求已保存", task.CancellationSource)
+	s.publishCanvasTaskEvent(task.ID)
 
 	if task.ProviderRequestID != "" {
 		// 上游取消可能需要轮询确认，不能阻塞取消接口；请求上下文也不能因

@@ -4,6 +4,10 @@
 
 ## 设计沉淀
 
+- [画布任务运行时现状与重构分析](design/task-runtime-reconstruction-analysis.md)：梳理参数构造、任务受理、队列、调度、执行与结果回填的现状和优化方向（分析提案）。
+
+- [公共任务运行时完整实施规格](plans/task-runtime-implementation-plan.md) · [分批执行与验收手册](plans/task-runtime-implementation-runbook.md)：公共构造器、幂等受理、队列/调度/执行边界、监控页面、数据迁移、R0–R9 接线与回退条件（待实施）。
+
 - [漫剧老李流程对照与影策优化清单](plans/manju-workflow-review.md)：对照 V7.4.20 技能套装与当前八阶段、制作 Agent、素材引用和剪辑链路，列出 15 项分级改进及验收标准；调研建议，未实施。
 
 - [制作流程长任务 Agent 改造方案](plans/workflow-production-agent.md)：复用现有后台 Agent，将资产提取与跨节点汇总接入规划、分页读取、共享事实、逐项产出、检查修复和断点恢复；待实施方案。

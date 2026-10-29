@@ -1,6 +1,7 @@
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { taskExecutionRows, type ExecutionJournalRow } from "@/lib/task-execution-journal";
-import { productionJournalRows } from "./production-agent-journal";
+import { productionJournalRows, productionRunExternalFailure } from "./production-agent-journal";
+import { canvasNodeWarning, executionTaskWarning } from "../execution-warning";
 import type { TaskExecutionDetails } from "@/services/api/task-center";
 import type { AgentRun } from "@/services/api/agent";
 
@@ -9,6 +10,13 @@ export function groupSessionOwner(node: CanvasNodeData | null, nodes: CanvasNode
     if (node.type === CanvasNodeType.Frame) return node;
     const parent = nodes.find(entry => entry.id === node.parentId && entry.type === CanvasNodeType.Frame);
     return parent || node;
+}
+
+// A node that owns a generation task shows its own generation details.
+// Other members (planned items, production agent outputs) resolve to the group.
+export function nodeDetailsTarget(node: CanvasNodeData | null, nodes: CanvasNodeData[]) {
+    if (node && node.type !== CanvasNodeType.Frame && node.metadata?.taskId && !node.metadata.shortDrama?.productionAgent?.runId) return node;
+    return groupSessionOwner(node, nodes);
 }
 
 export function groupSessionMembers(group: CanvasNodeData, nodes: CanvasNodeData[]) {
@@ -40,10 +48,14 @@ export function groupSessionTargets(members: CanvasNodeData[], group?: CanvasNod
 }
 
 export function groupMemberState(node: CanvasNodeData, snapshot?: GroupSessionSnapshot) {
+    if (snapshot?.kind === "task" && executionTaskWarning(snapshot.detail.task.status, snapshot.detail.task.diagnostic)) return "内容待处理";
     const status = snapshot?.kind === "task" ? snapshot.detail.task.status : snapshot?.kind === "agent" ? snapshot.run.status : node.metadata?.taskStatus;
+    if (!snapshot && !node.metadata?.shortDrama?.productionAgent?.runId && !["queued", "running", "succeeded", "completed", "cancelled"].includes(status || "") && canvasNodeWarning(node.metadata)) return "内容待处理";
     if (status === "succeeded" || status === "completed") return "已完成";
+    if (snapshot?.kind === "agent" && ["failed", "rejected"].includes(status || "")) return productionRunExternalFailure(snapshot.run.events, snapshot.run.id) ? "执行失败" : "已暂停";
     if (status === "failed" || status === "rejected") return "执行失败";
     if (status === "cancelled") return "已取消";
+    if (snapshot?.kind === "agent" && status === "waiting_user") return "已暂停";
     if (snapshot?.kind === "agent" && snapshot.run.production?.paused) return "已暂停";
     if (status === "running") return "执行中";
     if (status === "queued") return "排队中";

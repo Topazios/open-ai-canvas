@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -48,6 +49,45 @@ func productionCompactToolJournal(call cloudAgentCall, result any, payload map[s
 				summary[key] = value
 			}
 		}
+		for _, key := range []string{"validationIssueCount", "validationScope", "validationProblemSignature", "retry"} {
+			if value, exists := fields[key]; exists {
+				summary[key] = value
+			}
+		}
+		if raw, exists := fields["validationIssues"]; exists {
+			if issues, ok := raw.([]cloudAgentValidationIssue); ok {
+				count, ok := fields["validationIssueCount"].(int)
+				if !ok {
+					count = len(issues)
+				}
+				// Compute the array budget once. The placeholder deliberately uses
+				// the longest possible counters and `false`, so the final metadata
+				// can only be the same size or smaller.
+				summary["validationIssues"] = []cloudAgentValidationIssue{}
+				summary["validationIssuesIncluded"] = count
+				summary["validationIssuesOmitted"] = count
+				summary["validationReportComplete"] = false
+				base, _ := json.Marshal(summary)
+				budget := 32768 - len(base)
+				included := make([]cloudAgentValidationIssue, 0, len(issues))
+				for _, issue := range issues {
+					item, _ := json.Marshal(issue)
+					cost := len(item)
+					if len(included) > 0 {
+						cost++
+					}
+					if cost > budget {
+						break
+					}
+					budget -= cost
+					included = append(included, issue)
+				}
+				summary["validationIssues"] = included
+				summary["validationIssuesIncluded"] = len(included)
+				summary["validationIssuesOmitted"] = max(0, count-len(included))
+				summary["validationReportComplete"] = len(included) == count
+			}
+		}
 	}
 	payload["result"] = summary
 }
@@ -83,7 +123,18 @@ func productionRuntimeTools(manifest productionManifest, work map[string]any) []
 		}
 	}
 	if manifest.Plan != nil && manifest.Plan.Version >= 2 {
-		tools = productionPlanScopedTools(tools, work)
+		tools = productionPlanScopedTools(tools, work, manifest.Plan.Version)
+		pages := []string{}
+		for _, source := range manifest.Sources {
+			pages = append(pages, source.Pages...)
+		}
+		for _, tool := range tools {
+			function := tool["function"].(map[string]any)
+			if function["name"] == "production_read" && len(pages) > 0 {
+				properties := function["parameters"].(map[string]any)["properties"].(map[string]any)
+				properties["pageId"] = map[string]any{"type": "string", "enum": pages, "description": "只读取本任务来源页 ID；已保存文稿用 production_query 的 assetKey 读取，不能把文稿 key 当作 pageId。"}
+			}
+		}
 	}
 	return tools
 }
@@ -119,13 +170,69 @@ func productionRuntimeLatestCalls(messages []map[string]any) []cloudAgentCall {
 	return nil
 }
 
-var errProductionRuntimeUnknownTool = errors.New("制作工具与当前任务不匹配，已停止调用并保存进度；可继续任务重试")
-var errProductionRuntimePlanBlocked = errors.New("制作方案当前检查点无法继续，已停止调用并保留现场；请检查文稿及前置依赖，修复后继续或创建新的方案版本")
-var errProductionRuntimeNoProgress = errors.New("模型重复读取或说明且制作进度未变化，纠偏后仍未推进，已停止调用并保存进度；可继续任务重试")
+var errProductionRuntimeUnknownTool = errors.New("制作工具与当前任务不匹配")
+var errProductionRuntimePlanBlocked = errors.New("制作方案当前检查点的前置条件未满足")
+var errProductionRuntimeNoProgress = errors.New("当前制作步骤尚未产生可验证进度")
+
+const productionRuntimeContinuationRepairKey = "production_runtime_continuation"
+
+// Local orchestration and validation faults stay inside the production loop.
+// Callers use this signal to schedule the same durable checkpoint again without
+// converting a successful provider response into a failed or user-blocked run.
+type productionRuntimeContinueError struct {
+	Reason string
+	Cause  error
+	Quiet  bool
+}
+
+func (e *productionRuntimeContinueError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "production runtime continuation"
+	}
+	return e.Cause.Error()
+}
+
+func (e *productionRuntimeContinueError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func productionBlockRuntime(run *model.CloudAgentExecution, state *cloudAgentRuntime) {
+	run.Status, run.FailureMessage = "running", ""
+	state.ActiveTaskID, state.ActiveTextDraft, state.LastError = "", "", ""
+}
+
+func productionRuntimeQuietHold(state *cloudAgentRuntime) bool {
+	for toolName, repair := range state.ToolRepairs {
+		if strings.HasPrefix(toolName, "production_") && repair.ProductionProgressStep == state.ProductionProgressStep && repair.Attempt >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func productionRuntimeNoProgressError(state *cloudAgentRuntime) error {
+	for i := len(state.Events) - 1; i >= 0; i-- {
+		event := state.Events[i]
+		if !strings.HasPrefix(stringValue(event.Payload["toolName"]), "production_") {
+			continue
+		}
+		message := truncateRunes(stringValue(event.Payload["text"]), 500)
+		switch event.Type {
+		case "production_validation":
+			return fmt.Errorf("%w；当前提交的本地校验问题：%s", errProductionRuntimeNoProgress, message)
+		case "tool_failed":
+			return fmt.Errorf("%w；当前工具执行失败：%s", errProductionRuntimeNoProgress, message)
+		}
+	}
+	return errProductionRuntimeNoProgress
+}
 
 // Bump when the durable context contract changes. Old provider receipts and
 // loop evidence must not bypass a newly repaired context after deployment.
-const productionRuntimeContextRevision = 7
+const productionRuntimeContextRevision = 18
 
 // The checkpoint already supplies phase/status and the exact source range.
 // Scope provider tools without narrowing the durable execution whitelist: a
@@ -145,7 +252,7 @@ func productionConstrainStoryboard(work map[string]any, canonical *canonicalAgen
 		}
 	}
 	if len(tools) > 0 {
-		canonical.Tools, canonical.ToolChoice = tools, "required"
+		canonical.Tools, canonical.ToolChoice = tools, "auto"
 	}
 }
 
@@ -167,8 +274,79 @@ func productionRuntimeModelKey(messages []map[string]any, thinking string, corre
 	return productionHash([]any{messages, thinking, correction, checkpoint})
 }
 
+// Model success does not imply that its proposed tool calls were accepted.
+// Keep the billed result for audit, but never replay a rejected proposal.
+func productionRuntimeReusableReceipt(repo *repository.Repository, userID string, state *cloudAgentRuntime, taskID string) (bool, error) {
+	task, err := repo.TaskForUser(userID, taskID)
+	if err != nil {
+		return false, err
+	}
+	var result struct {
+		ToolCalls []cloudAgentCall `json:"toolCalls"`
+	}
+	if err := json.Unmarshal([]byte(task.ResultJSON), &result); err != nil {
+		return false, err
+	}
+	_, failed, _, err := productionRuntimeReadOutcomes(repo, userID, state, task.CreatedAt)
+	if err != nil {
+		return false, err
+	}
+	for _, call := range result.ToolCalls {
+		if _, rejected := failed[call.ID]; rejected {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 type productionRuntimeRecovery struct {
-	Reads map[string]bool `json:"reads"`
+	Reads                      map[string]bool             `json:"reads"`
+	RepairAttempts             int                         `json:"repairAttempts,omitempty"`
+	ValidationProblems         []string                    `json:"validationProblems,omitempty"`
+	ValidationIssues           []cloudAgentValidationIssue `json:"validationIssues,omitempty"`
+	ValidationCallID           string                      `json:"validationCallId,omitempty"`
+	ValidationMessage          string                      `json:"validationMessage,omitempty"`
+	ValidationProblemSignature string                      `json:"validationProblemSignature,omitempty"`
+	ValidationTool             string                      `json:"validationTool,omitempty"`
+}
+
+type productionRuntimeRepairReceipt struct {
+	Repairable                 bool
+	Problems                   []string
+	ValidationIssues           []cloudAgentValidationIssue
+	ValidationMessage          string
+	ValidationProblemSignature string
+	ToolName                   string
+	Attempt                    int
+}
+
+func productionRuntimePendingRepair(state *cloudAgentRuntime, preferredTool string) *productionRuntimeRecovery {
+	var selected cloudAgentToolRepair
+	selectedTool := ""
+	for toolName, repair := range state.ToolRepairs {
+		if toolName == productionRuntimeContinuationRepairKey || !strings.HasPrefix(toolName, "production_") || repair.ProductionProgressStep != state.ProductionProgressStep || repair.Attempt == 0 {
+			continue
+		}
+		prefer := toolName == preferredTool && selectedTool != preferredTool
+		better := selectedTool == "" || prefer || (selectedTool != preferredTool && (repair.Attempt > selected.Attempt || repair.Attempt == selected.Attempt && toolName < selectedTool))
+		if better {
+			selected, selectedTool = repair, toolName
+		}
+	}
+	if selectedTool == "" {
+		return nil
+	}
+	issues := append([]cloudAgentValidationIssue(nil), selected.ValidationIssues...)
+	return &productionRuntimeRecovery{
+		Reads:                      map[string]bool{},
+		RepairAttempts:             selected.Attempt,
+		ValidationProblems:         productionValidationProblems(issues, selected.ValidationMessage),
+		ValidationIssues:           issues,
+		ValidationCallID:           selected.CallID,
+		ValidationMessage:          selected.ValidationMessage,
+		ValidationProblemSignature: selected.ValidationProblemSignature,
+		ValidationTool:             selectedTool,
+	}
 }
 
 type productionRuntimeStepInput struct {
@@ -177,19 +355,25 @@ type productionRuntimeStepInput struct {
 	RequiredTool string                     `json:"productionRequiredTool,omitempty"`
 }
 
-// The final plan is a writing step, not another discovery loop. Its checkpoint
-// already carries the common standards and registered asset index.
-func productionConstrainFinalPlan(work map[string]any, canonical *canonicalAgentRequest) string {
+// The checkpoint contains the prerequisites for the next plan operation. Narrow
+// only the provider request; restored, authorized tool receipts can still settle.
+// RequiredTool is enforced by orchestration, not the optional wire-level choice:
+// reasoning models can support tools while rejecting forced tool selection.
+func productionConstrainPlan(work map[string]any, canonical *canonicalAgentRequest) string {
 	next, _ := work["nextAction"].(map[string]any)
-	if next["key"] != "generation" || next["tool"] != "production_submit" {
+	name := stringValue(next["tool"])
+	if stringValue(next["phase"]) == "" || stringValue(next["blockedReason"]) != "" || !cloudAgentContainsString([]string{"production_read", "production_submit", "production_plan_inventory", "production_check"}, name) {
 		return ""
 	}
 	for _, tool := range canonical.Tools {
 		fn, _ := tool["function"].(map[string]any)
-		if fn["name"] == "production_submit" {
+		if fn["name"] == name {
 			canonical.Tools = []map[string]any{tool}
-			canonical.ToolChoice = "required"
-			canonical.Messages = append(canonical.Messages, map[string]any{"role": "user", "content": "前置方案及资产均已完成。直接依据当前公共规范与资产索引编写并提交 generation 的完整 document；定义跨资产通用执行、引用、状态衔接、验收和返修规则，具体资产参数以其已保存档案为权威引用，不重新逐项读取或复制全部档案，不输出启动说明代替文稿。"})
+			canonical.ToolChoice = "auto"
+			if next["key"] != "generation" {
+				return name
+			}
+			canonical.Messages = append(canonical.Messages, map[string]any{"role": "user", "content": "故事总纲、资产清单、美术与导演规范已完成。直接依据当前公共规范与已登记资产索引编写并提交 generation 的完整 document；先定义跨资产通用执行、引用、状态衔接、验收和返修规则，具体资产参数由后续档案落实。规范齐备后检查并结束方案，资产仅在用户手动启动后制作。不得声称资产档案或媒体已经完成，不等待或读取尚不存在的档案，不输出启动说明代替文稿。"})
 			return "production_submit"
 		}
 	}
@@ -262,43 +446,70 @@ func productionRuntimeReadCycle(repo *repository.Repository, userID string, stat
 	if len(history) < 4 {
 		return nil, nil
 	}
-	// Journal receipts prove execution succeeded. Missing/failed executions do
-	// not become read-loop evidence merely because the model task succeeded.
-	outcomes, resumed, err := productionRuntimeReadOutcomes(repo, userID, state, history[len(history)-1].task.CreatedAt)
+	// Only successful, novel reads are discovery progress. A failed or missing
+	// receipt at the same durable checkpoint must not reset the idle sequence.
+	outcomes, repairs, resumed, err := productionRuntimeReadOutcomes(repo, userID, state, history[len(history)-1].task.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	reads := map[string]bool{}
+	successfulReads := map[string]bool{}
 	repeated := 0
+	repairAttempts := 0
+	var previousProblems []string
+	problemCounts := map[string]int{}
+	var problemHistory []string
 	for i := len(history) - 1; i >= 0; i-- {
 		item := history[i]
 		if !resumed.IsZero() && !item.task.CreatedAt.After(resumed) {
 			continue
 		}
 		signatures := []string{}
-		valid := true
+		novel := false
+		repairable := len(item.calls) > 0
+		var problems []string
 		for _, call := range item.calls {
 			signature := productionRuntimeReadSignature(call)
-			if signature == "" || outcomes[call.ID] != signature {
-				valid = false
-				break
+			repair := repairs[call.ID]
+			repairable = repairable && signature == "" && repair.Repairable
+			for _, problem := range repair.Problems {
+				problems = append(problems, productionHash([]string{call.Function.Name, problem}))
+			}
+			if signature == "" {
+				continue
 			}
 			signatures = append(signatures, signature)
-		}
-		if !valid {
-			reads, repeated = map[string]bool{}, 0
-			continue
+			if outcomes[call.ID] == signature {
+				if !successfulReads[signature] {
+					novel = true
+				}
+				successfulReads[signature] = true
+			}
 		}
 		if len(item.calls) == 0 {
 			// Paraphrasing an introduction is still the same non-action.
 			signatures = []string{"prose"}
 		}
-		novel := false
 		for _, signature := range signatures {
-			if !reads[signature] {
+			if signature == "prose" && !reads[signature] {
 				novel = true
 			}
 			reads[signature] = true
+		}
+		var input productionRuntimeStepInput
+		_ = json.Unmarshal([]byte(item.task.InputJSON), &input)
+		if repairable {
+			// The current checkpoint fixes the work identity. Editing an unrelated
+			// argument or alternating two unresolved issue sets is not progress.
+			problemCounts, repairAttempts = productionTrackValidationProblems(problems, problemCounts, &problemHistory)
+			previousProblems = problems
+		}
+		if input.Recovery != nil && !novel {
+			// Executed, pre-write argument errors deserve bounded correction.
+			// Missing receipts, unchanged writes and repeated reads do not.
+			if !repairable || repairAttempts >= cloudAgentToolAttemptLimit-1 || (len(input.Recovery.ValidationProblems) == 0 && input.Recovery.RepairAttempts >= cloudAgentToolAttemptLimit) {
+				return nil, errProductionRuntimeNoProgress
+			}
 		}
 		if novel {
 			repeated = 0
@@ -309,23 +520,39 @@ func productionRuntimeReadCycle(repo *repository.Repository, userID string, stat
 	if repeated < 3 {
 		return nil, nil
 	}
-	return &productionRuntimeRecovery{Reads: reads}, nil
+	return &productionRuntimeRecovery{Reads: reads, RepairAttempts: repairAttempts, ValidationProblems: previousProblems}, nil
 }
 
-func productionRuntimeReadOutcomes(repo *repository.Repository, userID string, state *cloudAgentRuntime, since time.Time) (map[string]string, time.Time, error) {
+func productionRuntimeReadOutcomes(repo *repository.Repository, userID string, state *cloudAgentRuntime, since time.Time) (map[string]string, map[string]productionRuntimeRepairReceipt, time.Time, error) {
 	outcomes := map[string]string{}
+	repairs := map[string]productionRuntimeRepairReceipt{}
+	for toolName, repair := range state.ToolRepairs {
+		if !strings.HasPrefix(toolName, "production_") || repair.CallID == "" || repair.ProductionProgressStep != state.ProductionProgressStep {
+			continue
+		}
+		issues := append([]cloudAgentValidationIssue(nil), repair.ValidationIssues...)
+		repairs[repair.CallID] = productionRuntimeRepairReceipt{
+			Repairable:                 true,
+			Problems:                   productionValidationProblems(issues, repair.ValidationMessage),
+			ValidationIssues:           issues,
+			ValidationMessage:          repair.ValidationMessage,
+			ValidationProblemSignature: repair.ValidationProblemSignature,
+			ToolName:                   toolName,
+			Attempt:                    repair.Attempt,
+		}
+	}
 	seen := map[string]bool{}
 	events := state.Events
 	for {
 		for i := len(events) - 1; i >= 0; i-- {
 			event := events[i]
 			if event.CreatedAt.Before(since) {
-				return outcomes, time.Time{}, nil
+				return outcomes, repairs, time.Time{}, nil
 			}
 			if event.Type == "production_control" && event.Payload["action"] == "resume" {
-				return outcomes, event.CreatedAt, nil
+				return outcomes, repairs, event.CreatedAt, nil
 			}
-			if event.Type != "tool_completed" && event.Type != "tool_failed" {
+			if event.Type != "tool_completed" && event.Type != "tool_failed" && event.Type != "production_validation" {
 				continue
 			}
 			id := stringValue(event.Payload["callId"])
@@ -338,20 +565,43 @@ func productionRuntimeReadOutcomes(repo *repository.Repository, userID string, s
 				call.Function.Name = stringValue(event.Payload["toolName"])
 				call.Function.Arguments = stringValue(event.Payload["arguments"])
 				outcomes[id] = productionRuntimeReadSignature(call)
+			} else {
+				result, _ := event.Payload["result"].(map[string]any)
+				retry, _ := result["retry"].(map[string]any)
+				var issues []cloudAgentValidationIssue
+				if raw, err := json.Marshal(result["validationIssues"]); err == nil {
+					_ = json.Unmarshal(raw, &issues)
+				}
+				if len(issues) == 0 && stringValue(result["field"]) != "" {
+					issues = []cloudAgentValidationIssue{{Field: stringValue(result["field"]), Issue: stringValue(result["issue"])}}
+				}
+				repairs[id] = productionRuntimeRepairReceipt{
+					Repairable:                 result["reason"] == "invalid_tool_arguments" && result["requiredAction"] == "fix_arguments" && result["retryable"] == true && retry["terminal"] != true && result["taskSubmitted"] != true && result["phase"] != "completion",
+					Problems:                   productionValidationProblems(issues, stringValue(result["error"])),
+					ValidationIssues:           issues,
+					ValidationMessage:          stringValue(result["error"]),
+					ValidationProblemSignature: stringValue(result["validationProblemSignature"]),
+					ToolName:                   stringValue(event.Payload["toolName"]),
+				}
+				if signature := stringValue(result["validationProblemSignature"]); signature != "" {
+					repair := repairs[id]
+					repair.Problems = []string{signature}
+					repairs[id] = repair
+				}
 			}
 		}
 		if len(events) == 0 || events[0].Seq <= 1 {
-			return outcomes, time.Time{}, nil
+			return outcomes, repairs, time.Time{}, nil
 		}
 		records, err := repo.CloudAgentEventRecordsBefore(userID, state.RuntimeRunID, events[0].Seq, 128)
 		if err != nil {
-			return nil, time.Time{}, err
+			return nil, nil, time.Time{}, err
 		}
 		events = nil
 		for _, record := range records {
 			var event CloudAgentEvent
 			if err := json.Unmarshal([]byte(record.EventJSON), &event); err != nil {
-				return nil, time.Time{}, err
+				return nil, nil, time.Time{}, err
 			}
 			events = append(events, event)
 		}
@@ -359,10 +609,6 @@ func productionRuntimeReadOutcomes(repo *repository.Repository, userID string, s
 }
 
 func (s *Service) correctProductionRuntimeCycle(userID, runID string, state *cloudAgentRuntime, checkpoint string, work map[string]any, canonical *canonicalAgentRequest) (*productionRuntimeRecovery, error) {
-	recovery, err := productionRuntimeReadCycle(s.repo, userID, state, checkpoint)
-	if err != nil || recovery == nil {
-		return recovery, err
-	}
 	next, _ := work["nextAction"].(map[string]any)
 	if next == nil && stringValue(work["nextTool"]) != "" {
 		next = map[string]any{"tool": work["nextTool"]}
@@ -382,6 +628,14 @@ func (s *Service) correctProductionRuntimeCycle(userID, runID string, state *clo
 		}
 	}
 	name := stringValue(next["tool"])
+	recovery := productionRuntimePendingRepair(state, name)
+	if recovery == nil {
+		var err error
+		recovery, err = productionRuntimeReadCycle(s.repo, userID, state, checkpoint)
+		if err != nil || recovery == nil {
+			return recovery, err
+		}
+	}
 	args, _ := json.Marshal(next["arguments"])
 	probe := cloudAgentCall{}
 	probe.Function.Name, probe.Function.Arguments = name, string(args)
@@ -392,19 +646,31 @@ func (s *Service) correctProductionRuntimeCycle(userID, runID string, state *clo
 	for _, tool := range canonical.Tools {
 		fn, _ := tool["function"].(map[string]any)
 		toolName := stringValue(fn["name"])
+		if recovery.ValidationTool != "" {
+			if toolName == recovery.ValidationTool {
+				tools = append(tools, tool)
+			}
+			continue
+		}
 		candidate := cloudAgentCall{}
 		candidate.Function.Name, candidate.Function.Arguments = toolName, "{}"
 		if (!productive && toolName == name) || (productive && productionRuntimeReadSignature(candidate) == "" && toolName != "production_storyboard_reset") {
 			tools = append(tools, tool)
 		}
 	}
-	if len(tools) == 0 {
-		return nil, errProductionRuntimeNoProgress
+	if len(tools) > 0 {
+		canonical.Tools, canonical.ToolChoice = tools, "auto"
 	}
-	canonical.Tools, canonical.ToolChoice = tools, "required"
 	body, _ := json.Marshal(map[string]any{
-		"reason": "production_read_cycle", "nextAction": next,
-		"instruction": "相同持久状态下已反复成功读取或返回说明。使用当前检查点中的来源正文、已有结果及完整 nextAction 执行下一项工作，按 documentSchema 编写完整正文后提交；不得再以相同读取、状态检查或开场说明代替工作。若 nextAction 指向已读正文，保存事实或当前缺失文稿，不编造工具参数或空文稿。",
+		"reason":                     "production_current_step_validation",
+		"nextAction":                 next,
+		"validationCallId":           recovery.ValidationCallID,
+		"validationAttempt":          recovery.RepairAttempts,
+		"validationIssues":           recovery.ValidationIssues,
+		"validationMessage":          recovery.ValidationMessage,
+		"validationProblemSignature": recovery.ValidationProblemSignature,
+		"validationTool":             recovery.ValidationTool,
+		"instruction":                "以上是当前制作步骤一次校验得到的完整问题集合。请在本次调用中同时满足全部问题与当前 schema，并重新提交当前步骤所需的完整结果；提交前自行检查字段、来源证据和内容完整性。不得把任一问题留给后续制作步骤，不得用读取、状态说明或开场文字代替当前结果。",
 	})
 	canonical.Messages = append(append([]map[string]any(nil), canonical.Messages...), map[string]any{"role": "user", "content": string(body)})
 	return recovery, nil
@@ -452,17 +718,26 @@ func (s *Service) productionRuntimeRecoveryFailed(userID, runID string, task *mo
 }
 
 // Reject an invalid batch before any tool executes. A successful billed model
-// task stays successful; only its unusable replay receipt is removed on failure.
-func (s *Service) failProductionRuntimeTool(userID, runID, taskID string) error {
-	return s.failProductionRuntime(userID, runID, taskID, "unknown_production_tool", errProductionRuntimeUnknownTool)
+// task stays successful; only its unusable replay receipt is removed on block.
+func (s *Service) blockProductionRuntimeTool(userID, runID, taskID string) error {
+	return s.blockProductionRuntime(userID, runID, taskID, "unknown_production_tool", errProductionRuntimeUnknownTool)
 }
 
-func (s *Service) failProductionRuntime(userID, runID, taskID, reason string, cause error) error {
+func (s *Service) blockProductionRuntime(userID, runID, taskID, reason string, cause error) error {
+	return s.setProductionRuntimeContinuation(userID, runID, taskID, reason, cause, false)
+}
+
+func (s *Service) quietProductionRuntime(userID, runID, taskID, reason string, cause error) error {
+	return s.setProductionRuntimeContinuation(userID, runID, taskID, reason, cause, true)
+}
+
+func (s *Service) setProductionRuntimeContinuation(userID, runID, taskID, reason string, cause error, forceQuiet bool) error {
 	for attempt := 0; attempt < 8; attempt++ {
 		run, err := s.repo.CloudAgent(userID, runID)
 		if err != nil {
 			return err
 		}
+		quiet := forceQuiet
 		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
 			if cloudAgentRunTerminal(current.Status) {
 				return nil
@@ -471,15 +746,39 @@ func (s *Service) failProductionRuntime(userID, runID, taskID, reason string, ca
 			if err != nil {
 				return err
 			}
+			if state.Request.Production != nil {
+				if job, err := s.repo.ProductionAgentJob(userID, runID); err == nil {
+					var manifest productionManifest
+					if json.Unmarshal([]byte(job.ManifestJSON), &manifest) == nil && manifest.Plan != nil && manifest.Plan.Version >= 5 {
+						forceQuiet = true
+						quiet = true
+					}
+				}
+			}
 			for key, receipt := range state.ProductionModelReceipts {
 				if taskID != "" && receipt == taskID {
 					delete(state.ProductionModelReceipts, key)
 				}
 			}
-			current.Status = "failed"
-			current.FailureMessage = cause.Error()
-			state.LastError = current.FailureMessage
-			state.event(runID, "run_failed", map[string]any{"reason": reason, "error": current.FailureMessage})
+			if state.ToolRepairs == nil {
+				state.ToolRepairs = map[string]cloudAgentToolRepair{}
+			}
+			repair := state.ToolRepairs[productionRuntimeContinuationRepairKey]
+			if repair.ProductionProgressStep != state.ProductionProgressStep {
+				repair = cloudAgentToolRepair{ProductionProgressStep: state.ProductionProgressStep}
+			}
+			if repair.Attempt < 2 {
+				repair.Attempt++
+			}
+			if forceQuiet && repair.Attempt < 2 {
+				repair.Attempt = 2
+			}
+			repair.ValidationMessage = cloudAgentSafeToolError(cause)
+			repair.ValidationProblemSignature = productionHash([]any{reason, repair.ValidationMessage})
+			state.ToolRepairs[productionRuntimeContinuationRepairKey] = repair
+			state.ProductionRepairs = repair.Attempt
+			quiet = quiet || repair.Attempt >= 2
+			productionBlockRuntime(current, &state)
 			return cloudAgentSave(current, &state)
 		})
 		if errors.Is(err, repository.ErrCreationConflict) {
@@ -489,7 +788,7 @@ func (s *Service) failProductionRuntime(userID, runID, taskID, reason string, ca
 			return err
 		}
 		s.projectProductionAgentStatus(userID, runID)
-		return cause
+		return &productionRuntimeContinueError{Reason: reason, Cause: cause, Quiet: quiet}
 	}
 	return repository.ErrCreationConflict
 }

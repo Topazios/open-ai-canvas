@@ -20,8 +20,9 @@ func (e *cloudAgentArgumentError) Unwrap() error { return e.error }
 
 type cloudAgentFieldArgumentError struct {
 	error
-	Field string
-	Issue string
+	Field  string
+	Issue  string
+	Issues []cloudAgentValidationIssue
 }
 
 func (e *cloudAgentFieldArgumentError) Unwrap() error { return e.error }

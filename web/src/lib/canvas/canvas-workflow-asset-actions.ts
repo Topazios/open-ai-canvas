@@ -3,11 +3,11 @@ import { ShortDramaStep as S, type ShortDramaStepId } from "../short-drama-steps
 import { type PlannedAssetKind } from "../production-plan";
 import { workflowAssetKind } from "./canvas-production-sources";
 
-const assetActions: Record<`${PlannedAssetKind}`, { label: string; step: ShortDramaStepId; imageStep?: ShortDramaStepId }> = {
+const assetActions: Record<`${PlannedAssetKind}`, { label: string; step: ShortDramaStepId; imageStep?: ShortDramaStepId; audioStep?: ShortDramaStepId }> = {
     character: { label: "人物资产", step: S.Characters, imageStep: S.CharacterReferences },
     environment: { label: "场景资产", step: S.Environments, imageStep: S.EnvironmentReferences },
     prop: { label: "道具资产", step: S.Props, imageStep: S.PropReferences },
-    sound: { label: "声音资产", step: S.Voices },
+    sound: { label: "声音资产", step: S.Voices, audioStep: S.VoiceSamples },
     special: { label: "特殊资产", step: S.Special, imageStep: S.SpecialReferences },
 };
 

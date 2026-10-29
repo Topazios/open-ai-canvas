@@ -59,7 +59,20 @@ export function parseChatCompletionPayload(payload: ChatCompletionPayload): Tool
             function: { name: call.function?.name || "", arguments: call.function?.arguments || "{}" },
         }))
         .filter((call) => call.id && call.function.name);
-    return { content: message?.content || "", toolCalls, ...(message?.reasoning_content ? { reasoning: message.reasoning_content } : {}) };
+    const reasoning = message?.reasoning_content || message?.reasoning || message?.reasoning_text;
+    return { content: providerTextContent(message?.content), toolCalls, ...(reasoning ? { reasoning } : {}) };
+}
+
+function providerTextContent(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (!Array.isArray(value)) return "";
+    return value.filter((part) => isRecord(part) && !part.thought && (!part.type || part.type === "text" || part.type === "output_text"))
+        .map((part) => stringValue(part.text)).join("");
+}
+
+export function requireToolResponseOutput(result: ToolResponseResult): ToolResponseResult {
+    if (result.content.trim() || result.toolCalls.length) return result;
+    throw new Error(result.reasoning?.trim() ? "模型接口没有返回内容：仅返回思考内容，缺少正文或工具调用" : "模型接口没有返回正文或工具调用");
 }
 
 export function parseToolResponse(payload: ResponseApiPayload): ToolResponseResult {
@@ -68,8 +81,14 @@ export function parseToolResponse(payload: ResponseApiPayload): ToolResponseResu
         payload.output_text ||
         output
             .flatMap((item) => (item.type === "message" ? item.content || [] : []))
+            .filter((item) => !item.type || item.type === "output_text" || item.type === "text")
             .map((item) => item.text || "")
             .join("");
+    const reasoning = output
+        .flatMap((item) => item.type === "reasoning" ? [...(item.summary || []), ...(item.content || [])] : [])
+        .filter((item) => ["summary_text", "reasoning_text", "text"].includes(item.type || ""))
+        .map((item) => item.text || "")
+        .join("");
     const toolCalls = output
         .filter((item): item is Extract<ResponseApiOutputItem, { type?: "function_call" }> => item.type === "function_call")
         .map((item) => ({
@@ -78,7 +97,7 @@ export function parseToolResponse(payload: ResponseApiPayload): ToolResponseResu
             function: { name: item.name || "", arguments: item.arguments || "{}" },
         }))
         .filter((item) => item.id && item.function.name);
-    return { content, toolCalls };
+    return { content, toolCalls, ...(reasoning ? { reasoning } : {}) };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -205,8 +224,9 @@ function consumeChatCompletionStreamBlock(block: string, state: ChatCompletionSt
     const choice = isRecord(choices[0]) ? choices[0] : undefined;
     const delta = choice && isRecord(choice.delta) ? choice.delta : undefined;
     if (!delta) return;
-    if (typeof delta.content === "string") {
-        state.text += delta.content;
+    const content = providerTextContent(delta.content);
+    if (content) {
+        state.text += content;
         onDelta?.(state.text);
     }
     const reasoningDelta = stringValue(delta.reasoning_content) || stringValue(delta.reasoning) || stringValue(delta.reasoning_text);

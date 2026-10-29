@@ -17,6 +17,7 @@ import (
 
 func cloudAgentToolResult(runID string, state *cloudAgentRuntime, call cloudAgentCall, result any, err error) bool {
 	payload := map[string]any{"toolName": call.Function.Name, "callId": call.ID, "arguments": call.Function.Arguments}
+	productionTool := state.Request.Production != nil && strings.HasPrefix(call.Function.Name, "production_")
 	if call.Function.Name == "skill_read_file" {
 		var args struct {
 			SkillID string `json:"skillId"`
@@ -33,6 +34,7 @@ func cloudAgentToolResult(runID string, state *cloudAgentRuntime, call cloudAgen
 		}
 	}
 	kind := "tool_completed"
+	localProductionValidation := false
 	if err != nil {
 		detail, ok := result.(map[string]any)
 		if !ok || detail == nil {
@@ -74,6 +76,11 @@ func cloudAgentToolResult(runID string, state *cloudAgentRuntime, call cloudAgen
 				}
 			}
 			detail["guidance"] = "本次调用未执行，请按 parameters 修正参数后重试，不要重复提交相同的错误参数"
+			if productionTool {
+				cloudAgentValidationModelReceipt(detail, err)
+			} else {
+				cloudAgentValidationReceipt(detail, err)
+			}
 			if call.Function.Name == "canvas_get_state" {
 				detail["exampleArguments"] = map[string]any{}
 			}
@@ -90,6 +97,11 @@ func cloudAgentToolResult(runID string, state *cloudAgentRuntime, call cloudAgen
 				detail["requiredAction"] = requiredAction
 			}
 			payload["errorClass"] = class
+			localProductionValidation = productionTool && class == cloudAgentToolErrorSchemaError
+			if !localProductionValidation {
+				generationToolNotice(payload, class)
+				generationToolNotice(detail, class)
+			}
 		}
 		result = detail
 		kind = "tool_failed"
@@ -122,6 +134,20 @@ func cloudAgentToolResult(runID string, state *cloudAgentRuntime, call cloudAgen
 		return false
 	}
 	exhausted := cloudAgentTrackToolRepair(runID, state, call, result, err, payload)
+	if productionTool {
+		// Production validation is an internal checkpoint transition. Keep the
+		// complete structured receipt in the model transcript, but do not expose
+		// retry/correction presentation metadata in the user execution journal.
+		delete(payload, "retry")
+		if detail, ok := result.(map[string]any); ok {
+			delete(detail, "retry")
+			delete(detail, "severity")
+			delete(detail, "errorSource")
+			if detail["outcome"] == "needs_revision" {
+				delete(detail, "outcome")
+			}
+		}
+	}
 	raw, _ := json.Marshal(result)
 	payload["result"] = result
 	if call.Function.Name == "skill_read_file" && err == nil {
@@ -136,10 +162,12 @@ func cloudAgentToolResult(runID string, state *cloudAgentRuntime, call cloudAgen
 			payload["result"] = receipt
 		}
 	}
-	if state.Request.Production != nil && strings.HasPrefix(call.Function.Name, "production_") {
+	if productionTool {
 		productionCompactToolJournal(call, result, payload)
 	}
-	state.event(runID, kind, payload)
+	if !localProductionValidation {
+		state.event(runID, kind, payload)
+	}
 	state.Canonical.Messages = append(state.Canonical.Messages, map[string]any{"role": "tool", "tool_call_id": call.ID, "content": string(raw)})
 	state.CallIndex++
 	state.Approval = nil

@@ -6,15 +6,26 @@ const sleep = (ms = 15) => new Promise((resolve) => setTimeout(resolve, ms));
 const event = (type: string, payload: Record<string, unknown> = {}): AgentEvent => ({ eventId: type, runId: "run", seq: 1, type, payload, createdAt: "2026-09-13" });
 const delta = event("canvas_updated", { canvasId: "canvas", canvasPatch: { canvasId: "canvas", nodes: [], connections: [], updatedAt: "2026-09-13" } });
 
-test("50 concurrent node completions are one local batch with zero full-canvas GETs", async () => {
+test("50 concurrent node completions are one local batch with one terminal snapshot", async () => {
     const applyPatches = mock(async () => {}), refresh = mock(async () => {}), onError = mock(() => {});
     const sync = createAgentCanvasSync({ canvasId: "canvas", applyPatches, refresh, onError, batchMs: 0 });
     for (let i = 0; i < 50; i++) { sync.receive(delta); sync.receive(event("tool_failed", { toolName: "generate_media" })); sync.receive(event("run_failed")); }
     await sleep(); sync.dispose();
     expect(applyPatches).toHaveBeenCalledTimes(1);
     expect((applyPatches.mock.calls[0] as unknown as [unknown[]])[0]).toHaveLength(50);
-    expect(refresh).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledTimes(1);
     expect(onError).not.toHaveBeenCalled();
+});
+
+test("terminal run events still refresh after patch support has been detected", async () => {
+    const refresh = mock(async () => {});
+    const sync = createAgentCanvasSync({ canvasId: "canvas", applyPatches: async () => {}, refresh, onError: () => {}, batchMs: 0, refreshIntervalMs: 0 });
+    sync.receive(delta);
+    await sleep();
+    sync.receive(event("run_failed", { failureMessage: "模型服务暂时不可用" }));
+    await sleep();
+    sync.dispose();
+    expect(refresh).toHaveBeenCalledTimes(1);
 });
 
 test("legacy success/failure bursts coalesce into one snapshot", async () => {
@@ -81,4 +92,34 @@ test("a full invalidation and undo still refresh after delta support was detecte
     sync.receive(event("canvas_undone", { canvasId: "canvas" })); await sleep();
     expect(refresh).toHaveBeenCalledTimes(2);
     sync.dispose();
+});
+
+test("a transient snapshot failure recovers without another event or model call", async () => {
+    const onError = mock(() => {}), onSynced = mock(() => {});
+    let reads = 0;
+    const refresh = mock(async () => { if (++reads === 1) throw new Error("temporary read failure"); });
+    const sync = createAgentCanvasSync({ canvasId: "canvas", applyPatches: async () => {}, refresh, onError, onSynced, batchMs: 1, refreshIntervalMs: 20 });
+    sync.reconcile();
+    await sleep(80);
+    sync.dispose();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onSynced).toHaveBeenCalledTimes(1);
+});
+
+test("persistent snapshot conflicts stop retrying and can recover on explicit reconcile", async () => {
+    let conflict = true;
+    const refresh = mock(async () => { if (conflict) throw new Error("local edit conflict"); });
+    const onSynced = mock(() => {});
+    const sync = createAgentCanvasSync({ canvasId: "canvas", applyPatches: async () => {}, refresh, onError: () => {}, onSynced, batchMs: 1, refreshIntervalMs: 10 });
+    sync.reconcile();
+    await sleep(100);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(onSynced).not.toHaveBeenCalled();
+    conflict = false;
+    sync.reconcile();
+    await sleep(30);
+    sync.dispose();
+    expect(refresh).toHaveBeenCalledTimes(4);
+    expect(onSynced).toHaveBeenCalledTimes(1);
 });

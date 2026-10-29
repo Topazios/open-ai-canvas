@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createShortDramaPipeline, deriveShortDramaProgress } from "../src/lib/canvas/canvas-short-drama";
 import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowAncestors, workflowSources, workflowContinuationRange, workflowEpisodeProgress, groupExistingWorkflowEpisodes, groupSelectedWorkflowDocuments, workflowGroupingProblem, type WorkflowGenerationRequest } from "../src/lib/canvas/canvas-short-drama-workflow";
-import { shortDramaSteps, activeShortDramaSteps, ShortDramaStep, nextShortDramaSteps } from "../src/lib/short-drama-steps";
+import { shortDramaSteps, activeShortDramaSteps, ShortDramaStep, nextShortDramaSteps, isStoryboardFrameStep } from "../src/lib/short-drama-steps";
 import { confirmProductionBible } from "../src/lib/canvas/canvas-short-drama-workflow";
 import { bibleOutput, assetItem } from "./fixtures/workflow-asset-output";
 import { completeWorkflowPlan } from "./fixtures/workflow-plan";
@@ -10,6 +10,8 @@ import { productionRuleBlock } from "../src/lib/production-rules";
 import type { CanvasNodeData, CanvasConnection } from "../src/types/canvas";
 import { removeCanvasDisplayConnection, resolveCanvasDisplayConnections } from "../src/lib/canvas/canvas-connection-spatial-index";
 import { commitCanvasGenerationResult } from "../src/lib/canvas/canvas-generation-result";
+import { saveWorkflowCanvasUntilSynced } from "../src/lib/canvas/workflow-canvas-save";
+import { ApiError } from "../src/services/api/request";
 
 const center = { x: 0, y: 0 };
 function fixture() {
@@ -25,8 +27,34 @@ function complete(nodes: CanvasNodeData[]) {
 }
 
 describe("short drama document workflow", () => {
+    test("workflow node persistence waits through transient sync failures and stops on cancellation", async () => {
+        let attempts = 0;
+        let waitingUpdates = 0;
+        await saveWorkflowCanvasUntilSynced(async (options) => {
+            expect(options).toEqual({ quiet: true });
+            attempts++;
+            return attempts === 2;
+        }, new AbortController().signal, () => waitingUpdates++);
+        expect(attempts).toBe(2);
+        expect(waitingUpdates).toBe(1);
+
+        const controller = new AbortController();
+        const pending = saveWorkflowCanvasUntilSynced(async () => false, controller.signal);
+        setTimeout(() => controller.abort(), 5);
+        await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+
+        attempts = 0;
+        await saveWorkflowCanvasUntilSynced(async () => {
+            attempts++;
+            if (attempts === 1) throw new ApiError("云端版本已更新", { status: 409, retryable: false });
+            return true;
+        }, new AbortController().signal);
+        expect(attempts).toBe(2);
+        await expect(saveWorkflowCanvasUntilSynced(async () => { throw new Error("本地数据无效"); }, new AbortController().signal)).rejects.toThrow("本地数据无效");
+    });
+
     test("active and saved legacy steps belong to an enum stage and form an acyclic reachable dependency graph", () => {
-        expect(shortDramaSteps).toHaveLength(48);
+        expect(shortDramaSteps).toHaveLength(49);
         expect(new Set(Object.values(ShortDramaStep))).toEqual(new Set(shortDramaSteps.map((step) => step.id)));
         const visited = new Set<string>();
         for (const step of shortDramaSteps) {
@@ -66,7 +94,7 @@ describe("short drama document workflow", () => {
         const f = fixture();
         let nodes = f.nodes; let connections: CanvasConnection[] = [];
         const legacyHidden = new Set([ShortDramaStep.Extract, ShortDramaStep.Catalog, ShortDramaStep.AssetApproval, ShortDramaStep.Style, ShortDramaStep.Settings, ShortDramaStep.Voices, ShortDramaStep.Scenes, ShortDramaStep.Reconcile]);
-        for (const step of shortDramaSteps.slice(1).filter((entry) => !legacyHidden.has(entry.id as ShortDramaStep))) {
+        for (const step of shortDramaSteps.slice(1).filter((entry) => !legacyHidden.has(entry.id as ShortDramaStep) && entry.mediaOutput !== "audio" && !isStoryboardFrameStep(entry.id))) {
             const sourceNodeIds = step.requires.map((required) => nodes.find((node) => nodeWorkflow(node)?.step === required && !nodeWorkflow(node)?.assetKey)!.id);
             const generated = createWorkflowDocuments({ ...f.request, step: step.id, sourceNodeIds }, nodes, connections, center);
             const metadata = generated.created[0].metadata!;
@@ -103,7 +131,7 @@ describe("short drama document workflow", () => {
         const first = createWorkflowDocuments(f.request, f.nodes, [], center); const one = completeWorkflowPlan(first);
         expect(() => workflowAncestors([one.docs[0].id], one.docs, f.request.pipelineId)).toThrow("已删除");
         expect(() => workflowSources("story.episodes", "other", first.nodes, [one.frame.id])).toThrow("不属于");
-        expect(() => workflowSources("story.episodes", f.request.pipelineId, first.nodes, [f.storyNodeId])).toThrow("请选择项目制作方案");
+        expect(() => workflowSources("story.episodes", f.request.pipelineId, first.nodes, [f.storyNodeId])).toThrow("请选择故事总纲与世界规则节点");
         const second = createWorkflowDocuments(f.request, first.nodes, [], center); const two = completeWorkflowPlan(second);
         expect(() => workflowAncestors([one.frame.id, two.frame.id], second.nodes, f.request.pipelineId)).toThrow("不同版本");
         first.nodes[0].metadata!.content = "changed topic";

@@ -1,5 +1,5 @@
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react";
-import { ChevronDown, ChevronUp, Clock3, Coins, FileText, ListTodo, LoaderCircle, XCircle } from "lucide-react";
+import { ChevronDown, ChevronUp, Clock3, Coins, FileText, ListTodo, LoaderCircle, Pause, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { formatCredits } from "@/constant/credits";
@@ -9,11 +9,12 @@ import { canvasTaskCounts, canvasTaskPresentation, type CanvasTaskPresentation }
 import type { CanvasNodeData } from "@/types/canvas";
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { GenerationTask } from "@/services/api/task-center";
+import type { AgentRun } from "@/services/api/agent";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 // 顶栏是绝对定位浮层，面板必须按调用方传入的 topInset 避让；专注模式隐藏顶栏时传小间距。
-export function CanvasActiveTaskPanel({ tasks, nodes = [], align = "right", topInset = "var(--canvas-topbar-offset)", onCancelTask, onOpenNode }: { tasks: GenerationTask[]; nodes?: CanvasNodeData[]; align?: "left" | "right"; topInset?: string; onCancelTask?: (task: GenerationTask) => void; onOpenNode?: (nodeId: string) => void }) {
+export function CanvasActiveTaskPanel({ tasks, agentRuns = [], nodes = [], align = "right", topInset = "var(--canvas-topbar-offset)", onCancelTask, onOpenNode, workflowSubmitting = false, onCancelWorkflowSubmission }: { tasks: GenerationTask[]; agentRuns?: AgentRun[]; nodes?: CanvasNodeData[]; align?: "left" | "right"; topInset?: string; onCancelTask?: (task: GenerationTask) => void; onOpenNode?: (nodeId: string) => void; workflowSubmitting?: boolean; onCancelWorkflowSubmission?: () => void }) {
     const theme = canvasThemes[useActiveTheme()];
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const reducedMotion = useReducedMotion();
@@ -22,6 +23,8 @@ export function CanvasActiveTaskPanel({ tasks, nodes = [], align = "right", topI
     const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
     const presentations = useMemo(() => new Map(tasks.map((task) => [task.id, canvasTaskPresentation(task, tasks, nodes)])), [tasks, nodes]);
     const counts = canvasTaskCounts(tasks);
+    const agents = agentRuns.filter(run => run.production && ["queued", "running", "waiting_approval"].includes(run.status) && nodes.some(node => node.id === run.production!.targetNodeId && node.metadata?.shortDrama?.productionAgent?.runId === run.id));
+    const hasRunning = tasks.length > 0 || agents.some(run => !run.production?.paused && run.status !== "waiting_approval");
 
     useEffect(() => {
         if (!tasks.length) return;
@@ -33,7 +36,7 @@ export function CanvasActiveTaskPanel({ tasks, nodes = [], align = "right", topI
         if (expandedTaskId && !tasks.some((task) => task.id === expandedTaskId)) setExpandedTaskId(null);
     }, [expandedTaskId, tasks]);
 
-    if (!tasks.length) return null;
+    if (!tasks.length && !agents.length && !workflowSubmitting) return null;
 
     const motionTransition = reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel;
 
@@ -71,12 +74,12 @@ export function CanvasActiveTaskPanel({ tasks, nodes = [], align = "right", topI
                                 <span className="min-w-0">
                                     <span className="block text-sm font-semibold leading-5">生成任务</span>
                                     <span className="block truncate text-[var(--fs-label)]" style={{ color: theme.node.muted }} aria-live="polite">
-                                        {counts.roots} 项制作{counts.children ? ` · ${counts.children} 个子任务` : ""}{counts.queued ? ` · ${counts.queued} 个排队` : ""}
+                                        {workflowSubmitting ? "正在创建节点并提交" : `${counts.roots + agents.length} 项制作${counts.children ? ` · ${counts.children} 个子任务` : ""}${counts.queued ? ` · ${counts.queued} 个排队` : ""}`}
                                     </span>
                                 </span>
                             </span>
                             <span className="flex shrink-0 items-center gap-2" style={{ color: theme.accent.primary }}>
-                                <LoaderCircle className="size-4 animate-spin opacity-70 motion-reduce:animate-none" />
+                                {hasRunning ? <LoaderCircle className="size-4 animate-spin opacity-70 motion-reduce:animate-none" /> : <Pause className="size-4" />}
                                 {open ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
                             </span>
                         </motion.button>
@@ -93,6 +96,11 @@ export function CanvasActiveTaskPanel({ tasks, nodes = [], align = "right", topI
                                     className="thin-scrollbar max-h-[min(70vh,520px)] space-y-2 overflow-y-auto px-2.5 pb-2.5"
                                     data-canvas-wheel-scroll
                                 >
+                                    {workflowSubmitting ? <div className="flex items-center justify-between gap-3 rounded-[var(--r-md)] border p-3 text-xs" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
+                                        <span className="min-w-0" style={{ color: theme.node.muted }}>节点创建与任务提交在后台继续</span>
+                                        {onCancelWorkflowSubmission ? <button type="button" className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--r-sm)] px-2.5 font-medium" style={{ background: theme.toolbar.itemHover, color: theme.node.text }} onClick={onCancelWorkflowSubmission} aria-label="停止后续任务提交" title="停止后续任务提交"><XCircle className="size-4" />停止后续提交</button> : null}
+                                    </div> : null}
+                                    {agents.map(run => <CanvasActiveAgentCard key={run.id} run={run} nodes={nodes} onOpenNode={onOpenNode} theme={theme} />)}
                                     {tasks.map((task) => (
                                         <CanvasActiveTaskCard
                                             key={task.id}
@@ -116,6 +124,25 @@ export function CanvasActiveTaskPanel({ tasks, nodes = [], align = "right", topI
             </motion.div>
         </AnimatePresence>
     );
+}
+
+export function CanvasActiveAgentCard({ run, nodes, onOpenNode, theme }: { run: AgentRun; nodes: CanvasNodeData[]; onOpenNode?: (nodeId: string) => void; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+    const progress = run.production!;
+    const target = nodes.find(node => node.id === progress.targetNodeId);
+    const title = target?.title || "制作 Agent";
+    const status = progress.paused ? progress.waitingForBoundary ? "暂停中，等待当前调用结束" : "已暂停" : run.status === "waiting_user" ? "等待用户处理" : run.status === "completed" ? "已完成" : run.status === "queued" ? "排队中" : run.status === "waiting_approval" ? "等待授权" : "执行中";
+    const current = progress.concurrentItems?.length ? progress.concurrentItems.join("、") : progress.currentItem || progress.phaseLabel || "准备制作内容";
+    const items = progress.parallelItems || [];
+    const itemStatus = { queued: "排队中", running: "生成中", succeeded: "已返回", failed: "调用失败", cancelled: "已取消", retrying: "自动重试中", error: "保存失败", warning: "待检查", unknown: "核对状态中" };
+    return <article className="rounded-[var(--r-md)] border p-3 text-xs" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }} aria-label={`${title}任务`}>
+        <div className="flex items-start justify-between gap-2"><span className="min-w-0 break-words font-semibold">{title}</span><span className="shrink-0" style={{ color: theme.accent.primary }}>{status}</span></div>
+        <div className="mt-2 break-words" style={{ color: theme.node.muted }}>{current}</div>
+        <div className="mt-2" style={{ color: theme.node.muted }}>
+            {progress.workKind === "plan" ? `文稿 ${progress.documentCount || 0}/${progress.documentTotal || 0} · 资产 ${progress.assetCount || 0}/${progress.assetTotal || 0}` : `已保存 ${progress.artifactCount} 项${progress.shotTotal ? ` · 共 ${progress.shotTotal} 个镜头` : ""}`}
+        </div>
+        {items.map(item => <div key={item.key} className="mt-2 flex justify-between gap-2"><span className="min-w-0 break-words">{item.name}</span><span className="shrink-0" style={{ color: item.severity === "warning" || item.status === "warning" ? "var(--status-warning)" : item.status === "failed" || item.status === "error" ? "var(--status-error)" : theme.node.muted }}>{item.severity === "warning" && ["failed", "error"].includes(item.status) ? "待处理" : itemStatus[item.status]}</span></div>)}
+        {onOpenNode ? <button type="button" className="mt-3 inline-flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[var(--fs-tiny)] font-medium" style={{ background: theme.toolbar.itemHover, color: theme.node.text }} onClick={() => onOpenNode(target?.parentId || progress.targetNodeId)}><FileText className="size-3" />查看执行详情</button> : null}
+    </article>;
 }
 
 export function CanvasActiveTaskCard({

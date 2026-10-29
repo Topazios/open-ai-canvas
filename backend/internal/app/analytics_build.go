@@ -84,7 +84,9 @@ func buildAnalyticsOverview(filter repository.AnalyticsFilter, tasks []model.Tas
 	result.KPI.WAU = rollingActiveUsers(rollingActivities, rollingTasks, rollingLogs, filter.To.AddDate(0, 0, -7), filter.To)
 	result.KPI.MAU = rollingActiveUsers(rollingActivities, rollingTasks, rollingLogs, filter.To.AddDate(0, 0, -30), filter.To)
 	for _, log := range logs {
-		durations = append(durations, log.DurationMs)
+		if log.Status != model.ApiCallStatusRunning {
+			durations = append(durations, log.DurationMs)
+		}
 	}
 	result.KPI.P95DurationMs = percentile(durations, 0.95)
 	result.Trend = buildAnalyticsTrend(filter, tasks, logs, activities)
@@ -117,8 +119,10 @@ func buildAnalyticsTrend(filter repository.AnalyticsFilter, tasks []model.Task, 
 		key := log.CreatedAt.UTC().Format("2006-01-02")
 		if point := points[key]; point != nil {
 			point.Requests++
-			requestTotals[key]++
-			if log.Status == model.ApiCallStatusSucceeded {
+			if status := log.DisplayStatus(); status == model.ApiCallStatusSucceeded || status == model.ApiCallStatusFailed {
+				requestTotals[key]++
+			}
+			if log.DisplayStatus() == model.ApiCallStatusSucceeded {
 				requestSuccess[key]++
 			}
 			if activeByDay[key] == nil {
@@ -161,6 +165,7 @@ func buildAnalyticsModels(tasks []model.Task, logs []model.ApiCallLog) []Analyti
 		taskSuccess    int
 		taskTotal      int
 		requestSuccess int
+		requestTotal   int
 		durations      []int64
 	}
 	items := map[string]*accumulator{}
@@ -190,8 +195,13 @@ func buildAnalyticsModels(tasks []model.Task, logs []model.ApiCallLog) []Analyti
 		item := get(log.Model, log.Capability)
 		item.row.Requests++
 		item.users[log.UserID] = true
-		item.durations = append(item.durations, log.DurationMs)
-		if log.Status == model.ApiCallStatusSucceeded {
+		if status := log.DisplayStatus(); status == model.ApiCallStatusSucceeded || status == model.ApiCallStatusFailed {
+			item.requestTotal++
+		}
+		if log.DisplayStatus() != model.ApiCallStatusRunning {
+			item.durations = append(item.durations, log.DurationMs)
+		}
+		if log.DisplayStatus() == model.ApiCallStatusSucceeded {
 			item.requestSuccess++
 		}
 		if log.UsageAvailable {
@@ -207,7 +217,7 @@ func buildAnalyticsModels(tasks []model.Task, logs []model.ApiCallLog) []Analyti
 	for _, item := range items {
 		item.row.UniqueUsers = len(item.users)
 		item.row.TaskSuccessRate = ratio(item.taskSuccess, item.taskTotal)
-		item.row.RequestSuccessRate = ratio(item.requestSuccess, item.row.Requests)
+		item.row.RequestSuccessRate = ratio(item.requestSuccess, item.requestTotal)
 		item.row.P50DurationMs = percentile(item.durations, 0.5)
 		item.row.P95DurationMs = percentile(item.durations, 0.95)
 		result = append(result, item.row)
@@ -291,7 +301,7 @@ func buildAnalyticsUsers(filter repository.AnalyticsFilter, tasks []model.Task, 
 func buildAnalyticsFailures(logs []model.ApiCallLog) []AnalyticsFailureRow {
 	items := map[string]*AnalyticsFailureRow{}
 	for _, log := range logs {
-		if log.Status != model.ApiCallStatusFailed {
+		if log.DisplayStatus() != model.ApiCallStatusFailed {
 			continue
 		}
 		typeName := classifyAPICallError(log)
@@ -364,9 +374,9 @@ func rollingActiveUsers(activities []model.UserDailyActivity, tasks []model.Task
 func successRateLogs(logs []model.ApiCallLog) float64 {
 	succeeded, failed := 0, 0
 	for _, log := range logs {
-		if log.Status == model.ApiCallStatusSucceeded {
+		if log.DisplayStatus() == model.ApiCallStatusSucceeded {
 			succeeded++
-		} else if log.Status == model.ApiCallStatusFailed {
+		} else if log.DisplayStatus() == model.ApiCallStatusFailed {
 			failed++
 		}
 	}

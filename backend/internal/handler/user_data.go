@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -314,15 +315,20 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 	})
 	publicResourceHandler := func(c *gin.Context) {
 		options := resourceAccessOptions(c)
-		delivery, err := svc.PreparePublicResourceDelivery(c.Param("id"), c.Query("expires"), c.Query("signature"), options, c.GetHeader("Range"))
+		rangeHeader := c.GetHeader("Range")
+		if c.Request.Method == http.MethodHead {
+			rangeHeader = ""
+		}
+		expires, signature := publicResourceSignatureQuery(c)
+		delivery, err := svc.PreparePublicResourceDelivery(c.Param("id"), expires, signature, options, rangeHeader)
 		if err != nil {
 			failService(c, err)
 			return
 		}
 		serveResourceDelivery(c, delivery, "public, max-age=0, must-revalidate", "")
 	}
-	r.GET("/public/resources/:id/file", publicResourceHandler)
-	r.GET("/public/resources/:id/file/:filename", publicResourceHandler)
+	r.Match([]string{http.MethodGet, http.MethodHead}, "/public/resources/:id/file", publicResourceHandler)
+	r.Match([]string{http.MethodGet, http.MethodHead}, "/public/resources/:id/file/:filename", publicResourceHandler)
 	r.GET("/assets", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -558,6 +564,19 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		okCanvasProject(c, project)
 	})
+	r.POST("/canvas-projects/:id/nodes/:nodeId/variant-code", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		code, err := svc.ReserveProductionVariantCode(user.ID, c.Param("id"), c.Param("nodeId"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"code": code})
+	})
 	r.GET("/canvas-projects/:id/history", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -696,6 +715,23 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"id": c.Param("id")})
 	})
+}
+
+// publicResourceSignatureQuery tolerates URLs copied from JSON/log output where
+// an ampersand was left as a literal "\\u0026" (or percent-encoded equivalent).
+// The returned values still go through the normal expiry and HMAC checks; this
+// only restores query parameter boundaries and never grants access by itself.
+func publicResourceSignatureQuery(c *gin.Context) (string, string) {
+	raw := c.Request.URL.RawQuery
+	raw = strings.ReplaceAll(raw, `\\u0026`, "&")
+	raw = strings.ReplaceAll(raw, `\u0026`, "&")
+	raw = strings.ReplaceAll(raw, "%5Cu0026", "&")
+	raw = strings.ReplaceAll(raw, "%5cu0026", "&")
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return "", ""
+	}
+	return values.Get("expires"), values.Get("signature")
 }
 
 func hasUserAssetPageFilters(c *gin.Context) bool {

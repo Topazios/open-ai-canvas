@@ -290,20 +290,25 @@ func (s *Service) advanceCloudAgent(run *model.CloudAgentExecution) (err error) 
 		if cloudAgentStepTimedOut(task) && state.StepTimeoutEscalated < cloudAgentMaxStepTimeoutEscalations {
 			return s.correctCloudAgentStepTimeout(run, &state)
 		}
+		if cloudAgentOutputLimitReached(task) && state.OutputLimitEscalated < cloudAgentMaxOutputLimitEscalations {
+			return s.correctCloudAgentOutputLimit(run, &state)
+		}
 		return s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
 			if task.Status != model.TaskStatusSucceeded {
 				current.Status = "failed"
 				text, reason := cloudAgentModelFailure(task)
 				current.FailureMessage = truncateRunes(text, 1000)
 				cloudAgentDropInterjections(run.ID, "本轮已结束："+truncateRunes(text, 120), &state)
-				state.event(run.ID, "run_failed", map[string]any{"text": text, "reason": reason, "taskId": task.ID})
+				payload := map[string]any{"text": text, "reason": reason, "taskId": task.ID}
+				generationTaskNotice(payload, task)
+				state.event(run.ID, "run_failed", payload)
 				return cloudAgentSave(current, &state)
 			}
 			calls := result.ToolCalls
 			if result.Reasoning != "" {
 				state.event(run.ID, "reasoning_message", map[string]any{"messageId": task.ID + ":reasoning", "text": truncateRunes(result.Reasoning, 8000)})
 			}
-			if result.Text != "" {
+			if result.Text != "" && state.Request.Production == nil {
 				state.event(run.ID, "assistant_message", map[string]any{"messageId": task.ID, "text": result.Text})
 				// 普通正文可能是读取失败或多图混合回答，不能自动归为某张图的视觉事实。
 				if len(calls) == 0 {

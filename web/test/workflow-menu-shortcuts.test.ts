@@ -8,7 +8,7 @@ test("story menus follow the immediate production path instead of all references
     expect(next(S.Plan)).toEqual([S.Episodes]);
     expect(next(S.Episodes)).toEqual([S.Body]);
     expect(next(S.Body)).toEqual([S.Audit, S.Shots]);
-    expect(next(S.Shots)).toEqual([S.Boards, S.StartFrame, S.EndFrame, S.Keyframes, S.Previsualization, S.Dialogue]);
+    expect(next(S.Shots)).toEqual([S.Boards, S.StartFrame, S.EndFrame, S.Keyframes, S.Previsualization]);
     expect(next(S.Verify)).toEqual([S.Promotion]);
 });
 
@@ -18,8 +18,7 @@ test("shared norms and asset aggregates do not offer unrelated downstream work",
     expect(next(S.Characters)).toEqual([S.CharacterReferences]);
     expect(next(S.Environments)).toEqual([S.EnvironmentReferences]);
     expect(next(S.Props)).toEqual([S.PropReferences]);
-    expect(next(S.Dialogue)).toEqual([S.Casting]);
-    expect(next(S.Recording)).toEqual([S.Timing]);
+    expect(activeShortDramaSteps.some(step => [S.Dialogue, S.Casting, S.Recording, S.Timing].includes(step.id))).toBe(false);
 });
 
 test("optional image steps and parallel edit outputs retain their direct continuation", () => {

@@ -183,12 +183,61 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 		return
 	}
 	defer s.projectProductionAgentStatus(userID, runID)
+	diagnostic := taskExecutionDiagnosticFromError(cause)
+	if diagnostic == nil || (diagnostic.ErrorSource != "upstream" && diagnostic.ErrorSource != "network") {
+		for attempt := 0; attempt < 4; attempt++ {
+			run, err := s.repo.CloudAgent(userID, runID)
+			if err != nil {
+				return
+			}
+			err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+				state, decodeErr := cloudAgentDecode(current)
+				if decodeErr != nil {
+					return decodeErr
+				}
+				externalFailure := false
+				for _, work := range state.ProductionParallel {
+					if productionParallelExternalFailure(work) {
+						externalFailure = true
+						break
+					}
+				}
+				if externalFailure && !cloudAgentRunTerminal(current.Status) && current.Status != "waiting_user" {
+					current.Status, current.FailureMessage = "failed", cause.Error()
+					payload := map[string]any{"error": cause.Error()}
+					generationStopNotice(repo, &state, payload)
+					state.event(runID, "run_failed", payload)
+					return cloudAgentSave(current, &state)
+				}
+				if warning := generationRunWarning(repo, &state, runID); warning != nil {
+					state.event(runID, "run_failed", warning)
+					return cloudAgentSave(current, &state)
+				}
+				return nil
+			})
+			if !errors.Is(err, repository.ErrCreationConflict) {
+				return
+			}
+		}
+		return
+	}
 	for attempt := 0; attempt < 4; attempt++ {
 		run, err := s.repo.CloudAgent(userID, runID)
 		if err != nil {
 			return
 		}
 		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+			if current.Status == "waiting_user" {
+				state, decodeErr := cloudAgentDecode(current)
+				if decodeErr != nil {
+					return decodeErr
+				}
+				if warning := generationRunWarning(repo, &state, runID); warning != nil {
+					state.event(runID, "run_failed", warning)
+					return cloudAgentSave(current, &state)
+				}
+				return nil
+			}
 			if cloudAgentRunTerminal(current.Status) {
 				return nil
 			}
@@ -202,7 +251,9 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 					}
 				}
 				state.LastError = cause.Error()
-				state.event(runID, "run_failed", map[string]any{"error": cause.Error()})
+				payload := map[string]any{"error": cause.Error()}
+				generationStopNotice(repo, &state, payload)
+				state.event(runID, "run_failed", payload)
 				return cloudAgentSave(current, &state)
 			}
 			return nil
@@ -273,7 +324,7 @@ func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID stri
 		return fmt.Errorf("load run: %w", err)
 	}
 
-	if cloudAgentRunTerminal(run.Status) {
+	if cloudAgentRunTerminal(run.Status) || run.Status == "waiting_user" {
 		return nil
 	}
 
@@ -395,6 +446,9 @@ func (s *Service) completeCloudAgentPiRun(userID, runID string) error {
 
 		// 检查是否有未完成的任务
 		if state.ActiveTaskID != "" || state.MediaTaskID != "" || len(state.ProductionParallel) > 0 || state.Approval != nil {
+			return nil
+		}
+		if productionParallelQuietHeld(state) || productionRuntimeQuietHold(&state) {
 			return nil
 		}
 

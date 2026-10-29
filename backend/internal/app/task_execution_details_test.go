@@ -67,7 +67,7 @@ func TestTaskExecutionDetailsOwnershipAndJournal(t *testing.T) {
 
 func TestTaskExecutionDetailsOrdinaryTask(t *testing.T) {
 	s, db, _, _ := creationTestService(t)
-	task := model.Task{ID: "image", UserID: "user", Type: "canvas_image", Status: model.TaskStatusQueued, InputJSON: `{"config":{"quality":"high","count":2},"textOptions":{"reasoningEffort":"medium"}}`}
+	task := model.Task{ID: "image", UserID: "user", Type: "canvas_image", Status: model.TaskStatusQueued, InputJSON: `{"mode":"image","config":{"quality":"high","count":2,"audioVoice":"alloy","audioFormat":"mp3","videoSeconds":"6"},"textOptions":{"reasoningEffort":"medium"}}`}
 	if err := db.Create(&task).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +78,17 @@ func TestTaskExecutionDetailsOrdinaryTask(t *testing.T) {
 	if len(got.Steps) != 0 || got.Parameters["count"] != "2" || got.Parameters["quality"] != "high" {
 		t.Fatalf("unexpected detail: %+v", got)
 	}
-	if got.Parameters["reasoningEffort"] != "medium" {
-		t.Fatal("text options omitted")
+	if _, exists := got.Parameters["reasoningEffort"]; exists {
+		t.Fatal("image task exposed text parameters")
+	}
+	if _, exists := got.Parameters["audioVoice"]; exists {
+		t.Fatal("image task exposed audio parameters")
+	}
+	if _, exists := got.Parameters["audioFormat"]; exists {
+		t.Fatal("image task exposed audio format")
+	}
+	if _, exists := got.Parameters["videoSeconds"]; exists {
+		t.Fatal("image task exposed video parameters")
 	}
 }
 

@@ -17,7 +17,7 @@ func TestMigrateSchemaV46PreservesExistingTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := schemaMigrations[len(schemaMigrations)-1].apply(db); err != nil {
+		if err := schemaMigrations[45].apply(db); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -5,6 +5,7 @@ import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/compon
 import { CanvasNodeImageEditDialog, type CanvasImageEditPayload } from "@/components/canvas/canvas-node-image-edit-dialog";
 import { CanvasNodeLayerDecompositionDialog, type CanvasImageLayerDecompositionPayload } from "@/components/canvas/canvas-node-layer-decomposition-dialog";
 import { CanvasNodeTextEditDialog, type CanvasImageTextEditPayload } from "@/components/canvas/canvas-node-text-edit-dialog";
+import { canAutoAdjustImagePrompt, canRedrawFailedImage, canRegenerateImageInDialog, readImageNodePrompt } from "@/lib/canvas/canvas-image-redraw";
 import type { CanvasNodeData } from "@/types/canvas";
 import type { AiConfig } from "@/stores/use-config-store";
 
@@ -30,6 +31,8 @@ type CanvasProjectMediaDialogsProps = {
     onAnnotate: (node: CanvasNodeData, dataUrl: string) => void;
     onAnnotationEdit: (node: CanvasNodeData, payload: CanvasImageAnnotationPayload) => void;
     onMaskEdit: (node: CanvasNodeData, payload: CanvasImageMaskEditPayload) => void;
+    onRegeneratePrompt: (node: CanvasNodeData, prompt: string) => void;
+    onAutoAdjustPrompt: (node: CanvasNodeData) => void;
     onUpscale: (node: CanvasNodeData, params: CanvasImageUpscaleParams) => void;
     onImageOperation: (node: CanvasNodeData, payload: CanvasImageEditPayload) => void;
     onLayerDecomposition: (node: CanvasNodeData, payload: CanvasImageLayerDecompositionPayload) => void;
@@ -60,6 +63,8 @@ export function CanvasProjectMediaDialogs({
     onAnnotate,
     onAnnotationEdit,
     onMaskEdit,
+    onRegeneratePrompt,
+    onAutoAdjustPrompt,
     onUpscale,
     onImageOperation,
     onLayerDecomposition,
@@ -72,7 +77,7 @@ export function CanvasProjectMediaDialogs({
             {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open onClose={onCloseCrop} onConfirm={(crop) => onCrop(cropNode, crop)} /> : null}
             {annotationNode?.metadata?.content ? <CanvasNodeAnnotationDialog image={{ url: annotationNode.metadata.content, storageKey: annotationNode.metadata.storageKey }} open onClose={onCloseAnnotation} onConfirm={(dataUrl) => { if (typeof dataUrl === "string") onAnnotate(annotationNode, dataUrl); }} /> : null}
             {annotationEditNode?.metadata?.content ? <CanvasNodeAnnotationDialog image={{ url: annotationEditNode.metadata.content, storageKey: annotationEditNode.metadata.storageKey }} editMode open onClose={onCloseAnnotationEdit} onConfirm={(payload) => { if (typeof payload !== "string") onAnnotationEdit(annotationEditNode, payload); }} /> : null}
-            {maskEditNode?.metadata?.content ? <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} config={{ ...config, model: maskEditNode.metadata.model || config.model, imageModel: maskEditNode.metadata.model || config.imageModel, size: maskEditNode.metadata.size || config.size, quality: maskEditNode.metadata.quality || config.quality, count: String(maskEditNode.metadata.count || config.count) }} open onClose={onCloseMaskEdit} onConfirm={(payload) => onMaskEdit(maskEditNode, payload)} /> : null}
+            {maskEditNode && (maskEditNode.metadata?.content || canRedrawFailedImage(maskEditNode)) ? <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata?.content || ""} config={{ ...config, model: maskEditNode.metadata?.model || config.model, imageModel: maskEditNode.metadata?.model || config.imageModel, size: maskEditNode.metadata?.size || config.size, quality: maskEditNode.metadata?.quality || config.quality, count: String(maskEditNode.metadata?.count || config.count) }} initialPrompt={readImageNodePrompt(maskEditNode)} canEditPrompt={canRegenerateImageInDialog(maskEditNode) || canRedrawFailedImage(maskEditNode)} canAutoAdjust={canAutoAdjustImagePrompt(maskEditNode) || (canRedrawFailedImage(maskEditNode) && Boolean(maskEditNode.metadata?.shortDrama?.assetSheet))} open onClose={onCloseMaskEdit} onConfirm={(payload) => onMaskEdit(maskEditNode, payload)} onRegenerate={(prompt) => onRegeneratePrompt(maskEditNode, prompt)} onAutoAdjust={() => onAutoAdjustPrompt(maskEditNode)} /> : null}
             {upscaleNode?.metadata?.content ? <CanvasNodeUpscaleDialog dataUrl={upscaleNode.metadata.content} open onClose={onCloseUpscale} onConfirm={(params) => onUpscale(upscaleNode, params)} /> : null}
             {imageEditNode?.metadata?.content ? <CanvasNodeImageEditDialog dataUrl={imageEditNode.metadata.content} preset={imageEditPreset} config={{ ...config, model: imageEditNode.metadata.model || config.model, imageModel: imageEditNode.metadata.model || config.imageModel, size: imageEditNode.metadata.size || config.size, quality: imageEditNode.metadata.quality || config.quality }} open onClose={onCloseImageEdit} onConfirm={(payload) => onImageOperation(imageEditNode, payload)} /> : null}
             {layerDecompositionNode?.metadata?.content ? <CanvasNodeLayerDecompositionDialog dataUrl={layerDecompositionNode.metadata.content} config={{ ...config, model: layerDecompositionNode.metadata.model || config.model, imageModel: layerDecompositionNode.metadata.model || config.imageModel, size: layerDecompositionNode.metadata.size || config.size, quality: layerDecompositionNode.metadata.quality || config.quality }} open onClose={onCloseLayerDecomposition} onConfirm={(payload) => onLayerDecomposition(layerDecompositionNode, payload)} /> : null}

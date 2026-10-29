@@ -46,12 +46,24 @@ func TestDefaultVideoTaskTimeoutIsOneHour(t *testing.T) {
 	}
 }
 
-func TestProviderPollingDeadlineDefaultsToOneHour(t *testing.T) {
+func TestProviderPollingDeadlineUsesConfiguredVideoTaskTimeout(t *testing.T) {
 	startedAt := time.Now()
 	deadline := providerPollingDeadline(context.Background())
 	remaining := deadline.Sub(startedAt)
-	if remaining < time.Hour || remaining > time.Hour+time.Second {
-		t.Fatalf("provider polling deadline = %s, want approximately 1h", remaining)
+	want := time.Duration(defaultRuntimePolicy().Task.VideoTimeoutMinutes) * time.Minute
+	if remaining < want-time.Second || remaining > want+time.Second {
+		t.Fatalf("provider polling deadline = %s, want approximately %s", remaining, want)
+	}
+}
+
+func TestProviderCreateRequestUsesRuntimePolicyTimeout(t *testing.T) {
+	policy := defaultRuntimePolicy()
+	policy.Task.ProviderRequestTimeoutSeconds = 95
+	if err := validateRuntimePolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	if got := time.Duration(policy.Task.ProviderRequestTimeoutSeconds) * time.Second; got != 95*time.Second {
+		t.Fatalf("provider request timeout = %s, want 95s", got)
 	}
 }
 
@@ -221,6 +233,8 @@ func TestRuntimePolicyBackfillsRecycleBinRetentionForLegacyJSON(t *testing.T) {
 	}
 	resource := value["resource"].(map[string]any)
 	delete(resource, "recycleBinRetentionDays")
+	task := value["task"].(map[string]any)
+	delete(task, "providerRequestTimeoutSeconds")
 	encoded, err = json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
@@ -235,5 +249,8 @@ func TestRuntimePolicyBackfillsRecycleBinRetentionForLegacyJSON(t *testing.T) {
 	}
 	if policy.Resource.RecycleBinRetentionDays != 30 {
 		t.Fatalf("legacy recycle bin retention = %d, want 30", policy.Resource.RecycleBinRetentionDays)
+	}
+	if policy.Task.ProviderRequestTimeoutSeconds != defaultRuntimePolicy().Task.ProviderRequestTimeoutSeconds {
+		t.Fatalf("legacy provider request timeout = %d, want %d", policy.Task.ProviderRequestTimeoutSeconds, defaultRuntimePolicy().Task.ProviderRequestTimeoutSeconds)
 	}
 }

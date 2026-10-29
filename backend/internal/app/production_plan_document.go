@@ -7,6 +7,10 @@ import "strings"
 // Reserved document keys require an empty kind; asset keys require a known kind.
 // Each call owns its slice so tool-schema construction cannot alter the contract.
 func productionPlanDocumentSections(key, kind string) []productionDocumentSection {
+	return productionPlanDocumentSectionsForSchema(key, kind, 1)
+}
+
+func productionPlanDocumentSectionsForSchema(key, kind string, schemaVersion int) []productionDocumentSection {
 	var fields []productionDocumentSection
 	switch key {
 	case "story":
@@ -25,6 +29,9 @@ func productionPlanDocumentSections(key, kind string) []productionDocumentSectio
 			{"foreshadowing", "伏笔埋设与回收计划"},
 			{"continuity", "时间线与故事连续性规则"},
 			{"uncertainties", "已定依据、创作设计与未定事项"},
+		}
+		if schemaVersion >= 2 {
+			fields = append(fields, productionDocumentSection{"episodeArchitecture", "逐集剧情与状态规划"})
 		}
 	case "visual":
 		fields = []productionDocumentSection{
@@ -112,7 +119,7 @@ func productionPlanDocumentSections(key, kind string) []productionDocumentSectio
 			{"costume", "固定服装、配饰与材质配色"},
 			{"hairMakeup", "发型、妆容与固定细节"},
 			{"performance", "姿态、动作、表情与表演边界"},
-			{"variants", "服化与情绪状态变体及启用条件"},
+			{"variants", "重大形态、结构或身份变体及启用条件；普通服化与情绪写入正文连续性"},
 			{"sound", "人物声线设计与声音资产引用"},
 			{"voiceTimbre", "声线音色、质感与辨识点"},
 			{"voiceRange", "音域、音高与共鸣位置"},
@@ -136,7 +143,7 @@ func productionPlanDocumentSections(key, kind string) []productionDocumentSectio
 			{"materials", "建筑材质、表面质感与配色"},
 			{"lighting", "固定光源、日夜与天气光照"},
 			{"cameraPositions", "可用机位、遮挡与取景边界"},
-			{"variants", "日夜、天气与陈设状态变体"},
+			{"variants", "场景拓扑或结构重大变化；日夜、天气、光照与普通陈设写入连续性"},
 			{"sound", "环境声源、层次、混响与变化条件"},
 			{"prompt", "场景参考图生成提示词"},
 			{"negativePrompt", "空间与陈设禁止变化"},
@@ -152,7 +159,7 @@ func productionPlanDocumentSections(key, kind string) []productionDocumentSectio
 			{"ownership", "初始归属、持有人与转移条件"},
 			{"mechanism", "影视表现方式、外观状态切换与功能限制"},
 			{"interaction", "握持、佩戴与人物交互规则"},
-			{"variants", "完好、损坏、消耗与修复状态"},
+			{"variants", "道具结构或身份重大变化；普通损坏、消耗、开合与运行写入连续性"},
 			{"sound", "操作声、材质声与标志音效"},
 			{"prompt", "道具参考图生成提示词"},
 			{"negativePrompt", "道具形态与功能禁止变化"},
@@ -169,7 +176,7 @@ func productionPlanDocumentSections(key, kind string) []productionDocumentSectio
 			{"limits", "能力边界、持续时间与失效条件"},
 			{"cost", "使用代价、副作用与恢复条件"},
 			{"visualEffects", "特效颜色、运动、光照与空间影响"},
-			{"variants", "启动、持续、衰减与失效形态"},
+			{"variants", "特殊资产发生重大形态或结构变化；启动、持续、衰减与失效写入状态连续性"},
 			{"sound", "触发、持续、结束与标志声音"},
 			{"prompt", "特殊资产生成提示词"},
 			{"negativePrompt", "特殊资产形态与能力禁止项"},
@@ -188,7 +195,7 @@ func productionPlanDocumentSections(key, kind string) []productionDocumentSectio
 			{"spatial", "距离、方位、混响与空间层次"},
 			{"cues", "触发、进入、退出与同步时点"},
 			{"mixing", "音量层级、对白避让与混音边界"},
-			{"variants", "强弱、情绪与场景适配变体"},
+			{"variants", "需要独立复用的全新声源或制作形态；强弱、情绪与场景适配写入声音提示"},
 			{"prompt", "声音生成提示词与声线复用要求"},
 			{"negativePrompt", "声音禁止项与失真限制"},
 			{"continuity", "声音跨集复用与变化规则"},
@@ -201,7 +208,11 @@ func productionPlanDocumentSections(key, kind string) []productionDocumentSectio
 // productionRenderPlanDocument only renders strict v2 documents. Unknown fields
 // are errors, not discarded prose. No caller-owned fields or saved content change.
 func productionRenderPlanDocument(key, kind string, document map[string]string) (string, error) {
-	sections := productionPlanDocumentSections(key, kind)
+	return productionRenderPlanDocumentForSchema(key, kind, document, 1)
+}
+
+func productionRenderPlanDocumentForSchema(key, kind string, document map[string]string, schemaVersion int) (string, error) {
+	sections := productionPlanDocumentSectionsForSchema(key, kind, schemaVersion)
 	if len(sections) == 0 {
 		return "", cloudAgentFieldError("document", "unknown_schema", "制作方案文稿需要有效的共用文稿 key 或已登记的资产 kind。")
 	}
@@ -209,47 +220,69 @@ func productionRenderPlanDocument(key, kind string, document map[string]string) 
 	for _, section := range sections {
 		allowed[section.Key] = true
 	}
+	unknown := []string{}
 	for field := range document {
 		if !allowed[field] {
-			return "", cloudAgentFieldError("document", "unknown_fields", "document 含有当前文稿类型未声明的字段；请按当前类型的必填字段保留并整理原有内容后重新提交。")
+			unknown = append(unknown, field)
 		}
 	}
-	parts, missing := []string{}, []string{}
+	var failures []error
+	if len(unknown) > 0 {
+		failures = append(failures, productionDocumentUnknownFieldsError(sections, unknown))
+	}
+	parts := []string{}
 	for _, section := range sections {
 		value := strings.TrimSpace(document[section.Key])
 		if value == "" {
-			missing = append(missing, section.Key+"（"+section.Title+"）")
+			failures = append(failures, cloudAgentFieldError("document."+section.Key, "missing_sections", "请补齐 document 字段："+section.Key+"（"+section.Title+"）。没有对应项时明确说明不适用及原因，不要空填。"))
+			continue
 		}
-		switch strings.ToLower(strings.Trim(value, " \t\r\n。.!！?？…")) {
-		case "待补充", "待完善", "待确认", "待定", "同上", "略", "todo", "tbd":
-			return "", cloudAgentFieldError("document."+section.Key, "placeholder_content", "此字段只有占位文字，请填写具体制作要求；不适用时说明原因。"+productionPlanFieldDescription(key, kind, section))
+		if err := productionValidatePlanField(key, kind, section, value); err != nil {
+			failures = append(failures, err)
+			continue
 		}
-		invalidHeading := false
-		closed := productionPlanDocumentScan(value, func(level int, _ string) {
-			if level == 1 || level == 2 {
-				invalidHeading = true
-			}
-		})
-		if invalidHeading || !closed {
-			return "", cloudAgentFieldError("document."+section.Key, "invalid_section", "字段正文不能包含一级或二级标题，代码围栏必须闭合；细分内容请使用三级或更低层级标题。")
+		content := "## " + section.Title + "\n" + value
+		if cloudAgentContainsString(productionPlanDocumentMissingForSchema(key, kind, content, schemaVersion), section.Key) {
+			failures = append(failures, cloudAgentFieldError("document."+section.Key, "missing_sections", "字段 "+section.Key+"（"+section.Title+"）只有标题或空代码围栏，请补充实际正文。"))
 		}
-		parts = append(parts, "## "+section.Title+"\n"+value)
+		parts = append(parts, content)
 	}
-	if len(missing) > 0 {
-		return "", cloudAgentFieldError("document", "missing_sections", "请补齐当前类型的 document 字段："+strings.Join(missing, "、")+"。没有对应项时明确说明不适用及原因，不要空填。")
+	if err := cloudAgentValidationErrors(failures...); err != nil {
+		return "", err
 	}
-	content := strings.Join(parts, "\n\n")
-	if missing = productionPlanDocumentMissing(key, kind, content); len(missing) > 0 {
-		return "", cloudAgentFieldError("document", "missing_sections", "以下字段只有标题或空代码围栏，请补充正文："+strings.Join(missing, "、"))
+	return strings.Join(parts, "\n\n"), nil
+}
+
+func productionValidatePlanField(key, kind string, section productionDocumentSection, value string) error {
+	switch strings.ToLower(strings.Trim(value, " \t\r\n。.!！?？…")) {
+	case "待补充", "待完善", "待确认", "待定", "同上", "略", "todo", "tbd":
+		return cloudAgentFieldError("document."+section.Key, "placeholder_content", "此字段只有占位文字，请填写具体制作要求；不适用时说明原因。"+productionPlanFieldDescription(key, kind, section))
 	}
-	return content, nil
+	invalidHeading := ""
+	closed := productionPlanDocumentScan(value, func(level int, title string) {
+		if (level == 1 || level == 2) && invalidHeading == "" {
+			invalidHeading = strings.Repeat("#", level) + " " + title
+		}
+	})
+	var failures []error
+	if invalidHeading != "" {
+		failures = append(failures, cloudAgentFieldError("document."+section.Key, "invalid_heading", "字段正文包含一级或二级标题："+productionDocumentDiagnosticKeys([]string{invalidHeading})+"；系统统一添加章节标题，请保留其正文，将内部分标题改为三级或更低层级标题。"))
+	}
+	if !closed {
+		failures = append(failures, cloudAgentFieldError("document."+section.Key, "unclosed_fence", "字段正文含未闭合的代码围栏，请补齐对应结束围栏并保留正文；细分内容请使用三级或更低层级标题。"))
+	}
+	return cloudAgentValidationErrors(failures...)
 }
 
 // productionPlanDocumentMissing reports absent, empty or duplicate sections in
 // canonical field order. "$schema" means the key/kind pair is unsupported.
 // This validates structure, not creative quality, and never repairs saved prose.
 func productionPlanDocumentMissing(key, kind, content string) []string {
-	sections := productionPlanDocumentSections(key, kind)
+	return productionPlanDocumentMissingForSchema(key, kind, content, 1)
+}
+
+func productionPlanDocumentMissingForSchema(key, kind, content string, schemaVersion int) []string {
+	sections := productionPlanDocumentSectionsForSchema(key, kind, schemaVersion)
 	if len(sections) == 0 {
 		return []string{"$schema"}
 	}
@@ -277,6 +310,65 @@ func productionPlanDocumentMissing(key, kind, content string) []string {
 		}
 	}
 	return missing
+}
+
+func productionPlanSectionBody(key, kind, content, field string, schemaVersion int) string {
+	sections := productionPlanDocumentSectionsForSchema(key, kind, schemaVersion)
+	wanted := ""
+	for _, section := range sections {
+		if section.Key == field {
+			wanted = section.Title
+			break
+		}
+	}
+	if wanted == "" {
+		return ""
+	}
+	// Scan into the requested section without treating matching prose inside
+	// fenced examples as a heading.
+	lines := strings.Split(content, "\n")
+	var fence byte
+	fenceLength := 0
+	collecting := false
+	var result []string
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line != "" && (line[0] == '`' || line[0] == '~') {
+			length := 0
+			for length < len(line) && line[length] == line[0] {
+				length++
+			}
+			if fence == 0 && length >= 3 {
+				fence, fenceLength = line[0], length
+			} else if line[0] == fence && length >= fenceLength && strings.TrimSpace(line[length:]) == "" {
+				fence, fenceLength = 0, 0
+			}
+			if collecting {
+				result = append(result, raw)
+			}
+			continue
+		}
+		level := 0
+		if fence == 0 {
+			for level < len(line) && line[level] == '#' {
+				level++
+			}
+			if level > 6 || (level < len(line) && line[level] != ' ' && line[level] != '\t') {
+				level = 0
+			}
+		}
+		if level == 2 {
+			if collecting {
+				break
+			}
+			collecting = strings.TrimSpace(line[level:]) == wanted
+			continue
+		}
+		if collecting {
+			result = append(result, raw)
+		}
+	}
+	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
 // Scan ATX headings while treating fenced examples as body text, so an example

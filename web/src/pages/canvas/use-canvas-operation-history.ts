@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { applyCanvasOperations, summarizeCanvasOperations, type CanvasOperation, type CanvasSnapshot } from "@/lib/canvas/canvas-operation-contract";
 import { createGenerationRetryContext } from "@/lib/canvas/canvas-project-generation";
-import { subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
+import { subscribeCanvasGenerationTasks, subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
 import { persistCanvasOperationContinuationEffect } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskAgent } from "@/services/project-asset-sync";
 import type { CanvasConnection, CanvasNodeData, ContextMenuState, ViewportTransform } from "@/types/canvas";
@@ -58,6 +58,7 @@ type CanvasOperationUndoBatch = { snapshot: CanvasSnapshot; afterNodes: CanvasNo
 type RunCanvasGenerationOpsInput = {
     generationOps: Array<Extract<CanvasOperation, { type: "run_generation" }>>;
     nodes: CanvasNodeData[];
+    projectId?: string;
     context?: CanvasGenerationContext;
     generate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options: CanvasGenerationOptions) => Promise<void>;
     subscribeTasks?: (ids: readonly string[], listener: (task: GenerationTask) => void) => () => void;
@@ -69,6 +70,7 @@ type RunCanvasGenerationOpsInput = {
 export async function runCanvasGenerationOps({
     generationOps,
     nodes,
+    projectId,
     context,
     generate,
     subscribeTasks = subscribeGenerationTasks,
@@ -76,6 +78,9 @@ export async function runCanvasGenerationOps({
     resumeAgent = async () => undefined,
     onContinuation,
 }: RunCanvasGenerationOpsInput) {
+    const observeTasks = projectId
+        ? (ids: readonly string[], listener: (task: GenerationTask) => void) => subscribeCanvasGenerationTasks(projectId, ids, listener)
+        : subscribeTasks;
     const observations = new Map<string, Promise<void>>();
     const observe = (taskId: string, nodeId: string, continuationIdPromise?: Promise<string>) => {
         const existing = observations.get(taskId);
@@ -83,7 +88,7 @@ export async function runCanvasGenerationOps({
         const observation = new Promise<void>((resolve, reject) => {
             let unsubscribe: (() => void) | undefined;
             let settled = false;
-            unsubscribe = subscribeTasks([taskId], (task) => {
+            unsubscribe = observeTasks([taskId], (task) => {
                 if (settled || (task.status !== "succeeded" && task.status !== "failed" && task.status !== "cancelled")) return;
                 settled = true;
                 queueMicrotask(() => {
@@ -291,6 +296,7 @@ export function useCanvasOperationHistory({
                     await runCanvasGenerationOps({
                         generationOps,
                         nodes: nodesRef.current,
+                        projectId,
                         generate,
                         context: generationContext,
                         onContinuation: async (nodeId, continuation) => {

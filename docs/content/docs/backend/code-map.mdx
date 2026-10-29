@@ -5,6 +5,12 @@ description: 从产品功能快速定位主要代码入口
 
 # 代码功能地图
 
+## 生成警告与来源
+
+- `backend/internal/app/generation_notice.go`、`task_diagnostic.go`：结构化严重度、内容／本地处理／未知来源说明、按用户与运行隔离的历史事件只读展示；调度终止与依赖约束保留。
+- `backend/internal/model/api_call_status.go`、`repository/analytics.go`：调用日志警告展示与筛选；结构化上游错误优先，不改历史记录。`database/migrations.go` 的版本 48 增加 `api_call_logs.error_source`。
+- `web/src/lib/execution-warning.ts`：任务、子步骤、分组和执行记录共用警告判断，恢复状态不受旧诊断污染。管理端请求记录同步支持黄色警告。
+
 ## 全局创作设定
 
 - `web/src/lib/short-drama-settings.ts`：分类枚举、中文选项、默认值、校验、时长映射与阶段提示词。
@@ -16,6 +22,9 @@ description: 从产品功能快速定位主要代码入口
 
 - `backend/internal/app/production_agent*.go`：来源分页、事实证据、共享缓存、资产写入回执、覆盖、暂停与恢复；复用 `cloud_agent_pi_*` 的服务端执行与任务账务。
 - `backend/internal/app/production_plan.go`、`production_plan_workflow.go`、`production_plan_document.go`：前置方案清单及编码、有序阶段与版本依赖、按文稿/资产类型的固定模板和结构检查。
+- `backend/internal/app/production_inventory_review.go`、`production_plan_inventory_document.go`：新方案逐章节、逐集的需求来源核对与总表投影；区分关联主体和设计前置，验证声明覆盖，不替代自然语言需求的语义审读。
+- `backend/internal/app/production_document_repair.go`、`production_document_parts.go`：参数层级、类型和字段诊断，以及拒绝原稿与资产 design 的私有修复上下文；分批持久化后仍须显式重提并完整校验。
+- `backend/internal/app/production_bound_submission.go`：从持久分工绑定新并行文稿的固定元数据，模型只生成正文及允许的设计字段；原始结果和显式冲突值保留，事务内版本与身份校验继续执行。
 - `backend/internal/app/production_plan_requirements.go`：旧八项制作规范整合到四份共用文稿的字段要求；串行与并发工具共用，保留历史字段和回执，不以结构检查冒充语义验收。
 - `backend/internal/app/production_parallel.go`：制作方案的依赖就绪队列，最多三份独立文稿并发；持久任务身份、分项纠错、暂停恢复及串行结果提交。模型调用复用原任务队列和账务。
 - `backend/internal/app/production_plan_groups.go`：公共方案与五类资产的独立容器、已有产物的分组与依赖回执重算、无空首格的固定排列。

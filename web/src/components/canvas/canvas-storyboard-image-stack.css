@@ -8,4 +8,5 @@
 .canvas-storyboard-image-stack-trigger:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; border-radius: 4px; }
 .canvas-storyboard-image-stack-caption { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 2px 5px; overflow: hidden; font-size: 10px; line-height: 1.35; }
 .canvas-storyboard-image-stack-caption > span:first-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.canvas-storyboard-image-stack-pending { border: 0; background: transparent; padding: 0; color: var(--workspace-danger, #c43d3d); cursor: pointer; font-size: inherit; }
+.canvas-storyboard-image-stack-pending { border: 0; background: transparent; padding: 0; color: inherit; opacity: .7; cursor: pointer; font-size: inherit; }
+.canvas-storyboard-image-stack-pending[data-failed="true"] { color: var(--workspace-danger, #c43d3d); opacity: 1; }

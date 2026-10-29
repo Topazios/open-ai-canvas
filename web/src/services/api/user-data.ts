@@ -145,6 +145,10 @@ export function deleteRemoteCanvasProject(id: string) {
     return http.delete<{ id: string }>(`/canvas-projects/${encodeURIComponent(id)}`);
 }
 
+export function reserveProductionVariantCode(canvasId: string, nodeId: string) {
+    return http.post<{ code: string }>(`/canvas-projects/${encodeURIComponent(canvasId)}/nodes/${encodeURIComponent(nodeId)}/variant-code`);
+}
+
 export type CanvasHistoryEntry = {
     id: string;
     canvasId: string;

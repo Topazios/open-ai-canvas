@@ -3,6 +3,7 @@ import { productionBibleInstruction, type ProductionBibleSection } from "./produ
 
 export enum ShortDramaStep {
     Audit = "story.audit",
+    VoiceSamples = "assets.voice_samples",
     Reconcile = "assets.reconcile",
     Bible = "assets.bible", Special = "assets.special",
     Topic = "story.topic", Plan = "story.plan", Episodes = "story.episodes", Body = "story.body",
@@ -24,7 +25,7 @@ export type ShortDramaStepDefinition = {
     production?: boolean;
     scope?: "project";
     output?: "asset-group";
-    mediaOutput?: "image" | "video";
+    mediaOutput?: "image" | "video" | "audio";
     mediaActionLabel?: string;
     optional?: boolean;
     optionalRequires?: readonly ShortDramaStepId[];
@@ -32,23 +33,24 @@ export type ShortDramaStepDefinition = {
 const S = ShortDramaStep;
 export const shortDramaSteps: readonly ShortDramaStepDefinition[] = [
     { id: S.Topic, stage: "story", label: "选题抽取", requires: [], requirement: "抽取选题。" },
-    { id: S.Plan, stage: "story", label: "项目制作方案", requires: [S.Topic], scope: "project", output: "asset-group", requirement: "统一前置故事总纲、世界规则、视觉美术、导演视听、生成一致性规范，以及带系统编码的全部人物、场景、道具、特殊与声音资产设计。" },
+    { id: S.Plan, stage: "story", label: "故事总纲与世界规则", requires: [S.Topic], scope: "project", output: "asset-group", requirement: "根据已采用选题完成故事总纲与世界规则，保存独立文稿后结束。其余制作方案由用户在总纲完成后手动启动，各自生成并保存文稿。" },
     { id: S.Episodes, stage: "story", label: "分集集纲", requires: [S.Plan], scope: "project", requirement: "全部集纲汇总为一份文稿，按集数顺序分节，不拆成逐集节点。" },
     { id: S.Body, stage: "story", label: "分集正文", requires: [S.Episodes], requirement: "生成指定集的完整剧本。" },
     { id: S.Audit, stage: "story", label: "正文质量审核", requires: [S.Body], requirement: "按集审读正文结构、因果、可表演性、节奏与来源连续性。只生成诊断报告和修复提示词，不改正文、不补建资产、不自动开启下游。" },
     { id: S.Bible, stage: "assets", label: "统一制作规范", requires: [S.Body], scope: "project", output: "asset-group", requirement: `基于所提供全部正文，分别生成8份可独立编辑的制作规范：${productionBibleInstruction}。每项区分正文事实（附集数场次与依据）、推断和可执行的设计建议；未明确的制作细节自行形成统一建议，不要求用户先确认，不虚称已获审核。不重复分集全文，不以逐人物/逐场景资产代替制作规范。` },
     { id: S.Reconcile, stage: "assets", label: "正文资产校核与补充", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "按集一次性核对正文与前置制作方案，统一校核人物、场景、道具和声音。能力、变身、环境效果和界面归所属资产状态，不另设特殊资产分类。复用原资产编号、设定与规范，补充实际出场、状态变化、新增项和冲突。每个资产独立保存，不重建全局规范，不虚构未提供集数。" },
-{ id: S.Special, stage: "assets", label: "特殊资产", requires: [S.Body, S.Bible], optional: true, scope: "project", output: "asset-group", requirement: "仅提取正文中需反复保持一致、且人物场景道具不能承载的特效、能力视觉、界面、标志符号等特殊资产。附出场集数场次、原文证据、触发规则、固定外观、状态变化、标志性声音、提示词和冲突。没有则输出空清单，不虚构补齐。遵循所选制作规范。" },
-    { id: S.Extract, stage: "assets", label: "正文固定资产提取", requires: [S.Body], requirement: "从本集正文提取可复用的角色及别名、场景空间、道具、服装妆发、角色声线与口音、环境声及音乐音效母题、世界观与全局视觉风格线索。每项标注类别、出现集数、场次、原文依据、稳定特征与变化状态。区分原文事实和待设计建议；没有依据则标为待确认，不凭空补设定。本步只做候选提取，不各自制定一套全剧规范。" },
-    { id: S.Catalog, stage: "assets", label: "跨集资产总表", requires: [S.Extract], scope: "project", requirement: "归并已提供的逐集固定资产提取表，按人物、场景、道具服化、声音、全局风格与其他可复用资产分类。建立稳定资产编号、别名表、出现集数与场次索引、正文依据、关系和状态版本。合并同一实体的别名，列出跨集冲突与待确认项。标明已覆盖集数和缺失集数，禁止宣称已覆盖未提供的正文；不重复逐集全文。" },
-    { id: S.Characters, stage: "assets", label: "人物资产", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "依据正文和所选制作规范，跨集合并人物及别名，每个人物一个条目。包含身份关系、外形体态、服装妆发基准、年龄/服装/伤情等状态变体、固定声线（音色、语速、口音、表演边界）、出现集数场次和证据、完整人物提示词及负面约束、需要的参考图与声线试听。服装变化不另建人物。区分事实、设计建议和冲突；文稿不能证明图片或配音已完成。" },
+{ id: S.Special, stage: "assets", label: "特殊资产", requires: [S.Body, S.Bible], optional: true, scope: "project", output: "asset-group", requirement: "仅提取正文中需反复保持一致、且人物场景道具不能承载的特效、能力视觉、界面、标志符号等特殊资产。按推动主线及关键场面程度排序，并输出类别内从1开始连续唯一的 priority。附出场集数场次、原文证据、触发规则、固定外观、状态变化、标志性声音、提示词和冲突。没有则输出空清单，不虚构补齐。遵循所选制作规范。" },
+    { id: S.Extract, stage: "assets", label: "正文固定资产提取", requires: [S.Body], requirement: "从本集正文提取可复用的角色及别名、场景空间、道具、服装妆发、角色声线与口音、环境声及音乐音效母题、世界观与全局视觉风格线索。每项标注类别、出现集数、场次、原文依据、稳定特征与变化状态。先标出主线核心、主要支撑、次要和背景项；区分原文事实和待设计建议，没有依据则标为待确认，不凭空补设定。本步只做候选提取，不各自制定一套全剧规范。" },
+    { id: S.Catalog, stage: "assets", label: "跨集资产总表", requires: [S.Extract], scope: "project", requirement: "归并已提供的逐集固定资产提取表，按人物、场景、道具服化、声音、全局风格与其他可复用资产分类。每个类别内按剧情主次排序，并标注从1开始连续唯一的优先序号：主线核心、关键支撑在前，次要和背景项在后；人物、场景、道具、声音均遵循此规则。按固定类别顺序呈现，禁止因来源节点顺序或生成先后随机排列。建立稳定资产编号、别名表、出现集数与场次索引、正文依据、关系和状态版本。合并同一实体的别名，列出跨集冲突与待确认项。标明已覆盖集数和缺失集数，禁止宣称已覆盖未提供的正文；不重复逐集全文。" },
+    { id: S.Characters, stage: "assets", label: "人物资产", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "依据正文和所选制作规范，跨集合并人物及别名，每个人物一个条目。按剧情主次给出类别内连续唯一的 priority，从1开始，主线驱动人物、核心对手/共同主角、主要配角、次要角色、群演/画外人物依次排列；不得按姓名或出场先后排序。包含身份关系、外形体态、服装妆发基准；只有变身、兽化、机械化、显著年龄/体型等需要独立参考图的重大形态变化才列状态变体，疲惫、受伤、污渍、湿润和普通换装写入连续性。固定声线（音色、语速、口音、表演边界）、出现集数场次和证据、完整人物提示词及负面约束、需要的参考图与声线试听。服装变化不另建人物。区分事实、设计建议和冲突；文稿不能证明图片或配音已完成。" },
     { id: S.CharacterReferences, stage: "assets", label: "人物参考图生成", requires: [S.Characters], scope: "project", mediaOutput: "image", mediaActionLabel: "根据人物资产生成参考图", requirement: "生成统一横向人物设定板：左侧资料栏，右上正面、左侧、右侧、背面四个全身视图，右下服装物件拆解与局部细节。同一基准年龄、服装和妆发，统一身高比例与基线；画风以本项目制作规范为准，不混合其他版本。" },
-    { id: S.Environments, stage: "assets", label: "场景资产", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "依据正文和所选制作规范归并复用空间，每个独立空间一个条目。包含别名、布局、地标、出入口、轴线、相邻空间、时代材质、日夜天气光照变体、环境声层次、出场集数场次及证据、完整提示词和负面约束、所需空间参考。不得随集数重复建立同名场景。区分事实、待设计和冲突。" },
+    { id: S.Environments, stage: "assets", label: "场景资产", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "依据正文和所选制作规范归并复用空间，每个独立空间一个条目。按主线反复出现、关键行动/高潮空间、主要空间、次要空间排序，输出类别内连续唯一的 priority（从1开始），不按集数先后随机排列。包含别名、布局、地标、出入口、轴线、相邻空间、时代材质；只有空间拓扑或结构重大改变且需要独立空间参考时才列场景变体，日夜、天气、开关灯、光照和普通陈设写入连续性。环境声层次、出场集数场次及证据、完整提示词和负面约束、所需空间参考。不得随集数重复建立同名场景。区分事实、待设计和冲突。" },
     { id: S.EnvironmentReferences, stage: "assets", label: "场景参考图生成", requires: [S.Environments], scope: "project", mediaOutput: "image", mediaActionLabel: "根据场景资产生成参考图", requirement: "生成统一横向场景设定板：左侧资料栏，右上主视角、正立面、侧剖面、俯视布局，右下动线、陈设与材质细节。一个独立空间和同一基准时间天气，各视图的门窗、地标和家具布局一致；采用本项目制作规范。" },
-    { id: S.Props, stage: "assets", label: "道具资产", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "依据正文和所选制作规范提取关键、可复用道具，每件一个条目。包含外观材质尺寸、剧情功能、所属人物/场景、交接/损坏/修复的状态链、标志性声音、出场集数场次及证据、生成提示词和负面约束、所需参考。人物日常服装妆发归人物资产；只有独立承担剧情功能的服饰才作道具。普通背景杂物无需逐项建档。不虚构规格或关键物件，区分事实、设计建议和冲突。" },
-    { id: S.PropReferences, stage: "assets", label: "道具参考图生成", requires: [S.Props], scope: "project", mediaOutput: "image", mediaActionLabel: "根据道具资产生成参考图", requirement: "生成统一横向道具设定板：左侧资料栏，右上正面、侧面、背面、三分之四视角，右下结构附件及材质细节。各视图保持同一道具的尺度、结构和基准状态，不虚构机关或功能；采用本项目制作规范。" },
+    { id: S.Props, stage: "assets", label: "道具资产", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "依据正文和所选制作规范提取关键、可复用道具，每件一个条目。按主线关键物件、线索/目标物、反复推动行动的道具、一般功能道具排序，输出类别内连续唯一的 priority（从1开始），禁止随机排列。包含外观材质尺寸、剧情功能、所属人物/场景、交接/损坏/修复的状态链、标志性声音、出场集数场次及证据、生成提示词和负面约束、所需参考。人物日常服装妆发归人物资产；只有独立承担剧情功能的服饰才作道具。普通背景杂物无需逐项建档。不虚构规格或关键物件，区分事实、设计建议和冲突。" },
+    { id: S.PropReferences, stage: "assets", label: "道具参考图生成", requires: [S.Props], scope: "project", mediaOutput: "image", mediaActionLabel: "根据道具资产生成参考图", requirement: "生成统一横向道具设定板：左侧资料栏，右上正面、侧面、背面、三分之四视角，右下外观附件及表面材质细节。各视图保持同一道具的尺度、外部结构和基准状态，仅作静态陈列，不虚构机关或功能；采用本项目制作规范。" },
     { id: S.SpecialReferences, stage: "assets", label: "特殊资产参考图生成", requires: [S.Special], scope: "project", optional: true, mediaOutput: "image", mediaActionLabel: "根据特殊资产生成参考图", requirement: "生成统一横向特殊资产设定板：左侧资料栏，右上按实体、界面符号或特效类型安排四个视图/状态，右下构成和细节。只使用已定义的形态与能力边界，沿用同一版式和本项目制作规范，不虚构未提取的新资产。" },
-    { id: S.Voices, stage: "assets", label: "声音提示词分组", requires: [S.Body], scope: "project", output: "asset-group", requirement: "从正文提取、跨集归并角色声线、环境声、标志性音效及音乐母题，每个声音资产一个条目。注明类别、关联角色或场景、年龄感、语速口音、音色、情绪表演边界或环境声层次、使用范围、出现集数场次、原文依据、可执行的声音提示词及禁用变化。缺少依据时标为待选设计建议，不逐句配音，不假称音频已经生成。" },
+    { id: S.Voices, stage: "assets", label: "声音提示词分组", requires: [S.Body], scope: "project", output: "asset-group", requirement: "从正文提取、跨集归并角色声线、环境声、标志性音效及音乐母题，每个声音资产一个条目。按人物主次及声音对主线的作用排序，并输出类别内从1开始连续唯一的 priority；关联人物声线排在对应人物主次顺序中，独立环境/音乐/音效按叙事重要性排在其后。注明类别、关联角色或场景、年龄感、语速口音、音色、情绪表演边界或环境声层次、使用范围、出现集数场次、原文依据、可执行的声音提示词及禁用变化。缺少依据时标为待选设计建议，不逐句配音，不假称音频已经生成。" },
+    { id: S.VoiceSamples, stage: "assets", label: "人物声音试听", requires: [S.Voices], scope: "project", optional: true, mediaOutput: "audio", mediaActionLabel: "生成声音试听", requirement: "依据独立声音档案生成校准试听，实际朗读文本与声线表演指令分开；沿用关联人物声音身份。不将试听冒充整集配音。", production: true },
     { id: S.Style, stage: "assets", label: "全局风格", requires: [S.Body], scope: "project", requirement: "基于已提供的正文总结全剧统一的视觉与声音风格：类型情绪、画风、色彩、光影、摄影、材质、节奏及声音美学、正负提示词基准和跨集不变规则。标注覆盖集数和具体正文依据，区分原文明确事实、推断、设计建议及冲突待确认项。不把未指定的画风当成既定事实，不代写世界观设定。" },
     { id: S.Settings, stage: "assets", label: "全局设定", requires: [S.Body], scope: "project", requirement: "基于已提供的正文总结全剧设定：时代地域、世界观及能力规则和限制、时间线、人物身份关系、组织称谓、空间关系、关键道具规则、不可变事实与连续性约束。每项附出现集数场次和正文依据，归并别名、列出矛盾和待确认项；不虚构未提供的剧情，不用视觉画风代替世界规则。" },
     { id: S.AssetApproval, stage: "assets", label: "资产一致性检查", requires: [S.Characters, S.Environments, S.Props, S.Voices], scope: "project", requirement: "对照资产总表与全局规范检查人物、场景、道具服化、声音的编号、别名、版本、覆盖范围和跨集一致性，输出差异、缺件及待人工确认项，不把检查文稿视为实际资产审核通过。", production: true },
@@ -65,13 +67,13 @@ export const shortDramaSteps: readonly ShortDramaStepDefinition[] = [
     { id: S.Recording, stage: "voice", label: "配音、音乐与音效素材", requires: [S.Casting, S.Environments, S.Props, S.Bible], optionalRequires: [S.Special], requirement: "依据人物声线、场景环境声、道具及特殊资产标志音和统一声音美学制作逐句配音、音乐与音效需求及命名清单，不假称音频已生成。", production: true },
     { id: S.Timing, stage: "voice", label: "实际时长、音画对齐与混音", requires: [S.Recording, S.Previsualization], requirement: "输出音画对齐和混音方案，实测缺失时明确待测，不编造实际时长。", production: true },
     { id: S.Sample, stage: "video", label: "代表性镜头样片验证（可选）", requires: [S.Shots], optional: true, requirement: "可选地选择代表性镜头，输出样片提示词、参数建议和验证标准；不阻塞逐镜头视频草样生成。", production: true },
-    { id: S.Video, stage: "video", label: "简单视频生成、导入与重试", requires: [S.Shots], optionalRequires: [S.Sample, S.Previsualization, S.StartFrame, S.EndFrame, S.Keyframes], requirement: "根据已完成的分镜详情直接生成逐镜头视频草样，保持资产和镜头编号。优先引用已经确认的首帧、尾帧和关键帧；模型不支持某种帧输入时明确降级为可用参考图或纯文本，并保留镜头连续性要求。", production: true },
-    { id: S.Performance, stage: "video", label: "口型与表演处理", requires: [S.Video, S.Timing], requirement: "逐镜头给出口型、表演、动作同步处理要求及检查项。", production: true },
+    { id: S.Video, stage: "video", label: "分镜视频与镜头声音", requires: [S.Shots], optionalRequires: [S.Sample, S.Previsualization, S.StartFrame, S.EndFrame, S.Keyframes], requirement: "按分镜逐镜头生成视频，并在同一镜头生成中处理镜头内对白、旁白、说话人表演和音效/环境声，沿用人物资产的固定声线、语速、口音及声音样本。使用模型支持的原生视频音频能力；模型不支持时清楚标为能力限制，不拆成独立配音任务。保持镜头编号、画面与声音同步及资产连续性。优先引用已确认的首尾帧和关键帧；不支持时使用可用参考图或纯文本。", production: true },
+    { id: S.Performance, stage: "video", label: "口型与表演检查", requires: [S.Video], requirement: "检查镜头生成结果中的口型、表演、对白与音效同步；未实际检查的内容标为待验收。", production: true },
     { id: S.VideoApproval, stage: "video", label: "候选对比、选用与问题回退", requires: [S.Performance], requirement: "列出视频候选评估、版本选用及问题回退清单；未观看的媒体不得判为通过。", production: true },
     { id: S.Rough, stage: "edit", label: "镜头排序、入出点与粗剪", requires: [S.VideoApproval], requirement: "输出剪辑顺序、入出点、时长与转场需求，未实测时间标为待测。", production: true },
     { id: S.Picture, stage: "edit", label: "画面调整、转场与包装", requires: [S.Rough], requirement: "输出画面匹配、调色、转场、片头片尾及包装执行清单。", production: true },
-    { id: S.Sound, stage: "edit", label: "对白、音乐、音效与环境声", requires: [S.Rough, S.Timing], requirement: "输出声音分轨、对白优先级、音乐音效入出点与混音检查表。", production: true },
-    { id: S.Subtitles, stage: "edit", label: "字幕、转写与样式校对", requires: [S.Picture, S.Sound, S.Dialogue], requirement: "整理字幕正文、说话人、断句、样式及同步校对清单。", production: true },
+    { id: S.Sound, stage: "edit", label: "完整背景音乐与声音混音", requires: [S.Rough], requirement: "根据已选镜头顺序、场景、情绪弧线和节奏，为整集生成连续完整的背景音乐，并编排镜头视频中已有对白、旁白、音效和环境声的分轨、入出点、音量层次及混音；不重复生成逐镜头对白或音效。", production: true },
+    { id: S.Subtitles, stage: "edit", label: "字幕、转写与样式校对", requires: [S.Picture, S.Sound, S.Shots], requirement: "依据分镜中的对白与旁白整理字幕正文、说话人、断句、样式及同步校对清单。", production: true },
     { id: S.AutomaticReview, stage: "review", label: "资源、版本、时长与字幕边界检查", requires: [S.Subtitles], requirement: "根据材料列出资源、版本、时长和字幕边界检查项，缺少机器检测证据时标为待检测。", production: true },
     { id: S.Screening, stage: "review", label: "成片画面、声音与字幕审片", requires: [S.AutomaticReview], requirement: "生成审片记录表和逐项核对标准，不编造观看结果或审核结论。", production: true },
     { id: S.Revision, stage: "review", label: "问题修订、重新渲染与复查", requires: [S.Screening], requirement: "对已有问题给出责任镜头、修订措施、影响范围、重渲染及复查清单。", production: true },
@@ -85,10 +87,11 @@ export const storyboardFrameStepIds: readonly ShortDramaStepId[] = [S.StartFrame
 export function isStoryboardFrameStep(id: string): id is ShortDramaStepId {
     return storyboardFrameStepIds.includes(id as ShortDramaStepId);
 }
-const legacyAssetSteps: readonly ShortDramaStepId[] = [S.Bible, S.Characters, S.Environments, S.Props, S.Special, S.SpecialReferences, S.Extract, S.Catalog, S.AssetApproval, S.Style, S.Settings, S.Voices, S.Scenes, S.Production];
+const legacyAssetSteps: readonly ShortDramaStepId[] = [S.Bible, S.Characters, S.Environments, S.Props, S.Special, S.SpecialReferences, S.Extract, S.Catalog, S.AssetApproval, S.Style, S.Settings, S.Voices, S.VoiceSamples, S.Scenes, S.Production];
+const legacyVoiceSteps: readonly ShortDramaStepId[] = [S.Dialogue, S.Casting, S.Recording, S.Timing];
 // A sample shot is an optional validation aid. It remains available from the
 // video work unit, but is intentionally outside the required dependency graph.
-export const activeShortDramaSteps = shortDramaSteps.filter((step) => step.id !== S.Reconcile && step.id !== S.Sample && !legacyAssetSteps.includes(step.id));
+export const activeShortDramaSteps = shortDramaSteps.filter((step) => step.id !== S.Reconcile && step.id !== S.Sample && !legacyAssetSteps.includes(step.id) && !legacyVoiceSteps.includes(step.id));
 // Reference dependencies are not workflow shortcuts. Keep only the primary
 // input path, plus explicit continuations for optional frames and parallel edits.
 export type ShortDramaNextStepGroup = {
@@ -126,7 +129,7 @@ export function nextShortDramaSteps(id: ShortDramaStepId) {
     // existing callers. The canvas menu uses nextShortDramaStepGroups(), which is the
     // compact user-facing view and may intentionally collapse several steps.
     const legacy: Partial<Record<ShortDramaStepId, readonly ShortDramaStepId[]>> = {
-        [S.Shots]: [S.Boards, S.StartFrame, S.EndFrame, S.Keyframes, S.Previsualization, S.Dialogue],
+        [S.Shots]: [S.Boards, S.StartFrame, S.EndFrame, S.Keyframes, S.Previsualization],
         [S.Boards]: [S.StartFrame, S.Previsualization],
         [S.StartFrame]: [S.EndFrame, S.Keyframes, S.Previsualization],
         [S.EndFrame]: [S.Keyframes, S.Previsualization],
@@ -141,9 +144,10 @@ export function nextShortDramaSteps(id: ShortDramaStepId) {
 }
 
 export type WorkflowAssetProfile = {
+    soundKind?: import("./production-sound").ProductionSoundKind;
     aliases: string[];
     occurrences: { episode: number; scene: string; state: string; owner: string; location: string; evidence: string }[];
-    variants: { code?: string; name: string; description: string }[];
+    variants: import("./production-continuity").ProductionAssetVariant[];
     sounds: string[];
     conflicts: string[];
     indexContent: string;
@@ -158,7 +162,11 @@ export type ShortDramaWorkflowData = {
     assetRevisionGroup?: { sourceNodeId: string; kind: `${import("./production-plan").PlannedAssetKind}` };
 	planGroups?: Partial<Record<import("./production-plan").PlannedAssetKind, string>>;
 	planGroup?: { rootFrameId: string; kind: import("./production-plan").PlannedAssetKind };
-    planVersion?: 2 | 3;
+    planVersion?: 2 | 3 | 4 | 5;
+    planReady?: boolean;
+    planAssetsStarted?: boolean;
+    assetExecutionStatus?: "failed" | "rejected" | "cancelled" | "completed";
+    assetExecutionError?: string;
     planAbsent?: Partial<Record<import("./production-plan").PlannedAssetKind, string>>;
     planSection?: import("./production-plan").ProductionPlanSection;
     assetIdentity?: import("./production-plan").ProductionAssetIdentity;
@@ -177,7 +185,9 @@ export type ShortDramaWorkflowData = {
     assetSchemaVersion?: 2;
     assetProfile?: WorkflowAssetProfile;
     referenceSignatures?: Record<string, string>;
-    mediaKind?: "image" | "video";
+    mediaKind?: "image" | "video" | "audio";
+    mediaVariantCode?: string;
+    soundSample?: { text: string; instructions: string; voice: string; format: string; speed: string; kind: import("./production-sound").ProductionSoundKind };
     mediaSubjectId?: string;
     mediaShotId?: string;
     mediaGroup?: { sourceNodeId: string; layout?: "grid" };

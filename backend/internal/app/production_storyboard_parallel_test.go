@@ -110,7 +110,7 @@ func TestStoryboardParallelRecoversRejectedSuccessfulReceipt(t *testing.T) {
 	work := state.ProductionParallel["S2-001"]
 	completeStoryboardWork(t, db, work)
 	task, _ := s.repo.Task(work.TaskID)
-	work.Attempts = cloudAgentModelStepRetries + 1
+	work.ValidationAttempts = productionParallelTransientRetries
 	productionRuntimeMutate(t, s, runID, func(state *cloudAgentRuntime) {
 		state.ProductionParallel[work.Key] = work
 		state.ProductionPaused = true

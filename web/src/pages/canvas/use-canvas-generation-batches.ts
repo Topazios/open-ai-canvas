@@ -2,12 +2,11 @@ import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } fr
 import { App } from "antd";
 import { nanoid } from "nanoid";
 
-import { generationBatchCandidates, generationBatchKind, generationBatchReservations, generationBatchRetryItems, generationBatchStatus, generationBatchTargetKey, pauseNodeGenerationBatches, reconcileGenerationBatches } from "@/lib/canvas/canvas-generation-batch";
+import { generationBatchKind, generationBatchQueueCandidates, generationBatchRetryItems, generationBatchStatus, generationBatchTargetKey, pauseNodeGenerationBatches, reconcileGenerationBatches } from "@/lib/canvas/canvas-generation-batch";
 import { buildGenerationConfig, createGenerationRetryContext, generationTaskMetadata, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { storyboardFrameNodeSelection } from "@/lib/canvas/storyboard-frame-model";
 import { unchangedModeratedPrompt } from "@/lib/generation-error";
-import { cancelGenerationTask, listGenerationTasks, type GenerationTask } from "@/services/api/task-center";
-import { readRuntimeLimits } from "@/services/runtime-limits";
+import { cancelGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { getActiveUserScope } from "@/lib/user-scope";
 import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchMode, CanvasNodeData, StoryboardVideoGeneration } from "@/types/canvas";
@@ -113,8 +112,17 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
         (sourceNodeId: string, mode: CanvasGenerationBatchMode, targets: BatchTarget[]) => {
             const sourceNode = nodesRef.current.find((node) => node.id === sourceNodeId);
             if (!sourceNode || !targets.length) return;
-            const activeNodeIds = new Set((sourceNode.metadata?.generationBatches || []).filter(batch => !batch.paused).flatMap((batch) => batch.items.filter((item) => ["waiting", "submitting", "queued", "running"].includes(item.status)).map((item) => generationBatchTargetKey(item))));
-            const availableTargets = targets.filter((target) => !activeNodeIds.has(generationBatchTargetKey(target)));
+            const activeTargetKeys = new Set(nodesRef.current.flatMap((node) =>
+                (node.metadata?.generationBatches || [])
+                    .filter((batch) => batch.projectId === projectId && !batch.paused)
+                    .flatMap((batch) => batch.items.filter((item) => ["waiting", "submitting", "queued", "running"].includes(item.status)).map(generationBatchTargetKey)),
+            ));
+            const availableTargets = targets.filter((target) => {
+                const key = generationBatchTargetKey(target);
+                if (activeTargetKeys.has(key)) return false;
+                activeTargetKeys.add(key);
+                return true;
+            });
             if (!availableTargets.length) {
                 message.info("所选镜头已在生成批次中");
                 return;
@@ -177,14 +185,9 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
             );
             if (!hasWaitingItems) return;
 
-            await readRuntimeLimits();
             policyErrorRef.current = "";
-            const submittedTaskIdsAtQuery = new Set(nodesRef.current.flatMap(node => node.metadata?.taskId ? [node.metadata.taskId] : []));
-            const tasks = await listGenerationTasks(100, { activeOnly: true }).catch(() => null);
-            if (!tasks) return;
             if (owner.current.projectId !== projectId || getActiveUserScope() !== scope) return;
-            const pendingReservations = generationBatchReservations(nodesRef.current, projectId, tasks, new Set(controllersRef.current.keys()), submittedTaskIdsAtQuery);
-            const candidates = generationBatchCandidates(nodesRef.current, projectId, await readRuntimeLimits(), tasks, pendingReservations);
+            const candidates = generationBatchQueueCandidates(nodesRef.current, projectId);
 
             for (const { batch, item, node } of candidates) {
                 if (owner.current.projectId !== projectId || getActiveUserScope() !== scope) return;

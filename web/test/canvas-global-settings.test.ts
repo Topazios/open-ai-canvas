@@ -113,6 +113,24 @@ describe("canvas global creation settings", () => {
         expect(validateShortDramaSettings(customized).voiceLanguage).toBe(DramaVoiceLanguage.Cantonese);
     });
 
+    test("Chinese output language does not turn an overseas story into a domestic setting", () => {
+        const overseas = changeDramaSetting(defaultShortDramaSettings(), "market", DramaMarket.Overseas);
+        const chineseOutput = changeDramaSetting(overseas, "language", DramaLanguage.SimplifiedChinese);
+        expect(chineseOutput).toMatchObject({ market: DramaMarket.Overseas, targetMarket: DramaTargetMarket.NorthAmerica, region: DramaRegion.NorthAmerica, language: DramaLanguage.SimplifiedChinese });
+        const prompt = globalSettingsPrompt(chineseOutput, "story");
+        expect(prompt).toContain("故事发生地是权威世界设定：北美");
+        expect(prompt).toContain("正文语言是简体中文");
+        expect(prompt).toContain("不得因为正文使用中文而自动加入这些身份");
+        expect(prompt).toContain("本地姓名可以按中文习惯音译或译写");
+        expect(prompt).toContain("故事地点“北美”必须参与核心关系、权力来源、可行策略及选择后果");
+        expect(prompt).toContain("大区域不是同质文化");
+        expect(prompt).toContain("中文仅是输出语言，不代表国内叙事腔");
+        const imagePrompt = globalSettingsPrompt(chineseOutput, "assets", "image");
+        expect(imagePrompt).toContain("故事发生地是权威世界设定：北美");
+        expect(imagePrompt).toContain("正文语言是简体中文");
+        expect(imagePrompt).not.toContain("发行方向");
+    });
+
     test("distribution and locale reach generated prompts and saved task snapshots", () => {
         const settings = changeDramaSetting(defaultShortDramaSettings(), "market", DramaMarket.Overseas);
         const created = newDramaCanvasContent(settings);

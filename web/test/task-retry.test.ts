@@ -38,4 +38,15 @@ describe("image retry billing confirmation", () => {
             await expect(retryTaskWithBillingConfirmation(task.id, async () => { throw new Error("unexpected confirmation"); }, async () => { throw error; })).rejects.toBe(error);
         }
     });
+    test("pre-acknowledged batch retry skips prompts and keeps each task's own order", async () => {
+        const orders = new Map([["a", "order-a"], ["b", "order-b"]]);
+        const calls: (string | undefined)[][] = [];
+        const run = (id: string) => retryTaskWithBillingConfirmation(id, async () => true, async (taskId, order) => {
+            calls.push([taskId, order]);
+            if (!order) throw new ApiError("待核对", { status: 409, reason: "task_billing_review_required", details: { billingOrderId: orders.get(taskId) } });
+            return { id: taskId } as GenerationTask;
+        });
+        await Promise.all([run("a"), run("b")]);
+        expect(calls).toEqual([["a", undefined], ["b", undefined], ["a", "order-a"], ["b", "order-b"]]);
+    });
 });

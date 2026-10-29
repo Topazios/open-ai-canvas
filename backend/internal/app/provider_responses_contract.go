@@ -18,7 +18,7 @@ func ValidateResponsesProviderResult(data []byte, stream bool) error {
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return errors.New("Responses 返回无效 JSON")
+		return providerResponseDecodeError{Err: errors.New("Responses 返回无效 JSON")}
 	}
 	_, err := parseAgentToolPayload(payload, "responses")
 	return err
@@ -52,21 +52,24 @@ func validateResponsesCompletion(payload map[string]interface{}) error {
 	case "incomplete":
 		details, _ := payload["incomplete_details"].(map[string]interface{})
 		if stringField(details, "reason") == "max_output_tokens" {
-			return errors.New("Responses 输出达到 token 上限，生成未完成；请增加输出上限或拆分任务")
+			return errProviderOutputLimit
 		}
-		return errors.New("Responses 返回未完成结果，不能作为完整内容采用")
+		return providerResponseDecodeError{Err: errors.New("Responses 返回未完成结果，不能作为完整内容采用")}
+	case "failed", "cancelled", "canceled", "expired":
+		raw, _ := json.Marshal(payload)
+		return providerPayloadError{raw: string(raw), message: fmt.Sprintf("上游 Responses 返回状态 %q，生成未完成", stringField(payload, "status"))}
 	default:
-		return fmt.Errorf("Responses 返回非完成状态 %q，生成未完成", stringField(payload, "status"))
+		return providerResponseDecodeError{Err: fmt.Errorf("Responses 返回非完成状态 %q，生成未完成", stringField(payload, "status"))}
 	}
 	for _, value := range interfaceSlice(payload["output"]) {
 		item, _ := value.(map[string]interface{})
 		if status := stringField(item, "status"); status != "" && status != "completed" {
-			return errors.New("Responses 输出条目未完成，生成未完成")
+			return providerResponseDecodeError{Err: errors.New("Responses 输出条目未完成，生成未完成")}
 		}
 		for _, value := range interfaceSlice(item["content"]) {
 			part, _ := value.(map[string]interface{})
 			if stringField(part, "type") == "refusal" {
-				return errors.New("模型拒绝了本次请求，未生成可用内容")
+				return providerResponseDecodeError{Err: errors.New("模型拒绝了本次请求，未生成可用内容")}
 			}
 		}
 	}

@@ -15,6 +15,7 @@ type (
 	RuntimeStoragePolicy       = platform.RuntimeStoragePolicy
 	RuntimeTaskPolicy          = platform.RuntimeTaskPolicy
 	RuntimeRequestPolicy       = platform.RuntimeRequestPolicy
+	RuntimeCanvasPolicy        = platform.RuntimeCanvasPolicy
 	RuntimePolicySetting       = platform.RuntimePolicySetting
 	PublicRuntimePolicySetting = platform.PublicRuntimePolicySetting
 	PublicRuntimeLimits        = platform.PublicRuntimeLimits

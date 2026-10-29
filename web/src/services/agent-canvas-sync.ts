@@ -6,6 +6,7 @@ type Options = {
     applyPatches: (patches: AgentCanvasPatch[]) => Promise<unknown>;
     refresh: () => Promise<unknown>;
     onError: (error: unknown) => void;
+    onSynced?: () => void;
     batchMs?: number;
     refreshIntervalMs?: number;
 };
@@ -18,6 +19,7 @@ export function createAgentCanvasSync(options: Options) {
     let disposed = false;
     let running = false;
     let lastRefresh = -Infinity;
+    let refreshRetries = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
         if (disposed || running || timer || (!patches.length && !needsRefresh)) return;
@@ -30,17 +32,25 @@ export function createAgentCanvasSync(options: Options) {
         const batch = patches;
         patches = [];
         try {
+            let synced = false;
             if (batch.length) {
-                try { await options.applyPatches(batch); }
+                try { await options.applyPatches(batch); synced = true; }
                 catch { needsRefresh = true; }
             }
             if (!disposed && needsRefresh && Date.now() - lastRefresh >= (options.refreshIntervalMs ?? 1000)) {
                 needsRefresh = false;
                 lastRefresh = Date.now();
                 await options.refresh();
+                synced = true;
             }
+            if (!disposed && synced && !needsRefresh) { refreshRetries = 0; options.onSynced?.(); }
         } catch (error) {
-            if (!disposed) options.onError(error);
+            if (!disposed) {
+                // Retry reads only, without replaying any model/tool call. Stop
+                // after a bounded recovery so real edit conflicts stay visible.
+                needsRefresh = refreshRetries++ < 2;
+                options.onError(error);
+            }
         } finally {
             running = false;
             schedule();
@@ -53,12 +63,12 @@ export function createAgentCanvasSync(options: Options) {
             if (patch && patch.canvasId === options.canvasId) {
                 supportsPatches = true;
                 patches.push(patch);
-            } else if (event.type === "canvas_updated" || event.type === "canvas_undone" || (!supportsPatches && (event.type === "generation_task_created" || event.type === "tool_failed" || event.type === "run_failed" || (event.type === "tool_completed" && ["canvas_apply_ops", "generate_media"].includes(String(event.payload.toolName)))))) {
+            } else if (event.type === "canvas_updated" || event.type === "canvas_undone" || ["run_failed", "run_completed", "run_cancelled"].includes(event.type) || (!supportsPatches && (event.type === "generation_task_created" || event.type === "tool_failed" || (event.type === "tool_completed" && ["canvas_apply_ops", "generate_media"].includes(String(event.payload.toolName)))))) {
                 needsRefresh = true;
             }
             schedule();
         },
-        reconcile() { if (!disposed) { needsRefresh = true; schedule(); } },
+        reconcile() { if (!disposed) { refreshRetries = 0; needsRefresh = true; schedule(); } },
         dispose() { disposed = true; if (timer) clearTimeout(timer); patches = []; },
     };
 }

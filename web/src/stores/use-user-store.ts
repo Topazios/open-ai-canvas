@@ -23,7 +23,31 @@ export type RuntimeLimits = {
     resourceUploadMB: number;
     recycleBinRetentionDays?: number;
     concurrency?: RuntimeConcurrency;
+    canvas?: {
+        connectionLineStyle: "solid" | "dashed";
+        connectionArrowStyle: "arrow" | "dot" | "none";
+        connectionEffect: "none" | "highlight";
+        taskEventHeartbeatSeconds?: number;
+        taskEventMaxConnectionsPerUser?: number;
+        taskEventMaxReplayEvents?: number;
+        taskEventRetentionHours?: number;
+        taskFallbackPollMinSeconds?: number;
+        taskFallbackPollMaxSeconds?: number;
+    };
 };
+
+const defaultRuntimeCanvas = {
+    connectionLineStyle: "solid" as const,
+    connectionArrowStyle: "arrow" as const,
+    connectionEffect: "highlight" as const,
+    taskEventHeartbeatSeconds: 15,
+    taskEventMaxConnectionsPerUser: 8,
+    taskEventMaxReplayEvents: 200,
+    taskEventRetentionHours: 168,
+    taskFallbackPollMinSeconds: 3,
+    taskFallbackPollMaxSeconds: 60,
+};
+const defaultRuntimeLimits: RuntimeLimits = { activeTaskLimit: 5, resourceUploadMB: 50, recycleBinRetentionDays: 30, canvas: defaultRuntimeCanvas };
 
 export type RuntimeConcurrency = Record<"image" | "text" | "agent" | "video" | "audio" | "other" | "channel" | "customRelay" | "imagePreparation" | "resourceDownload" | "upload" | "mediaRecovery" | "agentSessions", number>;
 
@@ -71,15 +95,15 @@ type UserStore = {
 export const useUserStore = create<UserStore>()((set) => ({
     hydrated: false,
     user: null,
-    runtimeLimits: { activeTaskLimit: 5, resourceUploadMB: 50, recycleBinRetentionDays: 30 },
+    runtimeLimits: defaultRuntimeLimits,
     runtimeLimitsUpdatedAt: 0,
     runtimeLimitsError: "",
     drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE },
     features: defaultFeatureAvailability,
     setUser: (user) => set({ user }),
-    setRuntimeLimits: (runtimeLimits) => set({ runtimeLimits: runtimeLimits || { activeTaskLimit: 5, resourceUploadMB: 50, recycleBinRetentionDays: 30 }, runtimeLimitsUpdatedAt: runtimeLimits ? Date.now() : 0, runtimeLimitsError: "" }),
+    setRuntimeLimits: (runtimeLimits) => set({ runtimeLimits: runtimeLimits ? { ...runtimeLimits, canvas: { ...defaultRuntimeCanvas, ...runtimeLimits.canvas } } : defaultRuntimeLimits, runtimeLimitsUpdatedAt: runtimeLimits ? Date.now() : 0, runtimeLimitsError: "" }),
     setDrawingEngine: (drawingEngine) => set({ drawingEngine: drawingEngine || { defaultEngine: DEFAULT_DRAWING_ENGINE } }),
     setFeatures: (features) => set({ features: features ? { ...defaultFeatureAvailability, ...features } : defaultFeatureAvailability }),
     setHydrated: (hydrated) => set({ hydrated }),
-    clearSession: () => set({ user: null, runtimeLimits: { activeTaskLimit: 5, resourceUploadMB: 50, recycleBinRetentionDays: 30 }, runtimeLimitsUpdatedAt: 0, runtimeLimitsError: "", drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE }, features: defaultFeatureAvailability }),
+    clearSession: () => set({ user: null, runtimeLimits: defaultRuntimeLimits, runtimeLimitsUpdatedAt: 0, runtimeLimitsError: "", drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE }, features: defaultFeatureAvailability }),
 }));

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"infinite-canvas/backend/internal/repository"
 	"infinite-canvas/backend/internal/service"
 )
 
@@ -255,16 +257,38 @@ func RegisterAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
 		var req struct {
-			Action   string `json:"action"`
-			MaxSteps int    `json:"maxSteps"`
+			Action       string                                `json:"action"`
+			MaxSteps     int                                   `json:"maxSteps"`
+			AssetKeys    []string                              `json:"assetKeys"`
+			AssetKinds   []string                              `json:"assetKinds"`
+			PlanSections []string                              `json:"planSections"`
+			Model        service.ProductionAssetModelSelection `json:"modelSelection"`
 		}
 		if err = c.ShouldBindJSON(&req); err != nil {
 			fail(c, http.StatusBadRequest, err)
 			return
 		}
-		if err = svc.ControlProductionAgent(user.ID, c.Param("id"), req.Action, req.MaxSteps); err != nil {
+		if req.Action == "generate_plans" {
+			err = svc.GenerateProductionPlanSections(user.ID, c.Param("id"), req.PlanSections)
+		} else if req.Action == "generate_assets" {
+			if len(req.AssetKinds) > 0 {
+				err = svc.GenerateProductionPlanAssetKinds(user.ID, c.Param("id"), req.AssetKinds, req.Model)
+			} else {
+				err = svc.GenerateProductionPlanAssets(user.ID, c.Param("id"), req.AssetKeys, req.Model)
+			}
+		} else {
+			err = svc.ControlProductionAgent(user.ID, c.Param("id"), req.Action, req.MaxSteps)
+		}
+		if err != nil {
+			var appErr *service.AppError
+			if !errors.As(err, &appErr) {
+				log.Printf("production-control failed: run=%s action=%s detail=%s", c.Param("id"), req.Action, productionControlLogDetail(err))
+				if errors.Is(err, repository.ErrCreationConflict) || errors.Is(err, repository.ErrCanvasRevisionConflict) {
+					err = service.NewAppError(http.StatusConflict, "任务数据刚被更新，请重试")
+				}
+			}
 			failService(c, err)
 			return
 		}
@@ -408,6 +432,18 @@ func RegisterAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
 			}
 		}
 	})
+}
+
+// productionControlLogDetail 只保留脱敏后的单行错误摘要，用于定位未分类的 500。
+func productionControlLogDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.Join(strings.Fields(err.Error()), " ")
+	if runes := []rune(text); len(runes) > 300 {
+		text = string(runes[:300])
+	}
+	return fmt.Sprintf("%T: %s", err, text)
 }
 
 func writeAgentSSE(c *gin.Context, event string, id int64, value any) {

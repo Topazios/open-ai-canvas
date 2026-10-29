@@ -1,4 +1,5 @@
 import type { GenerationTask, TaskStatus } from "@/services/api/task-center";
+import { executionTaskWarning } from "./execution-warning";
 
 export const statusLabel: Record<TaskStatus, string> = {
     queued: "排队中",
@@ -8,7 +9,7 @@ export const statusLabel: Record<TaskStatus, string> = {
     cancelled: "已取消",
 };
 
-type GenerationTaskDisplayTarget = Pick<GenerationTask, "status" | "stage" | "mediaStage" | "progress" | "providerRequestId" | "providerCancelStatus"> & Partial<Pick<GenerationTask, "operation">>;
+type GenerationTaskDisplayTarget = Pick<GenerationTask, "status" | "stage" | "mediaStage" | "progress" | "providerRequestId" | "providerCancelStatus"> & Partial<Pick<GenerationTask, "operation" | "diagnostic">>;
 
 const cancellablePreSubmissionStages = new Set(["queued", "等待队列调度", "后端接管任务", "正在准备创作"]);
 
@@ -45,6 +46,7 @@ export function isGenerationTaskSubmissionUncertain(task: GenerationTaskDisplayT
 }
 
 export function generationTaskStatusLabel(task: GenerationTaskDisplayTarget) {
+    if (executionTaskWarning(task.status, task.diagnostic)) return "内容待处理";
     if (task.mediaStage && task.status === "failed") return "作品保存未完成";
     if (task.mediaStage && (task.status === "queued" || task.status === "running")) return "作品已生成，正在保存";
     if (isGenerationTaskSubmissionUncertain(task)) return "提交结果待确认";

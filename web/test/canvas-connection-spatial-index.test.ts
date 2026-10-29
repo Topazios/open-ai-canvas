@@ -74,4 +74,12 @@ describe("connection geometry index", () => {
         expect(expanded.index.query(view)).toEqual(["edge"]);
         expect(buildCanvasConnectionSpatialIndex([child, target], connections, expanded).index.query(view)).toEqual(["edge"]);
     });
+    test("non-rendered storyboard frame links do not consume the viewport connection budget", () => {
+        const frameRecord: CanvasNodeData = { ...source, id: "frame-record", metadata: { storyboardFrame: { scriptId: "script", rowId: "row", frameId: "frame", sourcePromptHash: "hash" } } };
+        const frameLinks = Array.from({ length: 5001 }, (_, index) => ({ id: `frame-link-${index}`, fromNodeId: frameRecord.id, toNodeId: target.id }));
+        const index = buildCanvasConnectionSpatialIndex([source, target, frameRecord], [...frameLinks, ...connections]);
+
+        expect(index.index.query(view, 1)).toEqual(["edge"]);
+        expect(index.endpointsById.has("frame-link-0")).toBe(false);
+    });
 });

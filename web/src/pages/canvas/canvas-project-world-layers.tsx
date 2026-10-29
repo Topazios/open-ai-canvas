@@ -12,6 +12,8 @@ import type { CanvasBatchConnectionPreview } from "@/lib/canvas/canvas-batch-con
 import { sortCanvasNodesByStackOrder, type CanvasNodeStackOrder } from "@/lib/canvas/canvas-node-stack-order";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { isFrameNode } from "@/lib/canvas/canvas-frame";
+import type { RuntimeLimits } from "@/stores/use-user-store";
+import type { AgentRun } from "@/services/api/agent";
 import type { CanvasNodeRenderLOD } from "@/lib/canvas/canvas-node-lod";
 import type { CanvasDisplayConnection, CanvasFolderStyle, CanvasFolderTheme, CanvasNodeData, ConnectionHandle, Position, SelectionBox } from "@/types/canvas";
 
@@ -20,6 +22,9 @@ type NodeBounds = { left: number; top: number; width: number; height: number; co
 
 type CanvasProjectWorldLayersProps = {
     projectId: string;
+    productionRuns?: AgentRun[];
+    onGeneratePlanAssets?: (targetNodeId: string) => void;
+    productionBusy?: Record<string, boolean>;
     shotBindings?: Map<string, CanvasShotBinding>;
     originalNodeIds?: ReadonlySet<string>;
     onOriginalNodeView?: (nodeId: string, original: boolean) => void;
@@ -27,6 +32,7 @@ type CanvasProjectWorldLayersProps = {
     viewportScale: number;
     connectionLayerBounds: { left: number; top: number; width: number; height: number };
     displayConnections: CanvasDisplayConnection[];
+    connectionPolicy?: RuntimeLimits["canvas"];
     selectedConnectionId: string | null;
     relatedConnectionIds: Set<string>;
     scriptScrollTopById: Record<string, number>;
@@ -83,9 +89,11 @@ type CanvasProjectWorldLayersProps = {
     onReloadResource: (node: CanvasNodeData) => void;
     onOpenInfo: (node: CanvasNodeData) => void;
     onOpenTaskDetails: (node: CanvasNodeData) => void;
+    onRetryFailed?: (frame: CanvasNodeData, failedNodes: CanvasNodeData[]) => void;
     onCancelTask: (node: CanvasNodeData) => void;
     onOpenVersions: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
+    onMaskEdit: (node: CanvasNodeData) => void;
     onReplaceMedia: (node: CanvasNodeData) => void;
     onOpenTextEditor: (node: CanvasNodeData) => void;
     onOpenDirector: (node: CanvasNodeData) => void;
@@ -144,9 +152,9 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         fromScrollTop={props.scriptScrollTopById[from.id] || 0}
                         toScrollTop={props.scriptScrollTopById[to.id] || 0}
                         active={props.selectedConnectionId === connection.id || props.relatedConnectionIds.has(connection.id)}
-                        visualMode="full"
-                        // 拖动预览由 Leafer 图形层逐帧同步；隐藏这层静态 SVG 描边，避免两套位置叠出残影。
+                        visualMode="hover-only"
                         hideVisual={props.isNodeDragging}
+                        connectionPolicy={props.connectionPolicy}
                         onSelect={() => props.onConnectionSelect(connection.id)}
                         onContextMenu={(event) => props.onConnectionContextMenu(event, connection.id)}
                     />
@@ -162,6 +170,9 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         dragOffset={props.dragPreview?.nodeIds.has(node.id) ? props.dragPreview : undefined}
                         childNodes={framePreviewNodes(node)}
                         taskAnchor={props.nodeById.get(node.metadata?.shortDrama?.assetGroup?.manifestId || "")}
+                        productionRun={props.productionRuns?.find((run) => run.production?.targetNodeId === node.metadata?.shortDrama?.assetGroup?.manifestId)}
+                        onGeneratePlanAssets={props.onGeneratePlanAssets}
+                        planAssetsBusy={props.productionBusy?.[node.metadata?.shortDrama?.assetGroup?.manifestId || ""]}
                         scale={viewportScale}
                         isSelected={props.selectedNodeIds.has(node.id)}
                         isDropTarget={props.frameDropTargetId === node.id}
@@ -174,6 +185,7 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         onTitleChange={props.onNodeTitleChange}
                         onContextMenu={props.onNodeContextMenu}
                         onOpenTaskDetails={props.onOpenTaskDetails}
+                        onRetryFailed={props.onRetryFailed}
                     />
                 ) : (
                     <CanvasNodeGraphScope key={node.id} nodeId={node.id} upstreamNodes={props.upstreamNodesById.get(node.id)}>
@@ -226,6 +238,7 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         onCancelTask={props.onCancelTask}
                         onOpenVersions={props.onOpenVersions}
                         onViewImage={props.onViewImage}
+                        onMaskEdit={props.onMaskEdit}
                         onReplaceMedia={props.onReplaceMedia}
                         onOpenTextEditor={props.onOpenTextEditor}
                         onOpenDirector={props.onOpenDirector}

@@ -12,10 +12,14 @@ import (
 )
 
 func apiCallLogMetadataBytes(log model.ApiCallLog) int64 {
-	return int64(len(log.Path) + len(log.Model) + len(log.ProviderRequestID) + len(log.ErrorCode) + len(log.Error) + len(log.UpstreamURL) + len(log.RequestContentType))
+	return int64(len(log.Path) + len(log.Model) + len(log.ProviderRequestID) + len(log.ErrorCode) + len(log.ErrorSource) + len(log.Error) + len(log.UpstreamURL) + len(log.RequestContentType))
 }
 
 func (s *Service) LogAPICall(log model.ApiCallLog) error {
+	log.Status = log.DisplayStatus()
+	if log.Status == model.ApiCallStatusWarning && log.ErrorSource == "" {
+		log.ErrorSource = "content"
+	}
 	if log.ID == "" {
 		log.ID = newID()
 	}
@@ -33,7 +37,7 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 			stdlog.Printf("provider billing request id update failed: billing_order_id=%s provider_request_id=%s error=%v", log.BillingOrderID, log.ProviderRequestID, err)
 		}
 	}
-	if log.TaskID != "" && (log.RequestKind == "create" || log.RequestKind == "poll" || log.RequestKind == "cancel") {
+	if log.Status != model.ApiCallStatusRunning && log.TaskID != "" && (log.RequestKind == "create" || log.RequestKind == "poll" || log.RequestKind == "cancel") {
 		stage := log.RequestKind
 		var nextPollAt *time.Time
 		if stage == "create" && log.Status == model.ApiCallStatusSucceeded && log.ProviderRequestID != "" {
@@ -57,6 +61,11 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 			// 重建，不能让一次状态写失败掩盖真实的上游调用。
 			stdlog.Printf("provider task state update failed: task_id=%s provider_request_id=%s error=%v", log.TaskID, log.ProviderRequestID, err)
 		}
+	}
+	if updated, err := s.repo.CompletePendingAPICallLog(&log); err != nil {
+		return err
+	} else if updated {
+		return nil
 	}
 	if merged, err := s.mergeVideoAPICallLog(log); err != nil {
 		return err
@@ -120,13 +129,15 @@ func (s *Service) mergeVideoAPICallLog(log model.ApiCallLog) (bool, error) {
 	root.DurationMs = max(root.DurationMs, log.CreatedAt.Sub(startedAt).Milliseconds())
 	root.StatusCode = log.StatusCode
 	root.ConcurrencyLimit = log.ConcurrencyLimit
-	if log.Status == model.ApiCallStatusFailed {
+	if log.Status == model.ApiCallStatusFailed || log.Status == model.ApiCallStatusWarning {
 		root.Status = log.Status
 		root.ErrorCode = log.ErrorCode
+		root.ErrorSource = log.ErrorSource
 		root.Error = log.Error
 	} else {
 		root.Status = model.ApiCallStatusSucceeded
 		root.ErrorCode = ""
+		root.ErrorSource = ""
 		root.Error = ""
 	}
 	if log.UsageAvailable {
@@ -142,5 +153,9 @@ func (s *Service) APICallLogs(actor *model.User, limit int) ([]model.ApiCallLog,
 	if actor == nil {
 		return nil, Unauthorized("请先登录")
 	}
-	return s.repo.ApiCallLogs(actor.ID, actor.Role == model.UserRoleAdmin, limit)
+	logs, err := s.repo.ApiCallLogs(actor.ID, actor.Role == model.UserRoleAdmin, limit)
+	for index := range logs {
+		logs[index].Status = logs[index].DisplayStatus()
+	}
+	return logs, err
 }

@@ -72,9 +72,34 @@ func executeProtocolCreateRequest(ctx context.Context, input canvasGenerationInp
 		}
 		spec.Body = body
 	}
-	if input.Mode != "text" || !input.StreamText || !streamable {
-		data, err := executeProtocolRequest(ctx, input.Config, spec)
+	if input.Mode != "text" || !streamable || !input.StreamText {
+		var validators []func([]byte, string) error
+		if input.Mode == "text" {
+			if adapter, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
+				validators = append(validators, func(data []byte, _ string) error {
+					parsed, err := adapter.ParseCreate(ctx, data)
+					if err == nil && wire != "responses" && parsed.Status == protocol.StatusSucceeded && (parsed.Result == nil || strings.TrimSpace(parsed.Result.Text) == "") {
+						reasoning := ""
+						if parsed.Result != nil {
+							reasoning = parsed.Result.Reasoning
+						}
+						return missingProviderTextError(reasoning)
+					}
+					return err
+				})
+			}
+		}
+		data, _, err := executeProtocolBinaryRequestWithConsumer(ctx, input.Config, spec, nil, validators...)
 		if err == nil && input.Mode == "text" && wire == "responses" {
+			var payload map[string]interface{}
+			if json.Unmarshal(data, &payload) == nil {
+				switch strings.ToLower(strings.TrimSpace(stringField(payload, "status"))) {
+				case "queued", "pending", "created", "submitted", "in_progress", "processing", "running":
+					return data, nil, nil
+				case "failed", "failure", "error", "expired", "cancelled", "canceled", "incomplete":
+					return data, nil, nil
+				}
+			}
 			result, parseErr := parseProtocolResponsesText(data)
 			return data, result, parseErr
 		}
@@ -84,27 +109,33 @@ func executeProtocolCreateRequest(ctx context.Context, input canvasGenerationInp
 	if body == nil {
 		return nil, nil, errors.New("声明式流式文本请求体必须是 JSON 对象")
 	}
-	body["stream"] = true
-	if wire == "chat-completion" {
+	if input.StreamText {
+		body["stream"] = true
+	}
+	if input.StreamText && wire == "chat-completion" {
 		if err := ensureChatCompletionStreamUsage(body); err != nil {
 			return nil, nil, err
 		}
 	}
 	spec.Body = body
-	parser := newStreamingAgentParser(wire, input.OnTextDelta)
-	parser.emitReasoning = input.OnReasoningDelta
-	data, mimeType, err := executeProtocolBinaryRequestWithConsumer(ctx, input.Config, spec, parser.consume)
-	if err != nil || !strings.Contains(strings.ToLower(mimeType), "event-stream") {
-		if err == nil && wire == "responses" {
-			result, parseErr := parseProtocolResponsesText(data)
-			return data, result, parseErr
-		}
-		return data, nil, err
+	var parser *streamingAgentParser
+	var consume func(string, []byte)
+	if input.StreamText {
+		parser = newStreamingAgentParser(wire, input.OnTextDelta)
+		parser.emitReasoning = input.OnReasoningDelta
+		consume = parser.consume
 	}
-	parser.flush()
-	parsed, err := parser.result()
+	var parsed map[string]interface{}
+	data, _, err := executeProtocolBinaryRequestWithConsumer(ctx, input.Config, spec, consume, func(data []byte, mimeType string) error {
+		var parseErr error
+		parsed, parseErr = parseAgentProviderResponse(data, mimeType, wire, parser)
+		if parseErr == nil && strings.TrimSpace(stringField(parsed, "text")) == "" {
+			parseErr = missingProviderTextError(stringField(parsed, "reasoning"))
+		}
+		return parseErr
+	})
 	if err != nil {
-		return nil, nil, err
+		return data, nil, err
 	}
 	text := stringField(parsed, "text")
 	if text == "" {
@@ -259,7 +290,8 @@ func applyTextThinking(body map[string]interface{}, input canvasGenerationInput,
 	if input.TextOptions.ReasoningDisabled {
 		switch protocol {
 		case "responses":
-			delete(body, "reasoning")
+			// Omitting reasoning restores the provider default, which may be high.
+			body["reasoning"] = map[string]interface{}{"effort": "none"}
 		case "chat-completion":
 			delete(body, "reasoning_effort")
 		case "claude-api":

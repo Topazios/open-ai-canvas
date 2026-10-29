@@ -12,37 +12,52 @@ import (
 )
 
 type ProductionAgentProgress struct {
-	ExecutionMode         string                       `json:"executionMode,omitempty"`
-	EpisodeTaskStatus     string                       `json:"episodeTaskStatus,omitempty"`
-	ParallelItems         []ProductionParallelProgress `json:"parallelItems,omitempty"`
-	ConcurrentItems       []string                     `json:"concurrentItems,omitempty"`
-	ConcurrencyLimit      int                          `json:"concurrencyLimit,omitempty"`
-	DocumentCount         int                          `json:"documentCount,omitempty"`
-	DocumentTotal         int                          `json:"documentTotal,omitempty"`
-	AssetCount            int                          `json:"assetCount,omitempty"`
-	AssetTotal            int                          `json:"assetTotal,omitempty"`
-	Phase                 string                       `json:"phase,omitempty"`
-	PhaseLabel            string                       `json:"phaseLabel,omitempty"`
-	CurrentItem           string                       `json:"currentItem,omitempty"`
-	InventoryComplete     bool                         `json:"inventoryComplete,omitempty"`
-	WorkKind              string                       `json:"workKind,omitempty"`
-	MaxSteps              int                          `json:"maxSteps"`
-	TargetNodeID          string                       `json:"targetNodeId"`
-	Paused                bool                         `json:"paused"`
-	WaitingForBoundary    bool                         `json:"waitingForBoundary"`
-	ProcessedPages        int                          `json:"processedPages"`
-	TotalPages            int                          `json:"totalPages"`
-	ArtifactCount         int                          `json:"artifactCount"`
-	ShotTotal             int                          `json:"shotTotal,omitempty"`
-	Validated             bool                         `json:"validated"`
-	WaitingForSharedFacts bool                         `json:"waitingForSharedFacts"`
+	ExecutionMode              string                        `json:"executionMode,omitempty"`
+	EpisodeTaskStatus          string                        `json:"episodeTaskStatus,omitempty"`
+	ParallelItems              []ProductionParallelProgress  `json:"parallelItems,omitempty"`
+	AssetGroups                []ProductionPlanGroupProgress `json:"assetGroups,omitempty"`
+	Assets                     []ProductionPlanAssetProgress `json:"assets,omitempty"`
+	SelectedAssetKeys          []string                      `json:"selectedAssetKeys,omitempty"`
+	ConcurrentItems            []string                      `json:"concurrentItems,omitempty"`
+	ConcurrencyLimit           int                           `json:"concurrencyLimit,omitempty"`
+	DocumentCount              int                           `json:"documentCount,omitempty"`
+	DocumentTotal              int                           `json:"documentTotal,omitempty"`
+	AssetCount                 int                           `json:"assetCount,omitempty"`
+	AssetTotal                 int                           `json:"assetTotal"`
+	PlanReady                  bool                          `json:"planReady"`
+	AssetGenerationReady       bool                          `json:"assetGenerationReady"`
+	AssetsStarted              bool                          `json:"assetsStarted"`
+	Phase                      string                        `json:"phase,omitempty"`
+	PhaseLabel                 string                        `json:"phaseLabel,omitempty"`
+	CurrentItem                string                        `json:"currentItem,omitempty"`
+	InventoryComplete          bool                          `json:"inventoryComplete,omitempty"`
+	InventoryRecoveryAvailable bool                          `json:"inventoryRecoveryAvailable,omitempty"`
+	WorkKind                   string                        `json:"workKind,omitempty"`
+	MaxSteps                   int                           `json:"maxSteps"`
+	TargetNodeID               string                        `json:"targetNodeId"`
+	Paused                     bool                          `json:"paused"`
+	WaitingForBoundary         bool                          `json:"waitingForBoundary"`
+	ProcessedPages             int                           `json:"processedPages"`
+	TotalPages                 int                           `json:"totalPages"`
+	ArtifactCount              int                           `json:"artifactCount"`
+	ShotTotal                  int                           `json:"shotTotal,omitempty"`
+	Validated                  bool                          `json:"validated"`
+	WaitingForSharedFacts      bool                          `json:"waitingForSharedFacts"`
 }
 
 type ProductionParallelProgress struct {
-	Key    string `json:"key"`
-	Name   string `json:"name"`
-	TaskID string `json:"taskId,omitempty"`
-	Status string `json:"status"`
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+	TaskID   string `json:"taskId,omitempty"`
+	Status   string `json:"status"`
+	Severity string `json:"severity,omitempty"`
+}
+
+type ProductionPlanGroupProgress struct {
+	Kind      string `json:"kind"`
+	Total     int    `json:"total"`
+	Completed int    `json:"completed"`
+	Status    string `json:"status"`
 }
 
 func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgentRuntime) *ProductionAgentProgress {
@@ -67,7 +82,7 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 	}
 	for _, key := range productionParallelKeys(state.ProductionParallel) {
 		work := state.ProductionParallel[key]
-		status := "retrying"
+		status := "queued"
 		if work.Error != "" {
 			status = "error"
 		} else if work.TaskID != "" {
@@ -75,8 +90,17 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 			if status == "" {
 				status = "unknown"
 			}
+		} else if work.RetryAt > time.Now().UnixMilli() {
+			status = "retrying"
 		}
-		view.ParallelItems = append(view.ParallelItems, ProductionParallelProgress{Key: key, Name: work.Name, TaskID: work.TaskID, Status: status})
+		severity := ""
+		if work.Notice != nil && (work.Error != "" || status == "failed" || status == "retrying" || work.QuietHold) {
+			severity = work.Notice.Severity
+			if work.QuietHold && severity == "warning" {
+				status = "warning"
+			}
+		}
+		view.ParallelItems = append(view.ParallelItems, ProductionParallelProgress{Key: key, Name: work.Name, TaskID: work.TaskID, Status: status, Severity: severity})
 		if work.Error == "" {
 			view.ConcurrentItems = append(view.ConcurrentItems, work.Name)
 			view.WaitingForBoundary = view.WaitingForBoundary || (state.ProductionPaused && work.TaskID != "")
@@ -89,6 +113,20 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 	var m productionManifest
 	if json.Unmarshal([]byte(job.ManifestJSON), &m) != nil {
 		return view
+	}
+	if m.Plan != nil && len(m.Plan.SelectedAssetKeys) > 0 {
+		items := view.ParallelItems[:0]
+		view.ConcurrentItems = nil
+		for _, item := range view.ParallelItems {
+			if productionPlanItem(m, item.Key) != nil && !productionPlanAssetSelected(m, item.Key) {
+				continue
+			}
+			items = append(items, item)
+			if item.Status != "error" {
+				view.ConcurrentItems = append(view.ConcurrentItems, item.Name)
+			}
+		}
+		view.ParallelItems = items
 	}
 	if m.Storyboard != nil {
 		if policy, err := s.runtimeConcurrencySetting(); err == nil {
@@ -155,6 +193,37 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 				canvas, e := s.repo.CanvasProjectForUser(userID, job.CanvasID)
 				if e == nil {
 					if doc, e := creationDocument(canvas.PayloadJSON); e == nil {
+						view.PlanReady = productionPlanStandardsReady(m, doc, rows)
+						view.AssetGenerationReady = productionPlanAssetGenerationReady(m, doc, rows)
+						if m.Plan.Version >= 5 {
+							storyReady := productionPlanArtifactValid(m, doc, rows, "story")
+							view.PlanReady = storyReady && (!m.Plan.PlansStarted || (productionPlanArtifactValid(m, doc, rows, "inventory") && productionPlanArtifactValid(m, doc, rows, "visual") && productionPlanArtifactValid(m, doc, rows, "direction") && productionPlanArtifactValid(m, doc, rows, "generation")))
+							// A structurally valid empty inventory is still recoverable: it
+							// leaves no asset keys for the user to select or generate.
+							view.InventoryRecoveryAvailable = len(m.Plan.Assets) == 0 && storyReady
+						}
+						view.AssetsStarted = m.Plan.AssetsStarted
+						view.SelectedAssetKeys = m.Plan.SelectedAssetKeys
+						execution, _ := s.repo.CloudAgent(userID, runID)
+						active := execution != nil && (execution.Status == "running" || execution.Status == "queued")
+						view.Assets = productionPlanAssetProgress(m, doc, rows, state, taskStates, active)
+						if active && !state.ProductionPaused {
+							visible := make(map[string]bool, len(view.ParallelItems))
+							for _, item := range view.ParallelItems {
+								visible[item.Key] = true
+							}
+							for _, asset := range view.Assets {
+								if asset.Status == "queued" && !visible[asset.Key] {
+									view.ParallelItems = append(view.ParallelItems, ProductionParallelProgress{Key: asset.Key, Name: asset.Name, Status: "queued"})
+								}
+							}
+						}
+						if len(m.Plan.SelectedAssetKeys) > 0 {
+							view.TotalPages = view.DocumentTotal + len(m.Plan.SelectedAssetKeys)
+						}
+						if !m.Plan.AssetsStarted {
+							view.TotalPages = view.DocumentTotal
+						}
 						next := productionPlanNextAction(m, doc, rows)
 						view.Phase, view.PhaseLabel, view.CurrentItem = stringValue(next["phase"]), stringValue(next["phaseLabel"]), stringValue(next["name"])
 						view.InventoryComplete = productionPlanArtifactValid(m, doc, rows, "inventory")
@@ -171,6 +240,7 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 								view.AssetCount++
 							}
 						}
+						view.AssetGroups = productionPlanGroupProgress(m, doc, rows, state)
 					}
 				}
 			}
@@ -304,8 +374,14 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 	if task.RemovedAt != nil {
 		return BadAuthRequest("对应节点已删除，制作任务已移除")
 	}
+	if action == "generate_assets" {
+		return s.startProductionPlanAssets(userID, runID)
+	}
+	if action == "generate_plans" {
+		return s.GenerateProductionPlanSections(userID, runID, []string{"inventory", "visual", "direction", "generation"})
+	}
 	if action != "pause" && action != "resume" {
-		return BadAuthRequest("仅支持 pause 或 resume")
+		return BadAuthRequest("仅支持 pause、resume、generate_plans 或 generate_assets")
 	}
 	for attempt := 0; attempt < 4; attempt++ {
 		run, err := s.repo.CloudAgent(userID, runID)
@@ -318,6 +394,66 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 		}
 		if state.Request.Production == nil {
 			return BadAuthRequest("当前不是制作 Agent 作业")
+		}
+		// In a v5 plan, saving the story intentionally leaves a checkpoint at
+		// the boundary before the four remaining plan documents. Treat the
+		// visible “continue” action as starting that next phase, rather than
+		// resuming the runtime into its waitingManual checkpoint again.
+		if action == "resume" {
+			_, manifest, document, loadErr := productionLoad(s.repo, run, &state)
+			if loadErr != nil {
+				return loadErr
+			}
+			if manifest.Plan != nil && manifest.Plan.Version >= 5 && !manifest.Plan.PlansStarted {
+				artifacts, artifactsErr := s.repo.ProductionAgentArtifacts(userID, runID)
+				if artifactsErr != nil {
+					return artifactsErr
+				}
+				if productionPlanArtifactValid(manifest, document, artifacts, "story") {
+					return s.GenerateProductionPlanSections(userID, runID, []string{"inventory", "visual", "direction", "generation"})
+				}
+			}
+			if run.Status == "completed" && manifest.Plan != nil && !manifest.Plan.AssetsStarted {
+				artifacts, artifactsErr := s.repo.ProductionAgentArtifacts(userID, runID)
+				if artifactsErr != nil {
+					return artifactsErr
+				}
+				if report := productionCoverage(manifest, document, nil, artifacts, 0, 0); report["valid"] != true {
+					if manifest.Plan.Version >= 5 && productionPlanArtifactValid(manifest, document, artifacts, "story") {
+						if !manifest.Plan.PlansStarted {
+							return s.GenerateProductionPlanSections(userID, runID, []string{"inventory", "visual", "direction", "generation"})
+						}
+						missing := []string{}
+						for _, key := range []string{"inventory", "visual", "direction", "generation"} {
+							if !productionPlanArtifactValid(manifest, document, artifacts, key) {
+								missing = append(missing, key)
+							}
+						}
+						if len(missing) > 0 {
+							return s.GenerateProductionPlanSections(userID, runID, missing)
+						}
+					}
+					err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+						if current.Status != "completed" {
+							return repository.ErrCreationConflict
+						}
+						current.Status, current.FailureMessage = "running", ""
+						state.ProductionPaused, state.LastError = false, ""
+						state.PiResumePrompt = "用户请求继续未完成的制作方案。沿用当前已保存文稿，只补齐 nextAction 指定的缺项并通过覆盖校验后结束。"
+						state.event(runID, "production_control", map[string]any{"action": "resume", "text": "已从未完成的方案检查点继续"})
+						return cloudAgentSave(current, &state)
+					})
+					if errors.Is(err, repository.ErrCreationConflict) {
+						continue
+					}
+					if err != nil {
+						return err
+					}
+					s.projectProductionAgentStatus(userID, runID)
+					s.startCloudAgentPi(userID, runID)
+					return nil
+				}
+			}
 		}
 		if cloudAgentRunTerminal(run.Status) && run.Status != "failed" {
 			return BadAuthRequest("该作业已结束，请新建版本")
@@ -334,7 +470,7 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 				if task.ProviderCancelStatus == model.ProviderCancelStatusRequested || task.ProviderCancelStatus == model.ProviderCancelStatusUncertain {
 					return BadAuthRequest("原调用上游状态待确认，未重新提交")
 				}
-				if err := s.taskBilling().CheckRetryEligibility(task.BillingOrderID); err != nil {
+				if err := s.taskBilling().CheckManualRetryEligibility(task.BillingOrderID); err != nil {
 					return err
 				}
 				for key, id := range state.ProductionModelReceipts {
@@ -345,8 +481,26 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 				state.ActiveTaskID = ""
 			}
 		}
-		if action == "resume" && run.Status == "failed" {
+		if action == "resume" && (run.Status == "failed" || run.Status == "waiting_user") {
+			if state.ProductionPaused && len(state.ProductionParallel) == 0 {
+				if _, manifest, document, loadErr := productionLoad(s.repo, run, &state); loadErr != nil {
+					return loadErr
+				} else if manifest.Plan != nil && manifest.Plan.Version >= 5 && !manifest.Plan.PlansStarted {
+					if artifacts, artifactsErr := s.repo.ProductionAgentArtifacts(userID, runID); artifactsErr != nil {
+						return artifactsErr
+					} else if productionPlanArtifactValid(manifest, document, artifacts, "story") {
+						return s.GenerateProductionPlanSections(userID, runID, []string{"inventory", "visual", "direction", "generation"})
+					}
+				}
+			}
+			_, manifest, document, err := productionLoad(s.repo, run, &state)
+			if err != nil {
+				return err
+			}
 			for key, work := range state.ProductionParallel {
+				if manifest.Plan != nil && productionPlanItem(manifest, key) != nil && !productionPlanAssetSelected(manifest, key) {
+					continue
+				}
 				if work.TaskID != "" {
 					task, err := s.repo.TaskForUser(userID, work.TaskID)
 					if err != nil {
@@ -359,7 +513,7 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 						return BadAuthRequest("并发调用上游状态待确认，未重新提交")
 					}
 					if task.Status != model.TaskStatusSucceeded {
-						if err := s.taskBilling().CheckRetryEligibility(task.BillingOrderID); err != nil {
+						if err := s.taskBilling().CheckManualRetryEligibility(task.BillingOrderID); err != nil {
 							return err
 						}
 					}
@@ -375,13 +529,27 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 					if work.Error == "" && task.Status == model.TaskStatusSucceeded {
 						continue
 					}
+					if manifest.Plan != nil && manifest.Plan.Version >= 2 && cloudAgentOutputLimitReached(task) && work.DocumentParts == nil {
+						artifacts, err := s.repo.ProductionAgentArtifacts(userID, runID)
+						if err != nil {
+							return err
+						}
+						if err := productionSplitDocumentParts(manifest, document, artifacts, &work); err != nil {
+							return err
+						}
+						work.Correction = "上次完整文稿已确认输出超限，本次从指定章节分批继续，不重复完整请求。"
+					}
 				}
-				work.TaskID, work.Error, work.Attempts, work.RetryAt = "", "", 0, 0
+				work.TaskID, work.Error, work.Attempts, work.ValidationAttempts, work.TransientAttempts, work.RetryAt = "", "", 0, 0, 0, 0
+				work.QuietHold, work.RepairUsed, work.Notice = false, false, nil
+				work.ValidationSignature, work.RepeatedValidationFailures = "", 0
+				work.ValidationIssues, work.ValidationProblems, work.ValidationProblemCounts = nil, nil, nil
+				work.ValidationProblemHistory = nil
 				state.ProductionParallel[key] = work
 			}
 		}
 		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
-			if action == "resume" && current.Status == "failed" {
+			if action == "resume" && (current.Status == "failed" || current.Status == "waiting_user") {
 				if _, _, _, err := productionLoad(repo, current, &state); err != nil {
 					return err
 				}
@@ -415,7 +583,7 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 		}
 		if err == nil && action == "resume" {
 			s.projectProductionAgentStatus(userID, runID)
-			if run.Status == "failed" {
+			if run.Status == "failed" || run.Status == "waiting_user" {
 				s.resumeCloudAgentPi(userID, runID)
 			} else {
 				s.startCloudAgentPi(userID, runID)
@@ -429,58 +597,106 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 // Run status is authoritative. Projection failures never undo cancellation or
 // failure recording; a later control operation may repair the display.
 func (s *Service) projectProductionAgentStatus(userID, runID string) {
-	run, err := s.repo.CloudAgent(userID, runID)
-	if err != nil {
-		return
-	}
-	state, err := cloudAgentDecode(run)
-	if err != nil || state.Request.Production == nil || run.Status == "completed" {
-		return
-	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
-	_ = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
-		canvas, err := repo.CanvasProjectForUser(userID, state.Request.CanvasID)
+	for attempt := 0; attempt < 4; attempt++ {
+		run, err := s.repo.CloudAgent(userID, runID)
 		if err != nil {
-			return err
+			return
 		}
-		doc, err := creationDocument(canvas.PayloadJSON)
-		if err != nil {
-			return err
+		state, err := cloudAgentDecode(run)
+		if err != nil || state.Request.Production == nil || run.Status == "completed" {
+			return
 		}
-		node := productionNode(doc, state.Request.Production.TargetNodeID)
-		if node == nil || stringValue(node["parentId"]) == "" || productionNode(doc, stringValue(node["parentId"])) == nil {
-			return nil
-		}
-		data := productionWorkflow(node)
-		agent, _ := data["productionAgent"].(map[string]any)
-		if agent["runId"] != runID {
-			return nil
-		}
-		meta, _ := node["metadata"].(map[string]any)
-		meta["status"], meta["taskStage"] = "loading", "制作 Agent 正在执行"
-		delete(meta, "error")
-		delete(meta, "errorDetails")
-		if current.Status == "failed" || current.Status == "cancelled" {
-			meta["status"], meta["taskStage"] = "error", "制作 Agent 已停止"
-			meta["errorDetails"] = current.FailureMessage
-			if current.Status == "cancelled" {
-				meta["errorDetails"] = "任务已取消，已保存产物保留"
+		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+			canvas, err := repo.CanvasProjectForUser(userID, state.Request.CanvasID)
+			if err != nil {
+				return err
 			}
+			doc, err := creationDocument(canvas.PayloadJSON)
+			if err != nil {
+				return err
+			}
+			node := productionNode(doc, state.Request.Production.TargetNodeID)
+			if node == nil {
+				return nil
+			}
+			if parentID := stringValue(node["parentId"]); parentID != "" && productionNode(doc, parentID) == nil {
+				return nil
+			}
+			data := productionWorkflow(node)
+			agent, _ := data["productionAgent"].(map[string]any)
+			if agent["runId"] != runID {
+				return nil
+			}
+			meta, _ := node["metadata"].(map[string]any)
+			assetExecutionFailure := false
+			if mJob, jobErr := repo.ProductionAgentJob(userID, runID); jobErr == nil {
+				var manifest productionManifest
+				if json.Unmarshal([]byte(mJob.ManifestJSON), &manifest) == nil && manifest.Plan != nil && manifest.Plan.AssetsStarted && manifest.Plan.Version >= 2 &&
+					(current.Status == "failed" || current.Status == "rejected" || current.Status == "cancelled") {
+					if artifacts, artifactErr := repo.ProductionAgentArtifacts(userID, runID); artifactErr == nil && productionPlanStandardsReady(manifest, doc, artifacts) {
+						assetExecutionFailure = true
+						manifest.Plan.SummaryHash = productionTargetHash(node)
+						encoded, encodeErr := json.Marshal(manifest)
+						if encodeErr != nil {
+							return encodeErr
+						}
+						if err := repo.UpdateProductionAgentManifest(userID, runID, string(encoded)); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			meta["status"], meta["taskStage"] = "loading", "制作 Agent 正在执行"
+			data["submission"] = "submitted"
+			delete(meta, "error")
+			delete(meta, "errorDetails")
+			delete(meta, "generationWarning")
+			warning := generationRunWarning(repo, &state, runID)
+			if warning != nil {
+				meta["generationWarning"] = warning
+				meta["status"], meta["taskStage"] = "idle", "制作 Agent 待处理"
+				data["submission"] = "submitted"
+			}
+			if current.Status == "waiting_user" {
+				meta["status"], meta["taskStage"] = "idle", "制作 Agent 待处理"
+			}
+			if current.Status == "failed" || current.Status == "rejected" || current.Status == "cancelled" {
+				if assetExecutionFailure {
+					meta["status"], meta["taskStage"] = "success", "制作方案已完成 · 资产执行未完成"
+					data["assetExecutionStatus"] = current.Status
+					data["assetExecutionError"] = current.FailureMessage
+				} else if current.Status != "cancelled" && !generationRunExternalFailure(repo, &state, runID) {
+					meta["status"], meta["taskStage"] = "idle", "制作 Agent 已暂停"
+					data["submission"] = "submitted"
+				} else {
+					meta["status"], meta["taskStage"] = "error", "制作 Agent 已停止"
+					meta["errorDetails"] = current.FailureMessage
+					data["submission"] = "rejected"
+				}
+				if current.Status == "cancelled" && !assetExecutionFailure {
+					meta["status"], meta["taskStage"] = "idle", "制作 Agent 已取消"
+					delete(meta, "errorDetails")
+				}
+			}
+			before := canvas.PayloadJSON
+			if err := saveCloudAgentDocument(repo, canvas, doc, policy); err != nil {
+				return err
+			}
+			if err := emitCloudAgentCanvasChange(repo, runID, &state, cloudAgentMutationInput{UserID: userID, CanvasID: canvas.ID, Operation: "production_status", BeforeJSON: before}); err != nil {
+				return err
+			}
+			return cloudAgentSave(current, &state)
+		})
+		if !errors.Is(err, repository.ErrCreationConflict) {
+			return
 		}
-		before := canvas.PayloadJSON
-		if err := saveCloudAgentDocument(repo, canvas, doc, policy); err != nil {
-			return err
-		}
-		if err := emitCloudAgentCanvasChange(repo, runID, &state, cloudAgentMutationInput{UserID: userID, CanvasID: canvas.ID, Operation: "production_status", BeforeJSON: before}); err != nil {
-			return err
-		}
-		return cloudAgentSave(current, &state)
-	})
+	}
 }
 
 func (s *Service) productionAgentRepair(userID, runID string) error {

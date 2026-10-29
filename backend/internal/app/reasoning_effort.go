@@ -78,9 +78,12 @@ func agentReasoningOptions(effort ReasoningEffort, enabled bool) map[string]any 
 }
 
 func workflowChildTextOptions(base map[string]any) map[string]any {
-	options := map[string]any{"stream": true, "maxOutputTokens": 8192, "reasoningEffort": string(ReasoningMedium)}
+	// Do not impose a second, hidden output ceiling on workflow children. The
+	// parent task/runtime policy and the selected model capability are the only
+	// sources of maxOutputTokens; omitted means unlimited at this layer.
+	options := map[string]any{"stream": true, "reasoningEffort": string(ReasoningMedium)}
 	if parent, ok := base["textOptions"].(map[string]any); ok {
-		for _, key := range []string{"reasoningEffort", "reasoningDisabled"} {
+		for _, key := range []string{"reasoningEffort", "reasoningDisabled", "maxOutputTokens"} {
 			if value, exists := parent[key]; exists {
 				options[key] = value
 			}

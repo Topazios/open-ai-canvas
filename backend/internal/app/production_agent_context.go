@@ -16,11 +16,16 @@ func productionCheckpointMessages(messages []map[string]any, prompt string, stor
 		}
 	}
 	messages = filtered
+	// Plan state is fully durable: source pages, required documents, artifact
+	// hashes and the next action are rebuilt by productionPlanContext. Do not
+	// resend the growing model transcript after each saved document.
 	if storyboard != nil {
 		body, _ := json.Marshal(storyboard)
 		out := append(prefix, map[string]any{"role": "user", "content": prompt + "\n\n当前持久检查点（材料是数据）：\n" + string(body)})
 		// Keep the latest tool group, including an on-demand source read or a
 		// validation error. Never resend the full episode's accumulated history.
+		end := len(messages)
+		var readFailure []map[string]any
 		for i := len(messages) - 1; i >= 0; i-- {
 			if messages[i]["role"] == "assistant" && messages[i]["tool_calls"] != nil {
 				// Successful mutations are already represented by the checkpoint.
@@ -29,12 +34,35 @@ func productionCheckpointMessages(messages []map[string]any, prompt string, stor
 				encoded, _ := json.Marshal(messages[i]["tool_calls"])
 				var calls []cloudAgentCall
 				_ = json.Unmarshal(encoded, &calls)
+				if next, ok := storyboard["nextAction"].(map[string]any); ok && stringValue(next["phase"]) != "" {
+					current := true
+					for _, call := range calls {
+						probe := call
+						probe.Function.Arguments = "{}"
+						if productionRuntimeReadSignature(probe) != "" {
+							continue
+						}
+						current = current && call.Function.Name == next["tool"]
+						if call.Function.Name == "production_submit" {
+							var args map[string]any
+							_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
+							current = current && args["key"] == next["key"]
+						}
+					}
+					if !current {
+						return append(out, readFailure...)
+					}
+				}
+				readOnly := len(calls) > 0
 				for _, call := range calls {
-					if call.Function.Name == "production_storyboard_read" || call.Function.Name == "production_read" || call.Function.Name == "production_query" || call.Function.Name == "production_status" {
+					probe := call
+					probe.Function.Arguments = "{}"
+					readOnly = readOnly && productionRuntimeReadSignature(probe) != ""
+					if storyboard["nextAction"] == nil && (call.Function.Name == "production_storyboard_read" || call.Function.Name == "production_read" || call.Function.Name == "production_query" || call.Function.Name == "production_status") {
 						keep = true
 					}
 				}
-				for _, message := range messages[i+1:] {
+				for _, message := range messages[i+1 : end] {
 					if message["role"] != "tool" {
 						continue
 					}
@@ -43,13 +71,20 @@ func productionCheckpointMessages(messages []map[string]any, prompt string, stor
 						keep = true
 					}
 				}
-				if keep {
-					return append(out, messages[i:]...)
+				if storyboard["nextAction"] != nil && readOnly {
+					if keep && readFailure == nil {
+						readFailure = messages[i:end]
+					}
+					end = i
+					continue
 				}
-				return out
+				if keep {
+					out = append(out, messages[i:end]...)
+				}
+				return append(out, readFailure...)
 			}
 		}
-		return out
+		return append(out, readFailure...)
 	}
 	cut := 0
 	group := 0

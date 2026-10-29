@@ -21,12 +21,22 @@ type AnalyticsFilter struct {
 
 type APICallLogFilter struct {
 	AnalyticsFilter
-	RecordType string
-	Keyword    string
-	Status     string
-	IDs        []string
-	Page       int
-	Limit      int
+	RecordType                 string
+	Keyword                    string
+	Status                     string
+	IDs                        []string
+	Page                       int
+	Limit                      int
+	historicalUpstreamErrorIDs []string
+}
+
+// A dispatched request and its terminal response share one audit row.
+func (r *Repository) CompletePendingAPICallLog(item *model.ApiCallLog) (bool, error) {
+	if item.ID == "" || item.Status == model.ApiCallStatusRunning {
+		return false, nil
+	}
+	result := r.db.Model(&model.ApiCallLog{}).Where("id = ? AND status = ?", item.ID, model.ApiCallStatusRunning).Select("*").Updates(item)
+	return result.RowsAffected > 0, result.Error
 }
 
 func (r *Repository) RecordUserActivity(userID string, event string, count int, now time.Time) error {
@@ -95,8 +105,72 @@ func (r *Repository) AnalyticsTasks(filter AnalyticsFilter) ([]model.Task, error
 func (r *Repository) AnalyticsAPICallLogs(filter AnalyticsFilter) ([]model.ApiCallLog, error) {
 	var logs []model.ApiCallLog
 	query := r.apiCallLogQuery(filter)
-	return logs, query.Omit("RequestBody", "ResponseBody").Find(&logs).Error
+	err := query.Omit("RequestBody", "ResponseBody").Find(&logs).Error
+	if err == nil {
+		err = r.projectAPICallLogStatuses(logs, filter)
+	}
+	return logs, err
 }
+
+func (r *Repository) projectAPICallLogStatuses(logs []model.ApiCallLog, filter AnalyticsFilter) error {
+	candidates := make([]string, 0)
+	for _, log := range logs {
+		if log.ErrorSource == "" && log.DisplayStatus() == model.ApiCallStatusWarning {
+			candidates = append(candidates, log.ID)
+		}
+	}
+	knownFailures := make(map[string]bool)
+	if len(candidates) > 0 {
+		ids, err := r.historicalAPICallProviderFailures(filter, candidates)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			knownFailures[id] = true
+		}
+	}
+	for index := range logs {
+		if knownFailures[logs[index].ID] {
+			logs[index].Status = model.ApiCallStatusFailed
+			logs[index].ErrorSource = "upstream"
+		}
+		logs[index].Status = logs[index].DisplayStatus()
+	}
+	return nil
+}
+
+// Only legacy warning candidates need retained bodies to disambiguate a
+// provider error object using the same code as a local incomplete category.
+func (r *Repository) historicalAPICallProviderFailures(filter AnalyticsFilter, ids []string) ([]string, error) {
+	query := r.apiCallLogQuery(filter).Model(&model.ApiCallLog{}).
+		Where("("+apiCallLogDisplayStatusSQL+") = ?", model.ApiCallStatusWarning).
+		Where("COALESCE(api_call_logs.error_source, '') = ''")
+	if ids != nil {
+		query = query.Where("api_call_logs.id IN ?", ids)
+	}
+	result := make([]string, 0)
+	var batch []model.ApiCallLog
+	err := query.Select("api_call_logs.id", "api_call_logs.response_body").FindInBatches(&batch, 100, func(tx *gorm.DB, batchNumber int) error {
+		for _, log := range batch {
+			if model.APICallResponseHasExplicitFailure(log.ResponseBody) {
+				result = append(result, log.ID)
+			}
+		}
+		return nil
+	}).Error
+	return result, err
+}
+
+// Keep this predicate aligned with model.ApiCallLog.DisplayStatus. It uses
+// stored structured facts only, so historical warnings participate in paging
+// and export filters without rewriting their original audit receipts.
+const apiCallLogDisplayStatusSQL = `CASE
+ WHEN COALESCE(api_call_logs.error_source, '') NOT IN ('', 'content') THEN api_call_logs.status
+ WHEN api_call_logs.status = 'running' OR COALESCE(api_call_logs.status_code, 0) < 200 OR api_call_logs.status_code >= 300 THEN api_call_logs.status
+ WHEN COALESCE(api_call_logs.provider_status, '') IN ('failed', 'cancelled', 'canceled', 'expired') THEN 'failed'
+ WHEN COALESCE(api_call_logs.error_code, '') IN ('output_limit_exceeded', 'upstream_response_invalid') THEN 'warning'
+ WHEN api_call_logs.provider_status = 'incomplete' AND COALESCE(api_call_logs.error_code, '') = '' THEN 'warning'
+ ELSE api_call_logs.status END`
 
 func (r *Repository) AnalyticsActivities(filter AnalyticsFilter) ([]model.UserDailyActivity, error) {
 	var activities []model.UserDailyActivity
@@ -114,6 +188,13 @@ func (r *Repository) QueryAPICallLogs(filter APICallLogFilter) ([]model.ApiCallL
 	if filter.Limit <= 0 || filter.Limit > 200 {
 		filter.Limit = 50
 	}
+	if filter.Status == string(model.ApiCallStatusWarning) || filter.Status == string(model.ApiCallStatusFailed) {
+		ids, err := r.historicalAPICallProviderFailures(filter.AnalyticsFilter, nil)
+		if err != nil {
+			return nil, 0, err
+		}
+		filter.historicalUpstreamErrorIDs = ids
+	}
 	var total int64
 	// GORM 会把 Distinct 状态保留在同一查询链；计数和分页必须分别构造，避免 PostgreSQL 的 DISTINCT + ORDER BY 冲突。
 	if err := r.filteredAPICallLogQuery(filter).Model(&model.ApiCallLog{}).Distinct("api_call_logs.id").Count(&total).Error; err != nil {
@@ -121,6 +202,9 @@ func (r *Repository) QueryAPICallLogs(filter APICallLogFilter) ([]model.ApiCallL
 	}
 	var logs []model.ApiCallLog
 	err := r.filteredAPICallLogQuery(filter).Omit("RequestBody", "ResponseBody").Order("api_call_logs.created_at desc").Offset((filter.Page - 1) * filter.Limit).Limit(filter.Limit).Find(&logs).Error
+	if err == nil {
+		err = r.projectAPICallLogStatuses(logs, filter.AnalyticsFilter)
+	}
 	return logs, total, err
 }
 
@@ -128,12 +212,22 @@ func (r *Repository) ExportAPICallLogs(filter APICallLogFilter, limit int) ([]mo
 	if limit <= 0 || limit > 10_000 {
 		limit = 10_000
 	}
+	if filter.Status == string(model.ApiCallStatusWarning) || filter.Status == string(model.ApiCallStatusFailed) {
+		ids, err := r.historicalAPICallProviderFailures(filter.AnalyticsFilter, nil)
+		if err != nil {
+			return nil, err
+		}
+		filter.historicalUpstreamErrorIDs = ids
+	}
 	query := r.filteredAPICallLogQuery(filter)
 	if len(filter.IDs) > 0 {
 		query = query.Where("api_call_logs.id IN ?", filter.IDs)
 	}
 	var logs []model.ApiCallLog
 	err := query.Omit("RequestBody", "ResponseBody").Order("api_call_logs.created_at desc").Limit(limit).Find(&logs).Error
+	if err == nil {
+		err = r.projectAPICallLogStatuses(logs, filter.AnalyticsFilter)
+	}
 	return logs, err
 }
 
@@ -157,7 +251,13 @@ func (r *Repository) filteredAPICallLogQuery(filter APICallLogFilter) *gorm.DB {
 			)
 	}
 	if filter.Status != "" {
-		query = query.Where("api_call_logs.status = ?", filter.Status)
+		if len(filter.historicalUpstreamErrorIDs) > 0 && filter.Status == string(model.ApiCallStatusWarning) {
+			query = query.Where("("+apiCallLogDisplayStatusSQL+") = ? AND api_call_logs.id NOT IN ?", filter.Status, filter.historicalUpstreamErrorIDs)
+		} else if len(filter.historicalUpstreamErrorIDs) > 0 && filter.Status == string(model.ApiCallStatusFailed) {
+			query = query.Where("("+apiCallLogDisplayStatusSQL+") = ? OR api_call_logs.id IN ?", filter.Status, filter.historicalUpstreamErrorIDs)
+		} else {
+			query = query.Where("("+apiCallLogDisplayStatusSQL+") = ?", filter.Status)
+		}
 	}
 	return query
 }
@@ -167,7 +267,7 @@ func (r *Repository) APICallLogTasks(ids []string) ([]model.Task, error) {
 		return []model.Task{}, nil
 	}
 	var tasks []model.Task
-	err := r.db.Select("id", "user_id", "type", "status", "result_json", "media_stage").Where("id IN ?", ids).Find(&tasks).Error
+	err := r.db.Select("id", "user_id", "type", "status", "result_json", "media_stage", "execution_diagnostic_json").Where("id IN ?", ids).Find(&tasks).Error
 	return tasks, err
 }
 
@@ -278,6 +378,11 @@ func (r *Repository) VideoAPICallRoot(log model.ApiCallLog) (*model.ApiCallLog, 
 
 func (r *Repository) apiCallLogQuery(filter AnalyticsFilter) *gorm.DB {
 	query := r.db.Where("api_call_logs.created_at >= ? AND api_call_logs.created_at < ?", filter.From, filter.To)
+	if r.db.Dialector.Name() == "sqlite" {
+		// SQLite compares datetime TEXT lexically. Normalize offsets before comparing
+		// UTC filters with records written in the server's local time zone.
+		query = r.db.Where("julianday(api_call_logs.created_at) >= julianday(?) AND julianday(api_call_logs.created_at) < julianday(?)", filter.From.Format(time.RFC3339Nano), filter.To.Format(time.RFC3339Nano))
+	}
 	if filter.UserID != "" {
 		query = query.Where("api_call_logs.user_id = ?", filter.UserID)
 	}

@@ -1,38 +1,14 @@
-import { App, Button, ColorPicker, Dropdown, Input, Popover } from "antd";
-import type { TextAreaRef } from "antd/es/input/TextArea";
+import { App, Button, ColorPicker, Dropdown, Input, Popover, Segmented } from "antd";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { Tooltip } from "@/components/ui/base/tooltip";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 import type { Editor, JSONContent } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
-import {
-    AlignCenter,
-    AlignJustify,
-    AlignLeft,
-    AlignRight,
-    Bold,
-    ChevronDown,
-    Code2,
-    Eraser,
-    Highlighter,
-    Italic,
-    Link2,
-    List,
-    ListOrdered,
-    Minus,
-    MoreHorizontal,
-    Quote,
-    Redo2,
-    Save,
-    Strikethrough,
-    Underline,
-    Undo2,
-    X,
-} from "lucide-react";
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight, Bold, ChevronDown, Code2, Eraser, Highlighter, Italic, Link2, List, ListOrdered, Minus, MoreHorizontal, Quote, Redo2, Save, Strikethrough, Underline, Undo2, X } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { createCanvasRichTextExtensions, isSafeCanvasRichTextLink } from "@/lib/canvas/canvas-rich-text";
+import { canvasRichTextMarkdown, createCanvasRichTextExtensions, isSafeCanvasRichTextLink, markdownToCanvasRichTextHTML } from "@/lib/canvas/canvas-rich-text";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
@@ -40,7 +16,7 @@ type CanvasTextEditorModalProps = {
     node: CanvasNodeData | null;
     open: boolean;
     onClose: () => void;
-    onSave: (nodeId: string, title: string, content: string, richText: Record<string, unknown>) => Promise<void> | void;
+    onSave: (nodeId: string, title: string, content: string, richText?: Record<string, unknown>) => Promise<void> | void;
 };
 
 export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTextEditorModalProps) {
@@ -48,9 +24,14 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
     const theme = canvasThemes[useActiveTheme()];
     const [title, setTitle] = useState("");
     const [markdownContent, setMarkdownContent] = useState("");
+    const [markdownMode, setMarkdownMode] = useState<"visual" | "source">("visual");
+    const [markdownEditing, setMarkdownEditing] = useState(false);
     const [dirty, setDirty] = useState(false);
     const [saving, setSaving] = useState(false);
-    const markdownEditorRef = useRef<TextAreaRef | null>(null);
+    const savingRef = useRef(false);
+    const dirtyVersionRef = useRef(0);
+    const hydratingRef = useRef(false);
+    const markdownModeRef = useRef<"visual" | "source">("visual");
     const isMarkdown = node?.type === CanvasNodeType.Markdown;
     const editor = useEditor({
         immediatelyRender: false,
@@ -62,50 +43,105 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
                 "aria-label": "文本节点富文本编辑区",
             },
         },
-        onUpdate: () => setDirty(true),
+        onUpdate: () => {
+            if (hydratingRef.current) return;
+            dirtyVersionRef.current += 1;
+            setDirty(true);
+        },
     });
 
     useEffect(() => {
         if (!open || !node) return;
         setTitle(node.title || (node.type === CanvasNodeType.Markdown ? "Markdown" : "文本"));
         setMarkdownContent(node.metadata?.content || "");
+        setMarkdownMode("visual");
+        markdownModeRef.current = "visual";
+        setMarkdownEditing(false);
         setDirty(false);
         setSaving(false);
-        if (node.type === CanvasNodeType.Markdown) {
-            window.setTimeout(() => markdownEditorRef.current?.focus(), 0);
-            return;
-        }
+        savingRef.current = false;
+        dirtyVersionRef.current = 0;
         if (!editor) return;
-        editor.commands.setContent((node.metadata?.richText as JSONContent | undefined) || plainTextDocument(node.metadata?.content || ""), { emitUpdate: false });
-        window.setTimeout(() => editor.commands.focus("start"), 0);
+        hydratingRef.current = true;
+        const source = node.metadata?.content || "";
+        const document = source.trim()
+            ? markdownToCanvasRichTextHTML(source)
+            : (node.metadata?.richText as JSONContent | undefined) || emptyTextDocument();
+        editor.commands.setContent(document, { emitUpdate: false });
+        editor.setEditable(false);
+        dirtyVersionRef.current = 0;
+        setDirty(false);
+        queueMicrotask(() => { hydratingRef.current = false; });
     }, [editor, node?.id, node?.type, open]);
 
-    const characterCount = isMarkdown ? markdownContent.length : editor?.storage.characterCount?.characters?.() || 0;
-    const wordCount = useMemo(() => countWords(isMarkdown ? markdownContent : editor?.getText() || ""), [characterCount, editor, isMarkdown, markdownContent]);
+    useEffect(() => {
+        if (!editor) return;
+        editor.setEditable(open && markdownEditing && markdownMode === "visual");
+    }, [editor, markdownEditing, markdownMode, open]);
 
-    const save = async () => {
-        if (!node || saving || (!isMarkdown && !editor)) return;
+    const characterCount = markdownMode === "visual" ? editor?.storage.characterCount?.characters?.() || 0 : markdownContent.length;
+    const wordCount = useMemo(() => countWords(markdownMode === "visual" ? editor?.getText() || "" : markdownContent), [characterCount, editor, markdownContent, markdownMode]);
+
+    const setMarkdownEditorMode = (nextMode: "visual" | "source") => {
+        if (nextMode === markdownMode) return;
+        if (nextMode === "source") {
+            setMarkdownContent(editor ? canvasRichTextMarkdown(editor.getJSON()) : markdownContent);
+        } else if (editor) {
+            editor.commands.setContent(markdownToCanvasRichTextHTML(markdownContent), { emitUpdate: false });
+        }
+        markdownModeRef.current = nextMode;
+        setMarkdownMode(nextMode);
+    };
+
+    const save = async (silent = false) => {
+        if (!node || savingRef.current || !editor) return;
+        savingRef.current = true;
+        const savedVersion = dirtyVersionRef.current;
         setSaving(true);
         try {
-            if (isMarkdown) {
-                await onSave(node.id, title.trim() || "Markdown", markdownContent, (node.metadata?.richText as Record<string, unknown> | undefined) || {});
-            } else {
-                await onSave(node.id, title.trim() || "文本", editor!.getText({ blockSeparator: "\n" }).trimEnd(), editor!.getJSON() as Record<string, unknown>);
-            }
-            setDirty(false);
-            message.success("文本节点已保存");
+            const source = markdownMode === "visual" ? canvasRichTextMarkdown(editor.getJSON()) : markdownContent;
+            await onSave(node.id, title.trim() || (isMarkdown ? "Markdown" : "文本"), source, editor.getJSON() as Record<string, unknown>);
+            if (dirtyVersionRef.current === savedVersion) setDirty(false);
+            if (!silent) message.success("文本节点已保存");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "文本保存失败");
         } finally {
+            savingRef.current = false;
             setSaving(false);
         }
     };
 
+    const enterMarkdownEdit = (event: MouseEvent) => {
+        if (markdownMode !== "visual" || markdownEditing || !editor) return;
+        const position = editor.view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
+        event.preventDefault();
+        setMarkdownEditing(true);
+        editor.setEditable(true);
+        window.requestAnimationFrame(() => {
+            if (typeof position === "number") editor.commands.setTextSelection(position);
+            editor.commands.focus();
+        });
+    };
+
+    const leaveMarkdownEdit = () => {
+        if (!markdownEditing) return;
+        // Keep the Markdown document in sync as the editor returns to preview.
+        if (dirty) void save(true);
+        if (markdownMode === "source") {
+            editor?.commands.setContent(markdownToCanvasRichTextHTML(markdownContent), { emitUpdate: false });
+            markdownModeRef.current = "visual";
+            setMarkdownMode("visual");
+        }
+        setMarkdownEditing(false);
+        editor?.setEditable(false);
+    };
+
     const close = () => {
-        if (!dirty || saving) return onClose();
+        if (savingRef.current) return;
+        if (!dirty) return onClose();
         modal.confirm({
             title: "放弃未保存的修改？",
-            content: `关闭后，本次${isMarkdown ? "Markdown" : "富文本"}编辑不会写回画布节点。`,
+            content: `关闭后，本次${isMarkdown ? "Markdown" : "文本"}编辑不会写回画布节点。`,
             okText: "放弃修改",
             cancelText: "继续编辑",
             onOk: onClose,
@@ -121,7 +157,7 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
         };
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [dirty, editor, isMarkdown, markdownContent, node?.id, open, saving, title]);
+    }, [dirty, editor, isMarkdown, markdownContent, markdownMode, node?.id, open, saving, title]);
 
     return (
         <AppModal
@@ -134,59 +170,99 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
             destroyOnHidden
             width="min(1180px, calc(100vw - 24px))"
             onCancel={close}
-            flush styles={{ container: { borderRadius: 8 } }}
+            flush
+            styles={{ container: { borderRadius: 8 } }}
         >
             <section className="flex h-[min(88dvh,840px)] flex-col overflow-hidden" style={{ background: theme.node.panel, color: theme.node.text }}>
                 <header className="flex h-13 shrink-0 items-center gap-3 border-b px-3" style={{ borderColor: theme.node.stroke }}>
                     <Input
                         variant="borderless"
                         value={title}
-                        onChange={(event) => { setTitle(event.target.value); setDirty(true); }}
+                        onChange={(event) => {
+                            setTitle(event.target.value);
+                            dirtyVersionRef.current += 1;
+                            setDirty(true);
+                        }}
                         className="!h-9 min-w-0 max-w-[360px] flex-1 !px-1 text-sm font-semibold"
                         placeholder="文本节点标题"
                         aria-label="文本节点标题"
                     />
-                    <span className="hidden shrink-0 text-[var(--fs-label)] sm:inline" style={{ color: theme.node.muted }}>{characterCount.toLocaleString("zh-CN")} 字 · {wordCount.toLocaleString("zh-CN")} 词</span>
-                    <span className="ml-auto hidden text-[var(--fs-label)] sm:inline" style={{ color: dirty ? theme.accent.primary : theme.node.muted }}>{dirty ? "有未保存修改" : "已保存"}</span>
-                    <Button size="small" type="primary" icon={<Save className="size-3.5" />} loading={saving} disabled={!dirty} onClick={() => void save()}>保存</Button>
+                    <span className="hidden shrink-0 text-[var(--fs-label)] sm:inline" style={{ color: theme.node.muted }}>
+                        {characterCount.toLocaleString("zh-CN")} 字 · {wordCount.toLocaleString("zh-CN")} 词
+                    </span>
+                    <span className="ml-auto hidden text-[var(--fs-label)] sm:inline" style={{ color: dirty ? theme.accent.primary : theme.node.muted }}>
+                        {dirty ? "有未保存修改" : "已保存"}
+                    </span>
+                    <Button size="small" type="primary" icon={<Save className="size-3.5" />} loading={saving} disabled={!dirty} onClick={() => void save()}>
+                        保存
+                    </Button>
                     <Tooltip title="关闭">
                         <Button size="small" type="text" icon={<X className="size-4" />} aria-label="关闭文本编辑器" onClick={close} />
                     </Tooltip>
                 </header>
 
-                {isMarkdown ? (
-                    <div className="flex h-10 shrink-0 items-center border-b px-4 text-xs font-medium" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
-                        Markdown 源码
+                {markdownEditing ? (
+                    <div className="canvas-text-editor-controls flex h-10 shrink-0 items-center gap-3 border-b px-4 text-xs font-medium" style={{ borderColor: theme.node.stroke, color: theme.node.muted }} onMouseDown={(event) => event.preventDefault()}>
+                        <span>{isMarkdown ? "Markdown 编辑" : "文本编辑"}</span>
+                        <span className="hidden sm:inline">所见模式直接编辑解析后的内容，源码模式可输入 Markdown</span>
+                        <Segmented
+                            className="ml-auto"
+                            size="small"
+                            value={markdownMode}
+                            options={[
+                                { label: "所见编辑", value: "visual" },
+                                { label: "Markdown 源码", value: "source" },
+                            ]}
+                            onChange={(value) => setMarkdownEditorMode(value as "visual" | "source")}
+                        />
                     </div>
                 ) : (
-                    <TextEditorToolbar editor={editor} />
+                    <div className="flex h-10 shrink-0 items-center border-b px-4 text-xs" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
+                        双击正文进入编辑，光标离开后自动保存并返回预览
+                    </div>
                 )}
+                {markdownEditing && !isMarkdown && markdownMode === "visual" ? <TextEditorToolbar editor={editor} /> : null}
 
                 <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto" style={{ background: theme.canvas.background }}>
-                    <div
-                        className="mx-auto min-h-full w-full max-w-[920px] [&_.ProseMirror]:min-h-[calc(min(88dvh,840px)-126px)] [&_.ProseMirror_a]:text-blue-600 [&_.ProseMirror_a]:underline [&_.ProseMirror_blockquote]:my-4 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:pl-4 [&_.ProseMirror_blockquote]:opacity-70 [&_.ProseMirror_code]:rounded [&_.ProseMirror_code]:bg-black/6 [&_.ProseMirror_code]:px-1 [&_.ProseMirror_code]:py-0.5 dark:[&_.ProseMirror_code]:bg-white/8 [&_.ProseMirror_h1]:mb-4 [&_.ProseMirror_h1]:mt-6 [&_.ProseMirror_h1]:text-3xl [&_.ProseMirror_h1]:font-semibold [&_.ProseMirror_h2]:mb-3 [&_.ProseMirror_h2]:mt-5 [&_.ProseMirror_h2]:text-2xl [&_.ProseMirror_h2]:font-semibold [&_.ProseMirror_h3]:mb-2 [&_.ProseMirror_h3]:mt-4 [&_.ProseMirror_h3]:text-xl [&_.ProseMirror_h3]:font-semibold [&_.ProseMirror_hr]:my-6 [&_.ProseMirror_li]:my-1 [&_.ProseMirror_ol]:my-3 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-6 [&_.ProseMirror_p]:my-2 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:rounded-md [&_.ProseMirror_pre]:bg-black/90 [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:text-white [&_.ProseMirror_ul]:my-3 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-6 [&_.is-editor-empty:first-child]:before:pointer-events-none [&_.is-editor-empty:first-child]:before:float-left [&_.is-editor-empty:first-child]:before:h-0 [&_.is-editor-empty:first-child]:before:text-foreground/35 [&_.is-editor-empty:first-child]:before:content-[attr(data-placeholder)]"
-                    >
-                        {isMarkdown ? (
+                    <div className="mx-auto min-h-full w-full max-w-[1100px] [&_.ProseMirror]:min-h-[calc(min(88dvh,840px)-126px)] [&_.ProseMirror]:whitespace-normal [&_.ProseMirror]:outline-none [&_.ProseMirror_a]:text-blue-600 [&_.ProseMirror_a]:underline [&_.ProseMirror_blockquote]:my-4 [&_.ProseMirror_blockquote]:border-l-2 [&_.ProseMirror_blockquote]:pl-4 [&_.ProseMirror_blockquote]:opacity-70 [&_.ProseMirror_code]:rounded [&_.ProseMirror_code]:bg-black/6 [&_.ProseMirror_code]:px-1 [&_.ProseMirror_code]:py-0.5 dark:[&_.ProseMirror_code]:bg-white/8 [&_.ProseMirror_h1]:mb-4 [&_.ProseMirror_h1]:mt-6 [&_.ProseMirror_h1]:text-3xl [&_.ProseMirror_h1]:font-semibold [&_.ProseMirror_h2]:mb-3 [&_.ProseMirror_h2]:mt-5 [&_.ProseMirror_h2]:text-2xl [&_.ProseMirror_h2]:font-semibold [&_.ProseMirror_h3]:mb-2 [&_.ProseMirror_h3]:mt-4 [&_.ProseMirror_h3]:text-xl [&_.ProseMirror_h3]:font-semibold [&_.ProseMirror_hr]:my-6 [&_.ProseMirror_li]:my-1 [&_.ProseMirror_ol]:my-3 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-6 [&_.ProseMirror_p]:my-2 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:rounded-md [&_.ProseMirror_pre]:bg-black/90 [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:text-white [&_.ProseMirror_ul]:my-3 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-6 [&_.is-editor-empty:first-child]:before:pointer-events-none [&_.is-editor-empty:first-child]:before:float-left [&_.is-editor-empty:first-child]:before:h-0 [&_.is-editor-empty:first-child]:before:text-foreground/35 [&_.is-editor-empty:first-child]:before:content-[attr(data-placeholder)] [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:min-w-[720px] [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_td]:min-w-[96px] [&_.ProseMirror_th]:min-w-[96px] [&_.ProseMirror_td]:border-b [&_.ProseMirror_th]:border-b [&_.ProseMirror_td]:px-3 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_th]:py-2">
+                        {markdownMode === "source" ? (
                             <Input.TextArea
-                                ref={markdownEditorRef}
                                 value={markdownContent}
                                 onChange={(event) => {
-                                    setMarkdownContent(event.target.value);
+                                    const source = event.target.value;
+                                    setMarkdownContent(source);
+                                    editor?.commands.setContent(markdownToCanvasRichTextHTML(source), { emitUpdate: false });
+                                    dirtyVersionRef.current += 1;
                                     setDirty(true);
                                 }}
-                                placeholder="输入 Markdown 内容…"
+                                onFocus={() => setMarkdownEditing(true)}
+                                onBlur={(event) => {
+                                    if (markdownEditing && markdownModeRef.current === "source" && !(event.relatedTarget instanceof HTMLElement && event.relatedTarget.closest(".canvas-text-editor-controls"))) leaveMarkdownEdit();
+                                }}
+                                placeholder="输入普通文本或 Markdown 内容…"
                                 autoSize={false}
-                                className="!min-h-[calc(min(88dvh,840px)-126px)] !h-full !resize-none !border-0 !bg-transparent !px-8 !py-7 !text-sm !leading-7 !shadow-none focus:!border-0 focus:!shadow-none sm:!px-12 lg:!px-16"
+                                className="!h-full !min-h-[calc(min(88dvh,840px)-126px)] !resize-none !border-0 !bg-transparent !px-8 !py-7 !font-mono !text-sm !leading-7 !shadow-none focus:!border-0 focus:!shadow-none sm:!px-12"
                                 aria-label="Markdown 源码编辑区"
                             />
                         ) : (
-                            <EditorContent editor={editor} />
+                            <div
+                                className={`min-h-[calc(min(88dvh,840px)-126px)] overflow-x-auto px-8 py-7 sm:px-12 ${markdownEditing ? "cursor-text" : "cursor-default"}`}
+                                onDoubleClick={enterMarkdownEdit}
+                                onBlurCapture={(event) => {
+                                    if (event.target === editor?.view.dom && markdownEditing && markdownModeRef.current === "visual" && !(event.relatedTarget instanceof HTMLElement && event.relatedTarget.closest(".canvas-text-editor-controls"))) leaveMarkdownEdit();
+                                }}
+                                onMouseDown={(event) => {
+                                    if (!markdownEditing) event.preventDefault();
+                                }}
+                            >
+                                <EditorContent editor={editor} />
+                            </div>
                         )}
                     </div>
                 </div>
 
                 <footer className="flex h-8 shrink-0 items-center gap-3 border-t px-3 text-[var(--fs-tiny)]" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
-                    <span className="hidden sm:inline">{isMarkdown ? "直接编辑 Markdown 源码，保存后画布会按 Markdown 渲染" : "支持标题、列表、引用、链接、代码和颜色格式"}</span>
+                    <span className="hidden sm:inline">直接编辑普通文本，保存后画布会自动按 Markdown 渲染</span>
                     <span className="ml-auto">Ctrl/⌘S 保存</span>
                 </footer>
             </section>
@@ -228,24 +304,46 @@ function TextEditorToolbar({ editor }: { editor: Editor | null }) {
     };
 
     return (
-        <div className="hide-scrollbar flex h-11 shrink-0 items-center gap-0.5 overflow-x-auto border-b px-2" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
-            <EditorToolButton label="撤销" onClick={() => editor?.chain().focus().undo().run()}><Undo2 /></EditorToolButton>
-            <EditorToolButton label="重做" onClick={() => editor?.chain().focus().redo().run()}><Redo2 /></EditorToolButton>
+        <div className="canvas-text-editor-controls hide-scrollbar flex h-11 shrink-0 items-center gap-0.5 overflow-x-auto border-b px-2" style={{ borderColor: theme.node.stroke, background: theme.node.panel }} onMouseDown={(event) => event.preventDefault()}>
+            <EditorToolButton label="撤销" onClick={() => editor?.chain().focus().undo().run()}>
+                <Undo2 />
+            </EditorToolButton>
+            <EditorToolButton label="重做" onClick={() => editor?.chain().focus().redo().run()}>
+                <Redo2 />
+            </EditorToolButton>
             <ToolbarDivider />
             <Dropdown
                 trigger={["click"]}
                 menu={{
                     selectedKeys: [blockLabel],
                     items: ["正文", "标题 1", "标题 2", "标题 3"].map((label) => ({ key: label, label })),
-                    onClick: ({ key }) => key === "正文" ? editor?.chain().focus().setParagraph().run() : editor?.chain().focus().toggleHeading({ level: Number(key.slice(-1)) as 1 | 2 | 3 }).run(),
+                    onClick: ({ key }) =>
+                        key === "正文"
+                            ? editor?.chain().focus().setParagraph().run()
+                            : editor
+                                  ?.chain()
+                                  .focus()
+                                  .toggleHeading({ level: Number(key.slice(-1)) as 1 | 2 | 3 })
+                                  .run(),
                 }}
             >
-                <button type="button" className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="段落格式"><span>{blockLabel}</span><ChevronDown className="size-3" /></button>
+                <button type="button" className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="段落格式">
+                    <span>{blockLabel}</span>
+                    <ChevronDown className="size-3" />
+                </button>
             </Dropdown>
-            <EditorToolButton label="粗体" active={Boolean(editor?.isActive("bold"))} onClick={() => editor?.chain().focus().toggleBold().run()}><Bold /></EditorToolButton>
-            <EditorToolButton label="斜体" active={Boolean(editor?.isActive("italic"))} onClick={() => editor?.chain().focus().toggleItalic().run()}><Italic /></EditorToolButton>
-            <EditorToolButton label="下划线" active={Boolean(editor?.isActive("underline"))} onClick={() => editor?.chain().focus().toggleUnderline().run()}><Underline /></EditorToolButton>
-            <EditorToolButton label="删除线" active={Boolean(editor?.isActive("strike"))} onClick={() => editor?.chain().focus().toggleStrike().run()}><Strikethrough /></EditorToolButton>
+            <EditorToolButton label="粗体" active={Boolean(editor?.isActive("bold"))} onClick={() => editor?.chain().focus().toggleBold().run()}>
+                <Bold />
+            </EditorToolButton>
+            <EditorToolButton label="斜体" active={Boolean(editor?.isActive("italic"))} onClick={() => editor?.chain().focus().toggleItalic().run()}>
+                <Italic />
+            </EditorToolButton>
+            <EditorToolButton label="下划线" active={Boolean(editor?.isActive("underline"))} onClick={() => editor?.chain().focus().toggleUnderline().run()}>
+                <Underline />
+            </EditorToolButton>
+            <EditorToolButton label="删除线" active={Boolean(editor?.isActive("strike"))} onClick={() => editor?.chain().focus().toggleStrike().run()}>
+                <Strikethrough />
+            </EditorToolButton>
             <ToolbarDivider />
             <Dropdown
                 trigger={["click"]}
@@ -260,29 +358,58 @@ function TextEditorToolbar({ editor }: { editor: Editor | null }) {
                     onClick: ({ key }) => editor?.chain().focus().setTextAlign(key).run(),
                 }}
             >
-                <button type="button" className="inline-flex size-8 shrink-0 items-center justify-center gap-0.5 rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="文字对齐"><span className="[&_svg]:size-3.5">{alignmentIcon}</span><ChevronDown className="size-2.5" /></button>
+                <button type="button" className="inline-flex size-8 shrink-0 items-center justify-center gap-0.5 rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="文字对齐">
+                    <span className="[&_svg]:size-3.5">{alignmentIcon}</span>
+                    <ChevronDown className="size-2.5" />
+                </button>
             </Dropdown>
-            <EditorToolButton label="无序列表" active={Boolean(editor?.isActive("bulletList"))} onClick={() => editor?.chain().focus().toggleBulletList().run()}><List /></EditorToolButton>
-            <EditorToolButton label="有序列表" active={Boolean(editor?.isActive("orderedList"))} onClick={() => editor?.chain().focus().toggleOrderedList().run()}><ListOrdered /></EditorToolButton>
-            <EditorToolButton label="引用" active={Boolean(editor?.isActive("blockquote"))} onClick={() => editor?.chain().focus().toggleBlockquote().run()}><Quote /></EditorToolButton>
+            <EditorToolButton label="无序列表" active={Boolean(editor?.isActive("bulletList"))} onClick={() => editor?.chain().focus().toggleBulletList().run()}>
+                <List />
+            </EditorToolButton>
+            <EditorToolButton label="有序列表" active={Boolean(editor?.isActive("orderedList"))} onClick={() => editor?.chain().focus().toggleOrderedList().run()}>
+                <ListOrdered />
+            </EditorToolButton>
+            <EditorToolButton label="引用" active={Boolean(editor?.isActive("blockquote"))} onClick={() => editor?.chain().focus().toggleBlockquote().run()}>
+                <Quote />
+            </EditorToolButton>
             <Popover
                 open={linkOpen}
-                onOpenChange={(next) => { setLinkOpen(next); if (next) setLinkValue(String(editor?.getAttributes("link").href || "")); }}
+                onOpenChange={(next) => {
+                    setLinkOpen(next);
+                    if (next) setLinkValue(String(editor?.getAttributes("link").href || ""));
+                }}
                 trigger="click"
                 placement="bottom"
-                content={<div className="flex w-72 gap-2"><Input size="small" value={linkValue} placeholder="https://example.com" onChange={(event) => setLinkValue(event.target.value)} onPressEnter={applyLink} /><Button size="small" type="primary" onClick={applyLink}>应用</Button></div>}
+                content={
+                    <div className="canvas-text-editor-controls flex w-72 gap-2">
+                        <Input size="small" value={linkValue} placeholder="https://example.com" onChange={(event) => setLinkValue(event.target.value)} onPressEnter={applyLink} />
+                        <Button size="small" type="primary" onClick={applyLink}>
+                            应用
+                        </Button>
+                    </div>
+                }
             >
-                <span><EditorToolButton label="插入链接" active={Boolean(editor?.isActive("link"))} onClick={() => setLinkOpen(true)}><Link2 /></EditorToolButton></span>
+                <span>
+                    <EditorToolButton label="插入链接" active={Boolean(editor?.isActive("link"))} onClick={() => setLinkOpen(true)}>
+                        <Link2 />
+                    </EditorToolButton>
+                </span>
             </Popover>
             <ToolbarDivider />
             <Tooltip title="文字颜色">
                 <ColorPicker value={String(editor?.getAttributes("textStyle").color || theme.node.text)} onChangeComplete={(color) => editor?.chain().focus().setColor(color.toHexString()).run()}>
-                    <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md text-xs font-bold outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="文字颜色"><span className="border-b-2 px-0.5" style={{ borderColor: String(editor?.getAttributes("textStyle").color || theme.node.text) }}>A</span></button>
+                    <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md text-xs font-bold outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="文字颜色">
+                        <span className="border-b-2 px-0.5" style={{ borderColor: String(editor?.getAttributes("textStyle").color || theme.node.text) }}>
+                            A
+                        </span>
+                    </button>
                 </ColorPicker>
             </Tooltip>
             <Tooltip title="高亮颜色">
                 <ColorPicker value={String(editor?.getAttributes("highlight").color || "#fde68a")} onChangeComplete={(color) => editor?.chain().focus().toggleHighlight({ color: color.toHexString() }).run()}>
-                    <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="高亮颜色"><Highlighter className="size-3.5" /></button>
+                    <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="高亮颜色">
+                        <Highlighter className="size-3.5" />
+                    </button>
                 </ColorPicker>
             </Tooltip>
             <Dropdown
@@ -304,7 +431,9 @@ function TextEditorToolbar({ editor }: { editor: Editor | null }) {
                     },
                 }}
             >
-                <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="更多格式"><MoreHorizontal className="size-4" /></button>
+                <button type="button" className="grid size-8 shrink-0 place-items-center rounded-md outline-none hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8" aria-label="更多格式">
+                    <MoreHorizontal className="size-4" />
+                </button>
             </Dropdown>
         </div>
     );
@@ -314,7 +443,16 @@ function EditorToolButton({ label, active = false, children, onClick }: { label:
     const theme = canvasThemes[useActiveTheme()];
     return (
         <Tooltip title={label}>
-            <button type="button" aria-label={label} aria-pressed={active} className="grid size-8 shrink-0 place-items-center rounded-md outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8 [&_svg]:size-3.5" style={{ background: active ? theme.toolbar.activeBg : undefined, color: active ? theme.accent.primary : undefined }} onClick={onClick}>{children}</button>
+            <button
+                type="button"
+                aria-label={label}
+                aria-pressed={active}
+                className="grid size-8 shrink-0 place-items-center rounded-md outline-none transition hover:bg-black/5 focus-visible:ring-2 dark:hover:bg-white/8 [&_svg]:size-3.5"
+                style={{ background: active ? theme.toolbar.activeBg : undefined, color: active ? theme.accent.primary : undefined }}
+                onClick={onClick}
+            >
+                {children}
+            </button>
         </Tooltip>
     );
 }
@@ -325,14 +463,6 @@ function ToolbarDivider() {
 
 function emptyTextDocument(): JSONContent {
     return { type: "doc", content: [{ type: "paragraph" }] };
-}
-
-function plainTextDocument(content: string): JSONContent {
-    if (!content) return emptyTextDocument();
-    return {
-        type: "doc",
-        content: content.split("\n").map((line) => ({ type: "paragraph", content: line ? [{ type: "text", text: line }] : undefined })),
-    };
 }
 
 function countWords(content: string) {

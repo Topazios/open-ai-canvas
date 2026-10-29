@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { bodySourceRecords, episodeOutlineContext } from "../src/lib/canvas/workflow-body-context";
 import { workflowBodyBatch } from "../src/lib/canvas/workflow-text-batch";
 import { MAX_CANVAS_PAYLOAD_BYTES } from "../src/lib/canvas/generation-contract.generated";
-import { createWorkflowDocuments, nodeWorkflow, workflowBodyTaskInput, workflowSignature } from "../src/lib/canvas/canvas-short-drama-workflow";
+import { createWorkflowDocuments, nodeWorkflow, restoreWorkflowSourceConnections, workflowBodyTaskInput, workflowSignature } from "../src/lib/canvas/canvas-short-drama-workflow";
 import { compactWorkflowNodes } from "../src/lib/canvas/canvas-workflow-persistence";
 import { createShortDramaPipeline } from "../src/lib/canvas/canvas-short-drama";
 import { completeUnifiedWorkflowPlan } from "./fixtures/workflow-plan";
@@ -55,6 +55,36 @@ test("body nodes persist references and assemble only the relevant episode and a
     expect(requestText(input)).not.toContain("靠南入口");
     f.outline.metadata!.content += "\n改稿";
     expect(() => workflowBodyTaskInput(body, bodies.nodes)).toThrow("来源已变化");
+});
+
+test("body retry restores a missing canonical source edge before validating and building its prompt", () => {
+    const f = fixture();
+    const bodies = createWorkflowDocuments(f.bodyRequest, f.nodes, f.connections, { x: 0, y: 0 });
+    const body = bodies.created[0];
+    const broken = bodies.connections.filter(edge => edge.toNodeId !== f.outline.id);
+
+    expect(() => workflowBodyTaskInput(body, bodies.nodes, broken)).toThrow("来源连线已移除");
+    const repaired = restoreWorkflowSourceConnections(bodies.nodes, broken);
+    expect(repaired).toContainEqual(expect.objectContaining({ fromNodeId: f.plan.frame.id, toNodeId: f.outline.id }));
+    expect(requestText(workflowBodyTaskInput(body, bodies.nodes, repaired))).toContain("本集独有剧情1");
+});
+
+test("body context carries the plan's local story basis without loading unrelated plan chapters", () => {
+    const f = fixture();
+    const story = f.plan.docs.find(node => node.metadata?.shortDrama?.planSection === "story")!;
+    story.metadata!.content = [
+        "## 本土创作依据",
+        "海港社区的互助关系让主角必须在公开真相与保护邻居隐私之间选择。",
+        "## 世界设定",
+        "近未来的社区档案平台留有不可篡改的公开记录。",
+        "## 视觉风格",
+        "不要将本章节的整季美术参数带入正文。",
+    ].join("\n");
+    const records = bodySourceRecords([f.outline, story], 1, "");
+    const localBasis = records.find(record => record.id === story.id)!.content;
+    expect(localBasis).toContain("海港社区的互助关系");
+    expect(localBasis).toContain("不可篡改的公开记录");
+    expect(localBasis).not.toContain("整季美术参数");
 });
 
 test("60 planned bodies stay small even when the full-series outline is large", () => {

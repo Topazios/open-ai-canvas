@@ -339,7 +339,9 @@
 /* infinite 装饰动画在 reduced-motion / no-motion 下降级（对应 #99 三级降级）*/
 @media (prefers-reduced-motion: reduce) {
     .canvas-connection-flow,
+    .canvas-connection-flow-head,
     .canvas-connection-comet,
+    .canvas-connection-particles,
     .canvas-connection-target,
     .canvas-connection-draft,
     .canvas-task-progress-shimmer,
@@ -352,7 +354,9 @@
     }
 }
 .no-motion .canvas-connection-flow,
+.no-motion .canvas-connection-flow-head,
 .no-motion .canvas-connection-comet,
+.no-motion .canvas-connection-particles,
 .no-motion .canvas-connection-target,
 .no-motion .canvas-connection-draft,
 .no-motion .canvas-task-progress-shimmer,
@@ -361,6 +365,9 @@
 .no-motion .creation-intro-word,
 .no-motion .creation-intro-signal {
     animation: none;
+}
+.no-motion .canvas-connection-particles {
+    display: none;
 }
 
 .auth-scene {
@@ -10421,8 +10428,12 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
         will-change: transform;
     }
 
-    [data-canvas-viewport][data-canvas-viewport-interacting="true"] :where(.canvas-connection-flow, .canvas-connection-comet, .canvas-connection-draft) {
+    [data-canvas-viewport][data-canvas-viewport-interacting="true"] :where(.canvas-connection-flow, .canvas-connection-flow-head, .canvas-connection-comet, .canvas-connection-draft) {
         animation: none !important;
+    }
+
+    [data-canvas-viewport][data-canvas-viewport-interacting="true"] .canvas-connection-particles {
+        visibility: hidden;
     }
 
     [data-canvas-viewport-interacting="true"] :where(.canvas-node-toolbar, [data-canvas-node-panel]) {
@@ -10463,30 +10474,6 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
         animation: canvas-task-progress-shimmer 1.4s linear infinite;
     }
 
-    .canvas-connection-flow {
-        animation: canvas-connection-flow 0.74s var(--motion-ease-linear) infinite;
-        animation-delay: var(--canvas-connection-delay, 0ms);
-        will-change: stroke-dashoffset;
-    }
-
-    /* 一小段高亮沿起点到终点运行，用于在深色画布上明确表达因果方向。 */
-    .canvas-connection-comet {
-        animation: canvas-connection-comet 1.15s var(--motion-ease-linear) infinite;
-        animation-delay: var(--canvas-connection-delay, 0ms);
-        will-change: stroke-dashoffset;
-    }
-
-    .canvas-connection-target {
-        transform-box: fill-box;
-        transform-origin: center;
-        animation: canvas-connection-target-pulse 1.15s var(--motion-ease-in-out) infinite;
-        animation-delay: var(--canvas-connection-delay, 0ms);
-    }
-
-    .canvas-connection-draft {
-        animation: canvas-connection-flow 0.9s var(--motion-ease-linear) infinite;
-    }
-
     @keyframes canvas-panel-in {
         from {
             opacity: 0;
@@ -10507,31 +10494,6 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
     .canvas-node-panel-placement-change {
         animation: canvas-node-panel-placement-blur 180ms var(--motion-ease-out) both;
     }
-
-    @keyframes canvas-connection-flow {
-        from {
-            stroke-dashoffset: 0;
-        }
-        to {
-            stroke-dashoffset: -36;
-        }
-    }
-
-    @keyframes canvas-connection-target-pulse {
-        0%, 100% { opacity: .72; transform: scale(.88); }
-        50% { opacity: 1; transform: scale(1.16); }
-    }
-
-    /* 位移量必须等于 dasharray 之和（20 + 124），否则循环处会跳一下。 */
-    @keyframes canvas-connection-comet {
-        from {
-            stroke-dashoffset: 0;
-        }
-        to {
-            stroke-dashoffset: -144;
-        }
-    }
-
 
     .canvas-node-info-modal .ant-modal-header {
         padding-right: 0;
@@ -10650,10 +10612,16 @@ html:not(.dark) .canvas-generation-settings-trigger.ant-btn[aria-expanded="true"
     }
 
     .canvas-connection-flow,
+    .canvas-connection-flow-head,
     .canvas-connection-comet,
+    .canvas-connection-particles,
     .canvas-connection-target,
     .canvas-connection-draft {
         animation: none;
+    }
+
+    .canvas-connection-particles {
+        display: none;
     }
 }
 

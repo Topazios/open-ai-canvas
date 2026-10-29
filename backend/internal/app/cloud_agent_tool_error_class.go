@@ -13,7 +13,7 @@ import (
 //   - 模型幻觉出不存在的工具、在只暴露画布工具的这一轮里调画布工具、参数不合法 → 模型输出问题；
 //   - 只读轮里发起写入、目标不具备能力 → 权限边界问题；
 //   - 画布在模型读取之后被改动 → 状态冲突（可重读后重试）；
-//   - 上游拒绝/超时/网络 → 上游故障。
+//   - 有明确渠道响应的拒绝/故障 → 上游故障；本地上下文中断单独归类。
 //
 // 分类只进事件载荷，不参与任何放行或拒绝判定：拒绝逻辑仍然在各自的校验点。
 const (
@@ -22,6 +22,7 @@ const (
 	cloudAgentToolErrorStateConflict      = "state_conflict"
 	cloudAgentToolErrorPermission         = "permission_violation"
 	cloudAgentToolErrorUpstream           = "upstream_failure"
+	cloudAgentToolErrorExecution          = "execution_interrupted"
 	cloudAgentToolErrorAdmission          = "admission_failure"
 	cloudAgentToolErrorUnknown            = "tool_error"
 )
@@ -79,12 +80,18 @@ func cloudAgentToolErrorClass(req CloudAgentRequest, call cloudAgentCall, err er
 	if errors.As(err, &httpErr) {
 		return cloudAgentToolErrorUpstream, httpErr.StatusCode >= 500 || httpErr.StatusCode == 429, "report_to_user"
 	}
+	var payloadErr providerPayloadError
+	if errors.As(err, &payloadErr) {
+		return cloudAgentToolErrorUpstream, false, "report_to_user"
+	}
 	var pendingErr providerStatePendingError
 	if errors.As(err, &pendingErr) {
 		return cloudAgentToolErrorUpstream, true, "report_to_user"
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return cloudAgentToolErrorUpstream, true, "report_to_user"
+		// A cancelled local context or elapsed wall-clock budget does not prove
+		// that a channel returned an error. Do not authorize another generation.
+		return cloudAgentToolErrorExecution, false, "inspect_execution"
 	}
 	// Unknown failures are not evidence that another model-generated argument
 	// will work. Never advertise them as retryable; the caller must report the
@@ -114,6 +121,8 @@ func cloudAgentToolErrorLabel(class string) string {
 		return "超出本轮权限"
 	case cloudAgentToolErrorUpstream:
 		return "上游故障"
+	case cloudAgentToolErrorExecution:
+		return "执行已中断，需核对任务状态"
 	case cloudAgentToolErrorAdmission:
 		return "媒体生成准入失败"
 	default:

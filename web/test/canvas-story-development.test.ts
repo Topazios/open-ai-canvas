@@ -15,6 +15,9 @@ describe("story development", () => {
         const pipeline = createShortDramaPipeline({ x: 0, y: 0 });
         const chain = pipeline.nodes.filter((node) => node.metadata?.storyDevelopment);
         expect(chain.map((node) => node.metadata!.storyDevelopment!.stage)).toEqual(["topic", "plan", "episodes", "body"]);
+        expect(chain.slice(0, 3).map((node) => node.width)).toEqual([560, 560, 560]);
+        expect(chain.at(-1)!.width).toBe(400);
+        expect(chain.slice(1).map((node, index) => node.position.x - chain[index].position.x)).toEqual([640, 640, 640]);
         expect(new Set(chain.map((node) => node.id)).size).toBe(4);
         expect(pipeline.connections.some((edge) => edge.fromNodeId === chain.at(-1)!.id && edge.toNodeId === pipeline.scriptNodeId)).toBe(true);
         expect(chain.at(-1)!.metadata!.storyDevelopment!.sourceNodeIds).toEqual(chain.slice(0, -1).map((node) => node.id));
@@ -57,7 +60,7 @@ describe("story development", () => {
         const extra = createCanvasNode(CanvasNodeType.Text, { x: 0, y: 0 }, { content: "UNRELATED_SECRET" });
         const body = nodes.at(-1)!.metadata!.storyDevelopment!;
         const prompt = buildStoryDevelopmentPrompt({ ...body, episodeNumber: 3 }, [...nodes, extra], "草稿", "改善对白");
-        expect(prompt).toContain("第 3 集"); expect(prompt).toContain("改善对白"); expect(prompt).toContain("制作方案正文"); expect(prompt).not.toContain("UNRELATED_SECRET");
+        expect(prompt).toContain("第 3 集"); expect(prompt).toContain("改善对白"); expect(prompt).toContain("世界规则"); expect(prompt).not.toContain("UNRELATED_SECRET");
         expect(() => buildStoryDevelopmentPrompt(body, nodes.slice(1), "", "")).toThrow("前序节点");
         expect(() => buildStoryDevelopmentPrompt({ ...body, sourceNodeIds: [] }, [], "", "")).toThrow("前序节点");
     });
@@ -83,6 +86,23 @@ describe("story development", () => {
         delete data.brief.topicCount;
         expect(buildStoryDevelopmentPrompt(data, nodes, "", "", true)).toContain("一次生成 4 个");
     });
+    test("fresh topic draws avoid anchoring on an adopted draft but retain explicitly imported Markdown", () => {
+        const { nodes } = createStoryDevelopmentChain({ x: 0, y: 0 });
+        const topic = { ...nodes[0].metadata!.storyDevelopment!, brief: { ...nodes[0].metadata!.storyDevelopment!.brief!, genre: "爱情", style: "悬疑", premise: "主角守护一处社区空间" } };
+        const previousCandidate = "旧候选：收集证据夺回公司";
+        const fresh = buildStoryDevelopmentPrompt(topic, nodes, previousCandidate, "", true);
+        expect(fresh).not.toContain(previousCandidate);
+        expect(fresh).not.toContain("当前草稿");
+        expect(fresh).toContain("候选间不得重复同一冲突机制");
+        expect(fresh).toContain("故事发生地");
+        const imported = buildStoryDevelopmentPrompt({ ...topic, topicSourceKind: "imported" }, nodes, "# 导入故事\n主角守护社区的旧电影院。", "", true);
+        expect(imported).toContain("用户导入的原始选题材料");
+        expect(imported).toContain("主角守护社区的旧电影院");
+        expect(imported).not.toContain("当前草稿");
+        expect(() => buildStoryDevelopmentPrompt({ ...topic, topicSourceKind: "imported", brief: { ...topic.brief!, genre: "", style: "", premise: "" } }, nodes, "用户导入故事", "", true)).not.toThrow();
+        const edit = buildStoryDevelopmentPrompt(topic, nodes, previousCandidate, "保留设定，调整动机", false);
+        expect(edit).toContain(previousCandidate);
+    });
     test("one written episode is not whole-season readiness; each new body is separate", () => {
         const nodes = writtenChain();
         expect(deriveShortDramaProgress(nodes, []).steps[0].tasks.at(-1)!.ready).toBe(false);
@@ -93,17 +113,19 @@ describe("story development", () => {
         expect(second.metadata!.storyDevelopment!.sourceNodeIds).toEqual(body.metadata!.storyDevelopment!.sourceNodeIds);
         expect(body.metadata!.content).toBe("第 1 集 · 正文正文");
     });
-    test("production plan includes story architecture and directly opens existing episode outlines", () => {
+    test("production plan is regenerated from the adopted topic instead of the old draft", () => {
         const nodes = writtenChain();
-        const prompt = buildStoryDevelopmentPrompt(nodes[1].metadata!.storyDevelopment!, nodes, "已有制作方案", "补全缺项");
-        for (const requirement of ["故事总纲", "结局遵循全局设置与用户要求", "人物弧光", "集数分配", "伏笔与回收", "AI生成可行性", "已有制作方案"]) expect(prompt).toContain(requirement);
+        const prompt = buildStoryDevelopmentPrompt(nodes[1].metadata!.storyDevelopment!, nodes, "旧版本完整故事正文", "补全缺项");
+        for (const requirement of ["故事总纲", "结局遵循全局设置与用户要求", "人物弧光", "集数分配", "伏笔与回收", "AI生成可行性", "本次故事总纲必须重新从当前已采用选题推演"]) expect(prompt).toContain(requirement);
+        expect(prompt).not.toContain("旧版本完整故事正文");
+        expect(prompt).not.toContain("当前草稿");
         const next = advanceStoryDevelopment(nodes[1].id, nodes, []);
         expect(next.node).toBe(nodes[2]);
         expect(next.node.metadata!.storyDevelopment!.stage).toBe("episodes");
         expect(next.node.metadata!.content).toBe(nodes[2].metadata!.content);
         expect(next.connections.some((edge) => edge.fromNodeId === nodes[1].id && edge.toNodeId === nodes[2].id)).toBe(true);
     });
-    test("plan honors an open ending and uses the ordered asset workflow", () => {
+    test("plan honors an open ending and stays within the story outline task", () => {
         const nodes = writtenChain();
         nodes[0].metadata!.storyDevelopment!.brief!.globalSettings = { ...defaultShortDramaSettings(), ending: DramaEnding.Open };
         const prompt = buildStoryDevelopmentPrompt(nodes[1].metadata!.storyDevelopment!, nodes, "", "");
@@ -111,19 +133,20 @@ describe("story development", () => {
         expect(prompt).toContain("开放结局应交代阶段结果和保留悬念");
         expect(prompt).not.toContain("明确结局");
         expect(prompt).not.toContain("不以悬念代替结局");
-        const phases = ["1. 故事总纲与世界规则", "2. 全剧资产清单与系统编码", "3. 视觉与美术规范、导演与视听规范", "4. 按清单逐项保存", "5. 基于全部资产档案完成生成与一致性规范", "6. 校验清单覆盖"];
-        let previous = -1;
-        for (const phase of phases) {
-            const position = prompt.indexOf(phase);
-            expect(position).toBeGreaterThan(previous);
-            previous = position;
-        }
+        expect(prompt).toContain("根据已采用选题，仅输出独立的故事总纲与世界规则");
+        expect(prompt).toContain("完成后结束本步骤");
+        expect(prompt).not.toContain("全剧资产清单与系统编码");
+        expect(prompt).not.toContain("视觉与美术规范");
+        expect(prompt).not.toContain("导演与视听规范");
+        expect(prompt).not.toContain("生成与一致性规范");
     });
     test("legacy outline is optional even empty, deleted or stale; required plan still gates generation", () => {
         for (const content of ["", "LEGACY_REFERENCE"]) {
             const nodes = writtenChain();
             const legacy = createCanvasNode(CanvasNodeType.Text, { x: 0, y: 400 }, { content, storyDevelopment: { stage: "outline", pipelineId: nodes[0].metadata!.storyDevelopment!.pipelineId, sourceNodeIds: [nodes[0].id, nodes[1].id], sourceSignatures: { [nodes[1].id]: "old-plan" } } });
             const legacyNodes = nodes.map((node) => ["episodes", "body"].includes(node.metadata!.storyDevelopment!.stage) ? { ...node, metadata: { ...node.metadata, storyDevelopment: { ...node.metadata!.storyDevelopment!, sourceNodeIds: [...node.metadata!.storyDevelopment!.sourceNodeIds, legacy.id] } } } : node);
+            expect(buildStoryDevelopmentPrompt(nodes[1].metadata!.storyDevelopment!, [...legacyNodes, legacy], "旧版本总纲", "")).not.toContain("LEGACY_REFERENCE");
+            expect(buildStoryDevelopmentPrompt(nodes[1].metadata!.storyDevelopment!, [...legacyNodes, legacy], "旧版本总纲", "")).not.toContain("旧版本总纲");
             // Match an old saved body to its old episode document, including the legacy dependency.
             const bodyData = legacyNodes[3].metadata!.storyDevelopment!;
             bodyData.sourceSignatures = storySourceState(bodyData, legacyNodes).signatures;

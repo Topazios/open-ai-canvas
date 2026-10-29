@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"infinite-canvas/backend/internal/assets"
@@ -82,6 +83,14 @@ func serveResourceDelivery(c *gin.Context, delivery *service.ResourceDelivery, c
 	if seeker, ok := stream.Body.(io.ReadSeeker); ok {
 		c.Header("Content-Type", mimeType)
 		http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
+		return
+	}
+	if c.Request.Method == http.MethodHead {
+		c.Header("Content-Type", mimeType)
+		if stream.ContentLength >= 0 {
+			c.Header("Content-Length", strconv.FormatInt(stream.ContentLength, 10))
+		}
+		c.Status(stream.StatusCode)
 		return
 	}
 	c.DataFromReader(stream.StatusCode, stream.ContentLength, mimeType, stream.Body, nil)

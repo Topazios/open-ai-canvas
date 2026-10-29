@@ -58,10 +58,9 @@ func ConfigurePool(db *gorm.DB) error {
 		sqlDB.SetMaxIdleConns(10)
 		return nil
 	}
-	// Do not confuse database connection concurrency with task concurrency. The
-	// worker still runs model calls according to the runtime policy; SQLite writes
-	// are serialized here to keep a local generation queue reliable.
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
+	// WAL allows readers on separate connections while SQLite still serializes
+	// writes. A single pooled connection lets background workers starve HTTP reads.
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(5)
 	return nil
 }

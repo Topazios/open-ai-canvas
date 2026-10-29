@@ -90,3 +90,26 @@ test("explicit asset references retain codes and selected variants but exclude t
     expect(resolveProductionAssetReferences("@CHR-0001", [f.subject], [], (node) => assetSheetReferenceContent(node, f.subject.id)).content).toBe("");
     expect(resolveProductionAssetReferences("@CHR-0001-V01", [f.subject], [], (node) => assetSheetReferenceContent(node, f.subject.id)).content).toContain("黄色雨衣");
 });
+
+test("regenerate with an edited prompt creates a new task for succeeded and non-moderation failed sources", async () => {
+    for (const status of ["succeeded", "failed"] as const) {
+        const f = fixture();
+        f.source.status = status;
+        f.image.metadata!.prompt = "重新写过的整体提示词";
+        await retryWorkflowGeneration(f.image, f.source, "canvas", defaultConfig, f.api, f.nodes, undefined, true);
+        expect(f.calls).toHaveLength(1);
+        expect(f.calls[0].retry).toBeUndefined();
+        expect(f.calls[0].prompt).toBe("重新写过的整体提示词");
+    }
+});
+
+test("regenerate after moderation requires a changed prompt and then submits it as a new task", async () => {
+    const same = fixture(); same.source.errorCode = "moderation_blocked";
+    await expect(retryWorkflowGeneration(same.image, same.source, "canvas", defaultConfig, same.api, same.nodes, undefined, true)).rejects.toThrow("不能原样重试");
+    expect(same.calls).toHaveLength(0);
+    const edited = fixture(); edited.source.errorCode = "moderation_blocked";
+    edited.image.metadata!.prompt = "改写后的提示词";
+    await retryWorkflowGeneration(edited.image, edited.source, "canvas", defaultConfig, edited.api, edited.nodes, undefined, true);
+    expect(edited.calls).toHaveLength(1);
+    expect(edited.calls[0].prompt).toBe("改写后的提示词");
+});
