@@ -75,7 +75,7 @@ func applyStoryboardLayout(s *productionStoryboard, layouts []storyboardSceneLay
 				}
 			}
 			prior[plan.ID], lastStart = true, plan.Start
-			shots = append(shots, productionShot{ID: plan.ID, Start: plan.Start, End: plan.End, Duration: plan.Duration, Visual: plan.Goal, Camera: plan.Camera, Continuity: plan.Exit})
+			shots = append(shots, productionShot{ID: plan.ID, Start: plan.Start, End: plan.End, Duration: plan.Duration, Visual: plan.Goal, Camera: plan.Camera, Continuity: plan.Exit, ShotSize: plan.ShotSize, CameraAngle: plan.CameraAngle, Lens: plan.Lens, Movement: plan.Movement, Equipment: plan.Equipment, Blocking: plan.Blocking, TransitionIn: plan.TransitionIn, TransitionOut: plan.TransitionOut, CutPoint: plan.CutPoint})
 		}
 		for _, old := range scene.Shots {
 			found := false
@@ -222,15 +222,6 @@ func applyStoryboardExpansion(m productionManifest, doc map[string]any, sceneID 
 	if err := validateStoryboardShot(*scene, shot, index+1); err != nil {
 		return err
 	}
-	known := map[string]bool{}
-	for _, code := range storyboardAssetMentions.FindAllString(strings.Join(storyboardBody(m, doc), "\n"), -1) {
-		known[code], known[regexpStoryboardVariant.ReplaceAllString(code, "")] = true, true
-	}
-	for _, code := range shot.AssetIDs {
-		if !known[code] {
-			return BadAuthRequest("镜头引用的资产编码未出现在当前集正文：" + code)
-		}
-	}
 	next := *scene
 	next.Shots = append(append([]productionShot{}, scene.Shots...), shot)
 	sort.Slice(next.Shots, func(i, j int) bool { return next.Shots[i].ID < next.Shots[j].ID })
@@ -263,7 +254,8 @@ func storyboardParallelContext(repo *repository.Repository, run *model.CloudAgen
 	}
 	context := map[string]any{"phase": "expand", "nextTool": "production_storyboard_expand", "sceneId": scene.ID, "sceneGoal": scene.Goal, "sceneEntry": scene.Entry, "sceneExit": scene.Exit, "plannedShot": plan,
 		"brief": json.RawMessage(brief.FactsJSON), "source": storyboardNumberedUnits(storyboardBody(m, doc), plan.Start, plan.End),
-		"instruction": "只补全plannedShot，调用production_storyboard_expand保存，沿用sceneId及镜头ID/范围/时长。原文已提供，不读全剧或资产库。沿用共同构图与前后端点，资产编码只填本镜实际使用的正文编码。不要重新规划或生成其他镜头。"}
+		"instruction": "只补全plannedShot，调用production_storyboard_expand保存，沿用sceneId及镜头ID/范围/时长。原文已提供，不读全剧或资产库。沿用共同构图与前后端点，资产编码从availableAssets清单选本镜实际使用的，必须含所在场景SCN，清单没有则留空。不要重新规划或生成其他镜头。"}
+	storyboardSceneSpaceContext(context, *scene)
 	for i, item := range scene.Layout {
 		if item.ID == work.Key {
 			if i > 0 {
@@ -285,6 +277,7 @@ func storyboardParallelContext(repo *repository.Repository, run *model.CloudAgen
 		}
 	}
 	context["requiredPredecessors"] = required
+	storyboardAttachAssets(context, m, doc)
 	return context, nil
 }
 

@@ -27,6 +27,7 @@ var (
 	geminiGeneratePath         = regexp.MustCompile(`^/models/([^/:]+):(generateContent|streamGenerateContent)$`)
 	customGeminiRelayPath      = regexp.MustCompile(`(?:^|/)models/[^/:]+:(generateContent|streamGenerateContent|predictLongRunning)$`)
 	customVideoTaskPath        = regexp.MustCompile(`(?:^|/)video/generations/[^/]+$`)
+	customVideosTaskPath       = regexp.MustCompile(`(?:^|/)videos/generations/[^/]+$`)
 	customXAIVideoTaskPath     = regexp.MustCompile(`(?:^|/)videos/[^/]+$`)
 	customVideoContentPath     = regexp.MustCompile(`(?:^|/)videos/[^/]+/content$`)
 	customArkVideoTaskPath     = regexp.MustCompile(`(?:^|/)contents/generations/tasks/[^/]+$`)
@@ -79,7 +80,7 @@ func authorizeCustomRelay(method string, target *url.URL, apiFormat string, cont
 		}
 		allowed := requestPath == "/models" || strings.HasSuffix(requestPath, "/models")
 		if apiFormat == "openai" {
-			allowed = allowed || customVideoTaskPath.MatchString(requestPath) || customXAIVideoTaskPath.MatchString(requestPath) || customVideoContentPath.MatchString(requestPath) || customArkVideoTaskPath.MatchString(requestPath) || customMiniMaxTaskPath.MatchString(requestPath)
+			allowed = allowed || customVideoTaskPath.MatchString(requestPath) || customVideosTaskPath.MatchString(requestPath) || customXAIVideoTaskPath.MatchString(requestPath) || customVideoContentPath.MatchString(requestPath) || customArkVideoTaskPath.MatchString(requestPath) || customMiniMaxTaskPath.MatchString(requestPath)
 		} else if apiFormat == "gemini" {
 			allowed = allowed || customGeminiOperationPath.MatchString(requestPath)
 		}

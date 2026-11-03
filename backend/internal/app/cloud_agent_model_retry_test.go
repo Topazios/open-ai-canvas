@@ -64,6 +64,12 @@ func TestCloudAgentModelTaskTransientFailure(t *testing.T) {
 		{name: "stream reset after headers", status: 200, taskError: "connection reset by peer", want: true},
 		{name: "stream timeout after headers", status: 200, code: "upstream_timeout", message: "等待上游响应超时", want: true},
 		{name: "stream timeout code without message", status: 200, code: "upstream_timeout", want: true},
+		{name: "gateway cut stream mid tool call", status: 200, code: "upstream_stream_read_error", message: "Upstream response stream was interrupted", want: true},
+		{name: "http2 stream error with generic execution diagnostic", status: 200, code: "upstream_http2_stream_error", message: "Upstream HTTP/2 stream failed", taskError: "上游流式请求失败，生成未完成", diagnosticCode: "provider_execution_failed", retryClass: "new_generation_authorization", want: true},
+		{name: "stream read error with generic execution diagnostic", status: 200, code: "upstream_stream_read_error", taskError: "上游流式请求失败，生成未完成", diagnosticCode: "provider_execution_failed", retryClass: "new_generation_authorization", want: true},
+		{name: "gateway concurrency limit", status: 200, code: "gateway_concurrency_limit", want: true},
+		{name: "provider request timeout code", status: 200, code: "provider_request_timeout", want: true},
+		{name: "stream timeout code", status: 200, code: "stream_timeout", want: true},
 		{name: "stream EOF after headers", status: 200, taskError: "unexpected EOF", want: true},
 		{name: "stream deadline after headers", status: 200, taskError: "context deadline exceeded", want: true},
 		{name: "other successful headers with read failure", status: 201, taskError: "i/o timeout", want: true},
@@ -166,5 +172,30 @@ func TestCloudAgentModelTaskTransientFailureUsesLatestNonPollLog(t *testing.T) {
 	}
 	if s.cloudAgentModelTaskTransientFailure("task") {
 		t.Fatal("log lookup failure must not retry")
+	}
+}
+
+func TestProductionParallelTransientBackoff(t *testing.T) {
+	s, db := modelRetryTestService(t)
+	for _, tc := range []struct {
+		id, code string
+		attempt  int
+		min, max time.Duration
+	}{
+		{"plain", "server_error", 1, time.Second, 3 * time.Second},
+		{"plain-2", "server_error", 3, 4 * time.Second, 6 * time.Second},
+		{"limit", "gateway_concurrency_limit", 1, 5 * time.Second, 7 * time.Second},
+		{"cut", "upstream_stream_read_error", 2, 10 * time.Second, 12 * time.Second},
+		{"capped", "gateway_concurrency_limit", 6, 60 * time.Second, 62 * time.Second},
+	} {
+		if err := db.Create(&model.Task{ID: tc.id, Status: model.TaskStatusFailed}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&model.ApiCallLog{ID: tc.id + "-log", TaskID: tc.id, StatusCode: 200, ErrorCode: tc.code}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if got := s.productionParallelTransientBackoff(tc.id, tc.attempt); got < tc.min || got >= tc.max {
+			t.Fatalf("%s attempt %d backoff = %v, want [%v, %v)", tc.id, tc.attempt, got, tc.min, tc.max)
+		}
 	}
 }

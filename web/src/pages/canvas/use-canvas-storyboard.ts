@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import {
     backendProviderConfig,
+    bindGenerationTaskToNode,
     buildGenerationConfig,
     generationTaskMetadata,
     resetGenerationTaskMetadata,
@@ -264,7 +265,15 @@ export function useCanvasStoryboard({
                 initialTask: task,
                 signal,
                 useTextEvents: true,
-                onTaskUpdate: (next) => { if (!signal.aborted && scope === getActiveUserScope()) setNodes((current) => current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...generationTaskMetadata(next), status: NODE_STATUS_LOADING } } : node)); },
+                onTaskUpdate: (next) => {
+                    if (signal.aborted || scope !== getActiveUserScope()) return;
+                    setNodes((current) => current.map((node) => {
+                        if (node.id !== nodeId) return node;
+                        // 心跳只刷新 updatedAt 时保持节点引用，避免画布被无谓标脏。
+                        const bound = bindGenerationTaskToNode(node, next);
+                        return bound === node ? node : { ...bound, metadata: { ...bound.metadata, status: NODE_STATUS_LOADING } };
+                    }));
+                },
             });
             const result = storyboardRowsFromTask(completed);
             assertCurrent();

@@ -211,8 +211,8 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
             return { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, ...completedTaskMetadata(task), status: "success", taskStage: "正文诊断完成", errorDetails: undefined,
                 shortDrama: { ...node.metadata.shortDrama, materializedTaskId: task.id, screenplayAudit: { ...node.metadata.shortDrama.screenplayAudit, report, reportSignature: canonicalize(report), reportMarkdown: screenplayReportMarkdown(report), rawResult: undefined } } } };
         } catch (error) {
-            // Retain the charged result for inspection. An invalid report is not
-            // a pass and must never trigger an automatic repair/retry loop.
+            // Retain the charged result for inspection. An invalid report is not a pass.
+            // No repair or retry is triggered here; only the auto-review orchestrator retries, bounded by its round limit.
             return { ...node, metadata: { ...node.metadata, ...completedTaskMetadata(task), status: "error", taskStage: "诊断报告待核对", errorDetails: error instanceof Error ? error.message : "报告格式不符合审核合同",
                 shortDrama: { ...node.metadata.shortDrama, materializedTaskId: task.id, screenplayAudit: { ...node.metadata.shortDrama.screenplayAudit, report: undefined, rawResult: result.text } } } };
         }

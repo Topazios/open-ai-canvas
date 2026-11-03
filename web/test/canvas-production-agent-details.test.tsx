@@ -105,7 +105,7 @@ test("storyboard and extraction progress retain their existing counts", () => {
 
 test("completed plan details keep manual asset generation out of the task log", () => {
     const html = renderDetails({ workKind: "plan", planReady: true, assetsStarted: false, validated: true, assetTotal: 8 }, "completed");
-    expect(html).toContain("方案已完成 · 资产待手动生成");
+    expect(html).toContain("方案已完成 · 资产待生成");
     expect(html).not.toContain("选择资产生成");
     expect(html).not.toContain("资产清单");
     expect(html).not.toContain("继续任务");

@@ -127,6 +127,10 @@ func (p *streamingAgentParser) consumeFrame(frame string) {
 		p.err = providerResponseDecodeError{fmt.Errorf("上游 Agent 流式响应不完整或 JSON 无效，生成未完成：%w", err)}
 		return
 	}
+	if p.protocol == "responses" && isKnownGatewayStreamFailure(eventName, payload) {
+		p.consumeResponsesEvent(eventName, payload)
+		return
+	}
 	if err := validateTextPayload(payload); err != nil {
 		p.err = err
 		return
@@ -145,6 +149,68 @@ func (p *streamingAgentParser) consumeFrame(frame string) {
 	}
 }
 
+// responsesStreamFailureMessage 把 Responses 流里的失败事件转成面向用户的说明。
+// 只回传符合白名单字符的 error.code，不回显上游正文，避免把提示词或敏感内容带进界面。
+func responsesStreamFailureMessage(payload map[string]interface{}) string {
+	code := responsesStreamErrorCode(payload)
+	switch code {
+	case "":
+		return "上游 Responses 流式请求失败，生成未完成"
+	case "upstream_stream_read_error":
+		return "上游网关中断了流式输出（upstream_stream_read_error），生成未完成"
+	case "gateway_concurrency_limit":
+		return "上游网关并发已满（gateway_concurrency_limit），生成未完成"
+	default:
+		return "上游 Responses 流式请求失败（" + code + "），生成未完成"
+	}
+}
+
+// isKnownGatewayStreamFailure 判断是否为网关层已知的流式失败（流被切断、并发已满）。
+// 这类错误要先于通用消息归类处理，否则会被误报成"请检查请求内容或渠道配置"。
+func isKnownGatewayStreamFailure(eventName string, payload map[string]interface{}) bool {
+	eventType := firstNonEmptyString(stringField(payload, "type"), strings.TrimSpace(eventName))
+	if eventType != "error" && eventType != "response.failed" {
+		return false
+	}
+	switch responsesStreamErrorCode(payload) {
+	case "upstream_stream_read_error", "gateway_concurrency_limit":
+		return true
+	}
+	return false
+}
+
+func responsesStreamErrorCode(payload map[string]interface{}) string {
+	candidates := []map[string]interface{}{}
+	if errObj, ok := payload["error"].(map[string]interface{}); ok {
+		candidates = append(candidates, errObj)
+	}
+	if response, ok := payload["response"].(map[string]interface{}); ok {
+		if errObj, ok := response["error"].(map[string]interface{}); ok {
+			candidates = append(candidates, errObj)
+		}
+	}
+	for _, errObj := range candidates {
+		for _, key := range []string{"code", "type"} {
+			if code := stringField(errObj, key); isSafeErrorCode(code) {
+				return code
+			}
+		}
+	}
+	return ""
+}
+
+func isSafeErrorCode(code string) bool {
+	if code == "" || len(code) > 64 {
+		return false
+	}
+	for _, r := range code {
+		if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != '.' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *streamingAgentParser) consumeResponsesEvent(eventName string, payload map[string]interface{}) {
 	eventType := firstNonEmptyString(stringField(payload, "type"), strings.TrimSpace(eventName))
 	switch eventType {
@@ -158,9 +224,10 @@ func (p *streamingAgentParser) consumeResponsesEvent(eventName string, payload m
 			p.err = providerResponseDecodeError{Err: errors.New("Responses 完成事件缺少结果")}
 		}
 	case "response.failed", "error":
-		p.err = providerPayloadError{message: "上游 Responses 流式请求失败，生成未完成"}
+		message := responsesStreamFailureMessage(payload)
+		p.err = providerPayloadError{message: message}
 		if raw, err := json.Marshal(payload); err == nil {
-			p.err = providerPayloadError{raw: string(raw), message: "上游 Responses 流式请求失败，生成未完成"}
+			p.err = providerPayloadError{raw: string(raw), message: message}
 		}
 	case "response.incomplete":
 		response, _ := payload["response"].(map[string]interface{})

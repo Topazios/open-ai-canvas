@@ -21,6 +21,9 @@ func TestProductionIntegratedPlanCompletesWithoutSpecial(t *testing.T) {
 	}
 	submitOrderedPlan(t, s, run.ID, "generation", "", "生成规范")
 	startPlanAssetsForTest(t, s, run.ID)
+	if _, err := s.ensureProductionPlanGroups("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
 	submitOrderedPlan(t, s, run.ID, "hero", "character", "林岚")
 	check := productionCall(t, s, run.ID, "production_check", map[string]any{}, false)
 	if check["valid"] != true {

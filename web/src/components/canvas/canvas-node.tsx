@@ -316,6 +316,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const connectionTilt = isConnectionTarget && !reduceMediaEffects && !dragOffset
         ? canvasConnectionTilt(data, connectionApproach) : undefined;
     const warning = canvasNodeWarning(data.metadata);
+    const planRole = planNodeRole(data);
 
     return (
         <div
@@ -347,6 +348,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 editing={isEditingTitle}
                 draft={titleDraft}
                 grouped={Boolean(data.parentId)}
+                planRole={planRole}
                 theme={theme}
                 onDraftChange={setTitleDraft}
                 onEdit={() => setIsEditingTitle(true)}
@@ -361,7 +363,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 style={{
                     background: hasImageContent && data.parentId && data.metadata?.shortDrama?.mediaKind === "image" ? theme.node.fill : hasImageContent || hasVideoContent ? "transparent" : theme.node.fill,
                     // 固定占位但不绘制描边，避免聚焦切换时边框宽度变化造成白边跳动。
-                    border: isComposerNode ? "0" : "1px solid transparent",
+                    border: isComposerNode ? "0" : planRole === "primary" ? `1px solid color-mix(in srgb, ${theme.accent.primary} 35%, transparent)` : "1px solid transparent",
                     boxShadow: isComposerNode || !showChrome ? "none" : isSelected || isFocusRelated ? theme.node.hoverShadow : theme.node.shadow,
                     outline: warning ? "1px solid var(--status-warning)" : !showChrome && isActive ? `1px solid ${theme.node.activeStroke}` : undefined,
                     "--connection-tilt-x": `${connectionTilt?.rotateX || 0}deg`,
@@ -662,7 +664,7 @@ function formatMediaDimensionLabel(node: CanvasNodeData, hasVisualMediaContent: 
     return `${Math.round(width)}*${Math.round(height)}`;
 }
 
-function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, editing, draft, grouped, theme, onDraftChange, onEdit, onCommit, onCancel }: {
+function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, editing, draft, grouped, planRole, theme, onDraftChange, onEdit, onCommit, onCancel }: {
     node: CanvasNodeData;
     scale: number;
     dimensionLabel: string | null;
@@ -671,6 +673,7 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
     editing: boolean;
     draft: string;
     grouped: boolean;
+    planRole?: PlanNodeRole;
     theme: CanvasTheme;
     onDraftChange: (value: string) => void;
     onEdit: () => void;
@@ -706,6 +709,7 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
         >
             <div className="flex min-w-0 items-center gap-1" style={{ maxWidth: maxHeaderWidth }}>
                 <Icon className="size-3 shrink-0" strokeWidth={1.8} />
+                {planRole === "primary" ? <span className="shrink-0 whitespace-nowrap rounded-[var(--r-sm)] px-1 text-[var(--fs-micro)] font-semibold leading-4" style={{ background: theme.accent.primarySoft, color: theme.accent.primary }}>总纲</span> : planRole === "supporting" && showMeta ? <span className="shrink-0 whitespace-nowrap text-[var(--fs-micro)] leading-4" style={{ color: theme.node.muted }}>规范</span> : null}
                 {showMeta && node.metadata?.shortDrama?.assetIdentity ? <code className="min-w-0 max-w-[40%] shrink truncate text-[var(--fs-micro)]" title={`资产编码：${node.metadata.shortDrama.assetIdentity.code}`}>{node.metadata.shortDrama.assetIdentity.code}</code> : null}
                 {editing ? (
                     <input
@@ -724,17 +728,27 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
                         aria-label="节点名称"
                     />
                 ) : editable ? (
-                    <button type="button" className="group flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 text-xs font-medium outline-none transition-opacity hover:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1" style={{ opacity: active ? 1 : 0.78, outlineColor: theme.node.muted }} onClick={onEdit} aria-label={`编辑节点名称：${node.title}`}>
+                    <button type="button" className={`group flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 text-xs ${planRole === "primary" ? "font-semibold" : "font-medium"} outline-none transition-opacity hover:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1`} style={{ opacity: active ? 1 : 0.78, outlineColor: theme.node.muted }} onClick={onEdit} aria-label={`编辑节点名称：${node.title}`}>
                         <span className="min-w-0 flex-1 truncate" title={node.title}>{node.title}</span>
                         <Pencil className="size-2.5 shrink-0 opacity-55 transition-opacity group-hover:opacity-100" />
                     </button>
                 ) : (
-                    <span className="min-w-0 flex-1 truncate text-xs font-medium" title={node.title} style={{ opacity: active ? 1 : 0.78 }}>{node.title}</span>
+                    <span className={`min-w-0 flex-1 truncate text-xs ${planRole === "primary" ? "font-semibold" : "font-medium"}`} title={node.title} style={{ opacity: active ? 1 : 0.78 }}>{node.title}</span>
                 )}
             </div>
             {showDimension ? <span className="ml-auto shrink-0 whitespace-nowrap text-[var(--fs-micro)] font-medium leading-none tabular-nums" style={{ color: theme.node.muted }}>{dimensionLabel}</span> : null}
         </div>
     );
+}
+
+type PlanNodeRole = "primary" | "supporting";
+
+// 制作方案容器内的文稿分主次:总纲为主卡,其余规范为辅卡。
+function planNodeRole(node: CanvasNodeData): PlanNodeRole | undefined {
+    const meta = node.metadata?.shortDrama;
+    if (!meta || meta.step !== "story.plan" || meta.role !== "document" || meta.planGroup) return undefined;
+    if (meta.planSection === "story" || meta.assetKey === "story") return "primary";
+    return meta.planSection ? "supporting" : undefined;
 }
 
 function nodeTypeIcon(type: CanvasNodeTypeId) {

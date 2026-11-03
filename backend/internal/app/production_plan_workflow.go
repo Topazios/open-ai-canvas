@@ -43,6 +43,12 @@ func productionPlanDocumentSchemaVersion(planVersion int) int {
 	return 1
 }
 
+// productionPlanReferencesDeferred reports that no asset codes are registered
+// yet, so @ references stay placeholders instead of failing the document.
+func productionPlanReferencesDeferred(m productionManifest) bool {
+	return m.Plan != nil && m.Plan.Version >= 5 && len(m.Plan.Assets) == 0
+}
+
 func productionValidatePlanReferences(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact, content string) error {
 	known := map[string]bool{}
 	for _, item := range m.Plan.Assets {
@@ -279,14 +285,14 @@ func productionPlanArtifactValidPath(m productionManifest, doc map[string]any, a
 		}
 		meta, _ := node["metadata"].(map[string]any)
 		schemaVersion := int(numberValue(productionWorkflow(node)["planDocumentSchema"], 1))
-		if node["parentId"] != productionPlanParent(m, key) || !productionArtifactMatches(node, a.ContentHash) || len(productionPlanDocumentMissingForSchema(key, productionPlanKind(m, key), stringValue(meta["content"]), schemaVersion)) > 0 {
+		if !productionPlanParentMatches(m, key, node) || !productionArtifactMatches(node, a.ContentHash) || len(productionPlanDocumentMissingForSchema(key, productionPlanKind(m, key), stringValue(meta["content"]), schemaVersion)) > 0 {
 			return false
 		}
 		if key == "story" && m.Plan.StoryStructureVersion > 0 && len(productionPlanEpisodeArchitectureIssues(m, doc, stringValue(meta["content"]), schemaVersion)) > 0 {
 			return false
 		}
 		assetGeneration := m.Plan.AssetsStarted && productionPlanItem(m, key) != nil
-		if !assetGeneration && productionValidatePlanReferences(m, doc, artifacts, stringValue(meta["content"])) != nil {
+		if !assetGeneration && !productionPlanReferencesDeferred(m) && productionValidatePlanReferences(m, doc, artifacts, stringValue(meta["content"])) != nil {
 			return false
 		}
 		if !assetGeneration && m.Plan.Version < 5 && len(productionPlanContinuityIssues(m, doc, artifacts, key, stringValue(meta["content"]), nil)) > 0 {
@@ -335,14 +341,8 @@ func productionPlanPrerequisites(m productionManifest, doc map[string]any, artif
 		if key != "story" && !productionPlanArtifactValid(m, doc, artifacts, "story") {
 			return cloudAgentFieldError("key", "plan_prerequisite", "请先完成故事总纲与世界规则")
 		}
-		if key == "visual" || key == "direction" || key == "generation" {
-			if !productionPlanArtifactValid(m, doc, artifacts, "inventory") {
-				return cloudAgentFieldError("key", "plan_prerequisite", "请先完成资产总表与编码")
-			}
-		}
-		if key == "generation" && (!productionPlanArtifactValid(m, doc, artifacts, "visual") || !productionPlanArtifactValid(m, doc, artifacts, "direction")) {
-			return cloudAgentFieldError("key", "plan_prerequisite", "请先完成视觉与美术规范、导演与视听规范")
-		}
+		// Siblings only wait for the story, so one failed document never blocks
+		// the others; references to unregistered codes stay placeholders.
 		return nil
 	}
 	if _, section := planSection(key); !section && !m.Plan.AssetsStarted {
@@ -394,7 +394,7 @@ func productionPlanStoryPresent(m productionManifest, doc map[string]any, artifa
 			continue
 		}
 		node := productionNode(doc, artifact.NodeID)
-		if node == nil || node["parentId"] != productionPlanParent(m, "story") {
+		if node == nil || !productionPlanParentMatches(m, "story", node) {
 			return false
 		}
 		meta, _ := node["metadata"].(map[string]any)
@@ -468,7 +468,7 @@ func productionPlanNextAction(m productionManifest, doc map[string]any, artifact
 			continue
 		}
 		node := productionNode(doc, a.NodeID)
-		if node == nil || node["parentId"] != productionPlanParent(m, a.Key) || !productionArtifactMatches(node, a.ContentHash) {
+		if node == nil || !productionPlanParentMatches(m, a.Key, node) || !productionArtifactMatches(node, a.ContentHash) {
 			blocked := action(planPhaseValidation, "production_check", map[string]any{})
 			blocked["blockedReason"] = "已有文稿被删除、移动或人工修改，已保留现场；请创建新的方案版本：" + a.Key
 			return blocked
@@ -506,7 +506,7 @@ func productionPlanNextAction(m productionManifest, doc map[string]any, artifact
 				continue
 			}
 			if key == "inventory" {
-				args := map[string]any{"assets": []any{}, "absent": m.Plan.Absent, "complete": true, "independent": true}
+				args := map[string]any{"assets": []any{}, "absent": m.Plan.Absent, "complete": true}
 				for _, a := range artifacts {
 					if a.Key == "story" {
 						args["storyHash"] = a.ContentHash
@@ -608,6 +608,7 @@ func productionPlanNextAction(m productionManifest, doc map[string]any, artifact
 func productionOrderedPlanCoverage(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact) map[string]any {
 	issues, missing := []string{}, []productionPlanAsset{}
 	count := 0
+	storyHandEdited := false
 	keys := []string{"story", "inventory", "visual", "direction", "generation"}
 	if m.Plan.Version >= 5 && !m.Plan.PlansStarted {
 		keys = []string{"story"}
@@ -615,10 +616,17 @@ func productionOrderedPlanCoverage(m productionManifest, doc map[string]any, art
 	for _, key := range keys {
 		if productionPlanArtifactValid(m, doc, artifacts, key) {
 			count++
-		} else {
-			section, _ := planSection(key)
-			issues = append(issues, "缺少或需更新前置制作规范："+section.Title)
+			continue
 		}
+		// 资产已开始生成后总纲可能被手改过，与建组、收尾保持一致：总纲仍在且有正文就放行，
+		// 否则完成检查会一直失败，会话被反复拉起。
+		if key == "story" && m.Plan.AssetsStarted && productionPlanStoryPresent(m, doc, artifacts) {
+			count++
+			storyHandEdited = true
+			continue
+		}
+		section, _ := planSection(key)
+		issues = append(issues, "缺少或需更新前置制作规范："+section.Title)
 	}
 	for _, item := range m.Plan.Assets {
 		if !productionPlanAssetSelected(m, item.Key) {
@@ -630,7 +638,7 @@ func productionOrderedPlanCoverage(m productionManifest, doc map[string]any, art
 			missing = append(missing, item)
 		}
 	}
-	if story := productionPlanStoryContent(m, doc, artifacts, "", ""); story != "" {
+	if story := productionPlanStoryContent(m, doc, artifacts, "", ""); story != "" && !storyHandEdited {
 		if continuityIssues := productionPlanContinuityIssues(m, doc, artifacts, "story", story, nil); len(continuityIssues) > 0 {
 			issues = append(issues, "人物关系连续性："+strings.Join(continuityIssues, "；"))
 		}
@@ -638,7 +646,7 @@ func productionOrderedPlanCoverage(m productionManifest, doc map[string]any, art
 	if len(missing) > 0 {
 		issues = append(issues, fmt.Sprintf("还有%d项资产设定需要完成或更新", len(missing)))
 	}
-	return map[string]any{"valid": len(issues) == 0, "issues": issues, "missingAssets": missing[:min(12, len(missing))], "missingCount": len(missing), "artifactCount": len(artifacts), "validArtifactCount": count, "plannedAssets": len(m.Plan.Assets), "absent": m.Plan.Absent, "inventoryComplete": m.Plan.Complete, "semanticReview": "模板、依赖版本和登记清单覆盖检查；剧情合理性及资产语义质量待人工验收"}
+	return map[string]any{"valid": len(issues) == 0, "issues": issues, "missingAssets": missing[:min(12, len(missing))], "missingCount": len(missing), "artifactCount": len(artifacts), "validArtifactCount": count, "plannedAssets": len(m.Plan.Assets), "absent": m.Plan.Absent, "inventoryComplete": m.Plan.Complete, "semanticReview": "模板、依赖版本和登记清单覆盖检查；剧情合理性及资产语义质量可抽查"}
 }
 
 func productionPlanRequiredContext(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact, key string) []map[string]any {

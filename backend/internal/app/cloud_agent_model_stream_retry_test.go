@@ -175,3 +175,40 @@ func TestProductionParallelTransientRetryBudgetExceedsSingleStepBudget(t *testin
 		t.Fatalf("transient production failure exhausted the wrong budget: %+v", work)
 	}
 }
+
+func TestProductionParallelExhaustedTransientRetryIsVisiblyHeld(t *testing.T) {
+	s, _, runID := parallelPlanFixture(t)
+	cancel, done := startParallel(t, s, runID)
+	state := waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return len(state.ProductionParallel) == 2 })
+	cancel()
+	<-done
+
+	work := state.ProductionParallel["visual"]
+	productionRuntimeMutate(t, s, runID, func(state *cloudAgentRuntime) {
+		item := state.ProductionParallel[work.Key]
+		item.TransientAttempts = productionParallelTransientRetries
+		state.ProductionParallel[work.Key] = item
+	})
+	work.TransientAttempts = productionParallelTransientRetries
+	task, err := s.repo.Task(work.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recordProductionParallelFailure("user", runID, work, task, errors.New("temporary upstream failure"), true); err != nil {
+		t.Fatal(err)
+	}
+	_, after := productionRuntimeState(t, s, runID)
+	work = after.ProductionParallel[work.Key]
+	if work.Error == "" || !work.QuietHold || work.TaskID != "" {
+		t.Fatalf("exhausted retry must be held for manual retry: %+v", work)
+	}
+	found := false
+	for _, event := range after.Events {
+		if event.Type == "production_control" && event.Payload["action"] == "needs_revision" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("exhausted retry left no visible production_control event")
+	}
+}

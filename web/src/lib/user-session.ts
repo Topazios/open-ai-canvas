@@ -58,7 +58,14 @@ export async function applyUserSession(payload: AuthSessionPayload) {
         installRemoteUserDataAutoSync();
         useUserStore.getState().setHydrated(true);
         void hydrateUserSessionData(payload, generation).catch((error) => {
-            if (isCurrentSession(generation, nextUserId)) console.warn("用户工作区后台初始化失败，基础页面仍可继续", error);
+            if (!isCurrentSession(generation, nextUserId)) return;
+            console.warn("用户工作区后台初始化失败，基础页面仍可继续", error);
+            recordDiagnosticEvent({
+                category: "navigation",
+                level: "error",
+                code: "startup.workspace_background_failed",
+                message: error instanceof Error ? error.message : "用户工作区后台初始化失败",
+            });
         });
     } finally {
         if (useUserStore.getState().hydrated === false && isCurrentGeneration(generation)) useUserStore.getState().setHydrated(true);

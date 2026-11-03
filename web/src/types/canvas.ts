@@ -79,6 +79,11 @@ export type StoryboardColumn =
     | "viewerPOV"
     | "performanceBlocking"
     | "shotSize"
+    | "lens"
+    | "transitionIn"
+    | "transitionOut"
+    | "cutPoint"
+    | "craftWarning"
     | "emotion"
     | "lightingAndAtmosphere"
     | "audioEffects"
@@ -131,6 +136,11 @@ export type StoryboardRow = {
     viewerPOV: string;
     performanceBlocking: string;
     shotSize: string;
+    lens?: string;
+    transitionIn?: string;
+    transitionOut?: string;
+    cutPoint?: string;
+    craftWarning?: string;
     emotion: string;
     lightingAndAtmosphere: string;
     audioEffects: string;

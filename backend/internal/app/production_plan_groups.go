@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"time"
 
@@ -14,6 +15,13 @@ var productionPlanGroupLabels = map[string]string{"character": "人物资产", "
 
 // Titles sit above text nodes, so a row needs more than the card-to-card gap.
 const productionPlanRowPitch = 336
+
+// The outline card spans the container width; the gap separates it from the rule grid.
+const (
+	productionPlanLeadWidth  = 1248.0
+	productionPlanLeadHeight = 320.0
+	productionPlanLeadGap    = 40.0
+)
 
 func productionPlanGroupKind(item productionPlanAsset) string {
 	if cloudAgentContainsString(productionCurrentPlanKinds, item.GroupKind) {
@@ -33,6 +41,17 @@ func productionPlanParent(m productionManifest, key string) string {
 	return m.FrameID
 }
 
+// productionPlanParentMatches compares a node's parentId with the expected
+// one. Canvases saved while the outline was detached have it with no parent;
+// that value is still accepted for the outline so they keep validating until
+// productionAttachLegacyStory moves it back into the container.
+func productionPlanParentMatches(m productionManifest, key string, node map[string]any) bool {
+	parent := stringValue(node["parentId"])
+	if key == "story" && parent == "" && m.Plan != nil && m.Plan.Version >= 2 {
+		return true
+	}
+	return parent == productionPlanParent(m, key)
+}
 func productionLayoutPlanGroup(m productionManifest, frame map[string]any, nodes []map[string]any) {
 	order := map[string]int{"story": 0, "inventory": 1, "visual": 2, "direction": 3, "generation": 4}
 	if frame["id"] != m.FrameID {
@@ -52,11 +71,28 @@ func productionLayoutPlanGroup(m productionManifest, frame map[string]any, nodes
 	})
 	p, _ := frame["position"].(map[string]any)
 	x, y := numberValue(p["x"], 0), numberValue(p["y"], 0)
+	// The root container shows the outline as a full-width lead card, with the
+	// supporting rule documents in a grid below it.
+	var lead map[string]any
+	if frame["id"] == m.FrameID && len(members) > 0 && stringValue(productionWorkflow(members[0])["assetKey"]) == "story" {
+		lead, members = members[0], members[1:]
+	}
+	gridTop := y + 100
+	height := float64(124 + max(1, (len(members)+2)/3)*productionPlanRowPitch)
+	if lead != nil {
+		lead["position"] = map[string]any{"x": x + 24, "y": y + 100}
+		lead["width"], lead["height"] = productionPlanLeadWidth, productionPlanLeadHeight
+		gridTop = y + 100 + productionPlanLeadHeight + productionPlanLeadGap
+		rows := (len(members) + 2) / 3
+		height = 100 + productionPlanLeadHeight + productionPlanLeadGap + 24
+		if rows > 0 {
+			height += float64(rows)*productionPlanRowPitch - (productionPlanRowPitch - 280)
+		}
+	}
 	for i, node := range members {
-		node["position"] = map[string]any{"x": x + 24 + float64(i%3)*424, "y": y + 100 + float64(i/3)*productionPlanRowPitch}
+		node["position"] = map[string]any{"x": x + 24 + float64(i%3)*424, "y": gridTop + float64(i/3)*productionPlanRowPitch}
 		node["width"], node["height"] = 400, 280
 	}
-	height := float64(124 + max(1, (len(members)+2)/3)*productionPlanRowPitch)
 	meta, _ := frame["metadata"].(map[string]any)
 	if meta == nil {
 		meta = map[string]any{}
@@ -80,6 +116,9 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 	if err != nil {
 		return false, err
 	}
+	if cloudAgentRunTerminal(run.Status) || run.CleanupPending {
+		return false, nil
+	}
 	state, err := cloudAgentDecode(run)
 	if err != nil {
 		return false, err
@@ -98,7 +137,9 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 	if err != nil {
 		return false, err
 	}
-	if !productionPlanStandardsReady(m, doc, rows) {
+	// Creating a missing group only needs the outline to exist. A hand-edited
+	// outline must not stop the container from being rebuilt.
+	if !productionPlanStoryPresent(m, doc, rows) {
 		return false, nil
 	}
 	forceLayout := len(relayout) > 0 && relayout[0]
@@ -117,8 +158,7 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		placeholderExists := false
 		for _, node := range creationMaps(doc["nodes"]) {
 			workflow := productionWorkflow(node)
-			placeholder, _ := workflow["planGeneration"].(map[string]any)
-			if workflow["assetKey"] == item.Key && placeholder["runId"] == runID {
+			if workflow["assetKey"] == item.Key && productionPlanPlaceholderOwned(node, runID) {
 				_, placeholderExists = workflow["sourceNodeIds"].([]any)
 				if !placeholderExists {
 					needed = true
@@ -164,14 +204,16 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		for _, a := range rows {
 			node := productionNode(doc, a.NodeID)
 			if node == nil {
-				return BadAuthRequest("已有文稿被修改或移动，未自动重新分组：" + a.Key)
+				// The user deleted this document. There is nothing to migrate, and
+				// it must not block creating the groups that are still missing.
+				continue
 			}
 			item := productionPlanItem(m, a.Key)
 			kind := ""
 			if item != nil {
 				kind = productionPlanGroupKind(*item)
 			}
-			willMove := node["parentId"] != productionPlanParent(m, a.Key) || selectedGroupKinds[kind]
+			willMove := !productionPlanParentMatches(m, a.Key, node) || selectedGroupKinds[kind]
 			if !willMove {
 				continue
 			}
@@ -187,6 +229,9 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 			changed = false
 			for _, a := range rows {
 				if rehashKeys[a.Key] {
+					continue
+				}
+				if productionNode(doc, a.NodeID) == nil {
 					continue
 				}
 				for dependency := range productionPlanDependencies(m, rows, a.Key) {
@@ -253,7 +298,7 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 				continue
 			}
 			if id := m.Plan.Groups[kind]; id != "" {
-				if forceLayout {
+				if forceLayout && productionNode(doc, id) != nil {
 					productionNode(doc, id)["position"] = map[string]any{"x": x + float64(i%2+1)*1380, "y": columnBottom[i%2]}
 				}
 				columnBottom[i%2] += float64(124 + ((count+2)/3)*productionPlanRowPitch + 96)
@@ -277,12 +322,27 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		data["planGroups"] = m.Plan.Groups
 		ids := map[string][]string{m.FrameID: {fresh.Request.Production.TargetNodeID}}
 		for _, id := range m.Plan.Groups {
-			ids[id] = []string{}
+			// A container the user deleted stays deleted; its stale pointer is
+			// retired only when a new explicit asset batch starts.
+			if productionNode(doc, id) != nil {
+				ids[id] = []string{}
+			}
 		}
 		for _, a := range rows {
 			node := productionNode(doc, a.NodeID)
+			if node == nil {
+				continue
+			}
 			parent := productionPlanParent(m, a.Key)
+			if _, ok := ids[parent]; !ok {
+				continue
+			}
 			previousParent := node["parentId"]
+			if a.Key == "story" && (previousParent == nil || previousParent == "") {
+				// A legacy outline lives outside the container. Attaching it here
+				// would change its receipt hash; productionAttachLegacyStory owns that.
+				continue
+			}
 			node["parentId"] = parent
 			ids[parent] = append(ids[parent], a.NodeID)
 			if regroup && previousParent != parent && parent != m.FrameID {
@@ -295,16 +355,26 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 				continue
 			}
 			placeholderExists := false
-			for _, node := range nodes {
-				workflow := productionWorkflow(node)
-				placeholder, _ := workflow["planGeneration"].(map[string]any)
-				if workflow["assetKey"] == item.Key && placeholder["runId"] == runID {
+			for _, candidate := range nodes {
+				workflow := productionWorkflow(candidate)
+				if workflow["assetKey"] == item.Key && productionPlanPlaceholderOwned(candidate, runID) {
 					workflow["sourceNodeIds"] = []string{m.FrameID}
 					workflow["sourceSignatures"] = map[string]string{}
 					workflow["sourceSteps"] = []string{"story.plan"}
 					workflow["pipelineId"] = data["pipelineId"]
 					workflow["parameters"] = data["parameters"]
 					workflow["version"] = data["version"]
+					// A kept placeholder may still point at a group the user deleted.
+					// Move it into the current group so a later write cannot leave it
+					// under the stale parent.
+					if target := productionPlanParent(m, item.Key); productionNode(doc, target) != nil && candidate["parentId"] != target {
+						candidate["parentId"] = target
+						if _, ok := ids[target]; ok {
+							if id := stringValue(candidate["id"]); !slices.Contains(ids[target], id) {
+								ids[target] = append(ids[target], id)
+							}
+						}
+					}
 					placeholderExists = true
 					break
 				}
@@ -315,7 +385,9 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 			parent := productionPlanParent(m, item.Key)
 			frame := productionNode(doc, parent)
 			if frame == nil {
-				return BadAuthRequest("资产目标分组已删除，未创建排队节点")
+				// The target container was deleted. Skip this item so other
+				// groups keep progressing; it is queued again with a new group.
+				continue
 			}
 			framePosition, _ := frame["position"].(map[string]any)
 			index := 0
@@ -348,8 +420,20 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 			ids[parent] = append(ids[parent], id)
 		}
 		doc["nodes"] = nodes
+		// Plan-document placeholders live in the root container and have no
+		// receipt yet, so keep them in its member list.
+		for _, node := range nodes {
+			workflow := productionWorkflow(node)
+			if workflow["planSection"] != nil && productionPlanPlaceholderOwned(node, runID) && (node["parentId"] == m.FrameID || workflow["planSection"] == "story") {
+				if id := stringValue(node["id"]); !slices.Contains(ids[m.FrameID], id) {
+					ids[m.FrameID] = append(ids[m.FrameID], id)
+				}
+			}
+		}
 		for id, members := range ids {
-			productionWorkflow(productionNode(doc, id))["sourceNodeIds"] = members
+			if workflow := productionWorkflow(productionNode(doc, id)); workflow != nil {
+				workflow["sourceNodeIds"] = members
+			}
 		}
 		// Topological rehash: a parentId change changes the receipt of an asset,
 		// which must be reflected in dependent assets and final generation rules.
@@ -388,7 +472,9 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		productionLayoutPlanGroup(m, root, nodes)
 		for _, kind := range productionPlanGroupKinds {
 			if id := m.Plan.Groups[kind]; id != "" {
-				productionLayoutPlanGroup(m, productionNode(doc, id), nodes)
+				if group := productionNode(doc, id); group != nil {
+					productionLayoutPlanGroup(m, group, nodes)
+				}
 			}
 		}
 		// All children must have their new coordinates before collision checks;
@@ -396,7 +482,9 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		frames := []map[string]any{root}
 		for _, kind := range productionPlanGroupKinds {
 			if id := m.Plan.Groups[kind]; id != "" {
-				frames = append(frames, productionNode(doc, id))
+				if group := productionNode(doc, id); group != nil {
+					frames = append(frames, group)
+				}
 			}
 		}
 		for _, frame := range frames {
@@ -419,4 +507,227 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		return cloudAgentSave(current, &fresh)
 	})
 	return err == nil, err
+}
+
+// productionLegacyStoryNode finds an outline that was saved outside its plan
+// container: the filled document when it has a receipt, else the placeholder.
+func productionLegacyStoryNode(m productionManifest, doc map[string]any, rows []model.ProductionAgentArtifact, runID string) map[string]any {
+	for _, a := range rows {
+		if a.Key != "story" {
+			continue
+		}
+		if node := productionNode(doc, a.NodeID); node != nil {
+			if stringValue(node["parentId"]) == "" {
+				return node
+			}
+			return nil
+		}
+	}
+	for _, node := range creationMaps(doc["nodes"]) {
+		workflow := productionWorkflow(node)
+		if workflow["planSection"] == "story" && productionPlanPlaceholderOwned(node, runID) && stringValue(node["parentId"]) == "" {
+			return node
+		}
+	}
+	return nil
+}
+
+// productionAttachLegacyStory moves an outline that lives outside its plan
+// container back inside it. The parent is part of the receipt hash, so the
+// outline and every document built on it get new receipts. Canvases that are
+// already in the new shape produce no write.
+func (s *Service) productionAttachLegacyStory(userID, runID string) (bool, error) {
+	run, err := s.repo.CloudAgent(userID, runID)
+	if err != nil {
+		return false, err
+	}
+	if cloudAgentRunTerminal(run.Status) || run.CleanupPending {
+		return false, nil
+	}
+	state, err := cloudAgentDecode(run)
+	if err != nil {
+		return false, err
+	}
+	_, m, doc, err := productionLoad(s.repo, run, &state)
+	if err != nil {
+		return false, err
+	}
+	if m.Plan == nil || m.Plan.Version < 2 {
+		return false, nil
+	}
+	rows, err := s.repo.ProductionAgentArtifacts(userID, runID)
+	if err != nil {
+		return false, err
+	}
+	if productionLegacyStoryNode(m, doc, rows, runID) == nil {
+		return false, nil
+	}
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		return false, err
+	}
+	s.storageMu.Lock()
+	defer s.storageMu.Unlock()
+	migrated := false
+	err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+		fresh, err := cloudAgentDecode(current)
+		if err != nil {
+			return err
+		}
+		_, m, doc, err := productionLoad(repo, current, &fresh)
+		if err != nil {
+			return err
+		}
+		rows, err := repo.ProductionAgentArtifacts(userID, runID)
+		if err != nil {
+			return err
+		}
+		story := productionLegacyStoryNode(m, doc, rows, runID)
+		if story == nil {
+			return nil
+		}
+		// Receipts change, so wait until every response has been committed.
+		if fresh.ActiveTaskID != "" {
+			return repository.ErrCreationConflict
+		}
+		for _, work := range fresh.ProductionParallel {
+			if work.TaskID == "" {
+				continue
+			}
+			task, err := repo.TaskForUser(userID, work.TaskID)
+			if err != nil {
+				return err
+			}
+			if !cloudAgentTaskTerminal(task.Status) || (task.Status == model.TaskStatusSucceeded && work.Error == "") {
+				return repository.ErrCreationConflict
+			}
+		}
+		canvas, err := repo.CanvasProjectForUser(userID, fresh.Request.CanvasID)
+		if err != nil {
+			return err
+		}
+		before := canvas.PayloadJSON
+		root := productionNode(doc, m.FrameID)
+		if root == nil {
+			return nil
+		}
+		data := productionWorkflow(root)
+		nodes := creationMaps(doc["nodes"])
+		storyID := stringValue(story["id"])
+		story["parentId"] = m.FrameID
+
+		// Receipts: the outline first, then everything that depends on it. A
+		// hand-edited document only gets a new receipt, its text is untouched.
+		rehashKeys := map[string]bool{}
+		for _, a := range rows {
+			if a.Key == "story" && productionNode(doc, a.NodeID) != nil {
+				rehashKeys["story"] = true
+			}
+		}
+		for changed := true; changed && rehashKeys["story"]; {
+			changed = false
+			for _, a := range rows {
+				if rehashKeys[a.Key] || productionNode(doc, a.NodeID) == nil {
+					continue
+				}
+				for dependency := range productionPlanDependencies(m, rows, a.Key) {
+					if rehashKeys[dependency] {
+						rehashKeys[a.Key] = true
+						changed = true
+						break
+					}
+				}
+			}
+		}
+		done := map[string]bool{}
+		var rehash func(int) error
+		rehash = func(index int) error {
+			a := &rows[index]
+			if done[a.Key] {
+				return nil
+			}
+			done[a.Key] = true
+			for dependency := range productionPlanDependencies(m, rows, a.Key) {
+				if !rehashKeys[dependency] {
+					continue
+				}
+				for j := range rows {
+					if rows[j].Key == dependency {
+						if err := rehash(j); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			node := productionNode(doc, a.NodeID)
+			productionWorkflow(node)["planDependencies"] = productionPlanDependencies(m, rows, a.Key)
+			a.ContentHash = productionArtifactHash(node)
+			return repo.UpdateProductionAgentArtifact(a)
+		}
+		for i := range rows {
+			if rehashKeys[rows[i].Key] {
+				if err := rehash(i); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Connections: drop the container<->outline edge in either direction and
+		// connect the real sources to the container instead.
+		sources := []string{}
+		kept := []map[string]any{}
+		for _, edge := range creationMaps(doc["connections"]) {
+			from, to := stringValue(edge["fromNodeId"]), stringValue(edge["toNodeId"])
+			if (from == storyID && to == m.FrameID) || (from == m.FrameID && to == storyID) {
+				continue
+			}
+			if to == storyID && from != "" && !slices.Contains(sources, from) {
+				sources = append(sources, from)
+			}
+			kept = append(kept, edge)
+		}
+		if len(sources) == 0 {
+			sources = stringSlice(data["collectionSourceIds"])
+		}
+		for _, from := range sources {
+			if from == m.FrameID || productionNode(doc, from) == nil {
+				continue
+			}
+			exists := false
+			for _, edge := range kept {
+				if stringValue(edge["fromNodeId"]) == from && stringValue(edge["toNodeId"]) == m.FrameID {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				kept = append(kept, map[string]any{"id": "pe-" + productionHash(from + "->" + m.FrameID)[:28], "fromNodeId": from, "toNodeId": m.FrameID})
+			}
+		}
+		doc["connections"] = kept
+
+		members := stringSlice(data["sourceNodeIds"])
+		if !slices.Contains(members, storyID) {
+			merged := make([]any, 0, len(members)+1)
+			for _, id := range members {
+				merged = append(merged, id)
+			}
+			data["sourceNodeIds"] = append(merged, storyID)
+		}
+		productionLayoutPlanGroup(m, root, nodes)
+		meta, _ := root["metadata"].(map[string]any)
+		geometry, _ := meta["frame"].(map[string]any)
+		if geometry["collapsed"] != true {
+			productionFitFrame(root, nodes, numberValue(root["height"], 428))
+		}
+		if err := saveCloudAgentDocument(repo, canvas, doc, policy); err != nil {
+			return err
+		}
+		if err := emitCloudAgentCanvasChange(repo, runID, &fresh, cloudAgentMutationInput{UserID: userID, CanvasID: canvas.ID, Operation: "production_story_attach", BeforeJSON: before}); err != nil {
+			return err
+		}
+		migrated = true
+		return cloudAgentSave(current, &fresh)
+	})
+	return err == nil && migrated, err
 }

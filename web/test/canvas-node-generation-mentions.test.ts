@@ -42,7 +42,7 @@ describe("canvas node generation position mentions", () => {
             status: "success",
             storageKey: "resource:sheet",
             shortDrama: {
-                assetSheet: { version: 4, kind: "character", size: "1536x1024", styleSignatures: {} },
+                assetSheet: { version: 5, kind: "character", size: "1536x1024", styleSignatures: {} },
             },
         };
         expect(() => buildNodeGenerationContext(target.id, [sheet, target], [connection("sheet")], "参考 @图片1", [], true)).toThrow("不能直接使用");

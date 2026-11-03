@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyAgentCanvasPatch, mergeCanvasSnapshot, mergeAgentCanvasEditor, recoverCompletedProductionDocuments, type AgentCanvasPatch } from "@/lib/canvas/agent-canvas-patch";
+import { applyAgentCanvasPatch, mergeCanvasSnapshot, mergeCanvasSnapshotLenient, mergeAgentCanvasEditor, recoverCompletedProductionDocuments, type AgentCanvasPatch } from "@/lib/canvas/agent-canvas-patch";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
@@ -174,4 +174,34 @@ test("recovery skips completed documents whose original container was removed", 
         metadata: { status: "success", content: "完整规范", shortDrama: { stage: "story", step: "story.plan", role: "document", planSection: "visual", sourceNodeIds: [] } } };
     const stalePatch: AgentCanvasPatch = { canvasId: project.id, baseRevision: 2, revision: 3, updatedAt: "2026-09-13T12:00:00Z", nodes: [{ before: null, after: document }], connections: [] };
     expect(recoverCompletedProductionDocuments(project, [stalePatch])).toBe(project);
+});
+
+test("lenient merge keeps local content on a same-field conflict, never throws and reports it", () => {
+    const before = { ...project, nodes: [{ ...node, metadata: undefined }] };
+    const current = { ...before, nodes: [{ ...node, metadata: { prompt: "local prompt" } }] };
+    const incoming = { ...before, nodes: [{ ...node, metadata: { prompt: "remote prompt", status: "success" as const } }] };
+    let conflicts = 0;
+    const merged = mergeCanvasSnapshotLenient(before, current, incoming, () => { conflicts++; });
+    expect(conflicts).toBeGreaterThan(0);
+    expect(merged.nodes[0].metadata).toMatchObject({ prompt: "local prompt", status: "success" });
+    expect(current.nodes[0].metadata).toEqual({ prompt: "local prompt" });
+});
+
+test("lenient merge takes cloud values for server-owned task bindings instead of failing", () => {
+    const current = { ...project, nodes: [{ ...node, metadata: { ...node.metadata, taskId: "replacement" } }] };
+    const cloud = { ...failed, metadata: { ...failed.metadata, taskId: "cloud-task" } };
+    let conflicts = 0;
+    const merged = mergeCanvasSnapshotLenient(project, current, { ...project, nodes: [cloud] }, () => { conflicts++; });
+    expect(conflicts).toBeGreaterThan(0);
+    expect(merged.nodes[0].metadata).toMatchObject({ taskId: "cloud-task", status: "error", taskStatus: "failed" });
+});
+
+test("lenient merge without a known ancestor keeps local-only nodes and adds cloud-only nodes", () => {
+    const localOnly = { ...node, id: "local-only", title: "本地新增" };
+    const remoteOnly = { ...node, id: "remote-only", title: "云端新增" };
+    const current = { ...project, nodes: [node, localOnly] };
+    const incoming = { ...project, revision: 5, nodes: [node, remoteOnly] };
+    const merged = mergeCanvasSnapshotLenient(undefined, current, incoming);
+    expect(merged.nodes.map((item) => item.id).sort()).toEqual(["local-only", "remote-only", "video-1"]);
+    expect(merged.revision).toBe(5);
 });

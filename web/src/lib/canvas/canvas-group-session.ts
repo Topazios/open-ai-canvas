@@ -4,6 +4,7 @@ import { productionJournalRows, productionRunExternalFailure } from "./productio
 import { canvasNodeWarning, executionTaskWarning } from "../execution-warning";
 import type { TaskExecutionDetails } from "@/services/api/task-center";
 import type { AgentRun } from "@/services/api/agent";
+import { isPlanPlaceholder } from "./plan-placeholder";
 
 export function groupSessionOwner(node: CanvasNodeData | null, nodes: CanvasNodeData[]) {
     if (!node) return null;
@@ -47,7 +48,19 @@ export function groupSessionTargets(members: CanvasNodeData[], group?: CanvasNod
     return [...targets.values()];
 }
 
-export function groupMemberState(node: CanvasNodeData, snapshot?: GroupSessionSnapshot) {
+export function groupMemberState(node: CanvasNodeData, snapshot?: GroupSessionSnapshot, coordinator?: GroupSessionSnapshot, parallelStatus?: string) {
+    if (isPlanPlaceholder(node)) {
+        // 受控任务已经失败或被拒绝时，没保存的文档不会再启动，不能继续显示排队中。
+        const stopped = coordinator?.kind === "agent" && ["failed", "rejected"].includes(coordinator.run.status);
+        if (stopped) return "未启动";
+        // 占位节点自己没有任务记录，用容器并行明细里对应条目的状态。
+        if (parallelStatus === "running") return "执行中";
+        if (parallelStatus === "error" || parallelStatus === "failed") return "执行失败";
+        // 自动重试后被先跳过的文档状态为 warning，需要和排队中区分，用户可手动重试。
+        if (parallelStatus === "warning") return "内容待处理";
+        if (parallelStatus === "retrying") return "重试中";
+        return "排队中";
+    }
     if (snapshot?.kind === "task" && executionTaskWarning(snapshot.detail.task.status, snapshot.detail.task.diagnostic)) return "内容待处理";
     const status = snapshot?.kind === "task" ? snapshot.detail.task.status : snapshot?.kind === "agent" ? snapshot.run.status : node.metadata?.taskStatus;
     if (!snapshot && !node.metadata?.shortDrama?.productionAgent?.runId && !["queued", "running", "succeeded", "completed", "cancelled"].includes(status || "") && canvasNodeWarning(node.metadata)) return "内容待处理";

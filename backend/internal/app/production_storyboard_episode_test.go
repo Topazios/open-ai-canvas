@@ -28,7 +28,8 @@ func TestStoryboardEpisodeBatchAtomicResumeAndReview(t *testing.T) {
 		t.Fatal("not a continuous batch", ctx)
 	}
 	bad := []productionShot{storyboardShot("S2", 1, 2, 2, 10), storyboardShot("S2", 2, 3, 3, 10)}
-	bad[1].AssetIDs = []string{"CHR-999"}
+	// Well-formed but unregistered codes are kept as placeholders; a malformed code is still rejected.
+	bad[1].AssetIDs = []string{"not a code"}
 	args := storyboardSubmitArgs(t, restarted, runID, "S2", 0, bad, true)
 	productionCall(t, restarted, runID, "production_storyboard_submit", args, true)
 	m, _, _ = storyboardState(t, restarted, runID)

@@ -13,11 +13,17 @@ import { installRuntimeLimits } from "./fixtures/runtime-limits";
 
 test("storyboard episodes submit independently after one save, without waiting for first receipt or refresh", async () => {
     installRuntimeLimits({ agent: 3 });
-    const nodesRef = { current: [1, 2, 3].map(episodeNumber => createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, { shortDrama: {
-        pipelineId: "p", stage: "storyboard", step: "direction.shots", role: "document", sourceNodeIds: [], sourceSignatures: {},
-        episodeNumber, operationId: `ep-${episodeNumber}`, submission: "planned", productionAgent: {},
-    } })) };
-    const ids = nodesRef.current.map(node => node.id);
+    // Shot splitting only needs each episode body, so every shot node points at a finished body node.
+    const bodies = [1, 2, 3].map(episodeNumber => createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, {
+        content: "正文",
+        shortDrama: { pipelineId: "p", stage: "story", step: "story.body", role: "document", sourceNodeIds: [], sourceSignatures: {}, episodeNumber },
+    }));
+    const shots = bodies.map((body, index) => createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, { shortDrama: {
+        pipelineId: "p", stage: "storyboard", step: "direction.shots", role: "document", sourceNodeIds: [body.id], sourceSignatures: {},
+        episodeNumber: index + 1, operationId: `ep-${index + 1}`, submission: "planned", productionAgent: {},
+    } }));
+    const nodesRef = { current: [...bodies, ...shots] };
+    const ids = shots.map(node => node.id);
     const saves: string[][] = [], posts: string[] = [];
     let releaseFirst!: () => void;
     const first = new Promise<void>(resolve => { releaseFirst = resolve; });
@@ -45,7 +51,7 @@ test("storyboard episodes submit independently after one save, without waiting f
     }
     try {
         renderToStaticMarkup(<App><Harness /></App>);
-        const group = createCanvasNode(CanvasNodeType.Frame, { x:0, y:0 }, { shortDrama: { ...nodesRef.current[0].metadata!.shortDrama!, role:"collection", sourceNodeIds:ids } });
+        const group = createCanvasNode(CanvasNodeType.Frame, { x:0, y:0 }, { shortDrama: { ...shots[0].metadata!.shortDrama!, role:"collection", sourceNodeIds:ids } });
         nodesRef.current.push(group);
         const submitted = api.resume(group.id);
         for (let i=0; i<30 && posts.length < 3; i++) await new Promise(resolve => setTimeout(resolve, 1));

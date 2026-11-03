@@ -181,6 +181,9 @@ func TestProductionGenerationStandardCannotReturnToInspection(t *testing.T) {
 			}
 			productionCall(t, s, runID, "production_submit", map[string]any{"key": "generation", "name": "生成与一致性规范", "document": orderedPlanDocument("generation", ""), "factIds": []string{}}, false)
 			startPlanAssetsForTest(t, s, runID)
+			if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
+				t.Fatal(changed, err)
+			}
 			requirePlanAction(t, s, runID, "assets", "character")
 			for _, kind := range []string{"character", "sound", "environment", "prop", "special"} {
 				submitOrderedPlan(t, s, runID, kind, kind, "测试"+kind)

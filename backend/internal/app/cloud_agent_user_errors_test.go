@@ -15,7 +15,10 @@ import (
 func TestUserFacingTaskErrorMatchesCanvasNodeClassification(t *testing.T) {
 	for _, tc := range []struct{ name, raw, want string }{
 		{"connection reset", `Post "https://ai.cangyuansuanli.cn/v1/images/generations": read tcp 192.168.1.7:61229->154.12.46.253:443: read: connection reset by peer`, "网络异常。"},
+		{"windows connection forcibly closed", `Post "https://x/v1/images/generations": read tcp 192.168.1.48:1857->154.36.158.195:443: wsarecv: An existing connection was forcibly closed by the remote host.`, "网络异常。"},
 		{"dial", `dial tcp 10.0.0.1:443: connect: connection refused`, "网络异常。"},
+		{"wrapped reset keeps hint", `模型服务连接被重置，未收到响应，上游可能已完成；请先核对中转站任务和扣费记录，再决定是否重试：Post "https://x/v1/images/generations": read tcp 1.1.1.1:1->2.2.2.2:443: wsarecv: An existing connection was forcibly closed by the remote host.`, "模型服务连接被重置，未收到响应，上游可能已完成；请先核对中转站任务和扣费记录，再决定是否重试。"},
+		{"wrapped early close keeps hint", `模型服务连接提前关闭，未收到完整结果；请先核对中转站任务和扣费记录，再决定是否重试：EOF`, "模型服务连接提前关闭，未收到完整结果；请先核对中转站任务和扣费记录，再决定是否重试。"},
 		{"upstream 500 with reason", "模型服务暂时不可用（HTTP 500）；上游：Upstream gateway error", "模型服务暂时不可用（HTTP 500）；上游：Upstream gateway error"},
 		{"bare 502", "HTTP 502 Bad Gateway", taskErrorServiceMessage},
 		{"bare 500", "HTTP 500 Internal Server Error", taskErrorServiceMessage},

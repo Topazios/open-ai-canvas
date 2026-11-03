@@ -33,7 +33,7 @@ func doProviderHTTPRequest(req *http.Request, timeout time.Duration) (*http.Resp
 		cancel(providerRequestTimeoutError{timeout: timeout, cause: context.DeadlineExceeded})
 	})
 	stop := func() { timer.Stop(); cancel(context.Canceled); endTask() }
-	resp, err := OutboundHTTPClient(0).Do(req.WithContext(ctx))
+	resp, err := OutboundHTTPClientNoMux(0).Do(req.WithContext(ctx))
 	if err != nil {
 		var timeoutErr providerRequestTimeoutError
 		if errors.As(context.Cause(ctx), &timeoutErr) {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -34,11 +35,15 @@ func TestOpenAIImageRejectsMaskWithoutSourceBeforePlugin(t *testing.T) {
 }
 
 func TestProviderConnectionErrorPreservesCause(t *testing.T) {
-	for _, cause := range []error{io.EOF, io.ErrUnexpectedEOF} {
+	resetText := errors.New("read tcp 192.168.1.48:1857->154.36.158.195:443: wsarecv: An existing connection was forcibly closed by the remote host.")
+	for _, cause := range []error{io.EOF, io.ErrUnexpectedEOF, syscall.Errno(10054), syscall.ECONNRESET, resetText} {
 		err := providerConnectionError(cause)
 		if !errors.Is(err, cause) || !strings.Contains(err.Error(), "扣费记录") {
 			t.Fatalf("unexpected error: %v", err)
 		}
+	}
+	if !strings.Contains(providerConnectionError(resetText).Error(), "连接被重置") {
+		t.Fatal("reset text must be classified as connection reset")
 	}
 	if providerConnectionError(context.Canceled) != context.Canceled {
 		t.Fatal("cancellation must remain unchanged")

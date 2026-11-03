@@ -9,7 +9,7 @@ import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { retryRemoteUserDataSync } from "@/services/user-data-sync";
 import "./canvas-sync-status.css";
 
-export function CanvasSyncStatus({ projectId, onLoadLatest, onOpenVersions }: { projectId: string; onLoadLatest: () => Promise<void>; onOpenVersions?: () => void }) {
+export function CanvasSyncStatus({ projectId, onLoadLatest, onOpenVersions, onRetryLoad }: { projectId: string; onLoadLatest: () => Promise<void>; onOpenVersions?: () => void; onRetryLoad?: () => void }) {
     const { message, modal } = App.useApp();
     const progress = useSyncProgressStore((state) => state.syncingProjects[projectId]);
     const [busy, setBusy] = useState(false);
@@ -17,10 +17,11 @@ export function CanvasSyncStatus({ projectId, onLoadLatest, onOpenVersions }: { 
     const phase = progress?.phase;
     const conflict = phase === "conflict";
     const error = phase === "error";
+    const loadError = error && progress?.kind === "load";
     const retryScheduled = error && progress?.message?.includes("自动重试");
     const saving = phase === "pending" || phase === "saving" || phase === "uploading";
     const tone = conflict ? "conflict" : error ? "error" : saving ? "pending" : phase === "done" ? "done" : "idle";
-    const label = conflict ? "需要处理冲突" : error ? "云端保存失败" : saving ? "正在同步" : phase === "done" ? "已保存到云端" : "尚未同步";
+    const label = conflict ? "需要处理冲突" : loadError ? "读取云端失败" : error ? "云端保存失败" : saving ? "正在同步" : phase === "done" ? "已保存到云端" : "尚未同步";
     const description = conflict
         ? progress?.message || (progress?.draftCount ? "本地修改已保存为本地草稿。" : "存在版本冲突，请先下载本地副本；草稿保存尚未确认。")
         : error
@@ -96,7 +97,9 @@ export function CanvasSyncStatus({ projectId, onLoadLatest, onOpenVersions }: { 
                             <span>
                                 {retryScheduled
                                     ? "网络恢复后会自动重试；也可以点击“立即重试”。"
-                                    : "请处理上面的错误后点击“立即重试”；在此之前本地内容不会被覆盖。"}
+                                    : loadError
+                                      ? "点击“立即重试”会重新读取云端版本；在此之前本地内容不会被覆盖。"
+                                      : "请处理上面的错误后点击“立即重试”；在此之前本地内容不会被覆盖。"}
                             </span>
                         </div>
                     ) : null}
@@ -107,7 +110,16 @@ export function CanvasSyncStatus({ projectId, onLoadLatest, onOpenVersions }: { 
                                 block
                                 icon={<RefreshCw className="size-3.5" />}
                                 loading={busy}
-                                onClick={() => void run(() => retryRemoteUserDataSync(projectId)).then(() => setStatusOpen(false)).catch(() => undefined)}
+                                onClick={() => {
+                                    if (loadError && onRetryLoad) {
+                                        // 读取失败时重新触发画布加载，状态由加载结果更新。
+                                        useSyncProgressStore.getState().setProjectProgress(projectId, { phase: "pending", kind: undefined, message: "正在重新读取云端版本" });
+                                        onRetryLoad();
+                                        setStatusOpen(false);
+                                        return;
+                                    }
+                                    void run(() => retryRemoteUserDataSync(projectId)).then(() => setStatusOpen(false)).catch(() => undefined);
+                                }}
                             >
                                 立即重试
                             </Button>

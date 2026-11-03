@@ -21,6 +21,7 @@ import { refreshCanvasAfterAgent } from "@/services/user-data-sync";
 import { bindProductionAgentRun } from "@/lib/canvas/production-agent-state";
 import { withRuntimeConcurrency } from "@/services/runtime-limits";
 import { screenplayAuditState } from "@/lib/canvas/workflow-screenplay-audit";
+import { shortDramaSettingsChanged } from "@/lib/short-drama-settings";
 import { selectableModelsByCapability, type AiConfig } from "@/stores/use-config-store";
 import type { CanvasConnection, CanvasNodeData, Position } from "@/types/canvas";
 
@@ -33,6 +34,13 @@ type Options = {
     bindTask: (id: string, task: GenerationTask) => void;
     applyResult: (id: string, task: GenerationTask) => Promise<void>;
 };
+
+// Shot splitting only needs the episode body. Rules, assets, upstream edits and
+// settings changes never block it; missing assets stay as placeholders.
+function storyboardBodyError(data: NonNullable<CanvasNodeData["metadata"]>["shortDrama"], nodes: CanvasNodeData[]) {
+    const bodies = nodes.filter((node) => data?.sourceNodeIds?.includes(node.id) && node.metadata?.shortDrama?.step === ShortDramaStep.Body);
+    return bodies.some((node) => node.metadata?.status !== "loading" && node.metadata?.content?.trim()) ? "" : "本集正文为空或尚未完成";
+}
 
 const workflowSubmitGapMs = 220;
 const workflowSubmitRetryDelaysMs = [500, 1_000, 2_000] as const;
@@ -97,6 +105,8 @@ export function useShortDramaWorkflowGeneration(options: Options) {
     const lock = useRef(false);
     const lifetime = useRef(new AbortController());
     const activeRunController = useRef<AbortController | null>(null);
+    // Resolves once a submitted task has been applied to its node (or its monitor gave up).
+    const pendingResults = useRef(new Map<string, Promise<void>>());
     const scope = getActiveUserScope();
     useEffect(() => {
         const controller = new AbortController(); lifetime.current = controller;
@@ -111,6 +121,15 @@ export function useShortDramaWorkflowGeneration(options: Options) {
         const compacted = compactWorkflowNodes(context.nodesRef.current);
         if (compacted.some((node, index) => node !== context.nodesRef.current[index])) context.setNodes(compacted);
         const valid = () => !signal.aborted && context.projectId === ref.current.projectId && getActiveUserScope() === scope;
+        // Nodes planned before a settings edit keep the old snapshot. Submitting
+        // them would write content that contradicts the current global settings.
+        // Nodes without a snapshot predate this check and are not judged stale.
+        const settingsStale = (data: NonNullable<CanvasNodeData["metadata"]>["shortDrama"]) => {
+            const saved = data?.parameters?.globalSettings;
+            const current = useCanvasStore.getState().openProject(context.projectId)?.globalSettings;
+            return Boolean(saved && current && shortDramaSettingsChanged(saved, current));
+        };
+        const settingsStaleMessage = "全局设定已变更，请基于新设定重新生成";
         let lastSubmittedAt = 0;
         const patch = (id: string, update: (node: CanvasNodeData) => CanvasNodeData) => {
             if (valid()) context.setNodes((nodes) => nodes.map((node) => node.id === id ? update(node) : node));
@@ -123,8 +142,8 @@ export function useShortDramaWorkflowGeneration(options: Options) {
         if (agentNodes.length === ids.length && agentNodes.length && agentNodes.every(node => node.metadata?.shortDrama?.step === "direction.shots")) {
             const prepared = await Promise.allSettled(agentNodes.map(async node => {
                 const data = node.metadata!.shortDrama!;
-                workflowGenerationSources(data, context.nodesRef.current, context.connectionsRef.current);
-                if (!workflowSourceSignaturesMatch(data, context.nodesRef.current)) throw new Error("前置内容已变化，请基于新内容重新生成");
+                const bodyError = storyboardBodyError(data, context.nodesRef.current);
+                if (bodyError) throw new Error(bodyError);
                 return { id: node.id, data, request: await prepareProductionAgent(context.projectId, node, context.config) };
             }));
             if (!valid()) return;
@@ -143,7 +162,8 @@ export function useShortDramaWorkflowGeneration(options: Options) {
                 try {
                     const { run } = await withRuntimeConcurrency("agent", async () => {
                         if (!valid() || !context.nodesRef.current.some(node => node.id === id)) throw new DOMException("已取消", "AbortError");
-                        if (!workflowSourceSignaturesMatch(data, context.nodesRef.current)) throw new Error("前置内容在保存期间已变化，请重新生成");
+                        const bodyError = storyboardBodyError(data, context.nodesRef.current);
+                        if (bodyError) throw new Error(bodyError);
                         patch(id, current => ({ ...current, metadata: { ...current.metadata, taskStage: "正在提交制作 Agent" } }));
                         return submitProductionAgent(request);
                     }, signal);
@@ -207,6 +227,7 @@ export function useShortDramaWorkflowGeneration(options: Options) {
             // valid audit whenever an upstream outline was edited later.
             const pinnedAudit = Boolean(data.screenplayAudit || data.screenplayRepair);
             if (!pinnedAudit) {
+                if (settingsStale(data)) throw new Error(settingsStaleMessage);
                 if (sources.some((source) => !workflowSignatureMatches(source, data.sourceSignatures[source.id] || ""))) throw new Error("前置内容已变化，未提交节点保留，请重新生成");
                 if (Object.entries(data.sourceSignatures).some(([sourceId, signature]) => {
                     const source = context.nodesRef.current.find((entry) => entry.id === sourceId);
@@ -218,6 +239,11 @@ export function useShortDramaWorkflowGeneration(options: Options) {
                 if (pinnedAudit) {
                     workflowGenerationSources(data, context.nodesRef.current, context.connectionsRef.current);
                     return;
+                }
+                if (settingsStale(data)) {
+                    patch(id, (current) => ({ ...current, metadata: { ...current.metadata, status: "error", taskStage: "全局设定已变更", shortDrama: { ...current.metadata!.shortDrama!, submission: "rejected" } } }));
+                    if (valid()) await context.save();
+                    throw new Error(settingsStaleMessage);
                 }
                 let referencesCurrent = true;
                 if (data.mediaKind === "image" || data.assetRevision) {
@@ -305,6 +331,9 @@ export function useShortDramaWorkflowGeneration(options: Options) {
                 }
                 context.bindTask(id, task);
                 patch(id, (current) => ({ ...current, metadata: { ...current.metadata, shortDrama: { ...data, submission: "submitted" } } }));
+                let finishPending: () => void = () => {};
+                const pending = new Promise<void>((resolve) => { finishPending = resolve; });
+                pendingResults.current.set(id, pending);
                 const monitor = async () => {
                     const monitorValid = () => !monitorSignal.aborted && context.projectId === ref.current.projectId && getActiveUserScope() === scope;
                     try {
@@ -314,6 +343,9 @@ export function useShortDramaWorkflowGeneration(options: Options) {
                         if (monitorValid()) await context.save();
                     } catch (error) {
                         if (valid()) message.warning(error instanceof Error ? error.message : "任务状态暂不可用，请到任务中心查看");
+                    } finally {
+                        finishPending();
+                        if (pendingResults.current.get(id) === pending) pendingResults.current.delete(id);
                     }
                 };
                 void monitor();
@@ -428,5 +460,6 @@ export function useShortDramaWorkflowGeneration(options: Options) {
             return result.collection.id;
         } catch (error) { message.error(error instanceof Error ? error.message : "分组失败"); }
     };
-    return { run, resume, cancel: () => activeRunController.current?.abort(), groupEpisodes, submitting, submissionLock: lock };
+    const waitForNode = (id: string) => pendingResults.current.get(id) ?? Promise.resolve();
+    return { run, resume, cancel: () => activeRunController.current?.abort(), groupEpisodes, submitting, submissionLock: lock, waitForNode };
 }

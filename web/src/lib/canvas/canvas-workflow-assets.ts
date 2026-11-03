@@ -63,9 +63,12 @@ export function materializeWorkflowAssetGroup(nodes: CanvasNodeData[], manifest:
         return nodes.map((node) => node.id === manifest.id ? { ...node, metadata: { ...node.metadata, status: "error", errorDetails: `${(error as Error).message}。原始结果已保留，可编辑检查或生成另一版。`, shortDrama: { ...data, materializedTaskId: taskId } } } : node);
     }
     const columns = Math.min(3, parsed.items.length + 1);
-    const cellWidth = Math.max(400, manifest.width) + 24;
-    const cellHeight = Math.max(280, manifest.height) + 24;
-    const width = Math.max(frame.width, frame.metadata?.frame?.expandedWidth || 0, columns * cellWidth + 24);
+    // The plan root holds a full-width lead card above 400x280 spec cards, so the lead must not size the columns.
+    const frameWorkflow = frame.metadata?.shortDrama;
+    const planRoot = frameWorkflow?.step === ShortDramaStep.Plan && !frameWorkflow.planGroup;
+    const cellWidth = (planRoot ? 400 : Math.max(400, manifest.width)) + 24;
+    const cellHeight = (planRoot ? 280 : Math.max(280, manifest.height)) + 24;
+    const width = planRoot ? 1296 : Math.max(frame.width, frame.metadata?.frame?.expandedWidth || 0, columns * cellWidth + 24);
     const height = Math.max(frame.height, frame.metadata?.frame?.expandedHeight || 0, 100 + Math.ceil((parsed.items.length + 1) / columns) * cellHeight);
     let position = frame.position;
     const others = nodes.filter((node) => node.id !== frame.id && node.parentId !== frame.id);

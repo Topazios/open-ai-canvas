@@ -12,7 +12,7 @@ import { listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeCanvas
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { cinematicStoryboardColumns, storyboardRowsFromTask } from "@/lib/canvas/canvas-project-domain";
-import { generationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
+import { bindGenerationTaskToNode, generationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { generationFailureMetadata } from "@/lib/generation-error";
 import { runGenerationConsumer } from "@/services/generation-consumer-lifecycle";
 import { consumeCanvasGenerationContinuation } from "./use-canvas-operation-history";
@@ -262,20 +262,9 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             setNodes((current) =>
                 current.map((node) => {
                     if (node.id !== targetNodeId) return node;
-                    if (node.metadata?.shortDrama?.materializedTaskId === task.id) return node;
-                    newlyBound = node.metadata?.taskId !== task.id;
-                    const failed = task.status === "failed" || task.status === "cancelled";
-                    const hasCompletedContent = task.status === "succeeded" && Boolean(node.metadata?.content || node.metadata?.storageKey);
-                    const failure = failed ? generationFailureMetadata(task.error || (task.status === "cancelled" ? "任务已取消" : "任务失败"), node.metadata?.composerContent || node.metadata?.prompt || task.prompt || "") : undefined;
-                    return {
-                        ...node,
-                        metadata: {
-                            ...node.metadata,
-                            ...generationTaskMetadata(task),
-                            status: failed ? NODE_STATUS_ERROR : hasCompletedContent ? NODE_STATUS_SUCCESS : NODE_STATUS_LOADING,
-                            ...(failure || { errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined }),
-                        },
-                    };
+                    const bound = bindGenerationTaskToNode(node, task);
+                    if (bound !== node && node.metadata?.taskId !== task.id) newlyBound = true;
+                    return bound;
                 }),
             );
             if (newlyBound && persistTaskBinding && !taskBindingSaveScheduledRef.current) {

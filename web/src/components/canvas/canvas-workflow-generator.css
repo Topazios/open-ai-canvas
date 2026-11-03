@@ -23,8 +23,6 @@
 .production-agent-heading > strong { font-size: var(--fs-body); font-weight: 600; }
 .production-agent-status { color: var(--muted-foreground); font-size: var(--fs-label); }
 .production-agent-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.production-agent-actions label { display: flex; align-items: center; gap: 8px; }
-.production-agent-actions .ant-select { width: 88px; }
 .production-agent-note { color: var(--muted-foreground); }
 .production-agent-error { color: var(--destructive); }
 .production-agent-warning { color: var(--status-warning); }
@@ -40,6 +38,21 @@
 .production-agent-parameters .production-agent-prompt { grid-column: 1 / -1; }
 .production-agent-prompt dd { white-space: pre-wrap; }
 .production-agent-journal-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.production-agent-tasks { display: grid; gap: 0; min-width: 0; }
+.production-agent-task { border-bottom: 1px solid var(--border); min-width: 0; }
+.production-agent-task > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 0; list-style: none; cursor: pointer; }
+.production-agent-task > summary::-webkit-details-marker { display: none; }
+.production-agent-task > summary:hover { color: var(--foreground); }
+.production-agent-task > summary svg { flex-shrink: 0; color: var(--muted-foreground); }
+.production-agent-task[open] > summary .production-agent-chevron { transform: rotate(90deg); }
+.production-agent-task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.production-agent-task-state { flex-shrink: 0; color: var(--muted-foreground); font-size: var(--fs-label); }
+.production-agent-task-body { display: grid; gap: 12px; min-width: 0; margin: 4px 0 12px 6px; padding: 4px 0 4px 16px; border-left: 1px solid var(--border); }
+.production-agent-task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.production-agent-task-params { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; margin: 0; }
+.production-agent-task-params dt { color: var(--muted-foreground); font-size: var(--fs-micro); }
+.production-agent-task-params dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.production-agent-task-params .production-agent-prompt { grid-column: 1 / -1; }
 .production-agent-history { justify-self: center; }
 .production-agent-journal { min-width: 0; }
 .production-agent-event { padding: 6px 0; }
@@ -56,7 +69,7 @@
 .production-agent-commentary th, .production-agent-commentary td { overflow-wrap: anywhere; }
 @media (max-width: 480px) {
     .production-agent-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
-    .production-agent-actions label { grid-column: 1 / -1; justify-content: space-between; }
     .production-agent-actions > .ant-btn:last-child { justify-self: end; }
-    .production-agent-parameters dl { grid-template-columns: 1fr; }
+    .production-agent-parameters dl, .production-agent-task-params { grid-template-columns: 1fr; }
+    .production-agent-task-actions { display: grid; grid-template-columns: 1fr; }
 }

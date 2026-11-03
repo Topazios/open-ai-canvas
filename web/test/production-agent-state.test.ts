@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { bindProductionAgentRun, productionAgentNodePresent, productionTaskState, productionAssetGroupState, productionPlanAssetAction, productionPlanCanvasNeedsRefresh, productionPlanCanvasDocumentCount, hasMissingCompletedProductionOutput } from "@/lib/canvas/production-agent-state";
+import { bindProductionAgentRun, productionAgentNodePresent, productionTaskState, productionAssetGroupState, productionPlanAssetAction, productionPlanCanvasNeedsRefresh, productionPlanCanvasDocumentCount, productionPlanDetachedMembers, productionPlanMissingDocumentNote, productionPlanNeedsContinuation, hasMissingCompletedProductionOutput } from "@/lib/canvas/production-agent-state";
 import type { AgentRun } from "@/services/api/agent";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
@@ -170,6 +170,24 @@ test("plan frame counts saved standard documents rather than relying on its memb
     expect(productionPlanCanvasDocumentCount({ ...root, metadata: { shortDrama: { ...root.metadata!.shortDrama!, planGroup: { rootFrameId: root.id, kind: "character" } } } }, documents)).toBe(0);
 });
 
+test("standalone outline outside the plan frame still counts as a member", () => {
+    const outline: CanvasNodeData = { ...node, id: "plan-story", metadata: { ...node.metadata, shortDrama: { ...node.metadata!.shortDrama!, role: "document", planSection: "story" } } };
+    const inner: CanvasNodeData = { ...node, id: "plan-visual", parentId: "plan-frame", metadata: { ...node.metadata, shortDrama: { ...node.metadata!.shortDrama!, role: "document", planSection: "visual" } } };
+    const root: CanvasNodeData = {
+        ...node,
+        id: "plan-frame",
+        type: CanvasNodeType.Frame,
+        metadata: { shortDrama: { ...node.metadata!.shortDrama!, role: "collection", assetGroup: { manifestId: node.id }, sourceNodeIds: [outline.id, inner.id] } },
+    };
+    const nodeById = new Map([root, outline, inner].map((item) => [item.id, item]));
+    const detached = productionPlanDetachedMembers(root, nodeById);
+    expect(detached.map((item) => item.id)).toEqual(["plan-story"]);
+    expect(productionPlanCanvasDocumentCount(root, [inner], detached)).toBe(2);
+    expect(productionPlanCanvasDocumentCount(root, [inner])).toBe(1);
+    const group = { ...root, metadata: { shortDrama: { ...root.metadata!.shortDrama!, planGroup: { rootFrameId: root.id, kind: "character" } } } } as CanvasNodeData;
+    expect(productionPlanDetachedMembers(group, nodeById)).toEqual([]);
+});
+
 test("legacy plan documents without planSection still appear in the canvas", () => {
     const root: CanvasNodeData = {
         ...node,
@@ -187,4 +205,24 @@ test("legacy plan documents without planSection still appear in the canvas", () 
     expect(productionPlanCanvasDocumentCount(root, [manifest, ...legacy])).toBe(3);
     const receipt: AgentRun = { ...run, production: { targetNodeId: manifest.id, workKind: "plan", documentCount: 4 } as AgentRun["production"] };
     expect(productionPlanCanvasNeedsRefresh([root, manifest, ...legacy], receipt)).toBe(true);
+});
+
+const planRun = (production: Record<string, unknown>, status: AgentRun["status"] = "completed"): AgentRun =>
+    ({ ...run, status, production: { workKind: "plan", assetsStarted: false, documentTotal: 5, documentCount: 5, ...production } }) as unknown as AgentRun;
+
+test("a completed plan with every document saved offers no continuation", () => {
+    expect(productionPlanNeedsContinuation(planRun({}))).toBe(false);
+    expect(productionPlanMissingDocumentNote(planRun({}))).toBe("");
+});
+
+test("a missing document keeps continuation available even when no parallel item is left", () => {
+    const stalled = planRun({ documentCount: 4, parallelItems: [], inventoryComplete: false });
+    expect(productionPlanNeedsContinuation(stalled)).toBe(true);
+    expect(productionPlanMissingDocumentNote(stalled)).toContain("方案文档 4/5");
+    expect(productionPlanMissingDocumentNote(stalled)).toContain("资产总表与编码");
+});
+
+test("continuation is not offered once asset generation has started or the run is still active", () => {
+    expect(productionPlanNeedsContinuation(planRun({ documentCount: 4, assetsStarted: true }))).toBe(false);
+    expect(productionPlanNeedsContinuation(planRun({ documentCount: 4 }, "running"))).toBe(false);
 });

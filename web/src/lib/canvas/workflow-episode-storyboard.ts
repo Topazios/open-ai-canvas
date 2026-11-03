@@ -155,7 +155,8 @@ export function resolveEpisodeShotAssets(script: CanvasNodeData, row: Storyboard
     const codes = [...new Set([...(row.assetKeys || []), ...episodeStoryboardCodes(row.videoMotionPrompt || row.plotDescription)])];
     const bases = new Set(codes.map(productionAssetBaseCode));
     const sources = episodeStoryboardSources(script, nodes).filter(node => bases.has(node.metadata?.shortDrama?.assetIdentity?.code || node.metadata?.shortDrama?.assetKey || ""));
-    const resolved = resolveProductionAssetReferences("", sources, codes);
+    // Assets not generated yet stay as placeholders; they can be bound once they exist.
+    const resolved = resolveProductionAssetReferences("", sources, codes, undefined, { allowMissing: true });
     const media = new Map<string, CanvasNodeData>();
     for (const source of resolved.nodes) {
         const data = source.metadata!.shortDrama!;
@@ -190,5 +191,5 @@ export function resolveEpisodeShotAssets(script: CanvasNodeData, row: Storyboard
             media.set(node.id, node);
         }
     }
-    return { ...resolved, media: [...media.values()], referenceNodeIds: [...resolved.nodes.map(node => node.id), ...media.keys()] };
+    return { ...resolved, missingCodes: resolved.missing, media: [...media.values()], referenceNodeIds: [...resolved.nodes.map(node => node.id), ...media.keys()] };
 }

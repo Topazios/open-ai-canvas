@@ -390,16 +390,28 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 	if frame == nil {
 		return nil, BadAuthRequest("资产目标分组已删除，未重新创建")
 	}
+	// A v2 plan asset must live in its own collection. While that collection is
+	// missing, productionPlanParent falls back to the plan frame, so refuse the
+	// write instead of dropping the asset into the wrong container.
+	if m.Plan != nil && m.Plan.Version >= 2 {
+		if item := productionPlanItem(m, key); item != nil && m.Plan.Groups[productionPlanGroupKind(*item)] == "" {
+			// Groups are rebuilt by the plan loop, so this is a transient state
+			// conflict the caller may retry, not an argument error.
+			return nil, cloudAgentFieldError("planGroup", "stale_snapshot", "资产所在分组已删除，尚未重新创建，请稍后重试")
+		}
+	}
 	target := productionNode(doc, state.Request.Production.TargetNodeID)
 	data := productionWorkflow(target)
 	nodeID := "pa-" + productionHash([]string{run.ID, key})[:32]
 	var node map[string]any
-	if m.Plan != nil && productionPlanItem(m, key) != nil && receipt == nil {
-		nodeID = "pa-" + newID()
+	if m.Plan != nil && (productionPlanItem(m, key) != nil || planDocument) && receipt == nil {
+		assetPlaceholder := productionPlanItem(m, key) != nil
+		if assetPlaceholder {
+			nodeID = "pa-" + newID()
+		}
 		for _, candidate := range nodes {
 			workflow := productionWorkflow(candidate)
-			placeholder, _ := workflow["planGeneration"].(map[string]any)
-			if workflow["assetKey"] == key && placeholder["runId"] == run.ID {
+			if workflow["assetKey"] == key && productionPlanPlaceholderOwned(candidate, run.ID) && (assetPlaceholder || workflow["planSection"] == key) {
 				nodeID, node = stringValue(candidate["id"]), candidate
 				break
 			}
@@ -612,7 +624,7 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 			productionFitFrame(frame, nodes, numberValue(frame["height"], 428))
 		}
 	}
-	if m.Plan != nil && m.Plan.Version >= 2 && !(m.Plan.Version >= 5 && m.Plan.AssetsStarted && productionPlanItem(m, key) != nil) {
+	if m.Plan != nil && m.Plan.Version >= 2 && !productionPlanReferencesDeferred(m) && !(m.Plan.Version >= 5 && m.Plan.AssetsStarted && productionPlanItem(m, key) != nil) {
 		// Validate against the post-write profile so deleted variants cannot keep
 		// authorizing references, and newly assigned variants are recognized.
 		referenceArtifacts := append(append([]model.ProductionAgentArtifact{}, artifacts...), model.ProductionAgentArtifact{NodeID: nodeID})
@@ -730,6 +742,22 @@ func productionFitFrame(frame map[string]any, nodes []map[string]any, height flo
 	}
 }
 
+// productionCoverageFailureMessage 保留原提示，并附上前几条具体缺项，便于从日志直接定位。
+func productionCoverageFailureMessage(validated bool, report map[string]any) string {
+	message := "制作覆盖检查未通过，已有产物保留；继续任务补齐遗漏"
+	issues, _ := report["issues"].([]string)
+	if len(issues) > 3 {
+		issues = issues[:3]
+	}
+	if len(issues) > 0 {
+		return message + "（" + strings.Join(issues, "；") + "）"
+	}
+	if !validated {
+		return message + "（阶段完成回执尚未保存）"
+	}
+	return message
+}
+
 // Re-evaluate coverage at completion, even when the model previously passed a
 // check: sources or targets may have changed while its final answer was running.
 func productionComplete(repo *repository.Repository, run *model.CloudAgentExecution, state *cloudAgentRuntime, policy RuntimePolicySetting) error {
@@ -747,7 +775,7 @@ func productionComplete(repo *repository.Repository, run *model.CloudAgentExecut
 	}
 	report := productionCoverage(m, doc, facts, artifacts, done, total)
 	if !job.Validated || report["valid"] != true {
-		return BadAuthRequest("制作覆盖检查未通过，已有产物保留；继续任务补齐遗漏")
+		return BadAuthRequest(productionCoverageFailureMessage(job.Validated, report))
 	}
 	canvas, err := repo.CanvasProjectForUser(run.UserID, state.Request.CanvasID)
 	if err != nil {
@@ -762,7 +790,7 @@ func productionComplete(repo *repository.Repository, run *model.CloudAgentExecut
 	}
 	report = productionCoverage(m, doc, facts, artifacts, done, total)
 	if report["valid"] != true {
-		return BadAuthRequest("制作覆盖检查未通过，已有产物保留；继续任务补齐遗漏")
+		return BadAuthRequest(productionCoverageFailureMessage(true, report))
 	}
 	target := productionNode(doc, state.Request.Production.TargetNodeID)
 	if target == nil {
@@ -774,14 +802,14 @@ func productionComplete(repo *repository.Repository, run *model.CloudAgentExecut
 		return BadAuthRequest("提取记录已有人工内容，未覆盖")
 	}
 	if m.Storyboard == nil {
-		meta["content"] = fmt.Sprintf("已解析正文 %d/%d 页，保存 %d 项资产。\n\n机器覆盖检查通过；语义完整性、别名归并、冲突与提示词质量待人工验收。", done, total, len(artifacts))
+		meta["content"] = fmt.Sprintf("已解析正文 %d/%d 页，保存 %d 项资产。\n\n机器覆盖检查通过；语义完整性、别名归并、冲突与提示词质量可抽查。", done, total, len(artifacts))
 		if m.Plan != nil {
-			meta["content"] = fmt.Sprintf("制作方案已保存：故事总纲及 %d 项计划资产设定。\n\n资产清单覆盖检查通过，内容质量待人工验收。", len(m.Plan.Assets))
+			meta["content"] = fmt.Sprintf("制作方案已保存：故事总纲及 %d 项计划资产设定。\n\n资产清单覆盖检查通过，内容质量可抽查。", len(m.Plan.Assets))
 			if m.Plan.Version >= 2 && !m.Plan.AssetsStarted {
-				meta["content"] = fmt.Sprintf("制作方案已完成：故事总纲、资产总表及全部制作规范。\n\n已登记 %d 项计划资产，尚未创建资产档案；可手动点击生成资产。", len(m.Plan.Assets))
+				meta["content"] = fmt.Sprintf("制作方案已完成：故事总纲、资产总表及全部制作规范。\n\n已登记 %d 项计划资产，尚未创建资产档案；可在资产总表中选择并生成资产。", len(m.Plan.Assets))
 			}
 			if m.Plan.Version >= 2 && len(m.Plan.SelectedAssetKeys) > 0 {
-				meta["content"] = fmt.Sprintf("制作方案已完成，本次所选 %d 项资产档案已保存。\n\n清单共 %d 项资产；其他未生成项可在详情中手动选择。", len(m.Plan.SelectedAssetKeys), len(m.Plan.Assets))
+				meta["content"] = fmt.Sprintf("制作方案已完成，本次所选 %d 项资产档案已保存。\n\n清单共 %d 项资产；其他未生成项可在详情中选择后生成。", len(m.Plan.SelectedAssetKeys), len(m.Plan.Assets))
 			}
 			for _, kind := range planKinds(m) {
 				if reason := m.Plan.Absent[kind]; reason != "" {

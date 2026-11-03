@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -425,6 +426,87 @@ func TestOfficialRollDekWanVideoUsesVideosLifecycle(t *testing.T) {
 	}
 	if result.Method != "GET" || result.Path != "/v1/videos/task-roll-1/content" {
 		t.Fatalf("RollDek result = %#v", result)
+	}
+}
+
+func TestOfficialVideosGenerationsCapabilityLifecycle(t *testing.T) {
+	adapter := officialPackageAdapter(t, "videos-generations-capability.yingce-plugin", "videos-generations-capability")
+	request := GenerationRequest{
+		Model: "omni-fast", Prompt: "保持角色一致", Duration: 8, AspectRatio: "16:9", Resolution: "720p", GenerateAudio: true,
+		Images: []MediaReference{{URL: "https://cdn.example/character.png", Role: "reference_image"}},
+	}
+	create, err := adapter.BuildCreate(context.Background(), RequestContext{Request: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if create.Method != "POST" || create.Path != "/v1/videos/generations" || create.ContentType != "application/json" {
+		t.Fatalf("capability create = %#v", create)
+	}
+	body := manifestTestBody(t, create)
+	if body["model"] != request.Model || body["duration"] != float64(8) || body["resolution"] != "720p" {
+		t.Fatalf("capability create body = %#v", body)
+	}
+	if refs, _ := body["reference_image_urls"].([]any); len(refs) != 1 || refs[0] != request.Images[0].URL {
+		t.Fatalf("capability reference images = %#v", body["reference_image_urls"])
+	}
+	for _, key := range []string{"seconds", "generate_audio", "aspect_ratio", "first_image_url", "last_image_url"} {
+		if _, exists := body[key]; exists {
+			t.Fatalf("capability create body must not send %s: %#v", key, body)
+		}
+	}
+
+	created, err := adapter.ParseCreate(context.Background(), []byte(`{"id":"task-1","status":"queued"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.TaskID != "task-1" || created.Status != StatusPending {
+		t.Fatalf("capability create result = %#v", created)
+	}
+	poll, err := adapter.BuildPoll(context.Background(), PollContext{Request: request, TaskID: created.TaskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if poll.Method != "GET" || poll.Path != "/v1/videos/generations/task-1" {
+		t.Fatalf("capability poll = %#v", poll)
+	}
+	state, err := adapter.ParsePoll(context.Background(), PollContext{Request: request, TaskID: created.TaskID}, []byte(`{"id":"task-1","status":"completed","video_url":"https://cdn.example/result.mp4"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != StatusSucceeded || state.Result == nil || len(state.Result.Videos) != 1 || state.Result.Videos[0].URL != "https://cdn.example/result.mp4" {
+		t.Fatalf("capability poll result = %#v", state)
+	}
+	resultAdapter, ok := adapter.(ResultAdapter)
+	if !ok {
+		t.Fatal("capability adapter does not expose result download")
+	}
+	result, err := resultAdapter.BuildResult(context.Background(), PollContext{Request: request, TaskID: created.TaskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Method != "GET" || result.Path != "/v1/videos/task-1/content" {
+		t.Fatalf("capability result = %#v", result)
+	}
+
+	sixRefs := make([]MediaReference, 0, 6)
+	for i := 0; i < 6; i++ {
+		sixRefs = append(sixRefs, MediaReference{URL: fmt.Sprintf("https://cdn.example/ref-%d.png", i), Role: "reference_image"})
+	}
+	failures := []struct {
+		name    string
+		images  []MediaReference
+		message string
+	}{
+		{"reference with first frame", []MediaReference{{URL: "https://cdn.example/a.png", Role: "reference_image"}, {URL: "https://cdn.example/b.png", Role: "first_frame"}}, "参考图与首尾帧不能同时使用，请只保留其中一种素材"},
+		{"first frame only", []MediaReference{{URL: "https://cdn.example/b.png", Role: "first_frame"}}, "首帧和尾帧必须成对提供，请补齐缺失的一帧或移除另一帧"},
+		{"six references", sixRefs, "参考图最多 5 张，请减少参考图数量"},
+	}
+	for _, item := range failures {
+		bad := request
+		bad.Images = item.images
+		if _, err := adapter.BuildCreate(context.Background(), RequestContext{Request: bad}); err == nil || err.Error() != item.message {
+			t.Fatalf("%s: err = %v, want %q", item.name, err, item.message)
+		}
 	}
 }
 

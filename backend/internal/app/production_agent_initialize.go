@@ -33,7 +33,7 @@ func (s *Service) initializeProductionAgent(userID, runID string) error {
 		return err
 	}
 	return s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
-		_, _, doc, err := productionLoad(repo, current, &state)
+		_, m, doc, err := productionLoad(repo, current, &state)
 		if err != nil {
 			return err
 		}
@@ -60,6 +60,7 @@ func (s *Service) initializeProductionAgent(userID, runID string) error {
 		data["productionAgent"] = agent
 		data["submission"] = "submitted"
 		meta["status"], meta["taskStage"] = "loading", "制作 Agent 正在规划"
+		productionPlanDocumentPlaceholders(m, doc, runID, state.Request.Production.TargetNodeID, nil)
 		if err = saveCloudAgentDocument(repo, canvas, doc, policy); err != nil {
 			return err
 		}

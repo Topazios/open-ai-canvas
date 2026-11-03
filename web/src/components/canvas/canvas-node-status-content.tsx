@@ -14,6 +14,8 @@ export function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }:
     const production = node.metadata?.shortDrama?.productionAgent;
     const screenplayRepair = Boolean(node.metadata?.shortDrama?.screenplayRepair);
     const screenplayAudit = Boolean(node.metadata?.shortDrama?.screenplayAudit || node.metadata?.shortDrama?.step === "story.audit");
+    const autoReview = node.metadata?.shortDrama?.autoReview;
+    const autoReviewLabel = autoReview?.status === "auditing" ? `自动诊断中(第 ${autoReview.round} 轮)` : autoReview?.status === "repairing" ? `自动修复中(第 ${autoReview.round} 轮)` : undefined;
     const taskId = node.metadata?.taskId;
     const displayTaskId = production?.runId || taskId;
     const displayTask = {
@@ -27,8 +29,8 @@ export function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }:
     const submissionUncertain = Boolean(displayTaskId) && isGenerationTaskSubmissionUncertain(displayTask);
     const showsProgress = Boolean(displayTaskId) && generationTaskShowsProgress(displayTask);
     const progress = showsProgress && typeof node.metadata?.taskProgress === "number" ? Math.max(0, Math.min(100, Math.round(node.metadata.taskProgress))) : null;
-    const statusLabel = screenplayRepair ? "正文修复中" : screenplayAudit ? "正文诊断中" : production ? taskId ? "后台制作任务" : "提交待确认" : taskId ? generationTaskStatusLabel(displayTask) : "等待任务状态";
-    const stageLabel = screenplayRepair ? node.metadata?.taskStage || "正在修复正文" : screenplayAudit ? node.metadata?.taskStage || "正在诊断正文" : production ? taskId ? node.metadata?.taskStage || "制作任务执行中" : "提交待确认" : taskId ? generationTaskStageLabel(displayTask) : "正在创建任务";
+    const statusLabel = autoReviewLabel ? autoReviewLabel : screenplayRepair ? "正文修复中" : screenplayAudit ? "正文诊断中" : production ? taskId ? "后台制作任务" : "提交待确认" : taskId ? generationTaskStatusLabel(displayTask) : "等待任务状态";
+    const stageLabel = autoReviewLabel ? node.metadata?.taskStage || autoReviewLabel : screenplayRepair ? node.metadata?.taskStage || "正在修复正文" : screenplayAudit ? node.metadata?.taskStage || "正在诊断正文" : production ? taskId ? node.metadata?.taskStage || "制作任务执行中" : "提交待确认" : taskId ? generationTaskStageLabel(displayTask) : "正在创建任务";
     const elapsed = useTaskElapsed(node.metadata?.taskCreatedAt);
     const canRequestCancel = Boolean(taskId && onCancelTask && (displayTask.status === "queued" || displayTask.status === "running"));
     return (

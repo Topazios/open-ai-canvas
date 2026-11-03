@@ -712,6 +712,38 @@ add({
   poll: { method: "GET", path: "/v1/videos/{{taskId}}" }, response: asyncResponse("video")
 });
 
+const capabilityRefRoles = ["reference_image", "subject_reference", "style_reference", ""];
+const capabilityRefImages = mediaWithRoles("request.images", capabilityRefRoles);
+const capabilityFirstFrames = mediaWithRoles("request.images", ["first_frame"]);
+const capabilityLastFrames = mediaWithRoles("request.images", ["last_frame"]);
+
+add({
+  id: "videos-generations-capability", providerId: "videos-generations-capability", name: "Videos Generations Capability", vendor: "NewAPI", capability: "video",
+  baseUrl: "http://127.0.0.1:3000", auth: bearer, params: videoParams, requiresPublicMediaUrls: true,
+  notes: "该协议对应以复数路径 /v1/videos/generations 创建、/v1/videos/generations/{id} 查询、/v1/videos/{id}/content 下载的网关。请求体只携带模型能力声明过的字段：model、prompt、整数 duration、resolution、reference_image_urls 与 first_image_url/last_image_url。不发送 seconds、generate_audio、aspect_ratio。参考图与首尾帧互斥，首尾帧必须成对，参考图最多 5 张。下载接口返回 409 表示结果未就绪，由宿主继续轮询。单数路径 /v1/video/generations 属于 NewAPI Video Generations Channel 2，不能与本协议混用。",
+  validations: [
+    { assert: { $not: { $and: [gt(len(capabilityRefImages), 0), gt(len(mediaWithRoles("request.images", ["first_frame", "last_frame"])), 0)] } }, message: "参考图与首尾帧不能同时使用，请只保留其中一种素材" },
+    { assert: { $eq: [len(capabilityFirstFrames), len(capabilityLastFrames)] }, message: "首帧和尾帧必须成对提供，请补齐缺失的一帧或移除另一帧" },
+    { assert: { $lte: [len(capabilityRefImages), 5] }, message: "参考图最多 5 张，请减少参考图数量" },
+    { assert: { $lte: [len(capabilityFirstFrames), 1] }, message: "首帧只能提供 1 张" },
+    { assert: { $lte: [len(capabilityLastFrames), 1] }, message: "尾帧只能提供 1 张" }
+  ],
+  create: jsonCreate("/v1/videos/generations", {
+    model: ref("request.model"), prompt: ref("request.prompt"),
+    duration: omit(conditional(gt(ref("request.duration"), 0), toInt(ref("request.duration")))),
+    resolution: omit(ref("request.resolution")),
+    reference_image_urls: omit(map(capabilityRefImages, "media", ref("media.value"))),
+    first_image_url: omit(firstMediaFieldWithRoles("request.images", ["first_frame"], "value")),
+    last_image_url: omit(firstMediaFieldWithRoles("request.images", ["last_frame"], "value"))
+  }),
+  poll: { method: "GET", path: "/v1/videos/generations/{{taskId}}" },
+  result: { method: "GET", path: "/v1/videos/{{taskId}}/content", headers: { Accept: "video/mp4" } },
+  response: asyncResponse("video", {
+    taskId: coalesce(ref("response.id"), ref("response.request_id"), ref("response.task_id"), ref("response.data.id"), ref("response.data.task_id"), ref("taskId")),
+    errorPaths: ["error.code", "code"], messagePaths: ["error.message", "message", "fail_reason"]
+  })
+});
+
 add({
   id: "google-gemini-veo", providerId: "gemini-veo", name: "Google Gemini Veo", vendor: "Google", capability: "video",
   baseUrl: "https://generativelanguage.googleapis.com", auth: { type: "google-api-key", field: "apiKey" }, params: videoParams,

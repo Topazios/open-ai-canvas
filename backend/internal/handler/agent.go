@@ -278,6 +278,12 @@ func RegisterAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
 			} else {
 				err = svc.GenerateProductionPlanAssets(user.ID, c.Param("id"), req.AssetKeys, req.Model)
 			}
+		} else if req.Action == "retry_item" {
+			if len(req.PlanSections) != 1 {
+				fail(c, http.StatusBadRequest, errors.New("retry_item 需要且只能指定一项"))
+				return
+			}
+			err = svc.RetryProductionAgentItem(user.ID, c.Param("id"), req.PlanSections[0])
 		} else {
 			err = svc.ControlProductionAgent(user.ID, c.Param("id"), req.Action, req.MaxSteps)
 		}

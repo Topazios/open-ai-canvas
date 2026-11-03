@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"strings"
 
 	"infinite-canvas/backend/internal/model"
@@ -32,11 +33,52 @@ func cloudAgentModelOperation(task *model.Task) bool {
 }
 
 // cloudAgentStepTimedOut 判断这一步是不是被单步墙钟中止的。
+// 上游单次请求超时（provider_request_timeout）同样是"长时间无响应"，通常是思考阶段卡住，
+// 因此与墙钟超时一并按可恢复失败处理。
 func cloudAgentStepTimedOut(task *model.Task) bool {
 	if task == nil || task.Status == model.TaskStatusSucceeded {
 		return false
 	}
-	return strings.Contains(task.Error, cloudAgentStepTimeoutError)
+	return strings.Contains(task.Error, cloudAgentStepTimeoutError) || cloudAgentProviderRequestTimedOut(task)
+}
+
+// cloudAgentProviderRequestTimedOut 判断任务是不是因上游单次请求超时而失败。
+func cloudAgentProviderRequestTimedOut(task *model.Task) bool {
+	if task == nil || task.Status == model.TaskStatusSucceeded {
+		return false
+	}
+	diagnostic := taskExecutionDiagnostic(task)
+	return diagnostic != nil && diagnostic.Code == "provider_request_timeout"
+}
+
+// forceCloudAgentThinkingOff 把运行状态切到"关思考"，让紧接着的重试请求真正改变参数，
+// 而不是把同一个会挂住的请求原样重发。
+func (s *Service) forceCloudAgentThinkingOff(userID, runID string) error {
+	for attempt := 0; attempt < 8; attempt++ {
+		run, err := s.repo.CloudAgent(userID, runID)
+		if err != nil {
+			return err
+		}
+		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+			fresh, decodeErr := cloudAgentDecode(current)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			if fresh.ForceThinkingOff {
+				return nil
+			}
+			fresh.ForceThinkingOff = true
+			fresh.event(runID, "model_failure_recovered", map[string]any{
+				"reason": "provider_timeout_thinking_off",
+				"text":   "上游响应超时；已关闭思考重试同一步",
+			})
+			return cloudAgentSave(current, &fresh)
+		})
+		if !errors.Is(err, repository.ErrCreationConflict) {
+			return err
+		}
+	}
+	return repository.ErrCreationConflict
 }
 
 // correctCloudAgentStepTimeout 是单步超时的兜底：关掉上游思考并重发同一步。

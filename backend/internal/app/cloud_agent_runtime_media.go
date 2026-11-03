@@ -667,6 +667,11 @@ func (s *Service) saveCloudAgentPiResumePrompt(userID, id, prompt string) error 
 }
 
 func (s *Service) CancelCloudAgent(ctx context.Context, userID, id string) error {
+	return s.cancelCloudAgentWithSource(ctx, userID, id, "user_request", "用户取消接口已接收请求，正在取消关联任务")
+}
+
+// cancelCloudAgentWithSource 取消 run 并在事件里记录来源，便于区分用户取消和节点删除联动取消。
+func (s *Service) cancelCloudAgentWithSource(ctx context.Context, userID, id, source, text string) error {
 	defer s.projectProductionAgentStatus(userID, id)
 	s.stopCloudAgentPi(id)
 	// Cancellation is a control-plane operation. It must remain available even
@@ -718,7 +723,7 @@ func (s *Service) CancelCloudAgent(ctx context.Context, userID, id string) error
 			if decodeErr == nil {
 				current.CanvasID, current.ActiveTaskID, current.MediaTaskID = state.Request.CanvasID, state.ActiveTaskID, state.MediaTaskID
 				if firstCancellation {
-					state.event(id, "run_cancelled", map[string]any{"source": "user_request", "activeTaskId": state.ActiveTaskID, "mediaTaskId": state.MediaTaskID, "text": "用户取消接口已接收请求，正在取消关联任务"})
+					state.event(id, "run_cancelled", map[string]any{"source": source, "activeTaskId": state.ActiveTaskID, "mediaTaskId": state.MediaTaskID, "text": text})
 					if saveErr := cloudAgentSave(current, &state); saveErr != nil {
 						// Cancellation must still work if the transcript is oversized.
 						log.Printf("[cloud-agent] cancellation event unavailable for run %s: checkpoint rejected", id)

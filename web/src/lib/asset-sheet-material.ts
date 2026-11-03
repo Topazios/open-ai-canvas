@@ -53,7 +53,7 @@ const documentMarkers = new Set([
     "选题与项目约束", "正文风格依据", "视觉依据与项目约束", "视觉禁止项与负面提示词", "共用视觉生成提示词",
 ]);
 
-function documentSections(content: string) {
+export function documentSections(content: string) {
     const sections: { title: string; lines: string[] }[] = [{ title: "", lines: [] }];
     let fence: { marker: string; length: number } | undefined;
     for (const line of content.split(/\r?\n/)) {

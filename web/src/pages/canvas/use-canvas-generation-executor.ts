@@ -7,7 +7,7 @@ import { App } from "antd";
 
 import { buildNodeGenerationContext, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
-import { buildGenerationConfig, generationTaskMetadata, isGenerationCanceled } from "@/lib/canvas/canvas-project-generation";
+import { buildGenerationConfig, generationTaskMetadata, isGenerationCanceled, isTaskHeartbeatOnly } from "@/lib/canvas/canvas-project-generation";
 import { canvasGenerationPromptMetadata, canvasGenerationRequestFingerprint, runCanvasGenerationSubmissionOnce } from "@/lib/canvas/canvas-generation-submission";
 import { isGenerationTaskCapacityError } from "@/lib/canvas/canvas-generation-batch";
 import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture";
@@ -386,7 +386,7 @@ export function useCanvasGenerationExecutor({
                         bindGenerationTask: (targetNodeId: string, task: GenerationTask) => {
                             if (inlineStoryboardVideo && options?.storyboardRowId) {
                                 const taskMeta = generationTaskMetadata(task);
-                                setNodes(current => current.map(node => node.id !== nodeId ? node : {
+                                setNodes(current => current.map(node => node.id !== nodeId ? node : (node.metadata?.storyboard?.rows || []).some(row => row.id === options.storyboardRowId && row.videoGeneration?.prompt === prompt && row.videoGeneration?.errorDetails === undefined && isTaskHeartbeatOnly(row.videoGeneration as Record<string, unknown>, task)) ? node : {
                                     ...node,
                                     metadata: {
                                         ...node.metadata,

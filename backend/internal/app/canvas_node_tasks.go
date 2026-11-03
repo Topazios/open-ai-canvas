@@ -92,10 +92,21 @@ func (s *Service) ReconcileCanvasNodeTasks(ctx context.Context, userID, canvasID
 		if target == "" {
 			continue
 		}
-		if !canvasTaskNodeAbsent(doc, task.ID, target, agent) {
+		// 删除回执本身就是取消依据：run 会持续写云端画布，云端文档里的节点可能一直还在，
+		// 只看持久化文档会让容器已删除的任务永远取消不了。
+		receipt := agent && canvasAgentDeletedByReceipt(doc, target, deleted)
+		if !receipt && !canvasTaskNodeAbsent(doc, task.ID, target, agent) {
 			if !agent && task.NodeBoundAt == nil {
 				if err := s.repo.BindCanvasNodeTasks(userID, []string{task.ID}); err != nil {
-					return err
+					failures = append(failures, err)
+					continue
+				}
+			}
+			// 补偿：任务已终态而节点还没写入结果（任务先完成、节点后首次保存，
+			// 或上次回写失败）。回写函数自己重读画布，这里的 doc 可能已过期。
+			if !agent && canvasTaskStatusTerminal(string(task.Status)) && canvasNodeTaskUnsettled(doc, target) {
+				if err := s.writeTaskResultToCanvasID(ctx, task, canvasID); err != nil {
+					failures = append(failures, err)
 				}
 			}
 			continue
@@ -107,19 +118,24 @@ func (s *Service) ReconcileCanvasNodeTasks(ctx context.Context, userID, canvasID
 				continue
 			}
 			if err := s.repo.BindCanvasNodeTasks(userID, []string{task.ID}); err != nil {
-				return err
+				failures = append(failures, err)
+				continue
 			}
 		}
-		missing, err := s.canvasTaskTargetMissing(userID, canvasID, task.ID, target, agent)
-		if err != nil {
-			return err
-		}
-		if !missing {
-			continue
+		if !receipt {
+			missing, err := s.canvasTaskTargetMissing(userID, canvasID, task.ID, target, agent)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			if !missing {
+				continue
+			}
 		}
 		var relatedIDs []string
+		err = nil
 		if agent {
-			err = s.CancelCloudAgent(ctx, userID, task.ID)
+			err = s.cancelCloudAgentWithSource(ctx, userID, task.ID, "node_deleted", "画布节点已删除，正在取消关联任务")
 			if err == nil {
 				var run *model.CloudAgentExecution
 				run, err = s.repo.CloudAgent(userID, task.ID)
@@ -152,7 +168,10 @@ func (s *Service) ReconcileCanvasNodeTasks(ctx context.Context, userID, canvasID
 		}
 		// Undo or a newer canvas write may win while cancellation was in flight.
 		s.storageMu.Lock()
-		missing, err = s.canvasTaskTargetMissing(userID, canvasID, task.ID, target, agent)
+		missing := receipt
+		if !receipt {
+			missing, err = s.canvasTaskTargetMissing(userID, canvasID, task.ID, target, agent)
+		}
 		if err == nil && missing {
 			err = s.repo.RemoveStoppedCanvasTask(userID, task.ID, relatedIDs...)
 		}
@@ -167,6 +186,45 @@ func (s *Service) ReconcileCanvasNodeTasks(ctx context.Context, userID, canvasID
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// canvasAgentDeletedByReceipt 判断删除回执是否覆盖了 run 的目标节点、其所属容器或计划根容器。
+func canvasAgentDeletedByReceipt(doc map[string]any, target string, deleted map[string]bool) bool {
+	if len(deleted) == 0 {
+		return false
+	}
+	if deleted[target] {
+		return true
+	}
+	node := productionNode(doc, target)
+	seen := map[string]bool{}
+	for node != nil {
+		id := stringValue(node["id"])
+		if seen[id] {
+			return false
+		}
+		seen[id] = true
+		if deleted[id] {
+			return true
+		}
+		if data := productionWorkflow(node); data != nil {
+			if group, _ := data["planGroup"].(map[string]any); group != nil && deleted[stringValue(group["rootFrameId"])] {
+				return true
+			}
+			if group, _ := data["assetGroup"].(map[string]any); group != nil && deleted[stringValue(group["manifestId"])] {
+				return true
+			}
+		}
+		parentID := stringValue(node["parentId"])
+		if parentID == "" {
+			return false
+		}
+		if deleted[parentID] {
+			return true
+		}
+		node = productionNode(doc, parentID)
+	}
+	return false
 }
 
 func (s *Service) canvasTaskTargetMissing(userID, canvasID, taskID, target string, agent bool) (bool, error) {

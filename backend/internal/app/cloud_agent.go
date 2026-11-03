@@ -396,6 +396,11 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 		if state.Fingerprint == "" || state.Fingerprint != fingerprint {
 			return nil, kernel.NewAppError(409, "幂等键已用于不同请求，请使用新的幂等键")
 		}
+		if req.Production != nil {
+			if err := s.ensureProductionRunActive(userID, existing, "对应节点已删除，制作任务已移除"); err != nil {
+				return nil, err
+			}
+		}
 		run, runErr := s.CloudAgentRun(userID, existing.ID)
 		if runErr == nil && !cloudAgentRunTerminal(run.Status) {
 			if req.Production != nil {

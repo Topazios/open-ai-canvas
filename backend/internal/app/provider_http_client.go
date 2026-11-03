@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -558,7 +559,32 @@ func providerConnectionError(err error) error {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return fmt.Errorf("模型服务连接提前关闭，未收到完整结果；请先核对中转站任务和扣费记录，再决定是否重试：%w", err)
 	}
+	if providerConnectionReset(err) {
+		return fmt.Errorf("模型服务连接被重置，未收到响应，上游可能已完成；请先核对中转站任务和扣费记录，再决定是否重试：%w", err)
+	}
 	return err
+}
+
+// providerConnectionReset 识别对端或中间设备重置连接。
+// Windows 与 Linux 的措辞和错误码不同，所以同时看错误码和文本。
+func providerConnectionReset(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && (errno == 10054 || errno == 10053) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"connection reset", "forcibly closed by the remote host", "connection was aborted", "connection aborted"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseRetryAfter(value string, now time.Time) time.Duration {

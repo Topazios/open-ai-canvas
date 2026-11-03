@@ -18,6 +18,7 @@ import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, DEFAULT_CANVAS_BAC
 import { canvasThemes } from "@/lib/canvas-theme";
 import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, isCanvasFolderNode, isFrameNode, isNodeHiddenByCollapsedFrame } from "@/lib/canvas/canvas-frame";
 import { resolveCanvasDisplayConnections } from "@/lib/canvas/canvas-connection-spatial-index";
+import { productionPlanDetachedMembers } from "@/lib/canvas/production-agent-state";
 import { ensureMediaNodeMinimumSize } from "@/lib/canvas/canvas-node-size";
 import { getContextResourceNodes } from "@/lib/canvas/canvas-resource-references";
 import { getPublicCanvasShare } from "@/services/api/canvas-share";
@@ -260,7 +261,7 @@ export default function SharedCanvasPage() {
                 <svg className="absolute overflow-visible" viewBox={`${connectionBounds.left} ${connectionBounds.top} ${connectionBounds.width} ${connectionBounds.height}`} style={{ left: connectionBounds.left, top: connectionBounds.top, width: connectionBounds.width, height: connectionBounds.height, pointerEvents: "none", zIndex: 0 }}>
                     {visibleConnections.map(({ connection, from, to }) => <ConnectionPath key={connection.id} connection={connection} from={from} to={to} active={false} onSelect={() => setInfoNodeId(to.id)} />)}
                 </svg>
-                {visibleNodes.map((node) => isFrameNode(node) ? <CanvasFrameNode key={node.id} data={node} dragOffset={dragRef.current?.nodeIds.includes(node.id) && dragOffset ? dragOffset : undefined} childNodes={frameChildrenById.get(node.id) || []} scale={viewport.k} isSelected={selectedNodeId === node.id} isDropTarget={false} readOnly onMouseDown={(event, nodeId) => {
+                {visibleNodes.map((node) => isFrameNode(node) ? <CanvasFrameNode key={node.id} data={node} dragOffset={dragRef.current?.nodeIds.includes(node.id) && dragOffset ? dragOffset : undefined} childNodes={frameChildrenById.get(node.id) || []} detachedNodes={productionPlanDetachedMembers(node, nodeById)} scale={viewport.k} isSelected={selectedNodeId === node.id} isDropTarget={false} readOnly onMouseDown={(event, nodeId) => {
                     event.stopPropagation();
                     if (event.button !== 0) return;
                     setSelectedNodeId(nodeId);

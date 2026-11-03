@@ -157,6 +157,7 @@ export type WorkflowAssetProfile = {
 export type ShortDramaWorkflowData = {
     screenplayAudit?: import("./canvas/workflow-screenplay-audit").ScreenplayAuditBinding;
     screenplayRepair?: { bodyNodeId: string; reportNodeId?: string; reportSignature: string; contextNodeIds: string[]; previousContent?: string; previousRichText?: unknown; previousVersion?: number; repairedAt?: string };
+    autoReview?: import("./canvas/workflow-screenplay-audit").AutoReviewState;
     assetImageSourceIds?: string[];
     assetRevision?: { sourceNodeId: string; contextNodeIds: string[] };
     assetRevisionGroup?: { sourceNodeId: string; kind: `${import("./production-plan").PlannedAssetKind}` };
@@ -169,6 +170,8 @@ export type ShortDramaWorkflowData = {
     assetExecutionError?: string;
     planAbsent?: Partial<Record<import("./production-plan").PlannedAssetKind, string>>;
     planSection?: import("./production-plan").ProductionPlanSection;
+    // 后端预建的制作方案文档占位；文稿保存后整个 shortDrama 被重写，该字段随之消失。
+    planGeneration?: { runId: string; status: string };
     assetIdentity?: import("./production-plan").ProductionAssetIdentity;
     planAsset?: import("./production-plan").PlannedAsset;
     productionAgent?: { runId?: string; request?: import("@/services/api/agent").CreateAgentRunInput; maxCredits?: number; maxSteps?: number };

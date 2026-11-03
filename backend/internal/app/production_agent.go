@@ -165,10 +165,11 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 			}
 			if version >= 5 {
 				m.Plan.Version = 5
-				// New v5 plan runs produce the full plan in one durable backend job.
-				// Existing manifests keep their saved selection and remain resumable.
-				m.Plan.PlansStarted = true
-				m.Plan.SelectedPlanKeys = []string{"inventory", "visual", "direction", "generation"}
+				// A new v5 run only produces the story outline. The remaining plan
+				// documents start later through generate_plans, which sets
+				// PlansStarted and the selected keys.
+				m.Plan.PlansStarted = false
+				m.Plan.SelectedPlanKeys = nil
 			}
 		}
 	}
@@ -202,6 +203,12 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 		node := productionNode(doc, id)
 		wd := productionWorkflow(node)
 		if node == nil || wd["pipelineId"] != data["pipelineId"] {
+			// Storyboard only requires its own episode body. Missing or foreign
+			// rule sources are skipped; the body count check below still guards
+			// against a missing body.
+			if m.Storyboard != nil {
+				return nil
+			}
 			return BadAuthRequest("制作来源不存在或不属于当前流程")
 		}
 		meta, _ := node["metadata"].(map[string]any)
@@ -209,7 +216,10 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 			m.Dependencies[id] = productionNodeHash(node)
 			for _, child := range productionIDs(wd["sourceNodeIds"]) {
 				member := productionNode(doc, child)
-				if member == nil || member["parentId"] != id {
+				if member == nil || (member["parentId"] != id && !(productionWorkflow(member)["assetKey"] == "story" && stringValue(member["parentId"]) == "")) {
+					if m.Storyboard != nil {
+						continue
+					}
 					return BadAuthRequest("来源容器成员已移出，请更新关联后重试")
 				}
 				if err := visit(child); err != nil {
@@ -264,8 +274,24 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 			return nil
 		}
 		text := stringValue(meta["content"])
-		if strings.TrimSpace(text) == "" || meta["status"] == "loading" || meta["status"] == "error" {
-			return BadAuthRequest("制作来源正文为空或尚未完成")
+		if m.Storyboard != nil {
+			if step != "story.body" {
+				// Rules and other references are optional for storyboard work:
+				// an empty, running or failed source is simply left out.
+				if productionPlanPending(node) || strings.TrimSpace(text) == "" || meta["status"] == "loading" {
+					return nil
+				}
+			} else if productionPlanPending(node) || strings.TrimSpace(text) == "" || meta["status"] == "loading" {
+				return BadAuthRequest("该集正文为空或尚未完成，无法拆解分镜")
+			}
+			// A failed run that still left body text is usable for storyboard.
+		} else {
+			if productionPlanPending(node) {
+				return BadAuthRequest("制作来源正文为空或尚未完成")
+			}
+			if strings.TrimSpace(text) == "" || meta["status"] == "loading" || meta["status"] == "error" {
+				return BadAuthRequest("制作来源正文为空或尚未完成")
+			}
 		}
 		total += utf8.RuneCountInString(text)
 		if total > 4_000_000 || len(m.Sources) >= 512 {
@@ -511,6 +537,24 @@ func productionFacts(repo *repository.Repository, userID string, m productionMan
 	return facts, done, total, nil
 }
 
+// productionDropAdvisoryArgument removes a top-level key that the workflow
+// echoes in its suggested arguments but the tool schema does not accept.
+func productionDropAdvisoryArgument(raw, key string) string {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return raw
+	}
+	if _, ok := fields[key]; !ok {
+		return raw
+	}
+	delete(fields, key)
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return raw
+	}
+	return string(out)
+}
+
 func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecution, state *cloudAgentRuntime, call cloudAgentCall, policy RuntimePolicySetting) (any, error) {
 	if len(call.Function.Arguments) > productionToolArgumentsMaxBytes {
 		return nil, BadAuthRequest("单次工具参数超过预算，请分批提交")
@@ -523,10 +567,22 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 		return productionStoryboardTool(repo, run, state, job, m, doc, call, policy)
 	}
 	if call.Function.Name == "production_plan_inventory" {
+		call.Function.Arguments = productionDropAdvisoryArgument(call.Function.Arguments, "independent")
 		if m.Plan != nil && m.Plan.Version >= 5 {
 			var registration productionPlan
-			if decodeCloudAgentJSONObject(call.Function.Arguments, &registration) != nil || !registration.Complete || (m.Plan.InventoryReviewVersion > 0 && len(registration.InventoryReview) == 0) || (m.Plan.InventoryReviewVersion == 0 && len(registration.InventoryReview) != 0) {
-				return nil, BadAuthRequest("本次需一次提交完整资产总表及全部逐章来源核对，并设置 complete=true")
+			if err := decodeCloudAgentJSONObject(call.Function.Arguments, &registration); err != nil {
+				return nil, cloudAgentJSONArgumentError(err)
+			}
+			if !registration.Complete {
+				return nil, BadAuthRequest("完整资产总表需在本次调用一次提交，并明确 complete=true")
+			}
+			if m.Plan.InventoryReviewVersion > 0 && len(registration.InventoryReview) == 0 {
+				return nil, productionMissingInventoryReviewError(repo, run, m, doc)
+			}
+			if m.Plan.InventoryReviewVersion == 0 && len(registration.InventoryReview) != 0 {
+				// The checkpoint predates source review; ignore the surplus field
+				// instead of blocking the registration.
+				call.Function.Arguments = productionDropAdvisoryArgument(call.Function.Arguments, "inventoryReview")
 			}
 		}
 		result, err := productionPlanInventory(repo, run, state, m, doc, call, policy)
@@ -836,7 +892,7 @@ func productionCoverage(m productionManifest, doc map[string]any, facts []produc
 	}
 	for _, a := range artifacts {
 		node := productionNode(doc, a.NodeID)
-		if node == nil || stringValue(node["parentId"]) != m.FrameID {
+		if node == nil || !productionPlanParentMatches(m, a.Key, node) {
 			issues = append(issues, "资产已删除或移出："+a.Key)
 			continue
 		}
@@ -868,5 +924,5 @@ func productionCoverage(m productionManifest, doc map[string]any, facts []produc
 		}
 	}
 	sort.Strings(issues)
-	return map[string]any{"valid": len(issues) == 0, "issues": issues, "missingFactIds": missing[:min(30, len(missing))], "missingCount": len(missing), "processedPages": done, "totalPages": total, "artifactCount": len(artifacts), "semanticReview": "待人工验收；机器仅验证已提交事实的覆盖"}
+	return map[string]any{"valid": len(issues) == 0, "issues": issues, "missingFactIds": missing[:min(30, len(missing))], "missingCount": len(missing), "processedPages": done, "totalPages": total, "artifactCount": len(artifacts), "semanticReview": "可抽查；机器仅验证已提交事实的覆盖"}
 }

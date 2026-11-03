@@ -47,7 +47,8 @@ func (s *Service) cloudAgentModelTaskTransientFailure(taskID string) bool {
 	if status == 0 || (status >= 200 && status < 300) {
 		for _, code := range []string{log.ErrorCode, diagnosticCode} {
 			switch strings.ToLower(strings.TrimSpace(code)) {
-			case "server_error", "overloaded_error", "service_unavailable", "unavailable", "upstream_timeout", "rate_limit_exceeded", "upstream_response_invalid":
+			case "server_error", "overloaded_error", "service_unavailable", "unavailable", "upstream_timeout", "rate_limit_exceeded", "upstream_response_invalid",
+				"upstream_stream_read_error", "upstream_http2_stream_error", "gateway_concurrency_limit", "provider_request_timeout", "stream_timeout":
 				return true
 			}
 		}

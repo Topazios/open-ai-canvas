@@ -74,10 +74,25 @@ func TestProductionStoryboardCheckpointProducesEpisodeTable(t *testing.T) {
 	if target["type"] != "script" || len(rows) != 1 || rows[0]["shotCode"] != "S1-001" || meta["status"] != "loading" {
 		t.Fatalf("incremental table unavailable: %+v", target)
 	}
-	// A syntactically valid but invented code must not reach video generation.
+	// A well-formed code with no asset yet is kept as a placeholder, not rejected.
 	invalid := storyboardShot("S2", 1, 2, 3, 20)
 	invalid.AssetIDs = []string{"CHR-9999"}
-	productionCall(t, s, run.ID, "production_storyboard_submit", storyboardSubmitArgs(t, s, run.ID, "S2", 0, []productionShot{invalid}, true), true)
+	productionCall(t, s, run.ID, "production_storyboard_submit", storyboardSubmitArgs(t, s, run.ID, "S2", 0, []productionShot{invalid}, true), false)
+	canvas, _ = s.repo.CanvasProjectForUser("user", "agent-canvas")
+	doc, _ = creationDocument(canvas.PayloadJSON)
+	meta = productionNode(doc, "target")["metadata"].(map[string]any)
+	rows = creationMaps(meta["storyboard"].(map[string]any)["rows"])
+	found := false
+	for _, row := range rows {
+		for _, key := range productionIDs(row["assetKeys"]) {
+			if key == "CHR-9999" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("unresolved asset code not kept as placeholder: %+v", rows)
+	}
 }
 
 func TestStoryboardRowsLabelOnlyUnavoidableTailAndPreserveMedia(t *testing.T) {

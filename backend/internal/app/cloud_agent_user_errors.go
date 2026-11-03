@@ -26,7 +26,7 @@ const (
 )
 
 var (
-	taskErrorNetworkPattern        = regexp.MustCompile(`(?i)\b(?:dial tcp|connection refused|connection reset|no such host|i/o timeout|network error|failed to fetch|fetch failed|socket hang up|econnrefused|econnreset|etimedout|tls handshake timeout)\b`)
+	taskErrorNetworkPattern        = regexp.MustCompile(`(?i)\b(?:dial tcp|connection refused|connection reset|no such host|i/o timeout|network error|failed to fetch|fetch failed|socket hang up|econnrefused|econnreset|etimedout|tls handshake timeout|forcibly closed by the remote host|wsarecv|wsasend|connection was aborted|connection aborted|software caused connection abort)\b`)
 	taskErrorInfrastructurePattern = regexp.MustCompile(`(?i)(?:接口请求失败|Request failed with status code|https?://|\b(?:GET|POST|PUT|PATCH|DELETE)\s+["']?|Bad Gateway|Service Unavailable|Gateway Timeout|upstream_error|\bread tcp\b|\bwrite tcp\b)`)
 	taskErrorWrappedInterface      = regexp.MustCompile(`(?s)^接口请求失败[:：]\s*(.*)$`)
 	taskErrorWrappedRequest        = regexp.MustCompile(`(?is)^Request failed with status code \d{3}\s*[:：-]?\s*(.+)$`)
@@ -61,6 +61,9 @@ func userFacingTaskError(raw string) string {
 	if message := taskErrorStorageMessage(display); message != "" {
 		return message
 	}
+	if message := taskErrorConnectionHint(raw); message != "" {
+		return message
+	}
 	if taskErrorNetworkPattern.MatchString(display) {
 		return taskErrorNetworkMessage
 	}
@@ -89,6 +92,22 @@ func userFacingTaskError(raw string) string {
 		}
 	}
 	return truncateRunes(display, 240)
+}
+
+// taskErrorConnectionHint 保留出站层给连接中断写的提示，避免被后面的网络分类吞成"网络异常。"。
+// 提示在第一个全角冒号之前，冒号之后是原始底层错误，不展示给用户。
+func taskErrorConnectionHint(raw string) string {
+	for _, prefix := range []string{"模型服务连接被重置", "模型服务连接提前关闭"} {
+		if !strings.HasPrefix(raw, prefix) {
+			continue
+		}
+		hint := raw
+		if index := strings.Index(raw, "："); index > 0 {
+			hint = raw[:index]
+		}
+		return truncateRunes(strings.TrimSpace(hint), 240) + "。"
+	}
+	return ""
 }
 
 // userFacingTaskFailure 给任务失败加上"哪一步失败"的前缀，例如"图片生成失败：网络异常。"

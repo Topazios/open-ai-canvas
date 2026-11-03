@@ -7,6 +7,8 @@ import { Agent, setGlobalDispatcher } from "undici";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { collapseSystemMessages } from "./session-compaction.mjs";
+import { readRequest } from "./read-request.mjs";
 
 // Node 自带 undici 的 header/body 超时默认 300 秒，短于文本任务 8 分钟和视频任务 60 分钟。
 // 设为 0 后只由 Go 侧任务期限取消 bridge；这里不再提前切断仍在排队或生成中的步骤。
@@ -18,13 +20,6 @@ setGlobalDispatcher(new Agent({
 
 const providerID = "infinite-canvas";
 const api = "openai-completions";
-
-async function readRequest() {
-  let raw = "";
-  for await (const chunk of process.stdin) raw += chunk;
-  if (!raw.trim()) throw new Error("Agent runtime input is empty");
-  return JSON.parse(raw);
-}
 
 function emit(event, payload = {}) {
   process.stdout.write(`${JSON.stringify({ event, ...payload })}\n`);
@@ -79,8 +74,24 @@ async function bridge(request, path, body, signal) {
   return data;
 }
 
-async function run() {
-  const request = await readRequest();
+// Go 桥对单次请求解压后上限 64MB。会话快照超限时继续重发只会让整个运行反复失败，
+// 因此跳过本次快照并告警；持久检查点仍可恢复制作进度。
+const SNAPSHOT_LIMIT_BYTES = 60 * 1024 * 1024;
+async function sendSessionSnapshot(request, sessionJSONL, contextUsage) {
+  let bytes = Buffer.byteLength(sessionJSONL);
+  if (bytes > SNAPSHOT_LIMIT_BYTES) {
+    // 先合并重复的 system 消息再判断，历史上被损坏的会话靠它收敛体积。
+    sessionJSONL = collapseSystemMessages(sessionJSONL);
+    bytes = Buffer.byteLength(sessionJSONL);
+  }
+  if (bytes > SNAPSHOT_LIMIT_BYTES) {
+    emit("snapshot_skipped", { bytes, limit: SNAPSHOT_LIMIT_BYTES });
+    return null;
+  }
+  return bridge(request, "/event", { type: "session_snapshot", sessionJSONL, contextUsage });
+}
+
+async function run() {  const request = await readRequest();
   if (!request.bridgeURL || !request.bridgeToken || !request.model?.id) {
     throw new Error("Agent runtime is missing its bridge, session, or model configuration");
   }
@@ -219,7 +230,7 @@ async function run() {
   if (request.sessionJSONL) {
     if (!request.sessionFile) throw new Error("Agent session restore requires a session file path");
     await mkdir(dirname(request.sessionFile), { recursive: true, mode: 0o700 });
-    await writeFile(request.sessionFile, request.sessionJSONL, { mode: 0o600, flag: "w" });
+    await writeFile(request.sessionFile, collapseSystemMessages(request.sessionJSONL), { mode: 0o600, flag: "w" });
     sessionManager = SessionManager.open(request.sessionFile, undefined, request.cwd);
   } else {
     sessionManager = SessionManager.create(request.cwd, request.sessionDir);
@@ -409,11 +420,7 @@ async function run() {
       eventChain.current = eventChain.current.then(async () => {
         const sessionFile = sessionManager.getSessionFile();
         if (!sessionFile) return;
-        await bridge(request, "/event", {
-          type: "session_snapshot",
-          sessionJSONL: await readFile(sessionFile, "utf8"),
-          contextUsage: session.getContextUsage(),
-        });
+        await sendSessionSnapshot(request, await readFile(sessionFile, "utf8"), session.getContextUsage());
       });
     } else if (event.type === "tool_call_start") {
       enqueueEvent({
@@ -444,11 +451,7 @@ async function run() {
           if (error?.code === "ENOENT") return;
           throw error;
         }
-        return bridge(request, "/event", {
-          type: "session_snapshot",
-          sessionJSONL,
-          contextUsage: session.getContextUsage(),
-        });
+        return sendSessionSnapshot(request, sessionJSONL, session.getContextUsage());
       });
     } else if (event.type === "compaction_start" || event.type === "compaction_end") {
       enqueueEvent({ type: event.type, reason: event.reason, contextUsage: session.getContextUsage() });
@@ -465,11 +468,7 @@ async function run() {
     if (runtimeError && !pausedForApproval) throw runtimeError;
     const sessionFile = sessionManager.getSessionFile();
     const sessionJSONL = await readFile(sessionFile, "utf8");
-    await bridge(request, "/event", {
-      type: "session_snapshot",
-      sessionJSONL,
-      contextUsage: session.getContextUsage(),
-    });
+    await sendSessionSnapshot(request, sessionJSONL, session.getContextUsage());
     emit("settled", {
       contextUsage: session.getContextUsage(),
       sessionFile,

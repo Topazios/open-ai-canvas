@@ -73,7 +73,7 @@ export type AgentRun = {
         phaseLabel?: string;
         currentItem?: string;
         concurrentItems?: string[];
-        parallelItems?: Array<{ key: string; name: string; taskId?: string; severity?: "warning" | "error"; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "retrying" | "error" | "warning" | "unknown" }>;
+        parallelItems?: Array<{ key: string; name: string; taskId?: string; severity?: "warning" | "error"; abandoned?: boolean; step?: number; attempts?: number; validationAttempts?: number; retryAt?: number; validationIssues?: string[]; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "retrying" | "error" | "warning" | "unknown" }>;
         assetGroups?: Array<{ kind: string; total: number; completed: number; status: "waiting_standards" | "waiting_manual" | "waiting" | "running" | "error" | "complete" }>;
         concurrencyLimit?: number;
         documentCount?: number;
@@ -222,7 +222,7 @@ export function reconcileCanvasNodeTasks(canvasId: string, deletedNodeIds: strin
     return http.post<{ accepted: boolean }>(`/canvas-projects/${encodeURIComponent(canvasId)}/tasks/reconcile`, { deletedNodeIds }, { timeout: 30_000 });
 }
 
-export type ProductionAgentControlAction = "pause" | "resume" | "generate_plans" | "generate_assets";
+export type ProductionAgentControlAction = "pause" | "resume" | "generate_plans" | "generate_assets" | "retry_item";
 export type ProductionPlanScope = "inventory" | "visual" | "direction" | "generation";
 export type ProductionAssetModelSelection = { model: string; logicalModelId?: string; channelId?: string; channelModelKey?: string; reasoningEffort?: ReasoningEffort; instruction?: string; continueAppend?: boolean };
 export type ProductionPlanAsset = {
@@ -232,8 +232,8 @@ export type ProductionPlanAsset = {
     error?: string;
     missingDependencies: string[];
 };
-export function controlProductionAgent(runId: string, action: ProductionAgentControlAction, maxSteps?: number, assetKeys?: string[], planSections?: ProductionPlanScope[], modelSelection?: ProductionAssetModelSelection, assetKinds?: string[]) {
-    return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/production-control`, { action, maxSteps, ...(action === "generate_assets" ? { ...(assetKinds?.length ? { assetKinds } : { assetKeys }), ...(modelSelection ? { modelSelection } : {}) } : {}), ...(action === "generate_plans" ? { planSections: planSections || ["inventory", "visual", "direction", "generation"] } : {}) });
+export function controlProductionAgent(runId: string, action: ProductionAgentControlAction, maxSteps?: number, assetKeys?: string[], planSections?: string[], modelSelection?: ProductionAssetModelSelection, assetKinds?: string[]) {
+    return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/production-control`, { action, maxSteps, ...(action === "generate_assets" ? { ...(assetKinds?.length ? { assetKinds } : { assetKeys }), ...(modelSelection ? { modelSelection } : {}) } : {}), ...(action === "generate_plans" ? { planSections: planSections || ["inventory", "visual", "direction", "generation"] } : {}), ...(action === "retry_item" ? { planSections } : {}) });
 }
 
 export function undoAgentCanvasRun(runId: string, input: { stepId?: string; expectedSnapshotHash: string; reason?: string }, signal?: AbortSignal) {

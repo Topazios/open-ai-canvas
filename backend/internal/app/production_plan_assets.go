@@ -204,8 +204,8 @@ func (s *Service) GenerateProductionPlanAssets(userID, runID string, keys []stri
 	if err != nil {
 		return err
 	}
-	if task != nil && task.RemovedAt != nil {
-		return BadAuthRequest("对应节点已删除，制作任务已移除")
+	if err := s.ensureProductionRunActive(userID, task, "对应节点已删除，制作任务已移除"); err != nil {
+		return err
 	}
 	if err := s.prepareProductionPlanAssetGeneration(userID, runID, keys); err != nil {
 		return err

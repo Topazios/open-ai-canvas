@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const Version = 2
+const Version = 3
 
 //go:embed rules.json
 var catalogJSON []byte

@@ -70,13 +70,13 @@ import { CanvasTextEditorModal } from "@/components/canvas/canvas-text-editor-mo
 import { CanvasStoryDevelopmentEditor } from "@/components/canvas/canvas-story-development-editor";
 import { CanvasWorkflowGenerator, type WorkflowGeneratorTarget } from "@/components/canvas/canvas-workflow-generator";
 import { CanvasScreenplayNodeContent, CanvasScreenplayAuditDetails } from "@/components/canvas/canvas-screenplay-audit";
-import { latestBodyAudit, screenplayAuditState } from "@/lib/canvas/workflow-screenplay-audit";
-import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-task-state";
+import { AUTO_REVIEW_MAX_ROUNDS, latestBodyAudit, screenplayAuditState } from "@/lib/canvas/workflow-screenplay-audit";
 import { workflowAssetActions, workflowAssetRevisionMembers } from "@/lib/canvas/canvas-workflow-asset-actions";
 import { CanvasWorkflowAssetReview } from "./canvas-workflow-asset-review";
 import { nodeWorkflow, restoreWorkflowSourceConnections, workflowEpisodeProgress, workflowSignature, workflowGroupingProblem } from "@/lib/canvas/canvas-short-drama-workflow";
 import { isStoryboardFrameStep, nextShortDramaStepGroups, nextShortDramaSteps, shortDramaStep, ShortDramaStep, type ShortDramaStepId } from "@/lib/short-drama-steps";
 import { useShortDramaWorkflowGeneration } from "./use-short-drama-workflow-generation";
+import { useScreenplayAutoReview } from "./use-screenplay-auto-review";
 import { useProductionAgentRuns } from "./use-production-agent-runs";
 import { CanvasProductionAgentDetails } from "./canvas-production-agent-details";
 import { productionPlanAssetMenu, productionPlanInventoryRecoveryAvailable } from "@/lib/canvas/production-plan-asset-menu";
@@ -1002,9 +1002,22 @@ function InfiniteCanvasPage() {
             }
             cleanupCanvasFiles({ projectId, nodes: nextNodes, chatSessions });
             void (async () => {
-                if (await saveCanvasProject({ requireRemote: true })) await reconcileCanvasNodeTasks(projectId, [...removedIds]);
-                else await cancelRemovedCanvasNodeTasks(removedNodes, nextNodes);
-            })().catch((error) => message.warning(`节点任务清理尚未完成，将在下次同步时重试：${error instanceof Error ? error.message : "请检查网络"}`));
+                // Deletion receipts do not depend on the canvas save: the backend cancels by deleted ids.
+                await saveCanvasProject({ requireRemote: true }).catch(() => false);
+                let lastError: unknown;
+                for (let attempt = 0; attempt < 4; attempt += 1) {
+                    if (attempt) await new Promise((resolve) => window.setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
+                    try {
+                        await reconcileCanvasNodeTasks(projectId, [...removedIds]);
+                        return;
+                    } catch (error) {
+                        lastError = error;
+                    }
+                }
+                // Reconcile kept failing: cancel the runs found on the removed nodes and their container targets.
+                await cancelRemovedCanvasNodeTasks(removedNodes, nextNodes).catch(() => undefined);
+                throw lastError;
+            })().catch((error) => message.warning(`节点任务清理未完成，已尝试取消可识别的任务：${error instanceof Error ? error.message : "请检查网络"}`));
         },
         [
             chatSessions,
@@ -1677,51 +1690,6 @@ function InfiniteCanvasPage() {
 
     const workflowGeneration = useShortDramaWorkflowGeneration({ projectId, config: effectiveConfig, nodesRef, connectionsRef, setNodes, setConnections,
         save: (options) => saveCanvasProject({ requireRemote: true, quiet: options?.quiet }), center: getCanvasCenter, focus: focusCanvasNode, bindTask: bindGenerationTask, applyResult: applyGenerationTaskResult });
-    const runSingleScreenplayAudit = useCallback(async (body: CanvasNodeData) => {
-        const data = nodeWorkflow(body);
-        if (!data?.episodeNumber || data.step !== ShortDramaStep.Body) { message.warning("请选择已完成的分集正文"); return; }
-        const model = effectiveConfig.textModel || "";
-        const currentSettings = useCanvasStore.getState().openProject(projectId)?.globalSettings;
-        const resetReviewState = {
-            ...data,
-            submission: undefined,
-            materializedTaskId: undefined,
-            screenplayAudit: undefined,
-            screenplayRepair: undefined,
-        };
-        // Re-audit is a new review attempt. Clear the old repair task and report
-        // before saving so submit/recovery cannot validate against stale state.
-        setNodes(current => current.map(node => node.id !== body.id ? node : {
-            ...node,
-            metadata: {
-                ...resetGenerationTaskMetadata(node.metadata, "success"),
-                taskStage: "准备重新审核",
-                shortDrama: resetReviewState,
-            },
-        }));
-        if (!await saveCanvasProject({ requireRemote: true })) {
-            message.error("正文状态清理后未能保存到云端，尚未重新审核，请稍后重试");
-            return;
-        }
-        try {
-            await workflowGeneration.run({
-                step: ShortDramaStep.Audit,
-                pipelineId: data.pipelineId,
-                sourceNodeIds: [body.id],
-                anchorId: body.id,
-                model,
-                instruction: "",
-                episodeCount: data.parameters?.episodeCount || currentProject?.globalSettings?.episodeCount || 1,
-                minutesPerEpisode: data.parameters?.minutesPerEpisode || "1-2",
-                reasoningEffort: effectiveConfig.textReasoningEffort || "medium",
-                start: data.episodeNumber,
-                count: 1,
-                globalSettings: currentSettings,
-            });
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "一键诊断提交失败");
-        }
-    }, [effectiveConfig, message, projectId, saveCanvasProject, setNodes, workflowGeneration]);
     const openScreenplayRepair = useCallback((nodeId: string) => {
         const report = nodesRef.current.find(node => node.id === nodeId);
         const data = report ? nodeWorkflow(report) : undefined;
@@ -1739,12 +1707,17 @@ function InfiniteCanvasPage() {
     const restoreScreenplayBeforeRepair = useCallback(async (bodyId: string) => {
         const body = nodesRef.current.find(node => node.id === bodyId);
         const repair = body?.metadata?.shortDrama?.screenplayRepair;
-        if (!body || !repair || repair.previousContent === undefined) { message.warning("没有可恢复的修复前版本"); return; }
-        setNodes(current => current.map(node => node.id !== bodyId ? node : { ...node, metadata: { ...node.metadata, content: repair.previousContent, richText: repair.previousRichText as Record<string, unknown> | undefined, status: "success", taskStage: "已恢复修复前版本，待重新诊断", errorDetails: undefined, shortDrama: { ...node.metadata!.shortDrama!, screenplayRepair: undefined, screenplayAudit: node.metadata!.shortDrama?.screenplayAudit ? { ...node.metadata!.shortDrama.screenplayAudit, report: undefined, reportSignature: undefined, rawResult: undefined, reportMarkdown: undefined, bodySignature: undefined } : undefined } } }));
+        const auto = body?.metadata?.shortDrama?.autoReview;
+        const restoreContent = auto?.originalContent ?? repair?.previousContent;
+        const restoreRich = auto?.originalContent !== undefined ? auto.originalRichText : repair?.previousRichText;
+        if (!body || restoreContent === undefined) { message.warning("没有可恢复的修复前版本"); return; }
+        setNodes(current => current.map(node => node.id !== bodyId ? node : { ...node, metadata: { ...node.metadata, content: restoreContent, richText: restoreRich as Record<string, unknown> | undefined, status: "success", taskStage: "已恢复修复前版本，待重新诊断", errorDetails: undefined, shortDrama: { ...node.metadata!.shortDrama!, screenplayRepair: undefined, autoReview: undefined, screenplayAudit: node.metadata!.shortDrama?.screenplayAudit ? { ...node.metadata!.shortDrama.screenplayAudit, report: undefined, reportSignature: undefined, rawResult: undefined, reportMarkdown: undefined, bodySignature: undefined } : undefined } } }));
         setScreenplayAuditDetailId(null);
         if (await saveCanvasProject({ requireRemote: true })) message.success("已恢复修复前版本，请重新诊断正文");
         else message.warning("已在本地恢复，云端保存待重试");
     }, [message, nodesRef, saveCanvasProject]);
+    const screenplayAutoReview = useScreenplayAutoReview({ projectId, config: effectiveConfig, nodesRef, setNodes,
+        save: () => saveCanvasProject({ requireRemote: true }), workflow: workflowGeneration, message });
     const productionAgentRuns = useProductionAgentRuns(projectId, nodesRef, workflowGeneration.submissionLock, {
         config: effectiveConfig,
         setNodes,
@@ -2551,7 +2524,7 @@ function InfiniteCanvasPage() {
             const diagnosticNode = Boolean(contentNode.metadata?.shortDrama?.screenplayAudit || contentNode.metadata?.shortDrama?.screenplayRepair);
             if ([ShortDramaStep.Body, ShortDramaStep.Audit].includes(contentNode.metadata?.shortDrama?.step as ShortDramaStep) && contentNode.metadata?.content?.trim() && contentNode.metadata.status !== "loading" && (contentNode.metadata.status !== "error" || diagnosticNode)) {
                 const auditBody = contentNode.metadata?.shortDrama?.screenplayAudit?.bodyNodeId ? scope.nodes.find((source) => source.id === contentNode.metadata?.shortDrama?.screenplayAudit?.bodyNodeId) : undefined;
-                return <CanvasScreenplayNodeContent node={contentNode} nodes={scope.nodes} settings={currentProject?.globalSettings} onRepair={openScreenplayRepair} onReport={setScreenplayAuditDetailId} onAudit={() => runSingleScreenplayAudit(auditBody || contentNode)} onEdit={() => openTextNodeEditor(contentNode)} />;
+                return <CanvasScreenplayNodeContent node={contentNode} nodes={scope.nodes} settings={currentProject?.globalSettings} onRepair={openScreenplayRepair} onReport={setScreenplayAuditDetailId} onAudit={() => screenplayAutoReview.start((auditBody || contentNode).id)} onResume={(id) => void screenplayAutoReview.start(id, true)} onEdit={() => openTextNodeEditor(contentNode)} />;
             }
             if (contentNode.metadata?.workflowKind === "character" && contentNode.metadata.characterAssetId) {
                 return <CanvasCharacterReferenceNodeContent node={contentNode} onInfo={() => setInfoNodeId(contentNode.id)} />;
@@ -2714,6 +2687,7 @@ function InfiniteCanvasPage() {
             retryStoryboardFrame,
             selectStoryboardFrameModel,
             productionAgentRuns.runs,
+            screenplayAutoReview,
             stopRemainingBatchItems,
             theme,
             updateBatchRow,
@@ -2787,19 +2761,26 @@ function InfiniteCanvasPage() {
             const candidates = failedNodes.map((item) => latest.get(item.id) ?? item).filter((item) => item.metadata?.status === "error");
             const batches = new Map<string, CanvasNodeData[]>();
             const singles: CanvasNodeData[] = [];
+            const reviewBodies: CanvasNodeData[] = [];
             let moderated = 0;
             let skipped = 0;
             for (const node of candidates) {
                 const meta = node.metadata;
                 if (meta?.generationErrorCode === CONTENT_MODERATION_ERROR_CODE || isContentModerationError(meta?.errorDetails)) { moderated += 1; continue; }
                 if (meta?.shortDrama?.submission === "planned") { skipped += 1; continue; }
+                const bodyDrama = meta?.shortDrama;
+                if (bodyDrama?.step === ShortDramaStep.Body && (bodyDrama.autoReview || bodyDrama.screenplayAudit || bodyDrama.screenplayRepair)) {
+                    // 自动诊断修复过的正文失败后续跑自动流程，不走通用重试，避免覆盖原稿记录。
+                    reviewBodies.push(node);
+                    continue;
+                }
                 if (node.type === CanvasNodeType.Image && meta?.batchRootId && !meta.storyboardFrame && !meta.storyboardFramePlan) {
                     batches.set(meta.batchRootId, [...(batches.get(meta.batchRootId) ?? []), node]);
                 } else {
                     singles.push(node);
                 }
             }
-            const total = singles.length + [...batches.values()].reduce((sum, children) => sum + children.length, 0);
+            const total = singles.length + reviewBodies.length + [...batches.values()].reduce((sum, children) => sum + children.length, 0);
             if (!total) {
                 message.info(moderated ? `${moderated} 个失败任务因内容审核未通过，需要先修改提示词` : "没有可以直接重试的失败任务");
                 return;
@@ -2810,6 +2791,7 @@ function InfiniteCanvasPage() {
                 const acknowledged: CanvasNodeRetryOptions = { billingAcknowledged: true };
                 const jobs: Array<() => Promise<unknown>> = [
                     ...[...batches].map(([rootId, children]) => () => retryImageBatchChildren(rootId, children, acknowledged)),
+                    ...reviewBodies.map((node) => async () => { await screenplayAutoReview.start(node.id, true); }),
                     ...singles.map((node) => async () => {
                         const meta = node.metadata;
                         try {
@@ -2853,7 +2835,32 @@ function InfiniteCanvasPage() {
                 onOk: () => { void run(); },
             });
         },
-        [extractStoryboardKeyframes, generateScriptRows, handleRetryNode, message, modal, nodesRef, retryImageBatchChildren, retryStoryboardFrame],
+        [extractStoryboardKeyframes, generateScriptRows, handleRetryNode, message, modal, nodesRef, retryImageBatchChildren, retryStoryboardFrame, screenplayAutoReview],
+    );
+    const autoReviewFrameBodies = useCallback(
+        (_frame: CanvasNodeData, bodyNodes: CanvasNodeData[]) => {
+            const latest = new Map(nodesRef.current.map((item) => [item.id, item]));
+            const busy = new Set(screenplayAutoReview.running);
+            const ids = bodyNodes
+                .map((item) => latest.get(item.id) ?? item)
+                .filter((item) => {
+                    const status = item.metadata?.shortDrama?.autoReview?.status;
+                    return Boolean(item.metadata?.content?.trim()) && !busy.has(item.id) && status !== "auditing" && status !== "repairing";
+                })
+                .map((item) => item.id);
+            if (!ids.length) {
+                message.info("没有需要自动诊断修复的分集");
+                return;
+            }
+            modal.confirm({
+                title: "自动诊断修复",
+                content: `将对 ${ids.length} 集依次执行诊断、修复、复检，过程中不再询问。每一轮都会重新调用模型并产生费用，每集最多 ${AUTO_REVIEW_MAX_ROUNDS} 轮，仍有阻塞问题时带警告结束，不会停下等待处理，最多 3 集同时进行。结束原因和每轮的问题、修复方式都记录在对应分集详情的轮次里，方便抽查，需要时可在分集上重试自动修复。`,
+                okText: "确认并开始",
+                cancelText: "取消",
+                onOk: () => { void screenplayAutoReview.startBatch(ids); },
+            });
+        },
+        [message, modal, nodesRef, screenplayAutoReview],
     );
     const infoNode = nodeDetailsTarget(rawInfoNode, nodes);
     const openCanvasNodeTaskDetails = useCallback(
@@ -2961,7 +2968,7 @@ function InfiniteCanvasPage() {
                     <section data-canvas-editor inert={Boolean(versions.preview)} style={{ visibility: versions.preview ? "hidden" : undefined, opacity: versions.preview ? 0 : undefined }} className="relative min-w-0 flex-1 flex flex-col min-h-0 overflow-hidden">
                         {!focusMode ? (
                             <CanvasTopBar
-                                syncStatus={<CanvasSyncStatus projectId={projectId} onLoadLatest={reloadLatestCanvasProject} onOpenVersions={openVersions} />}
+                                syncStatus={<CanvasSyncStatus projectId={projectId} onLoadLatest={reloadLatestCanvasProject} onOpenVersions={openVersions} onRetryLoad={retryLoad} />}
                                 versionsOpen={versions.open}
                                 onToggleVersions={() => { closeAgent(); setVersionCompareRootId(null); versions.toggle(); }}
                                 title={currentProject?.title || "未命名画布"}
@@ -3153,6 +3160,7 @@ function InfiniteCanvasPage() {
                                                 onRetry={retryCanvasNode}
                                                 onReloadResource={reloadCanvasNodeResource}
                                                 onRetryFailed={retryFailedFrameNodes}
+                                                onAutoReview={autoReviewFrameBodies}
                                                 onOpenInfo={(node) => (node.metadata?.workflowKind === "character" && node.metadata.characterAssetId ? openTextNodeEditor(node) : setInfoNodeId(node.id))}
                                                 onOpenTaskDetails={openCanvasNodeTaskDetails}
                                                 onCancelTask={cancelCanvasNodeTask}
@@ -3175,7 +3183,7 @@ function InfiniteCanvasPage() {
                                         onOpenGlobalSettings={() => setGlobalSettingsOpen(true)}
                                         onOpenProjectAssociation={shortDramaEnabled ? () => setProjectAssociationOpen(true) : undefined}
                                         shortDramaGuide={shortDramaGuide}
-                                        syncStatus={<CanvasSyncStatus projectId={projectId} onLoadLatest={reloadLatestCanvasProject} onOpenVersions={openVersions} />}
+                                        syncStatus={<CanvasSyncStatus projectId={projectId} onLoadLatest={reloadLatestCanvasProject} onOpenVersions={openVersions} onRetryLoad={retryLoad} />}
                                         versionsOpen={versions.open}
                                         onToggleVersions={() => { closeAgent(); versions.toggle(); }}
                                         dockRevealed={focusDockRevealed}
@@ -3494,7 +3502,9 @@ function InfiniteCanvasPage() {
                                 if (!data || !contextMenuNode) return [];
                                 const anchorId = contextMenuNode.id;
                                 if (data.step === ShortDramaStep.Reconcile) return [{ label: "正文质量审核（替代旧资产校核）", run: () => openWorkflowGenerator(ShortDramaStep.Audit, anchorId) }];
-                                const planOwner = data.role === "collection" ? contextMenuNode : nodes.find(node => node.id === contextMenuNode.parentId);
+                                // The standalone outline has no parent; find the plan container that lists it.
+                                const planOwner = data.role === "collection" ? contextMenuNode : contextMenuNode.parentId ? nodes.find(node => node.id === contextMenuNode.parentId)
+                                    : data.planSection === "story" ? nodes.find(node => { const owner = nodeWorkflow(node); return owner?.role === "collection" && owner.step === ShortDramaStep.Plan && !owner.planGroup && owner.sourceNodeIds.includes(contextMenuNode.id); }) : undefined;
                                 const planTargetId = data.assetKey === "$summary" ? anchorId : (data.assetGroup?.manifestId || nodeWorkflow(planOwner)?.assetGroup?.manifestId);
                                 const planRun = productionAgentRuns.runs.find(run => run.production?.targetNodeId === planTargetId && run.production?.workKind === "plan");
                                 const categoryIcons = { [PlannedAssetKind.Character]: Users, [PlannedAssetKind.Environment]: MapPin, [PlannedAssetKind.Prop]: Package, [PlannedAssetKind.Sound]: AudioLines, [PlannedAssetKind.Special]: Sparkles };
@@ -3559,6 +3569,12 @@ function InfiniteCanvasPage() {
                                     ...(data.mediaGroup ? [{ label: "追加生成图片", disabled: workflowGeneration.submitting, run: () => openWorkflowGenerator(data.step, data.mediaGroup!.sourceNodeId) }] : []),
                                     ...(data.mediaGroup ? [{ label: "整理图片排列", run: () => setNodes((current) => layoutWorkflowImageGroups(current, new Set([anchorId]))) }] : []),
                                     ...(data.role === "collection" && !data.assetGroup && !data.mediaGroup && data.step !== ShortDramaStep.Audit && data.step !== ShortDramaStep.Body && data.step !== ShortDramaStep.Extract ? [{ label: "汇总分集文稿", run: () => setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId, aggregate: true }) }] : []),
+                                    ...(data.step === ShortDramaStep.Plan && data.role === "document" && data.planSection === "story" && planTargetId && planRun && ["failed", "waiting_user"].includes(planRun.status) && !planRun.production?.plansStarted ? [{ label: "重试总纲", detail: "总纲生成未完成，重新继续生成", disabled: productionAgentRuns.busy[planTargetId], run: () => {
+                                        void productionAgentRuns.control(planTargetId, "resume").then(result => {
+                                            if (result?.error) message.error(result.error);
+                                            else if (result?.success) message.success("已重新继续生成总纲");
+                                        });
+                                    } }] : []),
                                     ...(data.step === ShortDramaStep.Plan && data.role === "document" && data.planSection === "story" ? [{ label: "创作其余制作方案", disabled: !planRun?.production?.planReady || Boolean(planRun?.production?.plansStarted) || workflowGeneration.submitting, run: () => {
                                         if (planTargetId) void productionAgentRuns.control(planTargetId, "generate_plans", undefined, undefined, ["inventory", "visual", "direction", "generation"]).then(result => {
                                             if (result?.error) message.error(result.error);
@@ -3747,7 +3763,7 @@ function InfiniteCanvasPage() {
                             </div>
                         </Modal>
                         {workflowGenerator ? <CanvasWorkflowGenerator key={`${projectId}:${workflowGenerator.step}:${workflowGenerator.anchorId || ""}:${currentProject?.globalSettings?.revision || 0}`} globalSettings={currentProject?.globalSettings} target={workflowGenerator} nodes={nodes} submitting={workflowGeneration.submitting} onGenerate={workflowGeneration.run} onClose={() => setWorkflowGenerator(null)} /> : null}
-                        {screenplayAuditDetailId && nodes.some(node => node.id === screenplayAuditDetailId) ? <CanvasScreenplayAuditDetails node={nodes.find(node => node.id === screenplayAuditDetailId)!} nodes={nodes} settings={currentProject?.globalSettings} onClose={() => setScreenplayAuditDetailId(null)} onRepair={openScreenplayRepair} onRestore={restoreScreenplayBeforeRepair} onReaudit={bodyId => { setScreenplayAuditDetailId(null); openWorkflowGenerator(ShortDramaStep.Audit, bodyId); }} onBody={bodyId => { setScreenplayAuditDetailId(null); const body = nodesRef.current.find(node => node.id === bodyId); if (body) openTextNodeEditor(body); }} /> : null}
+                        {screenplayAuditDetailId && nodes.some(node => node.id === screenplayAuditDetailId) ? <CanvasScreenplayAuditDetails node={nodes.find(node => node.id === screenplayAuditDetailId)!} nodes={nodes} settings={currentProject?.globalSettings} onClose={() => setScreenplayAuditDetailId(null)} onRepair={openScreenplayRepair} onRestore={restoreScreenplayBeforeRepair} onResume={bodyId => { setScreenplayAuditDetailId(null); void screenplayAutoReview.start(bodyId, true); }} onReaudit={bodyId => { setScreenplayAuditDetailId(null); openWorkflowGenerator(ShortDramaStep.Audit, bodyId); }} onBody={bodyId => { setScreenplayAuditDetailId(null); const body = nodesRef.current.find(node => node.id === bodyId); if (body) openTextNodeEditor(body); }} /> : null}
                         {assetReviewId && nodes.some((node) => node.id === assetReviewId) ? <CanvasWorkflowAssetReview key={`${projectId}:${assetReviewId}`} node={nodes.find((node) => node.id === assetReviewId)!} nodes={nodes} onClose={() => setAssetReviewId(null)} onEdit={openTextNodeEditor}
                             onSave={async (id, assetProfile, expected) => {
                                 const current = nodesRef.current.find((node) => node.id === id);

@@ -1,10 +1,21 @@
-import type { CanvasNodeData } from "../../src/types/canvas";
+import type { CanvasConnection, CanvasNodeData } from "../../src/types/canvas";
 import { assetContentSignature } from "../../src/lib/canvas/canvas-workflow-asset-profile";
 import { ProductionPlanSection, productionPlanSections } from "../../src/lib/production-plan";
 import { ProductionBibleSection } from "../../src/lib/production-bible";
 
+// Mirror the server: every plan document is linked directly from its source nodes.
+function linkPlanDocuments(connections: CanvasConnection[] | undefined, docs: CanvasNodeData[]) {
+    if (!connections) return;
+    for (const doc of docs) {
+        for (const sourceId of doc.metadata?.shortDrama?.sourceNodeIds ?? []) {
+            if (connections.some((item) => item.fromNodeId === sourceId && item.toNodeId === doc.id)) continue;
+            connections.push({ id: `fixture-link:${sourceId}:${doc.id}`, fromNodeId: sourceId, toNodeId: doc.id });
+        }
+    }
+}
+
 // Simulate the server's durable plan artifacts, not a text-task JSON response.
-export function completeWorkflowPlan(result: { nodes: CanvasNodeData[]; created: CanvasNodeData[] }) {
+export function completeWorkflowPlan(result: { nodes: CanvasNodeData[]; created: CanvasNodeData[]; connections?: CanvasConnection[] }) {
     const manifest = result.created[0];
     const data = manifest.metadata!.shortDrama!;
     const frame = result.nodes.find((node) => node.id === manifest.parentId)!;
@@ -26,10 +37,11 @@ export function completeWorkflowPlan(result: { nodes: CanvasNodeData[]; created:
     manifest.metadata = { ...manifest.metadata, status: "success", content: "完整文稿已分组保存", shortDrama: { ...data, assetOutput: false, materializedTaskId: "fixture-plan-run", submission: "submitted" } };
     frame.metadata!.shortDrama!.sourceNodeIds = [manifest.id, ...docs.map((node) => node.id)];
     result.nodes.push(...docs);
+    linkPlanDocuments(result.connections, docs);
     return { frame, docs, manifest };
 }
 
-export function completeUnifiedWorkflowPlan(result: { nodes: CanvasNodeData[]; created: CanvasNodeData[] }) {
+export function completeUnifiedWorkflowPlan(result: { nodes: CanvasNodeData[]; created: CanvasNodeData[]; connections?: CanvasConnection[] }) {
     const value = completeWorkflowPlan(result);
     const { frame, docs, manifest } = value;
     const sections = { story: ProductionBibleSection.Settings, visual: ProductionBibleSection.Style, direction: ProductionBibleSection.Cinematography, generation: ProductionBibleSection.Generation };
@@ -39,6 +51,7 @@ export function completeUnifiedWorkflowPlan(result: { nodes: CanvasNodeData[]; c
     for (const section of productionPlanSections.slice(1)) {
         const node: CanvasNodeData = { ...docs[0], id: `${manifest.id}:${section.key}`, title: section.label, metadata: { content: `${section.label}：固定自然写实风格、克制表演，保持空间与服装连续性。`, status: "success", shortDrama: { ...docs[0].metadata!.shortDrama!, assetKey: section.key, planSection: section.key, bibleSection: sections[section.key] } } };
         docs.push(node); result.nodes.push(node);
+        linkPlanDocuments(result.connections, [node]);
     }
     docs.slice(1, 3).forEach((node, index) => {
         const data = node.metadata!.shortDrama!;

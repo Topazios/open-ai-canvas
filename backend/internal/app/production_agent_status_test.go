@@ -136,3 +136,27 @@ func mustCloudAgent(t *testing.T, s *Service, runID string) *model.CloudAgentExe
 	}
 	return run
 }
+
+func TestProductionStatusProjectionSkipsWriteWhenUnchanged(t *testing.T) {
+	s, _, view := productionFixture(t)
+	// 首次投影允许写入（节点状态被改为执行中）。
+	s.projectProductionAgentStatus("user", view.ID)
+	first, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runBefore := mustCloudAgent(t, s, view.ID)
+	for i := 0; i < 3; i++ {
+		s.projectProductionAgentStatus("user", view.ID)
+	}
+	second, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Revision != first.Revision || second.PayloadJSON != first.PayloadJSON {
+		t.Fatalf("unchanged projection rewrote the canvas: revision %d -> %d", first.Revision, second.Revision)
+	}
+	if runAfter := mustCloudAgent(t, s, view.ID); runAfter.Revision != runBefore.Revision {
+		t.Fatalf("unchanged projection bumped the run revision: %d -> %d", runBefore.Revision, runAfter.Revision)
+	}
+}

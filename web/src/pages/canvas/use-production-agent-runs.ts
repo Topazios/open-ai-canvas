@@ -222,7 +222,7 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
         return () => { closed = true; generation.current++; clearInterval(timer); controller.abort(); sync.dispose(); };
     }, [canvasId, scope, nodesRef]);
 
-    const control = async (nodeId: string, action: ProductionAgentControlAction | "cancel", maxSteps?: number, assetKeys?: string[], planSections?: import("@/services/api/agent").ProductionPlanScope[], modelSelection?: ProductionAssetModelSelection, assetKinds?: string[]) => {
+    const control = async (nodeId: string, action: ProductionAgentControlAction | "cancel", maxSteps?: number, assetKeys?: string[], planSections?: string[], modelSelection?: ProductionAssetModelSelection, assetKinds?: string[]) => {
         if (locks.current.has(nodeId) || submissionLock.current) return;
         const epoch = generation.current;
         locks.current.add(nodeId);

@@ -42,6 +42,8 @@ type productionParallelWork struct {
 	ValidationAttempts         int                            `json:"validationAttempts,omitempty"`
 	RepairUsed                 bool                           `json:"repairUsed,omitempty"`
 	QuietHold                  bool                           `json:"quietHold,omitempty"`
+	AutoRetryRounds            int                            `json:"autoRetryRounds,omitempty"`
+	Abandoned                  bool                           `json:"abandoned,omitempty"`
 	TransientAttempts          int                            `json:"transientAttempts,omitempty"`
 	Dependencies               string                         `json:"dependencies"`
 	Correction                 string                         `json:"correction,omitempty"`
@@ -69,7 +71,32 @@ type productionParallelWork struct {
 // storage, permission and version conflicts do not start another model call.
 const productionParallelTransientRetries = cloudAgentModelStepRetries * 2
 
+// A plan document that keeps failing is retried from scratch a few times
+// without anyone watching; after that it is set aside with a warning so its
+// siblings are never blocked. The retry entry point can revive it later.
+const productionParallelAutoRetryRounds = 2
+
+func productionParallelAutoRetryEligible(m productionManifest, key string) bool {
+	return m.Plan != nil && m.Storyboard == nil && m.Plan.Version >= 5
+}
+
 func productionParallelReady(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact) []productionParallelWork {
+	return productionParallelReadyWithState(m, doc, artifacts, nil)
+}
+
+// productionParallelStageSettled reports whether an earlier v5 plan document
+// no longer holds back its followers: it is valid, or it has already failed,
+// been held or been set aside. A failing document never blocks the rest, while
+// a healthy first batch still starts with inventory alone.
+func productionParallelStageSettled(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact, held map[string]productionParallelWork, key string) bool {
+	if productionPlanArtifactValid(m, doc, artifacts, key) {
+		return true
+	}
+	work, ok := held[key]
+	return ok && (work.Abandoned || work.QuietHold || work.Error != "" || work.AutoRetryRounds > 0)
+}
+
+func productionParallelReadyWithState(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact, held map[string]productionParallelWork) []productionParallelWork {
 	if m.Storyboard != nil {
 		if m.Storyboard.Version == storyboardEpisodeVersion {
 			return nil
@@ -108,6 +135,16 @@ func productionParallelReady(m productionManifest, doc map[string]any, artifacts
 			deferredInventory := key == "inventory" && len(m.Plan.SelectedAssetKinds) > 0
 			if (productionPlanArtifactValid(m, doc, artifacts, key) && !deferredInventory) || productionPlanPrerequisites(m, doc, artifacts, key) != nil {
 				continue
+			}
+			if !m.Plan.AssetsStarted {
+				// Keep the original order (inventory, then visual and direction,
+				// then generation) until an earlier document is valid or set aside.
+				if (key == "visual" || key == "direction" || key == "generation") && !productionParallelStageSettled(m, doc, artifacts, held, "inventory") {
+					continue
+				}
+				if key == "generation" && (!productionParallelStageSettled(m, doc, artifacts, held, "visual") || !productionParallelStageSettled(m, doc, artifacts, held, "direction")) {
+					continue
+				}
 			}
 			section, _ := planSection(key)
 			name := section.Title
@@ -227,10 +264,21 @@ func (s *Service) finalizeProductionPlanStage(userID, runID string) error {
 				keys = append(keys, m.Plan.SelectedPlanKeys...)
 				label = "其他制作方案"
 			}
+			skipped := 0
 			for _, key := range keys {
-				if !productionPlanArtifactValid(m, doc, artifacts, key) {
-					return nil
+				if productionPlanArtifactValid(m, doc, artifacts, key) {
+					continue
 				}
+				// 资产已开始生成后，总纲可能被手改过。与建组逻辑对齐：只要总纲仍在且有正文，
+				// 就不再用完整校验卡住阶段收尾，否则会话会每隔几秒重启一次。
+				if key == "story" && m.Plan.AssetsStarted && productionPlanStoryPresent(m, doc, artifacts) {
+					continue
+				}
+				if key != "story" && state.ProductionParallel[key].Abandoned {
+					skipped++
+					continue
+				}
+				return nil
 			}
 			canvas, err := repo.CanvasProjectForUser(userID, current.CanvasID)
 			if err != nil {
@@ -242,8 +290,12 @@ func (s *Service) finalizeProductionPlanStage(userID, runID string) error {
 			}
 			meta, _ := target["metadata"].(map[string]any)
 			targetData := productionWorkflow(target)
-			meta["content"] = label + "已保存。资产总表与制作规范的结构完整性由模板约束，语义质量待人工验收。"
+			meta["content"] = label + "已保存。资产总表与制作规范的结构完整性由模板约束，语义质量可抽查。"
 			meta["status"], meta["taskStage"] = "success", label+"已完成"
+			if skipped > 0 {
+				meta["content"] = fmt.Sprintf("%s已保存，其中 %d 项多次自动重试未通过，已跳过，可在任务详情中重试。", label, skipped)
+				meta["taskStage"] = fmt.Sprintf("%s已完成 · %d 项待处理", label, skipped)
+			}
 			targetData["materializedTaskId"] = runID
 			frameData := productionWorkflow(productionNode(doc, m.FrameID))
 			frameData["planReady"] = true
@@ -303,6 +355,57 @@ func (s *Service) refreshProductionParallelCheckpoint(run *model.CloudAgentExecu
 	})
 }
 
+// escalateProductionParallelHold turns a stuck item into an automatic retry
+// round, or sets it aside once the rounds are used up so siblings keep going.
+func (s *Service) escalateProductionParallelHold(run *model.CloudAgentExecution, key string) error {
+	return s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+		state, err := cloudAgentDecode(current)
+		if err != nil {
+			return err
+		}
+		work, exists := state.ProductionParallel[key]
+		if !exists || work.Abandoned || (!work.QuietHold && work.Error == "") {
+			return repository.ErrCreationConflict
+		}
+		// An upstream failure keeps pointing at its failed task. That task is
+		// finished, so it must not block the next automatic round; a task that is
+		// still running does.
+		if work.TaskID != "" {
+			task, taskErr := repo.TaskForUser(run.UserID, work.TaskID)
+			if taskErr != nil || task == nil || !cloudAgentTaskTerminal(task.Status) {
+				return repository.ErrCreationConflict
+			}
+		}
+		if work.AutoRetryRounds >= productionParallelAutoRetryRounds && key != "story" {
+			reason := work.Error
+			if reason == "" {
+				reason = work.Correction
+			}
+			work.Abandoned, work.QuietHold, work.TaskID, work.RetryAt = true, false, "", 0
+			work.Error = reason
+			work.Notice = &model.TaskExecutionDiagnostic{Severity: "warning", ErrorSource: "application", Outcome: "incomplete", Phase: "validation", SafeMessage: "已自动重试多次仍未通过，已跳过此项，不影响其他文稿；可随时点击重试"}
+			state.ProductionParallel[key] = work
+			return cloudAgentSave(current, &state)
+		}
+		_, manifest, _, err := productionLoad(repo, current, &state)
+		if err != nil {
+			return err
+		}
+		artifacts, err := repo.ProductionAgentArtifacts(run.UserID, run.ID)
+		if err != nil {
+			return err
+		}
+		rounds := work.AutoRetryRounds + 1
+		state.ProductionParallel[key] = productionParallelWork{
+			Key: key, Name: work.Name, Correction: work.Correction,
+			AutoRetryRounds: rounds,
+			RetryAt:         time.Now().Add(time.Duration(rounds) * 5 * time.Second).UnixMilli(),
+			Dependencies:    productionParallelDependencyHash(manifest, artifacts, key),
+		}
+		return cloudAgentSave(current, &state)
+	})
+}
+
 // Invoked at a Pi model boundary, so the serial model lane is never active
 // while independent dossiers are being drafted.
 func (s *Service) runProductionParallel(ctx context.Context, userID, runID string) (bool, error) {
@@ -324,6 +427,26 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 		}
 		if cloudAgentRunTerminal(run.Status) {
 			return handled, context.Canceled
+		}
+		// Backfill the plan document placeholders before any early return, so a
+		// run that is paused, waiting or busy still lists every task.
+		if state.Request.Production != nil {
+			created, err := s.ensureProductionPlanDocumentPlaceholders(userID, runID)
+			if errors.Is(err, repository.ErrCreationConflict) {
+				select {
+				case <-ctx.Done():
+					return handled, ctx.Err()
+				case <-time.After(250 * time.Millisecond):
+				}
+				continue
+			}
+			if err != nil {
+				return handled, err
+			}
+			if created {
+				handled = true
+				continue
+			}
 		}
 		if run.Status == "waiting_user" {
 			return handled, nil
@@ -360,14 +483,41 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 				continue
 			}
 			work := state.ProductionParallel[key]
+			eligible := productionParallelAutoRetryEligible(m, key)
+			// The story is the root document: it is retried like the others but
+			// never set aside, so an exhausted story fails the run instead.
+			autoRetry := eligible && !(key == "story" && work.AutoRetryRounds >= productionParallelAutoRetryRounds)
+			if autoRetry && work.Abandoned {
+				continue
+			}
 			// A locally rejected response gets one aggregated repair call. If that
 			// call is also rejected, persist a quiet hold at this checkpoint; never
-			// clear it on restart or let dependent production advance.
+			// clear it on restart or let dependent production advance. Plan items
+			// are retried automatically and finally set aside, so nobody has to
+			// release the hold by hand.
 			if work.QuietHold {
+				if autoRetry {
+					if err = s.escalateProductionParallelHold(run, key); err != nil && !errors.Is(err, repository.ErrCreationConflict) {
+						return true, err
+					}
+					changed, handled = true, true
+					break
+				}
+				if eligible {
+					failed = append(failed, work.Name+"："+work.Error)
+					continue
+				}
 				quietHeld = true
 				continue
 			}
 			if work.Error != "" && !(m.Storyboard != nil && work.TaskID != "" && work.Error == rejectedStoryboardToolMessage) {
+				if autoRetry {
+					if err = s.escalateProductionParallelHold(run, key); err != nil && !errors.Is(err, repository.ErrCreationConflict) {
+						return true, err
+					}
+					changed, handled = true, true
+					break
+				}
 				failed = append(failed, work.Name+"："+work.Error)
 				continue
 			}
@@ -412,6 +562,36 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 		// Settle responses before regrouping: a migration may need their
 		// receipts to drain, while new sibling groups can be added immediately.
 		if m.Plan != nil {
+			created, err := s.ensureProductionPlanDocumentPlaceholders(userID, runID)
+			if errors.Is(err, repository.ErrCreationConflict) {
+				select {
+				case <-ctx.Done():
+					return handled, ctx.Err()
+				case <-time.After(250 * time.Millisecond):
+				}
+				continue
+			}
+			if err != nil {
+				return handled, err
+			}
+			if created {
+				continue
+			}
+			attached, err := s.productionAttachLegacyStory(userID, runID)
+			if errors.Is(err, repository.ErrCreationConflict) {
+				select {
+				case <-ctx.Done():
+					return handled, ctx.Err()
+				case <-time.After(250 * time.Millisecond):
+				}
+				continue
+			}
+			if err != nil {
+				return handled, err
+			}
+			if attached {
+				continue
+			}
 			changed, err := s.ensureProductionPlanGroups(userID, runID)
 			if errors.Is(err, repository.ErrCreationConflict) {
 				select {
@@ -434,7 +614,7 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 			if err != nil {
 				return handled, err
 			}
-			ready := productionParallelReady(m, doc, artifacts)
+			ready := productionParallelReadyWithState(m, doc, artifacts, state.ProductionParallel)
 			// Serial documents can enter this lane after a bounded output-limit
 			// recovery. Their parts retain the same dependency and admission rules.
 			for _, key := range productionParallelKeys(state.ProductionParallel) {
@@ -442,7 +622,7 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 				if m.Plan != nil && productionPlanItem(m, key) != nil && !productionPlanAssetSelected(m, key) {
 					continue
 				}
-				if work.DocumentParts == nil || work.Error != "" || work.QuietHold || work.TaskID != "" {
+				if work.DocumentParts == nil || work.Error != "" || work.QuietHold || work.Abandoned || work.TaskID != "" {
 					continue
 				}
 				found := false
@@ -458,7 +638,7 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 				if m.Plan != nil && productionPlanItem(m, work.Key) != nil && !productionPlanAssetSelected(m, work.Key) {
 					continue
 				}
-				if work.TaskID != "" && work.Error == "" && !work.QuietHold {
+				if work.TaskID != "" && work.Error == "" && !work.QuietHold && !work.Abandoned {
 					inFlight++
 				}
 			}
@@ -469,7 +649,7 @@ func (s *Service) runProductionParallel(ctx context.Context, userID, runID strin
 					break
 				}
 				if existing, ok := state.ProductionParallel[work.Key]; ok {
-					if existing.Error != "" || existing.QuietHold || existing.TaskID != "" || existing.RetryAt > time.Now().UnixMilli() {
+					if existing.Error != "" || existing.QuietHold || existing.Abandoned || existing.TaskID != "" || existing.RetryAt > time.Now().UnixMilli() {
 						continue
 					}
 					work = existing
@@ -827,7 +1007,7 @@ func (s *Service) commitProductionParallel(userID, runID string, work production
 					if strings.HasPrefix(reason, "已有文稿被删除、移动或人工修改") {
 						return productionParallelStaleResultError{message: reason}
 					}
-					return BadAuthRequest(reason)
+					return productionParallelDeterministicError(BadAuthRequest(reason))
 				}
 			}
 		}
@@ -838,11 +1018,11 @@ func (s *Service) commitProductionParallel(userID, runID string, work production
 			return productionParallelStaleResultError{message: "目标文稿版本已变化，旧结果未写入"}
 		}
 		if err := productionParallelPrerequisites(m, doc, artifacts, work.Key); err != nil {
-			return err
+			return productionParallelDeterministicError(err)
 		}
 		if work.DocumentParts != nil {
 			if err := productionDocumentPartsVersion(m, doc, artifacts, work); err != nil {
-				return err
+				return productionParallelDeterministicError(err)
 			}
 			staged, merged, err := productionStageDocumentParts(m, doc, artifacts, &work, call)
 			if err != nil {
@@ -953,7 +1133,7 @@ func (s *Service) recordProductionParallelFailure(userID, runID string, work pro
 			work.Error, work.TaskID, work.RetryAt = work.Correction, "", 0
 			work.QuietHold = true
 			work.Notice = &model.TaskExecutionDiagnostic{Severity: "warning", ErrorSource: "application", Outcome: "needs_revision", Phase: "validation", SafeMessage: work.Correction}
-			message := "前置文稿已变化，旧结果未写入；请手动重试此项"
+			message := "前置文稿已变化，旧结果未写入；系统已先跳过此项，可点击“重试此项”基于最新文稿重新生成"
 			state.event(runID, "production_control", map[string]any{
 				"action": "needs_revision", "text": message, "severity": "warning",
 				"errorSource": "application", "phase": "validation", "outcome": "needs_revision",
@@ -1047,18 +1227,70 @@ func (s *Service) recordProductionParallelFailure(userID, runID string, work pro
 				// One unified repair call receives the complete issue set.
 			} else if retryCount <= productionParallelTransientRetries {
 				work.TaskID = ""
-				work.RetryAt = time.Now().Add(time.Duration(1<<(retryCount-1)) * time.Second).UnixMilli()
+				work.RetryAt = time.Now().Add(s.productionParallelTransientBackoff(task.ID, retryCount)).UnixMilli()
 				// Retry state is durable; keep transport retries out of the content journal.
 			} else {
-				work.Error = work.Correction
+				productionParallelHoldFailure(&state, runID, &work)
 			}
 		} else {
-			work.Error = work.Correction
+			productionParallelHoldFailure(&state, runID, &work)
 		}
 		state.ProductionParallel[work.Key] = work
 		if err := persistStoryboardWork(repo, current, &state, policy); err != nil {
 			return err
 		}
 		return cloudAgentSave(current, &state)
+	})
+}
+
+// productionParallelTransientBackoff spaces out retries. Account concurrency
+// limits and gateway-cut streams need a longer wait than a plain 5xx, and a
+// small jitter keeps parallel documents from retrying in the same instant.
+func (s *Service) productionParallelTransientBackoff(taskID string, attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	base := time.Duration(1<<(attempt-1)) * time.Second
+	if log, err := s.repo.LatestAPICallFailureForTask(taskID); err == nil {
+		switch strings.ToLower(strings.TrimSpace(log.ErrorCode)) {
+		case "gateway_concurrency_limit", "rate_limit_exceeded", "upstream_stream_read_error", "upstream_http2_stream_error":
+			base = time.Duration(5*(1<<(attempt-1))) * time.Second
+			if base > 60*time.Second {
+				base = 60 * time.Second
+			}
+		}
+	}
+	return base + time.Duration(time.Now().UnixNano()%1000)*time.Millisecond
+}
+
+// productionParallelDeterministicError turns a 400 state conflict found while
+// committing a valid response into a stale result. Returning it as-is would make
+// the settle loop repeat the same failure silently on every recovery scan.
+func productionParallelDeterministicError(err error) error {
+	var appErr *kernel.AppError
+	if errors.As(err, &appErr) && appErr.Status == 400 {
+		return productionParallelStaleResultError{message: cloudAgentSafeToolError(err)}
+	}
+	return err
+}
+
+// productionParallelHoldFailure records a terminal item failure. Upstream and
+// network failures keep failing the run. Any other failure (for example a local
+// request timeout) is held for manual retry; otherwise the scheduler keeps
+// returning the same error, the run never leaves "running" and the recovery
+// scan re-enters it forever with nothing visible to the user.
+func productionParallelHoldFailure(state *cloudAgentRuntime, runID string, work *productionParallelWork) {
+	work.Error = work.Correction
+	if productionParallelExternalFailure(*work) {
+		return
+	}
+	work.TaskID, work.RetryAt = "", 0
+	work.QuietHold = true
+	if work.Notice == nil {
+		work.Notice = &model.TaskExecutionDiagnostic{Severity: "warning", ErrorSource: "application", Outcome: "needs_revision", Phase: "execution", SafeMessage: work.Correction}
+	}
+	state.event(runID, "production_control", map[string]any{
+		"action": "needs_revision", "text": work.Correction, "severity": firstNonEmpty(work.Notice.Severity, "warning"),
+		"errorSource": firstNonEmpty(work.Notice.ErrorSource, "application"), "phase": firstNonEmpty(work.Notice.Phase, "execution"), "outcome": "needs_revision",
 	})
 }

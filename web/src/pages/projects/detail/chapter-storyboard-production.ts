@@ -169,6 +169,10 @@ function joinStoryboardAction(row: StoryboardRow) {
     return [
         labeledText("叙事意图", row.narrativeIntent),
         labeledText("表演调度", row.performanceBlocking),
+        labeledText("镜头焦段", row.lens || ""),
+        labeledText("入镜转场", row.transitionIn || ""),
+        labeledText("出镜转场", row.transitionOut || ""),
+        labeledText("剪辑点", row.cutPoint || ""),
         labeledText("时间节拍", row.timeBeats),
         labeledText("情绪", row.emotion),
         labeledText("光线与氛围", row.lightingAndAtmosphere),

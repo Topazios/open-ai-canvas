@@ -21,12 +21,13 @@ import { outlineAssetNarrative, outlineDirectionContext } from "./workflow-outli
 import { bodySourceRecords } from "./workflow-body-context";
 import { resetGenerationTaskMetadata } from "./canvas-task-state";
 import { bodyWritingPrompt, bodyWritingSpec } from "./workflow-body-writing";
-import { auditContextNodes, auditSources, selectedAuditBodies, screenplayAuditPrompt, screenplayAuditState, screenplayRepairPrompt, screenplayAuditOutput, screenplayBodySignature } from "./workflow-screenplay-audit";
+import { auditContextNodes, auditSources, latestBodyAudit, selectedAuditBodies, screenplayAuditPrompt, screenplayAuditState, screenplayRepairPrompt, screenplayAuditOutput, screenplayBodySignature } from "./workflow-screenplay-audit";
 import { placeWorkflowFootprint } from "./canvas-workflow-placement";
 import { groupGridMetrics, layoutCanvasGridGroups } from "./canvas-group-grid";
 import { EPISODE_STORYBOARD_SIZE } from "./workflow-episode-storyboard";
 import { assetAppliesToEpisode, assetProfileOutputInstruction, assetReferenceState, assetMediaSignature, assetContentSignature, assetContextProfile } from "./canvas-workflow-asset-profile";
 import { assetVariantMaterial } from "../production-continuity";
+import { isPlanPlaceholder } from "./plan-placeholder";
 
 const previousAssetRequirements: Partial<Record<ShortDramaStepId, ShortDramaStepId[]>> = {
     "assets.style": ["story.body"], "assets.characters": ["assets.extract", "assets.style"],
@@ -126,6 +127,8 @@ export function restoreWorkflowSourceConnections(nodes: CanvasNodeData[], connec
         for (const sourceId of data.sourceNodeIds) {
             const source = byId.get(sourceId);
             if (!source || source.id === target.id || nodeWorkflow(source)?.pipelineId !== data.pipelineId) continue;
+            // A member whose source is its own container needs no edge; both ends collapse to the container.
+            if (endpoint(sourceId) === endpoint(target.id)) continue;
             const hasEdge = [...connections, ...additions].some((edge) =>
                 endpoint(edge.fromNodeId) === endpoint(sourceId) && endpoint(edge.toNodeId) === endpoint(target.id));
             if (!hasEdge) additions.push({ id: nanoid(), fromNodeId: sourceId, toNodeId: target.id });
@@ -229,6 +232,15 @@ function validateWorkflowReferences(signatures: Record<string, string> | undefin
     }
 }
 
+// A current (not stale) audit that rejects the body for storyboard use keeps
+// downstream extraction and generation closed until a repaired version exists.
+function bodyAuditRejected(body: CanvasNodeData, nodes: CanvasNodeData[]) {
+    const reportNode = latestBodyAudit(body, nodes);
+    if (!reportNode) return false;
+    const state = screenplayAuditState(reportNode, nodes);
+    return !state.stale && state.report?.usability === "不通过";
+}
+
 export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], pipelineId: string, connections?: CanvasConnection[]) {
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const endpoint = (id: string) => {
@@ -258,11 +270,11 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
             parentData.role === "collection" && parentData.pipelineId === pipelineId && parentData.step === data.step && parentData.sourceNodeIds.includes(id);
         if (collection && data.step === ShortDramaStep.Plan && data.assetGroup && !data.planGroup) {
             const manifest = byId.get(data.assetGroup.manifestId);
-            if (data.planVersion === 5 && data.planReady !== true) throw new Error("请等待后台自动完成故事总纲、资产总表和制作规范");
+            if (data.planVersion === 5 && data.planReady !== true) throw new Error("请先等待故事总纲与世界观生成完成");
             if (manifest?.metadata?.status !== "success" || !nodeWorkflow(manifest)?.materializedTaskId || nodeWorkflow(manifest)?.assetOutput) throw new Error("请先完成制作方案的故事总纲与完整资产清单");
             if ((data.planVersion ?? 0) >= 2 && productionPlanSections.some((section) => !data.sourceNodeIds.some((memberId) => {
                 const member = byId.get(memberId);
-                return member?.parentId === id && nodeWorkflow(member)?.planSection === section.key && Boolean(member.metadata?.content?.trim());
+                return (member?.parentId === id || (section.key === "story" && !member?.parentId)) && nodeWorkflow(member)?.planSection === section.key && Boolean(member?.metadata?.content?.trim()) && !isPlanPlaceholder(member);
             }))) throw new Error("请先补齐项目制作方案的四份共用规范");
         }
         if (taskAnchor && parentData.sourceNodeIds.some((memberId) => memberId !== id)) {
@@ -273,7 +285,10 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
             byId.get(data.assetGroup.manifestId)?.parentId !== id || nodeWorkflow(byId.get(data.assetGroup.manifestId))?.assetKey !== "$summary")) throw new Error("容器任务记录已移出、删除或无效，请检查来源");
         if (data.step === ShortDramaStep.Bible && collection && !productionBibleHasSections(node, nodes)) throw new Error("请先完成统一制作规范中的全部分类文稿");
         if (taskAnchor && (node.metadata?.status !== "success" || !data.materializedTaskId)) throw new Error(`请先完成${shortDramaStep(data.step)?.label || node.title}，当前组尚无可用资产`);
-        if (!collection && (data.assetOutput || !(node.metadata?.content?.trim() || (data.mediaKind && node.metadata?.storageKey)) || node.metadata?.status === "loading" || node.metadata?.status === "error")) throw new Error(`请先完成${shortDramaStep(data.step)?.label || node.title}`);
+        // 诊断报告解析失败时，正文与诊断共用的节点会进入 error，但正文本身完整可用，仍可作为下游来源。
+        const diagnosticBodyError = data.step === ShortDramaStep.Body && data.role === "document" && Boolean(data.screenplayAudit || data.screenplayRepair) && node.metadata?.status === "error" && Boolean(node.metadata?.content?.trim());
+        if (!collection && (isPlanPlaceholder(node) || data.assetOutput || !(node.metadata?.content?.trim() || (data.mediaKind && node.metadata?.storageKey)) || node.metadata?.status === "loading" || (node.metadata?.status === "error" && !diagnosticBodyError))) throw new Error(`请先完成${shortDramaStep(data.step)?.label || node.title}`);
+        if (!collection && data.step === ShortDramaStep.Body && data.role === "document" && bodyAuditRejected(node, nodes)) throw new Error(`第${data.episodeNumber ?? ""}集正文审读未通过，请先修复并重新审核`);
         const branchKey = collection ? `collection:${id}` : data.mediaKind ? `media:${id}` : `${data.step}:${data.assetKey || data.episodeNumber || "all"}`;
         if (branch.has(branchKey) && branch.get(branchKey)!.id !== id) throw new Error(`前置材料引用了不同版本的${shortDramaStep(data.step)?.label}，请统一来源分支`);
         branch.set(branchKey, node); visiting.add(id);
@@ -314,7 +329,9 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
             const member = byId.get(sourceId); const source = nodeWorkflow(member);
             const allowed = data.assetGroup?.kind === "bible" ? [ShortDramaStep.Bible, ShortDramaStep.Style, ShortDramaStep.Settings].includes(source?.step as ShortDramaStep) : source?.step === data.step;
             const typed = data.mediaGroup ? source?.mediaKind === data.mediaKind && member?.type === (data.mediaKind === "audio" ? CanvasNodeType.Audio : CanvasNodeType.Image) && source?.mediaSubjectId : data.assetGroup || data.assetRevisionGroup ? source?.assetKey : source?.episodeNumber;
-            return member?.parentId !== node.id || !typed || !allowed || source?.role === "collection";
+            // The standalone outline of a plan sits outside its container but stays a member.
+            const standaloneOutline = Boolean(data.assetGroup) && !data.planGroup && data.step === ShortDramaStep.Plan && !member?.parentId && source?.planSection === "story";
+            return (member?.parentId !== node.id && !standaloneOutline) || !typed || !allowed || source?.role === "collection";
         }))) throw new Error("容器成员已移出、删除或无效，请检查来源并重新整理");
         if (!node.metadata?.shortDrama && node.metadata?.storyDevelopment) {
             const state = storySourceState(node.metadata.storyDevelopment, nodes);
@@ -637,11 +654,11 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
             return source.role === "collection" ? source.sourceNodeIds : [id];
         });
         const contextSources = (step.stage === "story" ? sources : sources.filter((node) => (inputIds.includes(node.id) || nodeWorkflow(node)?.step === ShortDramaStep.Plan) && assetAppliesToEpisode(node, episodeNumber)))
-            .filter((node) => nodeWorkflow(node)?.role !== "collection" && nodeWorkflow(node)?.assetKey !== "$summary")
+            .filter((node) => nodeWorkflow(node)?.role !== "collection" && nodeWorkflow(node)?.assetKey !== "$summary" && !isPlanPlaceholder(node))
             .filter((node) => {
                 if (step.id !== ShortDramaStep.Episodes) return true;
                 const source = nodeWorkflow(node)!;
-                if (source.step === ShortDramaStep.Topic && sources.some((item) => nodeWorkflow(item)?.planSection === "story" && item.metadata?.content?.trim())) return false;
+                if (source.step === ShortDramaStep.Topic && sources.some((item) => nodeWorkflow(item)?.planSection === "story" && item.metadata?.content?.trim() && !isPlanPlaceholder(item))) return false;
                 return (source.step === ShortDramaStep.Plan || source.step === ShortDramaStep.Topic) && !source.mediaKind && !["visual", "generation", "inventory"].includes(source.planSection || "");
             });
         const references = contextSources.flatMap((node) => assetContextProfile(node, episodeNumber)?.references || []);
@@ -687,7 +704,7 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
         else data.textBatch = isBody ? undefined : step.id === ShortDramaStep.Episodes ? workflowOutlineBatch(sourceRecords, brief.episodeCount) : (step.stage === "assets" ? sharedWorkflowTextBatch(sourceRecords, request.pipelineId, step.id.slice(7)) : undefined) || workflowTextBatch(sourceRecords, instructions.length);
         if (isBody) data.bodyContextVersion = 1;
         // Production agents receive the catalog in their server-owned system policy.
-        const prompt = productionAgent ? `使用制作领域工具完成${step.label}。\n${requirement}\n制作参数：${JSON.stringify(brief)}\n补充要求：${request.instruction || "遵循已有设定，事实与设计建议分开"}\n${step.id === ShortDramaStep.Plan ? "本步骤由后端后台任务持续完成整套制作方案：先依据本次绑定的已采用选题生成并保存故事总纲；然后自动登记资产总表，并继续生成全部制作规范，直至完整性校验通过或出现明确错误。不得在故事总纲保存后结束，也不要读取或引用其他方案版本、旧资产、历史任务结果或历史节点。资产档案仍由用户之后单独启动。" : step.id === ShortDramaStep.Shots ? "先读取持久检查点，规划本集场次和完整镜头清单，确定总数、编号和合法时长并铺好列表占位；按系统全局Agent并发策略以集为单位并发，同一集连续批量补全1至8镜的完整分镜信息与资产编码，承接前镜实际结果，有前置依赖的等待前置完成。不创建逐镜并发任务；每批保存检查点，保留全部对白与行动，最后直接对照本集正文和完整分镜校验剧情、时长与连续性。" : "先查询持久进度，读取制作方案和材料，沿用已有设定，保存共享事实，再逐项提交资产，最后检查覆盖。"}` : data.textBatch || isBody ? instructions : `${instructions}\n\n关联来源：${JSON.stringify(sourceRecords)}`;
+        const prompt = productionAgent ? `使用制作领域工具完成${step.label}。\n${requirement}\n制作参数：${JSON.stringify(brief)}\n补充要求：${request.instruction || "遵循已有设定，事实与设计建议分开"}\n${step.id === ShortDramaStep.Plan ? "本步骤只依据本次绑定的已采用选题生成并保存故事总纲与世界观，保存后即结束。资产总表和其余制作规范由用户之后在总纲下级单独启动，本次不要生成。不要读取或引用其他方案版本、旧资产、历史任务结果或历史节点。" : step.id === ShortDramaStep.Shots ? "先读取持久检查点，规划本集场次和完整镜头清单，确定总数、编号和合法时长并铺好列表占位；按系统全局Agent并发策略以集为单位并发，同一集连续批量补全1至8镜的完整分镜信息与资产编码，承接前镜实际结果，有前置依赖的等待前置完成。不创建逐镜并发任务；每批保存检查点，保留全部对白与行动，最后直接对照本集正文和完整分镜校验剧情、时长与连续性。" : "先查询持久进度，读取制作方案和材料，沿用已有设定，保存共享事实，再逐项提交资产，最后检查覆盖。"}` : data.textBatch || isBody ? instructions : `${instructions}\n\n关联来源：${JSON.stringify(sourceRecords)}`;
         const outputType = step.id === ShortDramaStep.Shots ? CanvasNodeType.Script : CanvasNodeType.Text;
         const node = createCanvasNode(outputType, { x, y: y + index * 344 }, {
             shortDrama: data, workflowTitle: step.label, content: "", status: "idle", generationMode: capability, model: request.model, reasoningEffort: normalizeReasoningEffort(request.reasoningEffort),
@@ -706,10 +723,10 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
         const manifest = created[0];
         const frame = createCanvasNode(CanvasNodeType.Frame, manifest.position, {});
         frame.position = { ...manifest.position };
-        frame.width = 448; frame.height = 404;
+        frame.width = step.id === ShortDramaStep.Plan ? 1296 : 448; frame.height = 404;
         frame.position = placeWorkflowFootprint(nodes, frame, frame.position, anchor);
         frame.title = manifest.title;
-        frame.metadata = { frame: { collapsed: false, expandedWidth: 448, expandedHeight: 404 }, shortDrama: {
+        frame.metadata = { frame: { collapsed: false, expandedWidth: frame.width, expandedHeight: 404 }, shortDrama: {
             ...(step.id === ShortDramaStep.Plan ? { planVersion: 5 as const, planReady: false } : {}),
             stage: step.stage, step: step.id, pipelineId: request.pipelineId, role: "collection",
             sourceNodeIds: [manifest.id], sourceSignatures: {}, collectionSourceIds: [...request.sourceNodeIds],
@@ -718,7 +735,8 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
         manifest.parentId = frame.id;
         manifest.position = { x: frame.position.x + 24, y: frame.position.y + 100 };
         manifest.title = `${step.label} · ${step.id === ShortDramaStep.Plan ? "制作进度" : "提取记录"}`;
-        return { ...result, nodes: [...result.nodes, frame], connections: step.id === ShortDramaStep.Plan ? result.connections.map((edge) => edge.toNodeId === manifest.id ? { ...edge, toNodeId: frame.id } : edge) : result.connections };
+        return { ...result, nodes: [...result.nodes, frame], // v5 Plan: sources are recorded in collectionSourceIds only; the backend links topic -> outline -> container.
+        connections: step.id === ShortDramaStep.Plan ? result.connections.filter((edge) => edge.toNodeId !== manifest.id) : result.connections };
     }
     if ((isBody || step.id === ShortDramaStep.Shots) && group) {
         const grouped = groupWorkflowDocuments(result.nodes, result.connections, created.map((node) => node.id));

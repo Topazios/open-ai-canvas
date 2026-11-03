@@ -236,6 +236,24 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 				}
 			}
 		}
+		// 只有保存后确实不存在的节点才算已删除；保存前已知但仍在的节点不能当作删除回执。
+		if len(knownIDs) > 0 {
+			var savedIDs []string
+			readOK := false
+			if saved, readErr := s.repo.CanvasProjectForUser(userID, result.ID); readErr == nil {
+				if doc, decodeErr := creationDocument(saved.PayloadJSON); decodeErr == nil {
+					readOK = true
+					for _, node := range creationMaps(doc["nodes"]) {
+						savedIDs = append(savedIDs, stringValue(node["id"]))
+					}
+				}
+			}
+			if readOK {
+				knownIDs = canvasRemovedNodeIDs(knownIDs, savedIDs)
+			} else {
+				knownIDs = nil
+			}
+		}
 		if cleanupErr := s.ReconcileCanvasNodeTasks(context.Background(), userID, result.ID, knownIDs...); cleanupErr != nil {
 			log.Printf("[canvas] node task cleanup pending: %v", cleanupErr)
 		}
@@ -243,6 +261,20 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 	return result, err
 }
 
+// canvasRemovedNodeIDs 返回保存前存在、保存后已不在画布上的节点 ID。
+func canvasRemovedNodeIDs(before, after []string) []string {
+	present := make(map[string]bool, len(after))
+	for _, id := range after {
+		present[id] = true
+	}
+	var removed []string
+	for _, id := range before {
+		if id != "" && !present[id] {
+			removed = append(removed, id)
+		}
+	}
+	return removed
+}
 func (s *Service) RepairUserCanvasProject(userID string, raw json.RawMessage) (UserDataSummary, error) {
 	return s.canvasDomain().RepairUserCanvasProject(userID, raw)
 }

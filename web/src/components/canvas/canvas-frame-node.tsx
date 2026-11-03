@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { Boxes, Check, ChevronDown, ChevronRight, CircleAlert, Info, LoaderCircle, RefreshCw, TriangleAlert, Video } from "lucide-react";
+import { Boxes, Check, ChevronDown, ChevronRight, CircleAlert, Info, LoaderCircle, RefreshCw, ShieldCheck, TriangleAlert, Video } from "lucide-react";
 
 import { CometCard } from "@/components/ui/aceternity/comet-card";
 import { CanvasFolderPreview } from "@/components/canvas/canvas-folder-preview";
@@ -9,14 +9,17 @@ import { CachedResourceImage } from "@/components/cached-resource-image";
 import { FRAME_HEADER_HEIGHT, FRAME_PADDING, isCanvasFolderNode } from "@/lib/canvas/canvas-frame";
 import type { CanvasNodeRenderLOD } from "@/lib/canvas/canvas-node-lod";
 import { recordCanvasRender } from "@/lib/canvas/canvas-performance-diagnostics";
+import { isPlanPlaceholder } from "@/lib/canvas/plan-placeholder";
 import { episodeProgress, episodeProgressLabel } from "@/lib/canvas/canvas-short-drama-workflow";
 import { productionAssetGroupState, productionTaskState, productionPlanAssetAction, productionPlanCanvasDocumentCount } from "@/lib/canvas/production-agent-state";
-import { CanvasNodeActionButton } from "./canvas-node-action-bar";
 import { groupStatusButtonsCompact } from "@/lib/canvas/canvas-node-header-metrics";
+import { ShortDramaStep } from "@/lib/short-drama-steps";
 import type { AgentRun } from "@/services/api/agent";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { CanvasNodeType, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type Position } from "@/types/canvas";
+
+const EMPTY_DETACHED_NODES: CanvasNodeData[] = [];
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
@@ -25,6 +28,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     renderLOD = "full",
     dragOffset,
     childNodes,
+    detachedNodes = EMPTY_DETACHED_NODES,
     taskAnchor,
     productionRun,
     scale,
@@ -40,6 +44,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     onContextMenu,
     onOpenTaskDetails,
     onRetryFailed,
+    onAutoReview,
     onGeneratePlanAssets,
     planAssetsBusy = false,
     readOnly = false,
@@ -49,6 +54,8 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     data: CanvasNodeData;
     dragOffset?: Position;
     childNodes: CanvasNodeData[];
+    /** Members listed in sourceNodeIds that sit outside the container, such as the plan outline. */
+    detachedNodes?: CanvasNodeData[];
     taskAnchor?: CanvasNodeData;
     productionRun?: AgentRun;
     renderLOD?: CanvasNodeRenderLOD;
@@ -65,6 +72,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     onContextMenu: (event: ReactMouseEvent, nodeId: string) => void;
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
     onRetryFailed?: (frame: CanvasNodeData, failedNodes: CanvasNodeData[]) => void;
+    onAutoReview?: (frame: CanvasNodeData, bodyNodes: CanvasNodeData[]) => void;
     onGeneratePlanAssets?: (targetNodeId: string) => void;
     planAssetsBusy?: boolean;
     readOnly?: boolean;
@@ -198,8 +206,9 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     const mediaFailed = mediaMembers.filter((node) => node.metadata?.status === "error").length;
     const assetManifest = collection?.assetGroup ? taskAnchor || childNodes.find((node) => node.id === collection.assetGroup!.manifestId) : undefined;
     const planRoot = collection?.step === "story.plan" && !collection.planGroup;
-    const assetCount = collection?.assetGroup ? planRoot ? productionPlanCanvasDocumentCount(data, childNodes)
-        : childNodes.filter((node) => collection.sourceNodeIds.includes(node.id) && node.id !== collection.assetGroup!.manifestId).length : 0;
+    const assetCount = collection?.assetGroup ? planRoot ? productionPlanCanvasDocumentCount(data, childNodes, detachedNodes)
+        : childNodes.filter((node) => collection.sourceNodeIds.includes(node.id) && node.id !== collection.assetGroup!.manifestId && !isPlanPlaceholder(node)).length : 0;
+    const hasStoryLead = planRoot && [...childNodes, ...detachedNodes].some((node) => node.metadata?.shortDrama?.planSection === "story" && node.metadata.shortDrama.role === "document" && !isPlanPlaceholder(node));
     const assetManifestData = assetManifest?.metadata?.shortDrama;
     const planAssetAction = productionPlanAssetAction(data, productionRun);
     const expectedAssetCount = collection?.assetGroup?.kind === "bible" ? collection.assetGroup.sections?.length || 2 : undefined;
@@ -220,11 +229,26 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
         : "");
     const failedNodes = useMemo(() => {
         if (readOnly || folder || !onRetryFailed) return [];
-        const scope = collection ? childNodes.filter((node) => collection.sourceNodeIds.includes(node.id)) : childNodes;
+        const scope = collection ? [...childNodes, ...detachedNodes].filter((node) => collection.sourceNodeIds.includes(node.id)) : childNodes;
         const manifestId = collection?.assetGroup?.manifestId;
         return scope.filter((node) => node.id !== manifestId && node.metadata?.status === "error");
-    }, [childNodes, collection, folder, onRetryFailed, readOnly]);
+    }, [childNodes, collection, detachedNodes, folder, onRetryFailed, readOnly]);
+    const autoReviewNodes = useMemo(() => {
+        if (readOnly || folder || !onAutoReview || collection?.step !== ShortDramaStep.Body) return [];
+        if (collection.assetGroup || collection.mediaGroup || collection.assetRevisionGroup) return [];
+        return childNodes.filter((node) => {
+            if (!collection.sourceNodeIds.includes(node.id)) return false;
+            const workflow = node.metadata?.shortDrama;
+            const reviewing = workflow?.autoReview?.status === "auditing" || workflow?.autoReview?.status === "repairing";
+            return workflow?.role === "document" && Boolean(node.metadata?.content?.trim()) && node.metadata?.status !== "loading" && !reviewing;
+        });
+    }, [childNodes, collection, folder, onAutoReview, readOnly]);
     const compactButtons = groupStatusButtonsCompact(data.width * scale);
+    const autoReviewButton = onAutoReview && autoReviewNodes.length > 0 ? <button type="button" aria-label={`一键自动诊断修复 ${autoReviewNodes.length} 集`} title="一键自动诊断修复：多轮诊断、修复、复检，仍有问题则带警告结束"
+        className="pointer-events-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
+        style={{ color: theme.node.text, outlineColor: theme.frame.activeStroke }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onAutoReview(data, autoReviewNodes); }}>
+        <ShieldCheck className="size-3.5" aria-hidden="true" /><span className={compactButtons ? "sr-only" : undefined}>自动诊断修复 {autoReviewNodes.length}</span>
+    </button> : null;
     const retryFailedButton = onRetryFailed && failedNodes.length > 0 ? <button type="button" aria-label={`一键重试 ${failedNodes.length} 个失败任务`} title="一键重试失败任务"
         className="pointer-events-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
         style={{ color: theme.node.text, outlineColor: theme.frame.activeStroke }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onRetryFailed(data, failedNodes); }}>
@@ -234,6 +258,11 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
         className="pointer-events-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-black/10 dark:hover:bg-white/10"
         style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenTaskDetails(data); }}>
         <Info className="size-3.5" aria-hidden="true" /><span className={compactButtons ? "sr-only" : undefined}>详情</span>
+    </button> : null;
+    const planGenerateButton = planRoot && !collapsed && !readOnly && planAssetAction && onGeneratePlanAssets ? <button type="button" aria-label="生成资产" title={planAssetAction.reason || "生成资产"} disabled={!planAssetAction.ready || planAssetsBusy}
+        className="pointer-events-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-medium transition-colors hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/10"
+        style={{ color: theme.node.text, outlineColor: theme.frame.activeStroke }} data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (planAssetAction.targetNodeId) onGeneratePlanAssets(planAssetAction.targetNodeId); }}>
+        {planAssetsBusy ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" /> : <Boxes className="size-3.5" aria-hidden="true" />}<span className={compactButtons ? "sr-only" : undefined}>生成资产</span>
     </button> : null;
 
     return (
@@ -340,15 +369,15 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                         </button>
                     )}
                     <span className="ml-auto shrink-0 pr-1 text-[var(--fs-label)] tabular-nums" style={{ color: theme.node.muted }}>
-                        {collection?.assetRevisionGroup ? `${mediaMembers.length} 项资产` : collection?.mediaGroup ? `${mediaMembers.length} 张图片` : collection?.assetGroup?.kind === "bible" ? `${assetCount}/${collection.assetGroup.sections?.length || 2} 项规范` : collection?.assetGroup ? `${assetCount} ${collection.step === "story.plan" && !collection.planGroup ? "份方案文稿" : "项资产"}` : collection && !collapsed ? `${collection.parameters?.episodeCount || childNodes.length} 集 · ${collection.parameters?.minutesPerEpisode || "待定"} 分钟/集` : childNodes.length}
+                        {collection?.assetRevisionGroup ? `${mediaMembers.length} 项资产` : collection?.mediaGroup ? `${mediaMembers.length} 张图片` : collection?.assetGroup?.kind === "bible" ? `${assetCount}/${collection.assetGroup.sections?.length || 2} 项规范` : collection?.assetGroup ? `${planRoot ? hasStoryLead ? `总纲 + ${Math.max(0, assetCount - 1)} 份规范` : `${assetCount} 份方案文稿` : `${assetCount} 项资产`}` : collection && !collapsed ? `${collection.parameters?.episodeCount || childNodes.length} 集 · ${collection.parameters?.minutesPerEpisode || "待定"} 分钟/集` : childNodes.length}
                     </span>
                 </div>
 
                 {collection?.assetGroup ? <div aria-label="资产分组状态" className="pointer-events-auto absolute inset-x-3 flex min-w-0 items-center gap-1.5 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
                     {assetTaskWarning ? <TriangleAlert className="size-3.5 shrink-0" style={{ color: "var(--status-warning)" }} aria-label="内容待处理" /> : assetTaskFailed ? <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" /> : assetTaskComplete ? <Check className="size-3.5 shrink-0" aria-hidden="true" /> : assetTaskActive ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" aria-hidden="true" /> : null}
                     <span className="min-w-0 flex-1 truncate" style={assetTaskWarning ? { color: "var(--status-warning)" } : undefined} title={(assetTaskWarning ? assetManifest?.metadata?.generationWarning?.message : undefined) || assetManifest?.metadata?.errorDetails || assetTaskLabel}>{assetTaskLabel}</span>
-                    {!planRoot ? retryFailedButton : null}
-                    {!planRoot && assetManifest && onOpenTaskDetails && (assetTaskActive || assetTaskFailed || Boolean(assetManifestData?.productionAgent) || assetTaskComplete) ? <button
+                    {planGenerateButton}{retryFailedButton}
+                    {onOpenTaskDetails && (planRoot || (assetManifest && (assetTaskActive || assetTaskFailed || Boolean(assetManifestData?.productionAgent) || assetTaskComplete))) ? <button
                         type="button"
                         className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[var(--fs-label)] transition-colors hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
                         style={{ color: theme.node.text, outlineColor: theme.frame.activeStroke }}
@@ -367,6 +396,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                 </div> : collection && progress ? <div aria-label="分集容器进度" className="pointer-events-none absolute inset-x-3 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
                     {collapsed ? <div className="basis-full">共 {progress.total} 集 · 每集 {collection.parameters?.minutesPerEpisode || "待定"} 分钟</div> : null}
                     <span className="min-w-0">{episodeProgressLabel(progress)}</span>
+                    {autoReviewButton}
                     {retryFailedButton}
                     {collectionDetails}
                 </div> : <>
@@ -376,11 +406,6 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                         {retryFailedButton}
                     </div> : null}
                 </>}
-                    {planRoot && !collapsed && !readOnly ? <div className="pointer-events-auto absolute inset-x-3 bottom-2 flex items-center gap-1" data-canvas-no-zoom aria-label="制作方案操作">
-                        {planAssetAction && onGeneratePlanAssets ? <span title={planAssetAction.reason}><CanvasNodeActionButton theme={theme} label="生成资产" icon={planAssetsBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : <Boxes className="size-3.5" />} primary disabled={!planAssetAction.ready || planAssetsBusy} onClick={() => { if (planAssetAction.targetNodeId) onGeneratePlanAssets(planAssetAction.targetNodeId); }} /></span> : null}
-                        {onOpenTaskDetails ? <CanvasNodeActionButton theme={theme} label="详情" icon={<Info className="size-3.5" />} onClick={() => onOpenTaskDetails(data)} /> : null}
-                        {onRetryFailed && failedNodes.length > 0 ? <CanvasNodeActionButton theme={theme} label={`重试失败 ${failedNodes.length}`} icon={<RefreshCw className="size-3.5" />} onClick={() => onRetryFailed(data, failedNodes)} /> : null}
-                    </div> : null}
                     </>
                 )}
             </CometCard>

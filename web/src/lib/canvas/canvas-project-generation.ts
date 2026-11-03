@@ -20,6 +20,7 @@ import { CanvasNodeType, type CanvasAssistantSession, type CanvasConnection, typ
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { generationSpecMetadata, readNodeGenerationSpec, resolveGenerationSelection } from "@/lib/canvas/generation-contract";
+import { generationFailureMetadata } from "@/lib/generation-error";
 
 export async function runBackendCanvasGenerationTask(
     {
@@ -177,6 +178,60 @@ export function generationTaskMetadata(task: GenerationTask): CanvasNodeMetadata
 }
 
 export { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-task-state";
+
+// 心跳只会刷新任务的 updatedAt。这些字段都没变化时不应改写节点，
+// 否则每次心跳都会让画布变脏并推高云端 revision。
+const TASK_BINDING_STABLE_KEYS = [
+    "taskStatus",
+    "taskProgress",
+    "taskStage",
+    "taskMediaStage",
+    "taskCanRecoverMedia",
+    "taskProvider",
+    "taskStartedAt",
+    "taskCompletedAt",
+    "taskErrorCode",
+    "taskOfficialStatus",
+    "taskReceiptRecorded",
+    "taskClientOperationId",
+    "retryOf",
+    "attemptGroupId",
+] as const satisfies readonly (keyof CanvasNodeMetadata)[];
+
+// 元数据对象(节点或分镜行内视频)是否只缺心跳带来的 taskUpdatedAt 变化。
+export function isTaskHeartbeatOnly(current: Partial<Record<string, unknown>> | undefined, task: GenerationTask): boolean {
+    if (!current || current.taskId !== task.id) return false;
+    if (task.status === "succeeded" || task.status === "failed" || task.status === "cancelled") return false;
+    const next = generationTaskMetadata(task) as Record<string, unknown>;
+    return TASK_BINDING_STABLE_KEYS.every((key) => current[key] === next[key]);
+}
+
+export function bindGenerationTaskToNode(node: CanvasNodeData, task: GenerationTask): CanvasNodeData {
+    const current = node.metadata;
+    if (current?.shortDrama?.materializedTaskId === task.id) return node;
+    const failed = task.status === "failed" || task.status === "cancelled";
+    const terminal = failed || task.status === "succeeded";
+    const hasCompletedContent = task.status === "succeeded" && Boolean(current?.content || current?.storageKey);
+    const status = failed ? "error" : hasCompletedContent ? "success" : "loading";
+    const failure = failed ? generationFailureMetadata(task.error || (task.status === "cancelled" ? "任务已取消" : "任务失败"), current?.composerContent || current?.prompt || task.prompt || "") : undefined;
+    const taskMetadata = generationTaskMetadata(task);
+    if (current?.taskId === task.id && current.status === status) {
+        const unchanged = TASK_BINDING_STABLE_KEYS.every((key) => current[key] === taskMetadata[key]) && (!terminal || current.taskUpdatedAt === taskMetadata.taskUpdatedAt);
+        const failureUnchanged = failure
+            ? current.errorDetails === failure.errorDetails && current.generationErrorCode === failure.generationErrorCode && current.failedPromptFingerprint === failure.failedPromptFingerprint
+            : current.errorDetails === undefined && current.generationErrorCode === undefined && current.resourceReloadAvailable === undefined && current.failedPromptFingerprint === undefined;
+        if (unchanged && failureUnchanged) return node;
+    }
+    return {
+        ...node,
+        metadata: {
+            ...current,
+            ...taskMetadata,
+            status,
+            ...(failure || { errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined }),
+        },
+    };
+}
 
 function normalizeTaskProgress(progress: number | undefined, status: GenerationTask["status"]) {
     if (typeof progress === "number" && Number.isFinite(progress)) return Math.max(0, Math.min(100, Math.round(progress)));

@@ -292,7 +292,7 @@ func (e HTTPError) Error() string {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return "模型服务鉴权失败，请检查 API Key 和模型权限"
 	case http.StatusNotFound:
-		return "模型或模型接口不存在，请检查渠道配置"
+		return "上游返回 404：请求的接口路径或模型不存在，请核对渠道的接口类型、Base URL 和模型名"
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
 		return "模型服务响应超时，请稍后重试"
 	case http.StatusTooManyRequests:

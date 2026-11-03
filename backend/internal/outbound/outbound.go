@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,7 @@ type OutboundHeader struct {
 
 var (
 	outboundTransport          = newOutboundTransport(resolveOutboundHost)
+	outboundNoMuxTransport     = newOutboundTransportWithMux(resolveOutboundHost, false)
 	customRelayTransport       = newOutboundTransport(resolveCustomRelayHost)
 	blockedCustomRelayPrefixes = []netip.Prefix{
 		netip.MustParsePrefix("0.0.0.0/8"),
@@ -107,6 +109,15 @@ func OutboundHTTPClient(timeout time.Duration) *http.Client {
 			return err
 		},
 	}
+}
+
+// OutboundHTTPClientNoMux 每个并发请求使用独立的 HTTP/1.1 连接。
+// 单次请求耗时长、批量并发发往同一主机的场景(如同步生图)若共用一条 HTTP/2 连接,
+// 该连接一旦被网关或本机网络重置,所有在途请求会同时失败。
+func OutboundHTTPClientNoMux(timeout time.Duration) *http.Client {
+	client := OutboundHTTPClient(timeout)
+	client.Transport = outboundNoMuxTransport
+	return client
 }
 
 func CustomRelayHTTPClient(timeout time.Duration) *http.Client {
@@ -250,8 +261,16 @@ func blockedOutboundHeader(name string) bool {
 }
 
 func newOutboundTransport(resolveHost func(context.Context, string) ([]net.IP, error)) *http.Transport {
-	dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
-	return &http.Transport{
+	return newOutboundTransportWithMux(resolveHost, true)
+}
+
+func newOutboundTransportWithMux(resolveHost func(context.Context, string) ([]net.IP, error), http2Enabled bool) *http.Transport {
+	// 响应在中途被网关或本机网络丢弃时,尽早探测并关闭死连接,让调用方尽快拿到明确错误。
+	dialer := &net.Dialer{
+		Timeout: 15 * time.Second,
+		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: 30 * time.Second, Interval: 15 * time.Second, Count: 4},
+	}
+	transport := &http.Transport{
 		Proxy: outboundProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(address)
@@ -268,13 +287,20 @@ func newOutboundTransport(resolveHost func(context.Context, string) ([]net.IP, e
 			}
 			return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
 		},
-		ForceAttemptHTTP2:     true,
+		ForceAttemptHTTP2:     http2Enabled,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
+	if http2Enabled {
+		transport.HTTP2 = &http.HTTP2Config{SendPingTimeout: 30 * time.Second, PingTimeout: 15 * time.Second}
+	} else {
+		// 非 nil 的空 TLSNextProto 会禁用 HTTP/2 协商。
+		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	}
+	return transport
 }
 
 func outboundProxyFromEnvironment(req *http.Request) (*url.URL, error) {

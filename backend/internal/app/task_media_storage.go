@@ -275,7 +275,7 @@ func (s *Service) storeTaskMediaFile(task *model.Task, index int, path, mimeType
 // explicit recovery instead of silently changing the storage destination.
 func (s *Service) storeTaskMediaObject(resource *model.Resource, _ string, body io.Reader) (string, error) {
 	if resource.Provider == "local" {
-		return "", writeLocalResourceObject(filepath.Join(s.dataDir, "resources", filepath.FromSlash(resource.ObjectKey)), body)
+		return "", s.writeLocalResource(resource, body)
 	}
 	setting, err := s.ossSettingForResource(resource.UserID, resource)
 	if err != nil {

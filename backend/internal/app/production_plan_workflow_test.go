@@ -383,6 +383,9 @@ func TestProductionPlanChangingStoryInvalidatesDownstreamButKeepsNodes(t *testin
 	submitOrderedPlan(t, s, run.ID, "direction", "", "导演规范")
 	submitOrderedPlan(t, s, run.ID, "generation", "", "生成规范")
 	startPlanAssetsForTest(t, s, run.ID)
+	if _, err := s.ensureProductionPlanGroups("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
 	submitOrderedPlan(t, s, run.ID, "hero", "character", "林岚")
 	document := orderedPlanDocument("story", "")
 	document["ending"] = "本季救回家人，保留相机来历的开放悬念。"
@@ -463,6 +466,9 @@ func TestProductionPlanLargeCatalogUnicodeAndCommonTitleDoNotBlock(t *testing.T)
 	submitOrderedPlan(t, s, run.ID, "direction", "", "导演规范")
 	submitOrderedPlan(t, s, run.ID, "generation", "", "生成规范")
 	startPlanAssetsForTest(t, s, run.ID)
+	if _, err := s.ensureProductionPlanGroups("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
 	submitOrderedPlan(t, s, run.ID, "hero0", "character", "视觉与美术规范")
 	if len(mustPlanArtifacts(t, s, run.ID)) != 6 {
 		t.Fatal("asset/common title collision lost a node")
@@ -479,6 +485,9 @@ func TestProductionPlanCannotRemoveVariantStillReferencedByNewDocument(t *testin
 	submitOrderedPlan(t, s, run.ID, "direction", "", "导演")
 	submitOrderedPlan(t, s, run.ID, "generation", "", "生成规范")
 	startPlanAssetsForTest(t, s, run.ID)
+	if _, err := s.ensureProductionPlanGroups("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
 	arguments := map[string]any{"key": "hero", "name": "主角", "document": orderedPlanDocument("hero", "character"), "factIds": []string{}, "design": productionDesignFields{Variants: []productionDesignVariant{{Name: "兽化形态", Description: "变身为兽形"}}}}
 	first := productionCall(t, s, run.ID, "production_submit", arguments, false)
 	document := orderedPlanDocument("hero", "character")

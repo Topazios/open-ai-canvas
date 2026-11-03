@@ -4,7 +4,7 @@ import { apiClient } from "../src/services/api/request";
 import { canvasContentHash } from "../src/lib/canvas/canvas-content";
 import { rebaseCanvasProjects, parseCanvasStorageDocument, serializeCanvasStorageDocument } from "../src/lib/canvas/canvas-storage-revision";
 import { readCanvasSyncDrafts } from "../src/services/canvas-sync-drafts";
-import { applyAgentCanvasPatches, deleteCanvasProjectsWithRemoteSync, refreshCanvasAfterAgent, initializeRemoteUserDataSession, installRemoteUserDataAutoSync, loadCanvasProjectForEditing, resetRemoteUserDataSync, saveRemoteUserDataNow, syncRemoteUserData } from "../src/services/user-data-sync";
+import { applyAgentCanvasPatches, deleteCanvasProjectsWithRemoteSync, refreshCanvasAfterAgent, initializeRemoteUserDataSession, installRemoteUserDataAutoSync, loadCanvasProjectForEditing, resetRemoteUserDataSync, retryRemoteUserDataSync, saveRemoteUserDataNow, syncRemoteUserData } from "../src/services/user-data-sync";
 import { createAgentCanvasSync } from "../src/services/agent-canvas-sync";
 import { CANVAS_STORE_KEY, flushCanvasStorePersistence, pendingCanvasStorePersistence, useCanvasStore, type CanvasProject } from "../src/stores/canvas/use-canvas-store";
 import { flushAssetStorePersistence, useAssetStore } from "../src/stores/use-asset-store";
@@ -333,9 +333,11 @@ test("sync recovery preserves conflicts and never authorizes another account's d
     useCanvasStore.getState().renameProject("canvas", "local edit");
     remote.set("canvas", { ...remote.get("canvas")!, title: "remote edit", revision: 2 });
     resetRemoteUserDataSync();
-    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow();
-    expect(remote.get("canvas")!.title).toBe("remote edit");
+    await saveRemoteUserDataNow("canvas");
+    expect(remote.get("canvas")!.title).toBe("local edit");
     expect(useCanvasStore.getState().openProject("canvas")!.title).toBe("local edit");
+    expect((await readCanvasSyncDrafts("canvas")).length).toBeGreaterThan(0);
+    expect(useSyncProgressStore.getState().syncingProjects.canvas?.phase).not.toBe("conflict");
     resetRemoteUserDataSync();
     scope = "different-account";
     requests = [];
@@ -371,13 +373,10 @@ async function otherTabEdit(update: (project: CanvasProject) => CanvasProject) {
     return key;
 }
 
-test("same-field local conflicts preserve a draft, stop cloud upload and keep subsequent edits recoverable", async () => {
+test("same-field local conflicts preserve a draft, keep syncing and keep subsequent edits recoverable", async () => {
     const key = await otherTabEdit((project) => ({ ...project, title: "other tab" }));
     useCanvasStore.getState().renameProject("canvas", "this tab");
-    requests = [];
-    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow();
-    expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
-    expect(useSyncProgressStore.getState().syncingProjects.canvas).toMatchObject({ phase: "conflict", draftCount: 1 });
+    await flushCanvasStorePersistence();
     expect(parseCanvasStorageDocument(indexed.get(key)!).state.projects.find((project) => project.id === "canvas")!.title).toBe("other tab");
     expect((await readCanvasSyncDrafts("canvas"))[0].project.title).toBe("this tab");
     const current = useCanvasStore.getState().openProject("canvas")!;
@@ -390,6 +389,11 @@ test("same-field local conflicts preserve a draft, stop cloud upload and keep su
     expect(parseCanvasStorageDocument(indexed.get(key)!).state.projects.find((project) => project.id === "canvas")!.title).toBe("other tab");
     await useCanvasStore.persist.rehydrate();
     expect(useCanvasStore.getState().openProject("canvas")!.title).toBe("other tab");
+    expect(await readCanvasSyncDrafts("canvas")).toHaveLength(2);
+    // Cloud sync keeps running with the surviving tab content and never stops in a conflict phase.
+    requests = [];
+    await saveRemoteUserDataNow("canvas");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas?.phase).not.toBe("conflict");
     expect(await readCanvasSyncDrafts("canvas")).toHaveLength(2);
 });
 
@@ -450,6 +454,22 @@ test("ordinary local write failures remain retryable and cannot be reported as s
     expect(pendingCanvasStorePersistence(scope)).toBeNull();
 });
 
+test("manual retry clears a leftover save error when there is nothing left to upload", async () => {
+    await flushCanvasStorePersistence();
+    useSyncProgressStore.getState().setProjectProgress("canvas", { phase: "error", message: "云端保存失败" });
+    requests = [];
+    await retryRemoteUserDataSync("canvas");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
+});
+
+test("manual retry never turns a load failure into a saved state", async () => {
+    await flushCanvasStorePersistence();
+    useSyncProgressStore.getState().setProjectProgress("canvas", { phase: "error", kind: "load", message: "读取云端失败" });
+    await retryRemoteUserDataSync("canvas");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("error");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.kind).toBe("load");
+});
+
 test("edits during an explicit replacement remain pending and are saved against the loaded revision", async () => {
     await otherTabEdit((project) => ({ ...project, title: "other tab" }));
     useCanvasStore.getState().renameProject("canvas", "this tab");
@@ -504,8 +524,13 @@ test("successive local writes merge independent fields but cannot upload a stale
     expect(durable.nodes[0].title).toBe("other node title");
     expect(await readCanvasSyncDrafts("canvas")).toHaveLength(2);
     requests = [];
-    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow();
-    expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
+    await expect(saveRemoteUserDataNow("canvas")).resolves.toBeUndefined();
+    const puts = requests.filter((request) => request.method === "put");
+    expect(puts).toHaveLength(1);
+    expect(puts[0].project!.revision).toBe(1);
+    expect(remote.get("canvas")!.title).toBe("second local title");
+    expect(useSyncProgressStore.getState().syncingProjects["canvas"]?.phase).not.toBe("conflict");
+    expect((await readCanvasSyncDrafts("canvas")).length).toBeGreaterThan(0);
 });
 
 test("local conflict backup includes edits arriving while the first draft is being written", async () => {
@@ -660,26 +685,30 @@ test("a conflict preserves drafts, stops retries and does not block another canv
     useCanvasStore.getState().updateProject("canvas", { nodes: addNode(canvas(), "local-video").nodes });
     useCanvasStore.getState().renameProject("canvas", "local title");
     useCanvasStore.getState().renameProject("other", "other edit");
-    await expect(saveRemoteUserDataNow()).rejects.toThrow("版本冲突");
-    expect(remote.get("canvas")!.nodes.map((node) => node.id)).toEqual(["old-image", "remote-video"]);
+    const phase = () => useSyncProgressStore.getState().syncingProjects.canvas.phase;
+    const cloudNodes = () => remote.get("canvas")!.nodes.map((node) => node.id).sort();
+    await expect(saveRemoteUserDataNow()).resolves.toBeUndefined();
+    expect(cloudNodes()).toEqual(["local-video", "old-image", "remote-video"]);
+    expect(remote.get("canvas")!.title).toBe("local title");
     expect(remote.get("other")!.title).toBe("other edit");
-    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("conflict");
-    expect((await readCanvasSyncDrafts("canvas"))[0].project.nodes.at(-1)!.id).toBe("local-video");
+    expect(phase()).not.toBe("conflict");
+    expect((await readCanvasSyncDrafts("canvas")).length).toBeGreaterThan(0);
     useCanvasStore.getState().renameProject("canvas", "more local edits");
-    await expect(saveRemoteUserDataNow()).rejects.toThrow("云端画布已有更新");
+    await expect(saveRemoteUserDataNow()).resolves.toBeUndefined();
+    expect(remote.get("canvas")!.title).toBe("more local edits");
+    expect(cloudNodes()).toEqual(["local-video", "old-image", "remote-video"]);
     useCanvasStore.getState().renameProject("other", "still saves independently");
     await saveRemoteUserDataNow("other");
     expect(remote.get("other")!.title).toBe("still saves independently");
-    await expect(saveRemoteUserDataNow(["canvas", "other"])).rejects.toThrow("云端画布已有更新");
-    expect(requests.filter((request) => request.method === "put" && request.id === "canvas")).toHaveLength(1);
-    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow("云端画布已有更新");
+    await expect(saveRemoteUserDataNow(["canvas", "other"])).resolves.toBeUndefined();
+    expect(phase()).not.toBe("conflict");
     await loadCanvasProjectForEditing("canvas", { latest: true });
-    expect(useCanvasStore.getState().openProject("canvas")!.nodes.at(-1)!.id).toBe("remote-video");
-    expect((await readCanvasSyncDrafts("canvas")).some((draft) => draft.project.title === "more local edits")).toBe(true);
+    expect(useCanvasStore.getState().openProject("canvas")!.nodes.map((node) => node.id).sort()).toEqual(["local-video", "old-image", "remote-video"]);
+    expect((await readCanvasSyncDrafts("canvas")).some((draft) => draft.project.title === "local title")).toBe(true);
     resetRemoteUserDataSync();
     await useCanvasStore.persist.rehydrate();
     await syncRemoteUserData(scope);
-    expect(useSyncProgressStore.getState().syncingProjects.canvas.draftCount).toBe(2);
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.draftCount).toBeGreaterThan(0);
 });
 
 test("generation save rebases independent nodes and retries with the current revision", async () => {
@@ -718,12 +747,13 @@ test("generation save recovers after an in-flight global save fails on another c
     const saving = saveRemoteUserDataNow("canvas");
     release();
 
-    expect(await background).toBeInstanceOf(Error);
+    expect(await background).toBeUndefined();
     await saving;
 
     expect(remote.get("canvas")!.nodes.at(-1)!.id).toBe("generation-target");
     expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
-    expect(useSyncProgressStore.getState().syncingProjects.other.phase).toBe("conflict");
+    expect(useSyncProgressStore.getState().syncingProjects.other.phase).not.toBe("conflict");
+    expect(remote.get("other")!.title).toBe("unrelated local title");
     expect(requests.filter(request => request.method === "put" && request.id === "canvas")).toHaveLength(1);
 });
 
@@ -741,7 +771,7 @@ test("a joined generation save rechecks a recoverable conflict after the prior s
     const saving = saveRemoteUserDataNow("canvas").then(() => undefined, error => error);
     release();
 
-    expect((await background)?.message).toContain("云端画布已有更新");
+    expect(await background).toBeUndefined();
     expect(await saving).toBeUndefined();
 
     expect(remote.get("canvas")!.nodes.at(-1)!.id).toBe("generation-target");
@@ -819,9 +849,12 @@ test("a history entry with the wrong content hash cannot overwrite an offline dr
         return { config, status: 200, statusText: "", headers: {}, data: { code: 0, data } };
     };
     expect((await loadCanvasProjectForEditing("canvas")).title).toBe("offline title");
-    await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow("云端画布已有更新");
+    await expect(saveRemoteUserDataNow("canvas")).resolves.toBeUndefined();
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).not.toBe("conflict");
+    expect(remote.get("canvas")!.nodes.map((node) => node.id)).toEqual(["old-image", "agent-result"]);
+    expect(remote.get("canvas")!.title).toBe("offline title");
+    expect(requests.filter((request) => request.method === "put").map((request) => request.project!.revision)).toEqual([3]);
     expect((await readCanvasSyncDrafts("canvas"))[0].project.title).toBe("offline title");
-    expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
 });
 
 test("server progress on a node merges with a local drag and content edit", async () => {
@@ -853,7 +886,8 @@ test("continuous remote writes bound CAS retries and retain an unsaved draft", a
     };
     useCanvasStore.getState().renameProject("canvas", "must survive contention");
     await expect(saveRemoteUserDataNow("canvas")).rejects.toThrow();
-    expect(requests.filter((request) => request.method === "put")).toHaveLength(4);
+    // 1 次初始 PUT + 每次冲突合并后的重放(上限 MAX_CONFLICT_MERGES_PER_DRAIN = 12),必须有界。
+    expect(requests.filter((request) => request.method === "put")).toHaveLength(13);
     expect((await readCanvasSyncDrafts("canvas"))[0].project.title).toBe("must survive contention");
     beforePut = undefined;
     await saveRemoteUserDataNow("canvas");
@@ -1022,9 +1056,13 @@ test("edits arriving during draft backup prevent replacement of the live canvas"
 test("unknown revision cannot borrow the latest revision to submit stale content", async () => {
     const local = useCanvasStore.getState().openProject("canvas")!;
     useCanvasStore.setState((state) => ({ projects: state.projects.map((project) => (project.id === local.id ? { ...local, revision: undefined, title: "legacy draft" } : project)) }));
-    await expect(saveRemoteUserDataNow()).rejects.toThrow("缺少画布版本");
-    expect(requests.filter((request) => request.method === "put")).toHaveLength(0);
-    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("conflict");
+    remote.set("canvas", { ...addNode(canvas(), "remote-video"), revision: 2 });
+    await expect(saveRemoteUserDataNow()).resolves.toBeUndefined();
+    const puts = requests.filter((request) => request.method === "put");
+    expect(puts.map((request) => request.project!.revision)).toEqual([2]);
+    expect(remote.get("canvas")!.nodes.map((node) => node.id)).toEqual(["old-image", "remote-video"]);
+    expect(remote.get("canvas")!.title).toBe("legacy draft");
+    expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).not.toBe("conflict");
     expect((await readCanvasSyncDrafts("canvas"))[0].project.title).toBe("legacy draft");
 });
 

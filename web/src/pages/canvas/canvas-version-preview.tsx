@@ -9,6 +9,7 @@ import { ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasNodeActionContext } from "@/components/canvas/canvas-node-action-context";
 import { CanvasNodeGraphContext } from "@/components/canvas/canvas-node-graph-context";
 import { isFrameNode, isNodeHiddenByCollapsedFrame } from "@/lib/canvas/canvas-frame";
+import { productionPlanDetachedMembers } from "@/lib/canvas/production-agent-state";
 import { resolveCanvasDisplayConnections } from "@/lib/canvas/canvas-connection-spatial-index";
 import { getCanvasNodesBounds, viewportAtScale, viewportForBounds } from "@/lib/canvas/canvas-viewport";
 import { resolveCanvasAppearance } from "@/lib/canvas/canvas-appearance";
@@ -59,6 +60,7 @@ export function CanvasVersionPreview({ preview, onReturn, onShowVersions }: { pr
             }),
         [project, localMedia],
     );
+    const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
     const visibleNodes = useMemo(() => nodes.filter((node) => !isNodeHiddenByCollapsedFrame(node, nodes)), [nodes]);
     const connections = useMemo(
         () => resolveCanvasDisplayConnections(nodes, project?.connections || []),
@@ -142,6 +144,7 @@ export function CanvasVersionPreview({ preview, onReturn, onShowVersions }: { pr
                                             key={node.id}
                                             data={{ ...node, id: previewNodeId(node.id) }}
                                             childNodes={nodes.filter((child) => child.parentId === node.id)}
+                                            detachedNodes={productionPlanDetachedMembers(node, nodeById)}
                                             scale={viewport.k}
                                             isSelected={false}
                                             isDropTarget={false}

@@ -354,7 +354,7 @@ func (s *Service) storeResourceObject(resource *model.Resource, fileName string,
 		return "", errors.New("资源不存在")
 	}
 	if resource.Provider == "local" {
-		return "", writeLocalResourceObject(filepath.Join(s.dataDir, "resources", filepath.FromSlash(resource.ObjectKey)), body)
+		return "", s.writeLocalResource(resource, body)
 	}
 	setting, settingErr := s.ossSettingForResource(resource.UserID, resource)
 	if settingErr != nil {

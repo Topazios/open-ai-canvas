@@ -488,6 +488,7 @@ func TestStoryboardParallelFailedSlotResumeReusesSuccessfulRows(t *testing.T) {
 	productionRuntimeMutate(t, s, runID, func(state *cloudAgentRuntime) {
 		work := state.ProductionParallel[failed.Key]
 		work.TaskID, work.Error, work.Attempts, work.RetryAt = "", "", 0, 0
+		work.QuietHold, work.RepairUsed, work.Notice = false, false, nil
 		state.ProductionParallel[work.Key] = work
 	})
 	_, before := productionRuntimeState(t, s, runID)

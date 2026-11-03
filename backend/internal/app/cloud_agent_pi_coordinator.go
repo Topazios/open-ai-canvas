@@ -202,6 +202,28 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 						break
 					}
 				}
+				// 会话因活动模型任务失败而退出时，错误已被包装成纯文本，拿不到上游诊断。
+				// 活动任务已处于失败终态就说明这一步无法继续，必须落到失败状态，
+				// 否则恢复扫描会反复拉起会话，每次都等到同一个失败任务。
+				activeTaskFailed := false
+				if state.Request.Production != nil && state.ActiveTaskID != "" {
+					if task, taskErr := repo.TaskForUser(userID, state.ActiveTaskID); taskErr == nil && task.Status == model.TaskStatusFailed {
+						activeTaskFailed = true
+						if !cloudAgentRunTerminal(current.Status) && current.Status != "waiting_user" {
+							state.event(runID, "production_model_completed", productionModelCompletedPayload(task, state.Step, cloudAgentSafeMediaTaskError(task)))
+							for key, id := range state.ProductionModelReceipts {
+								if id == task.ID {
+									delete(state.ProductionModelReceipts, key)
+								}
+							}
+							state.ActiveTaskID = ""
+							state.ActiveTextDraft = ""
+						}
+					}
+				}
+				if activeTaskFailed {
+					externalFailure = true
+				}
 				if externalFailure && !cloudAgentRunTerminal(current.Status) && current.Status != "waiting_user" {
 					current.Status, current.FailureMessage = "failed", cause.Error()
 					payload := map[string]any{"error": cause.Error()}
@@ -290,6 +312,13 @@ func (s *Service) recoverCloudAgentPiRunners() {
 			cursor = run.ID
 			// 跳过等待状态
 			if run.Status == "waiting_approval" || run.Status == "waiting_user" {
+				// 等待中的旧运行不会再进入调度，这里补齐计划文稿占位节点。
+				if _, err := s.ensureProductionPlanDocumentPlaceholders(run.UserID, run.ID); err != nil {
+					log.Printf("[Agent] placeholder backfill failed run=%s: %v", run.ID, err)
+				}
+				if run.Status == "waiting_user" && s.resumeQuietHeldProduction(run.UserID, run.ID) {
+					s.startCloudAgentPi(run.UserID, run.ID)
+				}
 				continue
 			}
 			// 批准后的媒体任务仍在生成。进程重启后内存 waiter 已经消失，这里按
@@ -385,7 +414,7 @@ func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID stri
 
 	// 6. 如果是恢复会话，使用恢复提示词
 	if len(sessionJSONL) > 0 {
-		request.Prompt = firstNonEmpty(runtimeState.PiResumePrompt, state.Request.Prompt)
+		request.Prompt = cloudAgentPiResumePrompt(runtimeState.PiResumePrompt, state.Request.Prompt, sessionJSONL)
 	}
 
 	// 7. 运行 Pi 会话

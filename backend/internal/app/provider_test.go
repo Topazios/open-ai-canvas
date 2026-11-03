@@ -273,7 +273,7 @@ func TestRunVideoTaskUsesDeclarativeAgnesJSONProtocol(t *testing.T) {
 				t.Errorf("decode create body: %v", err)
 			}
 			want := map[string]any{
-				"model": "agnes-video-2.5", "prompt": "make it move", "mode": "keyframe",
+				"model": "agnes-video-2.5", "prompt": withVideoNoSubtitlePolicy("make it move"), "mode": "keyframe",
 				"seconds": "5", "size": "720P", "aspect_ratio": "16:9", "n": float64(1),
 				"first_frame": server.URL + "/reference.png",
 			}
@@ -1861,7 +1861,7 @@ func TestRunVideoTaskUsesNewAPIForAnyVideoModel(t *testing.T) {
 			if err := r.ParseMultipartForm(1 << 20); err != nil {
 				t.Errorf("parse create body: %v", err)
 			}
-			if r.FormValue("model") != "custom-video-v1" || r.FormValue("prompt") != "make it move" {
+			if r.FormValue("model") != "custom-video-v1" || r.FormValue("prompt") != withVideoNoSubtitlePolicy("make it move") {
 				t.Errorf("create form = %#v", r.MultipartForm.Value)
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -2088,7 +2088,7 @@ func TestRunVideoTaskUsesJSONForGrokVideo(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			if body["model"] != "grok-video" || body["prompt"] != "make it move" {
+			if body["model"] != "grok-video" || body["prompt"] != withVideoNoSubtitlePolicy("make it move") {
 				t.Errorf("request body = %#v", body)
 			}
 			if body["image"] != testReferenceImageDataURL {
@@ -2140,7 +2140,7 @@ func TestRunVideoTaskUsesXAIVideoGenerationEndpoint(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			if body["model"] != "grok-imagine-video-1.5" || body["prompt"] != "make it move" {
+			if body["model"] != "grok-imagine-video-1.5" || body["prompt"] != withVideoNoSubtitlePolicy("make it move") {
 				t.Errorf("request body = %#v", body)
 			}
 			if body["duration"] != float64(10) || body["aspect_ratio"] != "1:1" || body["resolution"] != "720p" {
@@ -2982,7 +2982,7 @@ func TestRunNovitaVideoTaskDownloadsSucceededVideo(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			if body["model_name"] != "kling2.5_turbo_pro_t2v" || body["prompt"] != "make it move" || body["duration"] != float64(5) || body["aspect_ratio"] != "16:9" {
+			if body["model_name"] != "kling2.5_turbo_pro_t2v" || body["prompt"] != withVideoNoSubtitlePolicy("make it move") || body["duration"] != float64(5) || body["aspect_ratio"] != "16:9" {
 				t.Errorf("body = %#v", body)
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -3064,7 +3064,7 @@ func TestRunMiniMaxVideoTaskCreatesPollsAndDownloads(t *testing.T) {
 			if len(content) > 0 {
 				first, _ = content[0].(map[string]any)
 			}
-			if body["model"] != "MiniMax-H3" || body["resolution"] != "768P" || body["duration"] != float64(5) || body["ratio"] != "16:9" || first["text"] != "make it move" {
+			if body["model"] != "MiniMax-H3" || body["resolution"] != "768P" || body["duration"] != float64(5) || body["ratio"] != "16:9" || first["text"] != withVideoNoSubtitlePolicy("make it move") {
 				t.Errorf("body = %#v", body)
 			}
 			w.Header().Set("Content-Type", "application/json")

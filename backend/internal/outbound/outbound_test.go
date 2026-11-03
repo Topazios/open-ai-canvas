@@ -36,6 +36,26 @@ func TestOutboundTransportUsesEnvironmentProxyAndHonorsNoProxy(t *testing.T) {
 	}
 }
 
+func TestOutboundTransportDetectsDeadHTTP2Connections(t *testing.T) {
+	transport := newOutboundTransport(resolveOutboundHost)
+	if transport.HTTP2 == nil || transport.HTTP2.SendPingTimeout != 30*time.Second || transport.HTTP2.PingTimeout != 15*time.Second {
+		t.Fatalf("unexpected http2 config: %+v", transport.HTTP2)
+	}
+}
+
+func TestOutboundNoMuxTransportDisablesHTTP2(t *testing.T) {
+	transport := newOutboundTransportWithMux(resolveOutboundHost, false)
+	if transport.ForceAttemptHTTP2 || transport.HTTP2 != nil {
+		t.Fatalf("unexpected http2 config: force=%v http2=%+v", transport.ForceAttemptHTTP2, transport.HTTP2)
+	}
+	if transport.TLSNextProto == nil || len(transport.TLSNextProto) != 0 {
+		t.Fatalf("TLSNextProto must be a non-nil empty map, got %#v", transport.TLSNextProto)
+	}
+	if OutboundHTTPClientNoMux(0).Transport != outboundNoMuxTransport {
+		t.Fatal("no-mux client must use the dedicated transport")
+	}
+}
+
 func TestConfiguredProxyHostIsTrustedAsDeploymentEgress(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://172.24.176.1:10808")
 	if !configuredProxyHost("172.24.176.1") {

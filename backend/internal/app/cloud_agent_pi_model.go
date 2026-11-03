@@ -70,6 +70,10 @@ func (s *Service) cloudAgentPiModel(ctx context.Context, userID, runID string, p
 		if attempt >= cloudAgentModelStepRetries {
 			return nil, lastErr
 		}
+		// 上游请求超时每次要等满一个请求超时窗口；关思考后的那一次重试仍超时，就交给上层的重试轮次处理。
+		if errors.Is(err, errCloudAgentProviderTimeout) && attempt >= cloudAgentProviderTimeoutRetries {
+			return nil, lastErr
+		}
 		if errors.Is(err, errCloudAgentTruncatedToolArguments) && correction == nil {
 			correction = []map[string]any{cloudAgentRuntimeMessage(cloudAgentRuntimeContext{Kind: cloudAgentContextTruncatedArguments})}
 		}
@@ -79,6 +83,12 @@ func (s *Service) cloudAgentPiModel(ctx context.Context, userID, runID string, p
 
 // cloudAgentModelStepRetries 是单步模型调用首次失败后的最大重试次数。
 const cloudAgentModelStepRetries = 3
+
+// cloudAgentProviderTimeoutRetries 是上游请求超时后的最大同步重试次数。
+const cloudAgentProviderTimeoutRetries = 1
+
+// errCloudAgentProviderTimeout 标记失败原因是上游请求超时。
+var errCloudAgentProviderTimeout = errors.New("provider request timeout")
 
 // errCloudAgentTruncatedToolArguments 标记"模型返回的工具参数不是完整 JSON"：
 // 调用未执行，可以带纠偏上下文重做同一步。
@@ -218,14 +228,14 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 				if productionCoverage(manifest, doc, facts, artifacts, done, total)["valid"] == true {
 					if manifest.Plan != nil {
 						if manifest.Plan.Version >= 2 && !manifest.Plan.AssetsStarted {
-							return map[string]any{"text": "制作方案与全部规范已保存，完整性检查通过。资产清单已登记，可手动点击生成资产。", "toolCalls": []any{}}, false, nil
+							return map[string]any{"text": "制作方案与全部规范已保存，完整性检查通过。资产清单已登记，可在资产总表中选择并生成资产。", "toolCalls": []any{}}, false, nil
 						}
-						return map[string]any{"text": "故事总纲与计划资产已分组保存，清单覆盖检查通过；内容质量待人工验收。", "toolCalls": []any{}}, false, nil
+						return map[string]any{"text": "故事总纲与计划资产已分组保存，清单覆盖检查通过；内容质量可抽查。", "toolCalls": []any{}}, false, nil
 					}
 					if manifest.Storyboard != nil {
-						return map[string]any{"text": "全部场次镜头已保存，整集校验通过；制作质量待人工验收。", "toolCalls": []any{}}, false, nil
+						return map[string]any{"text": "全部场次镜头已保存，整集校验通过；制作质量可抽查。", "toolCalls": []any{}}, false, nil
 					}
-					return map[string]any{"text": fmt.Sprintf("已解析 %d/%d 页并保存 %d 项资产，覆盖检查通过；语义质量待人工验收。", done, total, len(artifacts)), "toolCalls": []any{}}, false, nil
+					return map[string]any{"text": fmt.Sprintf("已解析 %d/%d 页并保存 %d 项资产，覆盖检查通过；语义质量可抽查。", done, total, len(artifacts)), "toolCalls": []any{}}, false, nil
 				}
 			}
 			if state.ActiveTaskID == "" && !job.Validated && manifest.Plan != nil && manifest.Plan.Version >= 2 {
@@ -385,6 +395,13 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		}
 		retryable := ctx.Err() == nil && (truncated || s.cloudAgentModelTaskRetryable(taskID))
 		if retryable {
+			// 上游请求超时多半是思考阶段长时间无输出；原样重发只会再等一轮，先关思考再重试。
+			if failed, lookupErr := s.repo.Task(taskID); lookupErr == nil && cloudAgentProviderRequestTimedOut(failed) {
+				err = fmt.Errorf("%w: %v", errCloudAgentProviderTimeout, err)
+				if forceErr := s.forceCloudAgentThinkingOff(userID, runID); forceErr != nil {
+					log.Printf("[Agent] force thinking off after provider timeout run=%s: %v", runID, forceErr)
+				}
+			}
 			// 释放失败的步骤，下一次重试才能重新入队。
 			if releaseErr := s.finishCloudAgentPiModelStep(userID, runID, taskID, "", ""); releaseErr != nil {
 				return nil, false, releaseErr

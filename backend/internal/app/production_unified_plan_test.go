@@ -32,6 +32,9 @@ func TestProductionUnifiedPlanRequiresSharedRulesAndAssignsStableCodes(t *testin
 	}
 	productionCall(t, s, run.ID, "production_submit", map[string]any{"key": "generation", "name": "生成与一致性规范", "document": orderedPlanDocument("generation", ""), "factIds": []string{}}, false)
 	startPlanAssetsForTest(t, s, run.ID)
+	if changed, err := s.ensureProductionPlanGroups("user", run.ID); err != nil || !changed {
+		t.Fatal(changed, err)
+	}
 	productionCall(t, s, run.ID, "production_submit", map[string]any{"key": "hero", "name": "林岚", "document": orderedPlanDocument("hero", "character"), "factIds": []string{}}, false)
 	check = productionCall(t, s, run.ID, "production_check", map[string]any{}, false)
 	if check["valid"] != true {

@@ -17,6 +17,10 @@ test("generated frontend rules match the embedded backend catalog and cover ever
     for (const step of shortDramaSteps) expect(productionRuleBlock(step.stage, "text")).toContain(shared.stages[step.stage][0]);
     expect(shared.stages.story[0]).toContain("逐集骨架按当前总集数覆盖");
     expect(shared.stages.story[0]).toContain("仍需语义审读");
+    expect(shared.stages.story[0]).toContain("抽象事物写入世界规则或所属资产状态");
+    expect(shared.stages.story[0]).toContain("单集写作预算");
+    expect(shared.common.join("")).not.toContain("规范不代表上游审核保证");
+    expect(shared.common.join("")).toContain("规范用语、审核说明与制作说明不进入文稿");
 });
 
 test("normalization preserves content, remains idempotent and never contaminates speech", () => {
@@ -70,6 +74,10 @@ test("story generation and revision preserve structured output and user material
             expect(prompt).not.toContain("保留草稿");
             expect(prompt).toContain('仅返回 JSON：{"topics":');
             expect(prompt).toContain("一次生成 3 个");
+        } else if (data.stage === "plan") {
+            // 故事总纲每次从已采用选题重新推演，不带当前草稿
+            expect(prompt).not.toContain("保留草稿");
+            expect(prompt).toContain("仅输出修订后的完整正文");
         } else {
             expect(prompt).toContain("保留草稿");
             expect(prompt).toContain("仅输出修订后的完整正文");

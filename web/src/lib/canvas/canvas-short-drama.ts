@@ -9,6 +9,7 @@ import { nodeWorkflow, workflowAncestors, workflowEpisodeProgress, episodeProgre
 import { workflowImageSubjects, workflowImageShots } from "./canvas-workflow-images";
 import { workflowSoundSubjects } from "./canvas-workflow-sounds";
 import { workflowAssetKind } from "./canvas-production-sources";
+import { isPlanPlaceholder } from "./plan-placeholder";
 import type { PlannedAssetKind } from "../production-plan";
 import { latestBodyAudit, screenplayAuditState } from "./workflow-screenplay-audit";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
@@ -238,7 +239,7 @@ export function deriveShortDramaProgress(nodes: CanvasNodeData[], connections: C
                     if (definition.output === "asset-group" && definition.id !== "assets.bible" && !legacyPlan) {
                         const manifest = nodes.find((entry) => entry.id === nodeWorkflow(node)?.assetGroup?.manifestId);
                         if (manifest?.metadata?.status !== "success" || nodeWorkflow(manifest)?.assetOutput || !nodeWorkflow(manifest)?.materializedTaskId) {
-                            const count = nodes.filter((entry) => entry.parentId === node.id && entry.id !== manifest?.id && entry.metadata?.content?.trim()).length;
+                            const count = nodes.filter((entry) => entry.parentId === node.id && entry.id !== manifest?.id && entry.metadata?.content?.trim() && !isPlanPlaceholder(entry)).length;
                             const action = definition.id === "story.plan" ? "方案制作" : "提取";
                             statusDetail = `${manifest?.metadata?.status === "error" ? `任务失败，${action}未完成` : manifest?.metadata?.status === "loading" ? `${action}中` : `${action}待完成`} · 已保留 ${count} 项`;
                             return false;

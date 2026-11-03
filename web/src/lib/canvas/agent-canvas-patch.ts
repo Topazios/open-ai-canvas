@@ -1,6 +1,7 @@
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import { isGridFrame, layoutCanvasGridGroups } from "./canvas-group-grid";
+import { isPlanPlaceholder } from "./plan-placeholder";
 
 type Change<T> = { before: T | null; after: T | null };
 export type AgentCanvasPatch = {
@@ -25,32 +26,59 @@ function equal(a: unknown, b: unknown): boolean {
     return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => equal(item, b[index]));
 }
 
+export type MergeOptions = {
+    /** Resolve a real conflict by field ownership instead of failing the whole canvas. */
+    lenient?: boolean;
+    /** Called once per resolved conflict so the caller can keep the local version as a draft. */
+    onConflict?: () => void;
+};
+
+// Fields written by the server or by task callbacks. When both sides changed one of
+// them, the server value wins; every other field keeps the local (user) value.
+const SERVER_OWNED_KEYS = new Set([
+    "status", "taskStatus", "taskProgress", "taskStage", "errorDetails", "error", "content",
+    "taskId", "sourceNodeIds", "submission", "productionAgent", "planReady",
+]);
+const TERMINAL_STATUS = new Set(["success", "error", "idle"]);
+const TERMINAL_TASK_STATUS = new Set(["succeeded", "failed", "cancelled"]);
+
+function resolveConflict(key: string | undefined, current: unknown, after: unknown, options: MergeOptions): unknown {
+    options.onConflict?.();
+    if (!key || !SERVER_OWNED_KEYS.has(key)) return current;
+    // A terminal local result must never be turned back into a pending state.
+    if (key === "status" && typeof current === "string" && TERMINAL_STATUS.has(current) && after === "loading") return current;
+    if (key === "taskStatus" && typeof current === "string" && TERMINAL_TASK_STATUS.has(current) && !TERMINAL_TASK_STATUS.has(String(after))) return current;
+    return after;
+}
+
 // Three-way merge: untouched local fields (e.g. a drag or prompt edit) survive.
-// A concurrently changed field or a deleted node is a conflict, never an overwrite.
-function mergeValue(current: unknown, before: unknown, after: unknown): unknown {
+// Strict mode treats a concurrently changed field or a deleted node as a conflict.
+// Lenient mode resolves it by field ownership and reports it through onConflict.
+function mergeValue(current: unknown, before: unknown, after: unknown, options: MergeOptions = {}, key?: string): unknown {
     if (equal(before, after) || equal(current, after)) return current;
     if (equal(current, before)) return after;
-    if (record(current) && (record(before) || before === undefined) && record(after)) {
-        const base = before || {};
+    const base = record(before) ? before : (before === undefined || (options.lenient && before === null)) ? {} : undefined;
+    if (record(current) && base && record(after)) {
         const next = { ...current };
-        for (const key of new Set([...Object.keys(base), ...Object.keys(after)])) {
-            if (["__proto__", "constructor", "prototype"].includes(key)) throw new Error("无效的画布增量字段");
-            const value = mergeValue(current[key], base[key], after[key]);
-            if (value === undefined) delete next[key];
-            else next[key] = value;
+        for (const field of new Set([...Object.keys(base), ...Object.keys(after)])) {
+            if (["__proto__", "constructor", "prototype"].includes(field)) throw new Error("无效的画布增量字段");
+            const value = mergeValue(current[field], base[field], after[field], options, field);
+            if (value === undefined) delete next[field];
+            else next[field] = value;
         }
         return next;
     }
+    if (options.lenient) return resolveConflict(key, current, after, options);
     throw new Error("Agent 画布增量与本地内容冲突，需要校准；已保留本地编辑");
 }
 
-function mergeItems<T extends { id: string }>(items: T[], changes: Change<T>[]): T[] {
+function mergeItems<T extends { id: string }>(items: T[], changes: Change<T>[], options: MergeOptions = {}): T[] {
     if (!changes.length) return items;
     const next = new Map(items.map((item) => [item.id, item]));
     for (const { before, after } of changes) {
         const id = after?.id || before?.id;
         if (!id || (before && after && before.id !== after.id)) throw new Error("无效的画布增量节点");
-        const merged = mergeValue(next.get(id) ?? null, before, after) as T | null;
+        const merged = mergeValue(next.get(id) ?? null, before, after, options) as T | null;
         if (merged === null) next.delete(id);
         else next.set(id, merged);
     }
@@ -58,12 +86,15 @@ function mergeItems<T extends { id: string }>(items: T[], changes: Change<T>[]):
     return result.length === items.length && result.every((item, index) => item === items[index]) ? items : result;
 }
 
-function mergeProductionCheckpoint(change: Change<CanvasNodeData>, current?: CanvasNodeData): Change<CanvasNodeData> {
+function mergeProductionCheckpoint(change: Change<CanvasNodeData>, current?: CanvasNodeData, options: MergeOptions = {}): Change<CanvasNodeData> {
     const { before, after } = change;
     const beforeRun = before?.metadata?.shortDrama?.productionAgent?.runId;
     const afterRun = after?.metadata?.shortDrama?.productionAgent?.runId;
     const currentRun = current?.metadata?.shortDrama?.productionAgent?.runId;
-    if (beforeRun && currentRun !== beforeRun && currentRun !== afterRun) throw new Error("画布增量冲突：制作节点已删除或绑定另一任务，不能覆盖");
+    if (beforeRun && currentRun !== beforeRun && currentRun !== afterRun) {
+        if (options.lenient) return change;
+        throw new Error("画布增量冲突：制作节点已删除或绑定另一任务，不能覆盖");
+    }
     if (!before || !after || !current || !afterRun || currentRun !== afterRun) return change;
     // Poll receipts and canvas checkpoints describe the same run. Their status
     // fields are server-owned; content and a replacement run still use strict merging.
@@ -86,16 +117,19 @@ function mergeProductionCheckpoint(change: Change<CanvasNodeData>, current?: Can
     return { before: { ...before, metadata }, after: { ...after, metadata: afterMetadata } };
 }
 
-export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvasPatch): CanvasProject {
+export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvasPatch, options: MergeOptions = {}): CanvasProject {
     if (patch.canvasId !== project.id || !Array.isArray(patch.nodes) || !Array.isArray(patch.connections)) throw new Error("画布增量不属于当前画布或格式无效");
     const byId = new Map(project.nodes.map((node) => [node.id, node]));
     const nodeChanges = patch.nodes.map((entry) => {
-        const change = mergeProductionCheckpoint(entry, byId.get(entry.after?.id || entry.before?.id || ""));
+        const change = mergeProductionCheckpoint(entry, byId.get(entry.after?.id || entry.before?.id || ""), options);
         if (!change.after) return change;
         const current = byId.get(change.after.id);
         const beforeTask = change.before?.metadata?.taskId;
         const afterTask = change.after.metadata?.taskId;
-        if (beforeTask && current?.metadata?.taskId !== beforeTask && current?.metadata?.taskId !== afterTask) throw new Error("画布增量冲突：生成节点已删除或绑定另一任务，不能覆盖");
+        if (beforeTask && current?.metadata?.taskId !== beforeTask && current?.metadata?.taskId !== afterTask) {
+            if (options.lenient) return change;
+            throw new Error("画布增量冲突：生成节点已删除或绑定另一任务，不能覆盖");
+        }
         if (!current || !beforeTask || beforeTask !== afterTask) return change;
         const terminal = (status: string | undefined) => ["succeeded", "failed", "cancelled"].includes(status || "");
         // A local task subscriber may already know a newer state than the SSE
@@ -128,8 +162,8 @@ export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvas
         if (!isGridFrame(current) || !before.metadata?.frame || !after.metadata?.frame || !current.metadata?.frame) return change;
         return { before: geometry(before), after: geometry(after) };
     });
-    const nodes = layoutCanvasGridGroups(mergeItems(project.nodes, gridChanges));
-    const connections = mergeItems(project.connections, patch.connections);
+    const nodes = layoutCanvasGridGroups(mergeItems(project.nodes, gridChanges, options));
+    const connections = mergeItems(project.connections, patch.connections, options);
     if (nodes === project.nodes && connections === project.connections) return project;
     return { ...project, nodes, connections, updatedAt: patch.updatedAt || project.updatedAt };
 }
@@ -138,6 +172,7 @@ export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvas
 export function recoverCompletedProductionDocuments(project: CanvasProject, patches: AgentCanvasPatch[]): CanvasProject {
     const nodes = [...project.nodes];
     const byId = new Map(nodes.map((node) => [node.id, node]));
+    const placeholderIds = new Set(nodes.filter(isPlanPlaceholder).map((node) => node.id));
     const recovered = new Map<string, CanvasNodeData>();
     for (const patch of patches) {
         if (patch.canvasId !== project.id) continue;
@@ -146,15 +181,20 @@ export function recoverCompletedProductionDocuments(project: CanvasProject, patc
             const workflow = candidate?.metadata?.shortDrama;
             const completed = candidate?.metadata?.status === "success" && Boolean(candidate.metadata.content?.trim()) &&
                 Boolean(workflow?.planSection || workflow?.planAsset || workflow?.assetIdentity || workflow?.bibleSection);
-            if (!candidate || !completed || byId.has(candidate.id) || !candidate.parentId || !byId.has(candidate.parentId)) continue;
+            if (!candidate || !completed || isPlanPlaceholder(candidate) || (byId.has(candidate.id) && !placeholderIds.has(candidate.id)) || !candidate.parentId || !byId.has(candidate.parentId)) continue;
             recovered.set(candidate.id, candidate);
         }
     }
     if (!recovered.size) return project;
 
     for (const [id, node] of recovered) {
-        byId.set(id, node);
-        nodes.push(node);
+        if (placeholderIds.has(id)) {
+            // 本地占位原地替换，沿用其位置。
+            byId.set(id, { ...node, position: byId.get(id)!.position });
+        } else {
+            byId.set(id, node);
+            nodes.push(node);
+        }
     }
     for (const [parentId, parent] of byId) {
         const additions = [...recovered.values()].filter((node) => node.parentId === parentId);
@@ -181,7 +221,16 @@ export function recoverCompletedProductionDocuments(project: CanvasProject, patc
     return { ...project, nodes: updatedNodes };
 }
 
-export function mergeCanvasSnapshot(previous: CanvasProject, current: CanvasProject, incoming: CanvasProject): CanvasProject {
+/**
+ * Merge a cloud snapshot into the live canvas without ever failing on a field conflict.
+ * Without a known ancestor, local-only nodes are kept and remote fields fill in the rest.
+ */
+export function mergeCanvasSnapshotLenient(previous: CanvasProject | undefined, current: CanvasProject, incoming: CanvasProject, onConflict?: () => void): CanvasProject {
+    const base = previous ?? ({ id: current.id, nodes: [], connections: [] } as unknown as CanvasProject);
+    return mergeCanvasSnapshot(base, current, incoming, { lenient: true, onConflict });
+}
+
+export function mergeCanvasSnapshot(previous: CanvasProject, current: CanvasProject, incoming: CanvasProject, options: MergeOptions = {}): CanvasProject {
     if (previous.id !== current.id || incoming.id !== current.id) throw new Error("画布同步基线不属于当前画布");
     const changes = <T extends { id: string }>(before: T[], after: T[]): Change<T>[] => {
         const byId = new Map(before.map((item) => [item.id, item]));
@@ -215,6 +264,7 @@ export function mergeCanvasSnapshot(previous: CanvasProject, current: CanvasProj
                 return !removedEdges.has(edge.id) && !removedIds.has(edge.fromNodeId) && !removedIds.has(edge.toNodeId);
             }),
         },
+        options,
     );
     const merged = { ...projected } as CanvasProject & Record<string, unknown>;
     const before = previous as CanvasProject & Record<string, unknown>;
@@ -222,7 +272,7 @@ export function mergeCanvasSnapshot(previous: CanvasProject, current: CanvasProj
     const editor = current as CanvasProject & Record<string, unknown>;
     for (const key of new Set([...Object.keys(before), ...Object.keys(after), ...Object.keys(editor)])) {
         if (["id", "revision", "updatedAt", "remoteContentHash", "viewport", "nodes", "connections"].includes(key)) continue;
-        const value = mergeValue(editor[key], before[key], after[key]);
+        const value = mergeValue(editor[key], before[key], after[key], options, key);
         if (value === undefined) delete merged[key];
         else merged[key] = value;
     }

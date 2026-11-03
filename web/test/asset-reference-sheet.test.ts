@@ -14,6 +14,56 @@ const profile = (values: string[], parameter: "size" | "aspect_ratio" = "size") 
     ...defaultImageCapabilityConfig(), size: { values, parameter, default: values[0], allowCustom: false },
 });
 
+describe("asset sheet fixed template", () => {
+    const kinds = [AssetSheetKind.Character, AssetSheetKind.Environment, AssetSheetKind.Prop, AssetSheetKind.Special];
+    const build = (kind: AssetSheetKind, title: string, content: string, code?: string) => assetSheetPrompt({ kind, size: "16:9", title, code, content, style: "水彩平涂" });
+    const skeleton = (prompt: string) => ["【固定标题条】", "【固定资料栏】", "【固定右上视图】", "【固定右下分区】", "【画幅与留白】", "【固定风格规格】", "【字段表】"].map((key) => prompt.split("\n\n").find((part) => part.includes(key)) || "");
+
+    test("same kind keeps an identical skeleton regardless of asset content", () => {
+        for (const kind of kinds) {
+            const first = build(kind, "甲", "外观：红色", "A-001");
+            const second = build(kind, "乙", "外观：蓝色，材质：木", "B-002");
+            const [a, b] = [skeleton(first), skeleton(second)];
+            for (const index of [0, 2, 3, 4, 5]) {
+                expect(a[index]).not.toBe("");
+                expect(a[index]).toBe(b[index]);
+            }
+            const names = (part: string) => part.match(/“[^”]+”/gu)?.join("") || "";
+            expect(names(a[1])).toBe(names(b[1]));
+        }
+    });
+
+    test("every kind has a fixed title strip and the shared style block", () => {
+        const titles = ["角色资产设定", "场景资产设定", "道具资产设定", "特殊资产设定"];
+        kinds.forEach((kind, index) => {
+            const prompt = build(kind, "名", "外观：灰");
+            expect(prompt).toContain(`文案只能是“${titles[index]}”`);
+            expect(prompt).toContain("#F4EFE6");
+            expect(prompt).toContain("5500K");
+        });
+    });
+
+    test("missing facts are written as placeholders and the original material stays in the prompt", () => {
+        const content = "无章节结构的自由描述，铁灰色长杆";
+        const prompt = build(AssetSheetKind.Prop, "长杆", content);
+        expect(prompt).toContain(content);
+        expect(prompt).toContain("编号：待定");
+        expect(prompt).toContain("外形尺寸：待测量");
+    });
+
+    test("asset code goes into its own field", () => {
+        const prompt = build(AssetSheetKind.Character, "林岚", "外观：黑发", "C-001");
+        expect(prompt).toContain("编码：C-001");
+        expect(prompt).toContain("姓名：林岚");
+    });
+
+    test("scene sheets state each height only once and keep dimension lines outside objects", () => {
+        const prompt = build(AssetSheetKind.Environment, "老宅", "外观：青瓦");
+        expect(prompt).toContain("总高、檐口高、屋脊高各自只标一次");
+        expect(prompt).toContain("不压在家具或墙体上");
+    });
+});
+
 describe("asset reference sheet contract", () => {
     test("all prop sheets separate exterior display from operation without a weapon keyword list", () => {
         for (const [title, content] of [
@@ -142,7 +192,7 @@ describe("asset reference sheet contract", () => {
             const result = createWorkflowImages({ ...request, imageSubjectIds: subjects.map((node) => node.id) }, nodes, connections, center, profile(["1024x1024", "1536x1024"]));
             for (const [index, node] of result.created.entries()) {
                 const sheet = nodeWorkflow(node)!.assetSheet!;
-                expect(sheet).toMatchObject({ version: 4, kind: assetSheetKind(step), size: "1536x1024" });
+                expect(sheet).toMatchObject({ version: 5, kind: assetSheetKind(step), size: "1536x1024" });
                 expect(Object.keys(sheet.styleSignatures)).toHaveLength(3);
                 if (styleSignatures) expect(sheet.styleSignatures).toEqual(styleSignatures);
                 styleSignatures = sheet.styleSignatures;

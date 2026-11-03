@@ -1,18 +1,42 @@
 import { useMemo, useState } from "react";
-import { Button, Select } from "antd";
-import { Pause, Play, RefreshCw, RotateCcw, Square } from "lucide-react";
-import { productionPlanAssetAction, productionPlanNeedsContinuation } from "@/lib/canvas/production-agent-state";
+import { Button, Segmented } from "antd";
+import { ChevronRight, Pause, Play, RefreshCw, RotateCcw, Square } from "lucide-react";
+import { productionPlanAssetAction, productionPlanMissingDocumentNote, productionPlanNeedsContinuation } from "@/lib/canvas/production-agent-state";
 import { groupExecutionRows, groupMemberState, groupSessionMembers, groupSessionTargets, groupSessionHasEarlier } from "@/lib/canvas/canvas-group-session";
 import { nodeWorkflow, workflowContinuationRange, workflowEpisodeProgress } from "@/lib/canvas/canvas-short-drama-workflow";
 import { ShortDramaStep } from "@/lib/short-drama-steps";
 import { productionPlanPhaseLabels } from "@/lib/production-plan";
 import { productionParallelSummary, productionRunExternalFailure } from "@/lib/canvas/production-agent-journal";
+import { isPlanPlaceholder } from "@/lib/canvas/plan-placeholder";
 import type { CanvasNodeData } from "@/types/canvas";
 import type { GenerationTask } from "@/services/api/task-center";
 import { canCancelGenerationTask } from "@/lib/generation-task-display";
 import type { useProductionAgentRuns } from "./use-production-agent-runs";
 import { CanvasExecutionJournal } from "./canvas-execution-journal";
 import { useCanvasGroupSession } from "./use-canvas-group-session";
+
+const parallelStateLabels: Record<string, string> = {
+    running: "执行中",
+    queued: "排队中",
+    retrying: "重试中",
+    error: "执行失败",
+    failed: "执行失败",
+    succeeded: "已完成",
+    cancelled: "已取消",
+    warning: "内容待处理",
+};
+
+type ParallelDetail = { status?: string; attempts?: number; validationAttempts?: number; retryAt?: number; validationIssues?: string[] };
+
+// 把后端进度里的尝试次数、本地校验失败原因和下次重试时间拼成一行可读说明。
+function parallelDetailText(item?: ParallelDetail): string {
+    if (!item) return "";
+    const parts: string[] = [];
+    if (item.attempts && item.attempts > 0) parts.push("第 " + item.attempts + " 次尝试");
+    if (item.validationIssues?.length) parts.push("本地校验未通过：" + item.validationIssues.join("；"));
+    if (item.retryAt && item.retryAt > Date.now()) parts.push(Math.max(1, Math.ceil((item.retryAt - Date.now()) / 1000)) + " 秒后重试");
+    return parts.join(" · ");
+}
 
 export function CanvasGroupTaskDetails({
     node,
@@ -37,22 +61,38 @@ export function CanvasGroupTaskDetails({
     const visibleMembers = members.filter((member) => member.metadata?.shortDrama?.assetKey !== "$summary");
     const targets = useMemo(() => groupSessionTargets(members, node, nodes), [members, node, nodes]);
     const session = useCanvasGroupSession(node.id, targets);
-    const [selected, setSelected] = useState("");
     const [order, setOrder] = useState<"asc" | "desc">("desc");
-    const [visible, setVisible] = useState(100);
-    const chosen = members.find((member) => member.id === selected);
-    const target = targets.find((item) => item.nodeId === chosen?.id) || (!chosen ? targets.find((item) => item.coordinator) || targets.find((item) => item.kind === "agent" && item.scoped) : undefined);
-    const controlled = chosen || nodes.find((member) => member.id === target?.nodeId);
+    const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+    const [visibleByKey, setVisibleByKey] = useState<Record<string, number>>({});
+    const target = targets.find((item) => item.coordinator) || targets.find((item) => item.kind === "agent" && item.scoped);
+    const controlled = nodes.find((member) => member.id === target?.nodeId);
     const snapshot = target ? session.snapshots[target.key] : undefined;
-    const task = snapshot?.kind === "task" ? snapshot.detail.task : undefined;
     const run = snapshot?.kind === "agent" ? snapshot.run : undefined;
     const externalFailure = Boolean(run && ["failed", "rejected"].includes(run.status) && productionRunExternalFailure(run.events, run.id));
-    const progress = run?.production;
     const planRun = agentState.runs.find((entry) => entry.production?.targetNodeId === node.metadata?.shortDrama?.assetGroup?.manifestId);
+    // 快照还没读到时，用列表里同一容器的运行记录，保证并行明细先可见。
+    const progress = run?.production || planRun?.production;
+    const parallelItems = progress?.parallelItems;
+    // 占位节点没有自己的任务记录，按资产或文档 key 对应容器并行明细里的状态。
+    const parallelStatusOf = (member: CanvasNodeData) => {
+        const key = member.metadata?.shortDrama?.assetKey;
+        return key ? parallelItems?.find((item) => item.key === key)?.status : undefined;
+    };
+    const parallelItemOf = (member: CanvasNodeData) => {
+        const key = member.metadata?.shortDrama?.assetKey;
+        return key ? parallelItems?.find((item) => item.key === key) : undefined;
+    };
+    // 失败、带警告放弃的文档都给出重试入口；系统本身会自动重试，这里只是抽查时的便捷入口。
+    const retryableItem = (item?: { status?: string; abandoned?: boolean }) => Boolean(item && (item.abandoned || ["error", "warning", "failed"].includes(item.status || "")));
+    const retryItem = async (assetKey: string) => {
+        if (!controlled) return;
+        await agentState.control(controlled.id, "retry_item", undefined, undefined, [assetKey]);
+        session.refresh();
+    };
     const planAssetAction = productionPlanAssetAction(node, planRun);
     const active = run && ["running", "queued"].includes(run.status);
     const planNeedsContinuation = productionPlanNeedsContinuation(run);
-    const resumable = Boolean(run && (["failed", "waiting_user"].includes(run.status) || planNeedsContinuation));
+    const resumable = Boolean(run && (["failed", "rejected", "waiting_user", "cancelled"].includes(run.status) || planNeedsContinuation));
     const parallelWarnings = progress?.parallelItems?.filter((item) => item.severity === "warning" || item.status === "warning") || [];
     const retired = node.metadata?.shortDrama?.step === "assets.reconcile";
     const workflow = nodeWorkflow(node);
@@ -63,23 +103,58 @@ export function CanvasGroupTaskDetails({
     const pending = members.filter((member) => member.metadata?.shortDrama?.submission === "planned");
     const counts = visibleMembers.reduce<Record<string, number>>((result, member) => {
         const key = targets.find((item) => item.nodeId === member.id)?.key;
-        const state = groupMemberState(member, key ? session.snapshots[key] : undefined);
+        const state = groupMemberState(member, key ? session.snapshots[key] : undefined, snapshot, parallelStatusOf(member));
         result[state] = (result[state] || 0) + 1;
         return result;
     }, {});
-    const rows = groupExecutionRows(members, session.snapshots, order, targets).filter((row) => !chosen || row.nodeId === chosen.id);
-    const errors = members.filter((member) => (!chosen || member.id === chosen.id) && member.metadata?.errorDetails && !targets.some((target) => target.nodeId === member.id && session.snapshots[target.key]));
-    const hasEarlier = groupSessionHasEarlier(targets, session.snapshots);
-    const promptMembers = visibleMembers.filter((member) => member.metadata?.prompt?.trim());
+    const rowMembers = useMemo(() => {
+        const known = new Set(members.map((member) => member.id));
+        return [...members, ...targets.map((item) => nodes.find((entry) => entry.id === item.nodeId)).filter((entry): entry is CanvasNodeData => !!entry && !known.has(entry.id))];
+    }, [members, targets, nodes]);
+    const items = useMemo(() => {
+        type TaskItem = { key: string; target?: (typeof targets)[number]; member: CanvasNodeData };
+        // 协调节点($summary)只用于容器级控制，不进入任务列表
+        const result = targets.flatMap<TaskItem>((item) => {
+            const member = rowMembers.find((entry) => entry.id === item.nodeId);
+            return member && member.metadata?.shortDrama?.assetKey !== "$summary" ? [{ key: item.key, target: item, member }] : [];
+        });
+        const covered = new Set(result.map((item) => item.member.id));
+        visibleMembers.forEach((member) => {
+            if (!covered.has(member.id)) result.push({ key: "node:" + member.id, member });
+        });
+        return result;
+    }, [targets, rowMembers, visibleMembers]);
+    // 旧画布没有占位节点时，用并行明细生成只读任务行，保证执行中的任务可见。
+    const fallbackRows = useMemo(() => {
+        if (items.length) return [];
+        return (parallelItems || []).map((item) => ({
+            key: "parallel:" + item.key,
+            itemKey: item.key,
+            title: item.name || item.key,
+            state: parallelStateLabels[item.status] || "排队中",
+            detail: parallelDetailText(item),
+            retryable: retryableItem(item),
+        }));
+    }, [items.length, parallelItems]);
+    const displayCounts = items.length
+        ? counts
+        : fallbackRows.reduce<Record<string, number>>((result, row) => {
+              result[row.state] = (result[row.state] || 0) + 1;
+              return result;
+          }, {});
+    const truncated = targets.some((item) => {
+        const value = session.snapshots[item.key];
+        return value?.kind === "task" && value.detail.truncated;
+    });
     return (
         <section className="canvas-node-inspector-section production-agent-details" aria-label="分组统一详情会话" data-canvas-no-zoom data-canvas-wheel-scroll>
             <div className="production-agent-overview">
                 <div className="production-agent-heading">
                     <strong>{node.title}</strong>
-                    <span className="production-agent-status">{visibleMembers.length} 个节点</span>
+                    <span className="production-agent-status">{items.length || fallbackRows.length} 个任务</span>
                 </div>
                 <div className="production-agent-note" role="status">
-                    {Object.entries(counts)
+                    {Object.entries(displayCounts)
                         .map(([label, count]) => `${label} ${count}`)
                         .join(" · ")}
                 </div>
@@ -105,7 +180,12 @@ export function CanvasGroupTaskDetails({
                 )}
                 {parallelWarnings.length ? (
                     <div className="production-agent-error" role="alert">
-                        {parallelWarnings.map((item) => item.name).join("、")} 未通过本地校验，已暂停等待修复；点击“继续任务”会从已保存文稿继续。
+                        {parallelWarnings.map((item) => item.name).join("、")} 未通过本地校验，系统已自动重试并先跳过，不影响其他文档；可在对应任务里点击“重试此项”再次生成。
+                    </div>
+                ) : null}
+                {planNeedsContinuation ? (
+                    <div className="production-agent-error" role="alert">
+                        {productionPlanMissingDocumentNote(run)}
                     </div>
                 ) : null}
                 {externalFailure && progress?.assetsStarted && (
@@ -115,21 +195,6 @@ export function CanvasGroupTaskDetails({
                 )}
             </div>
             <div className="production-agent-actions">
-                <Select
-                    aria-label="筛选组内节点"
-                    value={chosen?.id || ""}
-                    style={{ width: "100%", maxWidth: 440 }}
-                    showSearch
-                    optionFilterProp="label"
-                    onChange={(value) => {
-                        setSelected(value);
-                        setVisible(100);
-                    }}
-                    options={[
-                        { value: "", label: "全部节点" },
-                        ...visibleMembers.map((member) => ({ value: member.id, label: `${member.title} · ${groupMemberState(member, session.snapshots[targets.find((item) => item.nodeId === member.id)?.key || ""])}` })),
-                    ]}
-                />
                 {pending.length > 0 && !retired ? (
                     <Button icon={<Play size={14} />} loading={submitting} disabled={submitting || !!active} onClick={() => onResume(node.id)}>
                         {active ? "后台生成中" : assetGeneration ? "继续生成" : "继续提交"}{active ? "" : `（${pending.length}）`}
@@ -141,16 +206,6 @@ export function CanvasGroupTaskDetails({
                     </Button>
                 ) : null}
                 <Button aria-label="刷新分组记录" title="刷新分组记录" loading={session.loading} icon={<RefreshCw size={14} />} onClick={session.refresh} />
-                {chosen && task && ["failed", "cancelled"].includes(task.status) ? (
-                    <Button icon={<RotateCcw size={14} />} onClick={() => onRetry(chosen)}>
-                        重试此节点
-                    </Button>
-                ) : null}
-                {task && canCancelGenerationTask(task) ? (
-                    <Button icon={<Square size={14} />} onClick={() => onCancel(task)}>
-                        取消此任务
-                    </Button>
-                ) : null}
                 {controlled && run && (active || externalFailure || resumable) && (!workflow?.planGroup || active || resumable) && (!retired || active || resumable) ? (
                     <Button
                         loading={agentState.busy[controlled.id]}
@@ -164,7 +219,7 @@ export function CanvasGroupTaskDetails({
                             ? assetGeneration
                                 ? "暂停生成"
                                 : "暂停任务"
-                            : progress?.assetsStarted
+                            : run.status === "cancelled" ? "继续制作" : progress?.assetsStarted
                               ? `重试上次范围（${progress.selectedAssetKeys?.length || progress.assetTotal || 0}项）`
                               : assetGeneration
                                 ? "继续生成"
@@ -204,77 +259,125 @@ export function CanvasGroupTaskDetails({
                     {agentState.syncError}
                 </div>
             ) : null}
-            {errors.map((member) => (
-                <div key={member.id} role="alert" className="production-agent-error">
-                    {member.title}：{member.metadata?.errorDetails}
-                </div>
-            ))}
-            {targets
-                .filter((target) => (!chosen || target.nodeId === chosen.id) && session.errors[target.key])
-                .map((target) => (
-                    <div key={target.key} role="alert" className="production-agent-error">
-                        {members.find((member) => member.id === target.nodeId)?.title}：{session.errors[target.key]}
+            <div className="production-agent-journal-heading">
+                <strong>任务</strong>
+                {targets.length ? (
+                    <Segmented
+                        aria-label="执行记录排序"
+                        size="small"
+                        value={order}
+                        onChange={(value) => setOrder(value as "desc" | "asc")}
+                        options={[
+                            { label: "最新在前", value: "desc" },
+                            { label: "最早在前", value: "asc" },
+                        ]}
+                    />
+                ) : null}
+            </div>
+            <div className="production-agent-tasks" aria-label="任务列表">
+                {items.length === 0 && fallbackRows.length === 0 ? <p className="production-agent-note">{session.loading ? "正在读取任务" : "本组暂无任务"}</p> : null}
+                {fallbackRows.map((row) => (
+                    <div key={row.key} className="production-agent-task">
+                        <div className="production-agent-task-summary">
+                            <span className="production-agent-task-title">{row.title}</span>
+                            <span className="production-agent-task-state">{row.state}</span>
+                            {row.detail ? <span className="production-agent-note" role="status">{row.detail}</span> : null}
+                            {row.retryable && controlled ? (
+                                <Button size="small" icon={<RotateCcw size={14} />} disabled={agentState.busy[controlled.id]} onClick={() => void retryItem(row.itemKey)}>
+                                    重试此项
+                                </Button>
+                            ) : null}
+                        </div>
                     </div>
                 ))}
-            {promptMembers.length ? (
-                <details className="production-agent-parameters">
-                    <summary>{chosen ? `运行参数 · ${chosen.title}` : `运行提示词 · ${promptMembers.length} 个节点`}</summary>
-                    {chosen?.metadata?.prompt ? (
-                        <dl>
-                            <div>
-                                <dt>模型</dt>
-                                <dd>{chosen.metadata.model || "未记录"}</dd>
-                            </div>
-                            <div>
-                                <dt>推理强度</dt>
-                                <dd>{chosen.metadata.reasoningEffort || "medium"}</dd>
-                            </div>
-                            <div className="production-agent-prompt">
-                                <dt>提示词</dt>
-                                <dd style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{chosen.metadata.prompt}</dd>
-                            </div>
-                        </dl>
-                    ) : (
-                        <div className="space-y-3">
-                            {promptMembers.map((member) => (
-                                <div key={member.id}>
-                                    <div className="text-xs font-semibold">{member.title}</div>
-                                    <div className="mt-1 whitespace-pre-wrap break-words text-xs" style={{ color: "var(--text-secondary, inherit)" }}>
-                                        {member.metadata?.prompt}
-                                    </div>
+                {items.map(({ key, target: itemTarget, member }) => {
+                    const open = !!expanded[key];
+                    const itemSnapshot = itemTarget ? session.snapshots[itemTarget.key] : undefined;
+                    const itemTask = itemSnapshot?.kind === "task" ? itemSnapshot.detail.task : undefined;
+                    const itemRun = itemSnapshot?.kind === "agent" ? itemSnapshot.run : undefined;
+                    const itemActive = !!itemRun && ["running", "queued"].includes(itemRun.status);
+                    const canRetryItem = !!itemTask && ["failed", "cancelled"].includes(itemTask.status);
+                    const canCancelItem = !!itemTask && canCancelGenerationTask(itemTask);
+                    const state = groupMemberState(member, itemSnapshot, snapshot, parallelStatusOf(member));
+                    const itemError = (itemTarget && session.errors[itemTarget.key]) || (!itemSnapshot ? member.metadata?.errorDetails : undefined);
+                    const limit = visibleByKey[key] || 100;
+                    const placeholder = isPlanPlaceholder(member);
+                    const placeholderKey = member.metadata?.shortDrama?.assetKey;
+                    const canRetryPlaceholder = placeholder && !!controlled && !!placeholderKey && retryableItem(parallelItemOf(member));
+                    // 方案文档（含占位和已保存的）没有自己的执行记录，统一展示容器的协调任务记录。
+                    const planDocument = placeholder || !!member.metadata?.shortDrama?.planSection;
+                    const journalTarget = itemTarget || (planDocument && target?.coordinator ? target : undefined);
+                    const itemRows = open && journalTarget ? groupExecutionRows(rowMembers, session.snapshots, order, [journalTarget]) : [];
+                    const earlier = !!journalTarget && groupSessionHasEarlier([journalTarget], session.snapshots);
+                    return (
+                        <details key={key} className="production-agent-task" open={open} onToggle={(event) => { const next = event.currentTarget.open; setExpanded((value) => (value[key] === next ? value : { ...value, [key]: next })); }}>
+                            <summary>
+                                <ChevronRight size={14} className="production-agent-chevron" aria-hidden />
+                                <span className="production-agent-task-title">{member.title}</span>
+                                <span className="production-agent-task-state">{state}</span>
+                            </summary>
+                            {open ? (
+                                <div className="production-agent-task-body">
+                                    {itemError ? <div role="alert" className="production-agent-error">{itemError}</div> : null}
+                                    {canRetryItem || canCancelItem ? (
+                                        <div className="production-agent-task-actions">
+                                            {canRetryItem ? <Button size="small" icon={<RotateCcw size={14} />} onClick={() => onRetry(member)}>重试此任务</Button> : null}
+                                            {canCancelItem && itemTask ? <Button size="small" icon={<Square size={14} />} onClick={() => onCancel(itemTask)}>取消此任务</Button> : null}
+                                        </div>
+                                    ) : null}
+                                    {canRetryPlaceholder && placeholderKey ? (
+                                        <div className="production-agent-task-actions">
+                                            <Button size="small" icon={<RotateCcw size={14} />} disabled={agentState.busy[controlled!.id]} onClick={() => void retryItem(placeholderKey)}>
+                                                重试此项
+                                            </Button>
+                                        </div>
+                                    ) : null}
+                                    {member.metadata?.prompt?.trim() ? (
+                                        <dl className="production-agent-task-params">
+                                            <div><dt>模型</dt><dd>{member.metadata.model || "未记录"}</dd></div>
+                                            <div><dt>推理强度</dt><dd>{member.metadata.reasoningEffort || "medium"}</dd></div>
+                                            <div className="production-agent-prompt"><dt>提示词</dt><dd>{member.metadata.prompt}</dd></div>
+                                        </dl>
+                                    ) : null}
+                                    {placeholder && parallelDetailText(parallelItemOf(member)) ? (
+                                        <p className="production-agent-note" role="status">{parallelDetailText(parallelItemOf(member))}</p>
+                                    ) : null}
+                                    {placeholder && state === "未启动" ? (
+                                        <p className="production-agent-note">
+                                            {member.metadata?.shortDrama?.planAsset?.name || member.title}尚未生成：系统已自动重试仍未成功，已先跳过，不影响其他文档；可点击“重试此项”再次生成。
+                                        </p>
+                                    ) : placeholder ? (
+                                        <p className="production-agent-note">
+                                            {run?.status === "cancelled" ? "已取消，可继续制作：" : "等待生成："}{member.metadata?.shortDrama?.planAsset?.name || member.title}{run?.status === "cancelled" ? "" : "，模型返回后将写入此文档。"}
+                                        </p>
+                                    ) : null}
+                                    {journalTarget ? (
+                                        <>
+                                            <CanvasExecutionJournal
+                                                compact
+                                                label={member.title + " 执行记录"}
+                                                rows={itemRows.slice(0, limit)}
+                                                order={order}
+                                                onOrder={setOrder}
+                                                empty={session.loading ? "正在读取执行记录" : itemActive ? "后台任务执行中，等待首条可展示进展。" : "暂无执行记录"}
+                                            />
+                                            {itemRows.length > limit ? <Button size="small" onClick={() => setVisibleByKey((value) => ({ ...value, [key]: limit + 100 }))}>显示更多记录</Button> : null}
+                                            {earlier ? (
+                                                <Button size="small" loading={session.loading} onClick={() => { session.loadEarlier(); setVisibleByKey((value) => ({ ...value, [key]: limit + 100 })); }}>
+                                                    读取更早记录
+                                                </Button>
+                                            ) : null}
+                                        </>
+                                    ) : (
+                                        <p className="production-agent-note">{planDocument ? "该文档由制作方案协调任务生成，暂无可展示的执行记录。" : "尚未调用模型，暂无执行记录。"}</p>
+                                    )}
                                 </div>
-                            ))}
-                        </div>
-                    )}
-                </details>
-            ) : null}
-            <CanvasExecutionJournal
-                rows={rows.slice(0, visible)}
-                order={order}
-                onOrder={(value) => {
-                    setOrder(value);
-                    setVisible(100);
-                }}
-                empty={pending.length ? "待提交节点尚未调用模型。" : session.loading ? "正在读取本组执行记录" : active ? "后台任务执行中，等待首条可展示进展。" : "本组暂无执行记录"}
-            />
-            {rows.length > visible ? <Button onClick={() => setVisible((value) => value + 100)}>显示更多记录</Button> : null}
-            {hasEarlier ? (
-                <Button
-                    loading={session.loading}
-                    onClick={() => {
-                        session.loadEarlier();
-                        setVisible((value) => value + 100);
-                    }}
-                >
-                    读取更早记录
-                </Button>
-            ) : null}
-            {targets.some((target) => {
-                const value = session.snapshots[target.key];
-                return value?.kind === "task" && value.detail.truncated;
-            }) ? (
-                <p className="production-agent-note">部分任务仅显示最近 200 条执行记录。</p>
-            ) : null}
+                            ) : null}
+                        </details>
+                    );
+                })}
+            </div>
+            {truncated ? <p className="production-agent-note">部分任务仅显示最近 200 条执行记录。</p> : null}
         </section>
     );
 }

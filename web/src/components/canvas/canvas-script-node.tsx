@@ -61,6 +61,11 @@ const columnOptions: Array<{ label: string; value: StoryboardColumn }> = [
     { label: "观众视点", value: "viewerPOV" },
     { label: "表演调度", value: "performanceBlocking" },
     { label: "景别", value: "shotSize" },
+    { label: "镜头焦段", value: "lens" },
+    { label: "入镜转场", value: "transitionIn" },
+    { label: "出镜转场", value: "transitionOut" },
+    { label: "剪辑点", value: "cutPoint" },
+    { label: "拍摄提示", value: "craftWarning" },
     { label: "情绪", value: "emotion" },
     { label: "光影氛围", value: "lightingAndAtmosphere" },
     { label: "音效", value: "audioEffects" },
@@ -525,7 +530,7 @@ export function CanvasScriptEditor({
                         className="w-full"
                         value={row.shotSize || undefined}
                         placeholder="选择景别"
-                        options={["特写", "近景", "中景", "全景", "远景"].map((value) => ({ value, label: value }))}
+                        options={Array.from(new Set([...["大特写", "特写", "近景", "中近景", "中景", "中全景", "全景", "远景", "大远景"], ...(row.shotSize ? [row.shotSize] : [])])).map((value) => ({ value, label: value }))}
                         onChange={(shotSize) => updateRow(row.id, { shotSize })}
                     />
                 ) : (

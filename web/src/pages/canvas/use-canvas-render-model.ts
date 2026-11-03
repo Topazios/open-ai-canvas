@@ -131,6 +131,15 @@ export function useCanvasRenderModel({
             }
         }
 
+        // A v5 plan container only appears once its plans start; until then the
+        // standalone outline is the visible node and the container stays hidden.
+        for (const node of nodes) {
+            const workflow = node.metadata?.shortDrama;
+            if (!isFrameNode(node) || workflow?.planVersion !== 5 || workflow.role !== "collection" || workflow.step !== "story.plan" || workflow.planGroup) continue;
+            const started = (frameChildrenById.get(node.id) || []).some((child) => child.metadata?.shortDrama?.assetKey !== "$summary");
+            if (!started) renderHiddenNodeIds.add(node.id);
+        }
+
         for (const root of batchRoots) {
             const childIndex = new Map((root.metadata?.batchChildIds || []).map((childId, index) => [childId, index]));
             batchChildIndexByRootId.set(root.id, childIndex);
@@ -366,6 +375,7 @@ export function useCanvasRenderModel({
             const visibleFrom = assetManifestFrameById.has(sourceFrom.id) ? nodeById.get(assetManifestFrameById.get(sourceFrom.id)!) : sourceFrom;
             const visibleTo = assetManifestFrameById.has(sourceTo.id) ? nodeById.get(assetManifestFrameById.get(sourceTo.id)!) : sourceTo;
             if (!visibleFrom || !visibleTo || visibleFrom.id === visibleTo.id) return [];
+            if (renderHiddenNodeIds.has(visibleFrom.id) || renderHiddenNodeIds.has(visibleTo.id)) return [];
             const from = dragPreview?.nodeIds.has(visibleFrom.id) ? { ...visibleFrom, position: { x: visibleFrom.position.x + dragPreview.x, y: visibleFrom.position.y + dragPreview.y } } : visibleFrom;
             const to = dragPreview?.nodeIds.has(visibleTo.id) ? { ...visibleTo, position: { x: visibleTo.position.x + dragPreview.x, y: visibleTo.position.y + dragPreview.y } } : visibleTo;
             const connectionLeft = Math.min(from.position.x, to.position.x);
@@ -375,7 +385,7 @@ export function useCanvasRenderModel({
             if (connectionRight <= renderBounds.retain.left || connectionLeft >= renderBounds.retain.right || connectionBottom <= renderBounds.retain.top || connectionTop >= renderBounds.retain.bottom) return [];
             return [{ connection, from, to }];
         });
-    }, [assetManifestFrameById, connectionSpatialIndex, connectionById, nodeById, dragPreview, relatedHighlight.connectionIds, renderBounds]);
+    }, [assetManifestFrameById, connectionSpatialIndex, connectionById, nodeById, dragPreview, relatedHighlight.connectionIds, renderBounds, renderHiddenNodeIds]);
 
     const configInputsById = useMemo(() => {
         const map = new Map<string, NodeGenerationInput[]>();

@@ -25,6 +25,15 @@ func TestApplyPreservesContentAndSpeech(t *testing.T) {
 }
 
 func TestUnknownScopeIsNotRewritten(t *testing.T) {
+	story := Block("story", "text")
+	for _, required := range []string{"抽象事物写入世界规则或所属资产状态", "单集写作预算", "规范用语、审核说明与制作说明不进入文稿"} {
+		if !strings.Contains(story, required) {
+			t.Fatalf("story rules missing %q", required)
+		}
+	}
+	if strings.Contains(story, "规范不代表上游审核保证") {
+		t.Fatal("author-level disclaimer leaked back into story rules")
+	}
 	for _, scope := range [][2]string{{"", "text"}, {"ordinary", "image"}, {"story", "unknown"}} {
 		if Block(scope[0], scope[1]) != "" || Apply("original", scope[0], scope[1]) != "original" {
 			t.Fatalf("unknown scope changed: %v", scope)

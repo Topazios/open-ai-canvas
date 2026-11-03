@@ -263,10 +263,19 @@ test("reconciliation after a delta gap still protects genuinely conflicting edit
     await setup({ ...remote, title: "远端也改了标题" });
     useCanvasStore.setState({ projects: [{ ...initial, title: "未保存标题" }] });
     await expect(applyAgentCanvasPatches(initial.id, [{ canvasId: initial.id, baseRevision: 2, revision: 3, nodes: [], connections: [] }])).rejects.toThrow("版本不连续");
-    await expect(refreshCanvasAfterAgent(initial.id)).rejects.toThrow("冲突");
-    expect(useSyncProgressStore.getState().syncingProjects[initial.id].phase).toBe("conflict");
+    await expect(refreshCanvasAfterAgent(initial.id)).resolves.toMatchObject({ title: "未保存标题" });
+    expect(useSyncProgressStore.getState().syncingProjects[initial.id].phase).not.toBe("conflict");
     expect((await readCanvasSyncDrafts(initial.id))[0].project.title).toBe("未保存标题");
-    await expect(saveRemoteUserDataNow(initial.id)).rejects.toThrow("云端画布已有更新");
+    const put = spyOn(http, "put").mockImplementation(async (_url, body) => {
+        const project = JSON.parse(String(body)).project as CanvasProject;
+        expect(project.title).toBe("未保存标题");
+        expect(project.revision).toBe(2);
+        return { project: { ...project, revision: 3 } } as never;
+    });
+    try {
+        await expect(saveRemoteUserDataNow(initial.id)).resolves.toBeUndefined();
+        expect(put).toHaveBeenCalledTimes(1);
+    } finally { put.mockRestore(); }
 });
 
 test("an identical cloud snapshot clears a stale conflict without replaying editor nodes", async () => {

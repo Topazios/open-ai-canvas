@@ -20,13 +20,23 @@ function width(nodes: CanvasNodeData[], value: number) {
 }
 
 describe("responsive group grid", () => {
-    test("plan root reserves bottom actions outside the document grid", () => {
+    test("plan root ends one padding below its last card", () => {
         const nodes = fixture(5);
         nodes[0].metadata!.shortDrama!.step = ShortDramaStep.Plan;
         const result = layoutCanvasGridGroups(nodes);
         const frame = result[0];
         const lastBottom = Math.max(...result.slice(1).map(node => node.position.y + node.height));
-        expect(frame.position.y + frame.height - lastBottom).toBeGreaterThanOrEqual(60);
+        expect(frame.position.y + frame.height - lastBottom).toBe(24);
+        expect(layoutCanvasGridGroups(result)).toBe(result);
+    });
+
+    test("plan container keeps three documents per row even with a stale narrow width", () => {
+        const nodes = fixture(5).map(n => n.id === "group" ? { ...n, width: 448, metadata: { ...n.metadata,
+            frame: { collapsed: false, expandedWidth: 448, expandedHeight: 404 },
+            shortDrama: { ...n.metadata!.shortDrama!, step: ShortDramaStep.Plan, assetGroup: { manifestId: "summary" } } } } : n);
+        const result = layoutCanvasGridGroups(nodes);
+        expect(result[0].width).toBe(1296);
+        expect(result.slice(1).map(n => [n.position.x, n.position.y])).toEqual([[124, 200], [548, 200], [972, 200], [124, 536], [548, 536]]);
         expect(layoutCanvasGridGroups(result)).toBe(result);
     });
 

@@ -5,6 +5,8 @@ export type SyncProjectProgress = {
     total: number;
     completed: number;
     phase: "pending" | "uploading" | "saving" | "done" | "error" | "conflict";
+    /** error 阶段的来源：load 为读取云端失败，save 为写入云端失败。 */
+    kind?: "load" | "save";
     message?: string;
     draftCount?: number;
 };

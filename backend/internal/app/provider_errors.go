@@ -145,7 +145,7 @@ func (e providerHTTPError) summary() string {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return "模型服务鉴权失败，请检查 API Key 和模型权限"
 	case http.StatusNotFound:
-		return "模型或模型接口不存在，请检查渠道配置"
+		return "上游返回 404：请求的接口路径或模型不存在，请核对渠道的接口类型、Base URL 和模型名"
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
 		return "模型服务响应超时，请稍后重试"
 	case http.StatusTooManyRequests:
@@ -224,6 +224,14 @@ func providerPayloadErrorCategory(raw string) (string, bool) {
 	case (strings.Contains(normalized, "thinking") || strings.Contains(normalized, "reasoning")) && strings.Contains(normalized, "tool_choice"),
 		strings.Contains(normalized, "tool_choice") && (strings.Contains(normalized, "not support") || strings.Contains(normalized, "unsupported")):
 		return "当前模型为思考/推理模式，不支持强制工具调用（tool_choice=required），请改用自动工具选择或更换非思考模式模型", true
+	// 上游点名某个字段不被支持或要求改用别的字段：同一路径在不同网关上字段约定可能不同，
+	// 这是渠道所选协议与上游不匹配，而不是提示词或素材的问题。具体字段名由随后附加的上游原文给出。
+	case strings.Contains(normalized, "is not supported; use"),
+		strings.Contains(normalized, "unknown field"),
+		strings.Contains(normalized, "unrecognized field"),
+		strings.Contains(normalized, "unknown parameter"),
+		strings.Contains(normalized, "unsupported parameter"):
+		return "上游不认可请求里的字段，通常是渠道所选协议与该上游的字段约定不一致，请核对渠道协议是否匹配该上游", true
 	case strings.Contains(normalized, "invalid"), strings.Contains(normalized, "parameter"), strings.Contains(normalized, "argument"):
 		return "模型服务拒绝了请求，请检查模型和参数", true
 	}

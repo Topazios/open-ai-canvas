@@ -78,7 +78,7 @@ func planKinds(m productionManifest) []string {
 }
 
 const unifiedPlanPolicy = `本轮是制作长任务。只能使用 production_* 工具。当前为前置制作方案，不从尚不存在的正文提取事实，不调用分镜工具或 production_facts。用户已授权自动完成，不需要逐步审核确认；调用及扣费照常统计，任务不按累计次数或积分预算停止。
-必须将故事发生地、发行方向、正文语言和人物身份分开解释：全局设定中的故事发生地是故事世界的权威来源，正文语言只决定输出文字语言，发行方向和目标市场只决定发行受众与区域偏好，不能互相替换。严格沿用用户明确选择的地区、社会制度、机构、职业环境、生活细节和世界规则；故事发生地不在中国时，未被选题或原文明确指定为中国籍、华裔、华人或移民的角色，不得仅因为中文输出而自动改成这些身份，也不得自动套用中国式家庭、机构、法律、货币、节日或城市称谓。中文输出可以对当地姓名进行中文音译或译写，但不能改变其故事身份。
+必须将故事发生地、发行方向、正文语言和人物身份分开解释：全局设定中的故事发生地是故事世界的权威来源，正文语言只决定输出文字语言，发行方向和目标市场只决定发行受众与区域偏好，不能互相替换。严格沿用用户明确选择的地区、社会制度、机构、职业环境、生活细节和世界规则；故事发生地不在中国时，未被选题或原文明确指定为中国籍、华裔、华人或移民的角色，不得仅因为中文输出而自动改成这些身份，也不得自动套用中国式家庭、机构、法律、货币、节日或城市称谓。中文输出可以对当地姓名进行中文音译或译写，但不能改变其故事身份。正文语言为中文而目标市场不是中国大陆时，中文只是制作端描述的显示语言：叙述方式、对白节奏、含蓄程度、幽默方式、俗语、比喻、意境和潜台词的措辞，仍按全局设定中目标市场的母语表达习惯构思，再译写成中文，不套用国内短剧腔和中文网络用语。
 必须按当前持久检查点 nextAction 推进：读取已采用选题和全局设定 → story 故事总纲与世界规则 → production_plan_inventory 登记全剧计划资产并完成清单 → visual 视觉美术规范、direction 导演视听规范并行 → generation 生成与连续性规范 → production_check 检查并结束制作方案。资产总表属于方案内容，不是已创建资产。用户手动点击生成资产后，才按依赖并行完成资产档案并单独检查；全部前置规范完成且版本有效且用户已经启动后才允许制作资产档案，规范失败或缺失时不跳过。不要反复检查代替创作。inventory 总表由系统维护，不手工 production_submit。
 全局设定是本轮约束；开放结局写明本季解决的主线与留下的悬念，不能强改为封闭结局。故事先完成类型/受众承诺、主线与必要支线、人物目标和对抗力量、世界边界与规则代价，再确定全季起承转合/阶段转折/结局和支线回收，最后严格按项目总集数及单集时长逐集填充。逐集必须给出时地、人物、目标、阻力、选择、行动、因果结果与代价、关系/信息/资产状态变化、阶段收束及下一集承接；节奏需有符合本项目时长的时间预算，不能用“符合时长”或篇章摘要代替。只有这条故事骨架可执行后才进入资产提取。资产总表逐项核对总纲各章和每一集的具体需求，覆盖行动者/有台词或被提及角色、实际地点、出现/转移/使用的实体道具、重复声音和规则效果，逐条给出原文证据及独立登记/并入状态/排除理由；总纲明确写到的底片、照片、账本等实体不能在类别缺省时消失。类别覆盖和字段完整不代表语义完整。清单逐篇章核对覆盖人物（含配角和画外音）、场景、道具、特殊资产、独立声音五类；不存在的类别在 absent 说明原因，不凑数。每项 purpose 写剧情功能，plannedRange 写计划篇章/集段；episodes 可以为空，未确定精确集数不编造。dependsOn 仅填必须先完成设计的资产 key，不把普通人物关系写成循环依赖。全部类别均需填写类别内 priority，从1开始连续且唯一，1为主线重要性最高；人物先主线驱动者和核心对手/共同主角，再主要配角、次要角色、群演/画外人物；场景先核心反复空间及高潮空间，再主要、次要空间；道具先主线关键物件、线索/目标物，再反复使用和一般功能道具；声音与特殊资产按主线作用排序。总表固定按人物、场景、道具、特殊资产、声音分组，组内按 priority 升序，禁止按姓名、出场顺序、提交批次或任务完成时间随机排列。
  登记支持分批，每批 complete=false；覆盖全部篇章和五类后 complete=true 固定本版清单。storyHash 使用当前保存回执。资产 key 为稳定临时标识，系统分配 CHR/SCN/PRP/SPC/AUD 编码；后续沿用 key、name 和返回的编码，不能自行编造编码。重大形态、结构或身份变化需要独立参考图/资产码时，在总清单中新增独立资产条目，kind 沿用 character/environment/prop/special，填写 baseKey 指向基础资产、stateName 写重大形态名称；每个形态有独立节点和基础资产码。普通情绪、伤势、污渍、天气灯光与日常换装写连续性，不另建条目。声音档案只管理独立复用的声音，个人声线以人物档案为权威，相关声音引用人物编码。
@@ -429,7 +429,7 @@ func productionPlanCoverage(m productionManifest, doc map[string]any, artifacts 
 	for _, a := range artifacts {
 		node := productionNode(doc, a.NodeID)
 		meta, _ := node["metadata"].(map[string]any)
-		if node == nil || node["parentId"] != m.FrameID || !productionArtifactMatches(node, a.ContentHash) || len(productionDocumentMissing("plan", a.Key, stringValue(meta["content"]))) > 0 {
+		if node == nil || !productionPlanParentMatches(m, a.Key, node) || !productionArtifactMatches(node, a.ContentHash) || len(productionDocumentMissing("plan", a.Key, stringValue(meta["content"]))) > 0 {
 			issues = append(issues, "文稿已变更、缺失或不完整："+a.Key)
 			continue
 		}
@@ -470,7 +470,7 @@ func productionPlanCoverage(m productionManifest, doc map[string]any, artifacts 
 	if len(missing) > 0 {
 		issues = append(issues, fmt.Sprintf("还有%d项资产设定未完成", len(missing)))
 	}
-	return map[string]any{"valid": len(issues) == 0, "issues": issues, "missingAssets": missing[:min(12, len(missing))], "missingCount": len(missing), "artifactCount": len(artifacts), "plannedAssets": len(m.Plan.Assets), "absent": m.Plan.Absent, "semanticReview": "计划清单覆盖已核对；剧情与资产语义完整性待人工验收"}
+	return map[string]any{"valid": len(issues) == 0, "issues": issues, "missingAssets": missing[:min(12, len(missing))], "missingCount": len(missing), "artifactCount": len(artifacts), "plannedAssets": len(m.Plan.Assets), "absent": m.Plan.Absent, "semanticReview": "计划清单覆盖已核对；剧情与资产语义完整性可抽查"}
 }
 
 func productionPlanContext(repo *repository.Repository, run *model.CloudAgentExecution, m productionManifest, doc map[string]any) (map[string]any, error) {

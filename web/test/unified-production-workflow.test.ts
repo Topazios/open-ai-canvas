@@ -116,6 +116,15 @@ test("episode prose flows into one reconciliation job and shared norms cannot be
     expect(() => workflowAncestors([f.frame.id], f.result.nodes, f.request.pipelineId)).toThrow("四份共用规范");
 });
 
+test("a standalone outline without parentId still satisfies the shared norms check", () => {
+    const f = unifiedPlan();
+    const story = f.docs.find((node) => nodeWorkflow(node)?.planSection === "story")!;
+    delete story.parentId;
+    expect(() => workflowAncestors([f.frame.id], f.result.nodes, f.request.pipelineId)).not.toThrow();
+    f.frame.metadata!.shortDrama!.sourceNodeIds = f.frame.metadata!.shortDrama!.sourceNodeIds.filter((id) => id !== f.docs[3].id);
+    expect(() => workflowAncestors([f.frame.id], f.result.nodes, f.request.pipelineId)).toThrow("四份共用规范");
+});
+
 test("asset mentions resolve only supplied versions and reject missing identities or states", () => {
     const f = unifiedPlan();
     const hero = f.docs[1];
@@ -127,6 +136,11 @@ test("asset mentions resolve only supplied versions and reject missing identitie
     expect(resolved.content).not.toContain("靠南入口");
     expect(() => resolveProductionAssetReferences("@CHR-9999", f.docs)).toThrow("不存在");
     expect(() => resolveProductionAssetReferences("@CHR-0001-V9999", f.docs)).toThrow("状态不存在");
+    const placeholder = resolveProductionAssetReferences("@CHR-0001-V0001 @CHR-9999 @CHR-0001-V9999", f.docs, [], undefined, { allowMissing: true });
+    expect(placeholder.missing).toEqual(["CHR-9999", "CHR-0001-V9999"]);
+    expect(placeholder.codes).toEqual(["CHR-0001-V0001"]);
+    expect(placeholder.nodes).toEqual([hero]);
+    expect(resolveProductionAssetReferences("@CHR-0001-V0001", f.docs).missing).toEqual([]);
     expect(() => resolveProductionAssetReferences("@CHR-0001", [hero, { ...hero, id: "other-version" }])).toThrow("多个版本");
     const reconciled = structuredClone(hero); reconciled.id = "checked-hero"; reconciled.metadata!.shortDrama!.step = "assets.reconcile";
     expect(resolveProductionAssetReferences("@CHR-0001", [hero, reconciled]).nodes).toEqual([reconciled]);

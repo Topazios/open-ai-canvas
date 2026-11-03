@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createCanvasNode } from "../src/lib/canvas/canvas-project-domain";
 import { createWorkflowDocuments, workflowBodyTaskInput, workflowGenerationSources, workflowAncestors, workflowSignature, nodeWorkflow } from "../src/lib/canvas/canvas-short-drama-workflow";
-import { selectedAuditBodies, parseScreenplayAuditReport, screenplayAuditState, screenplayReportMarkdown, auditContextNodes, latestBodyAudit, screenplayAuditChecks, screenplayBodySignature, type ScreenplayAuditReport } from "../src/lib/canvas/workflow-screenplay-audit";
+import { autoReviewOutdated, autoReviewPassed, autoReviewRoundFromReport, autoReviewStalled, selectedAuditBodies, parseScreenplayAuditReport, screenplayAuditState, screenplayReportMarkdown, auditContextNodes, latestBodyAudit, screenplayAuditChecks, screenplayBodySignature, type ScreenplayAuditReport } from "../src/lib/canvas/workflow-screenplay-audit";
 import { buildGenerationTaskNodeResult } from "../src/lib/canvas/canvas-generation-task-sync";
 import { deriveShortDramaProgress } from "../src/lib/canvas/canvas-short-drama";
 import { ShortDramaStep as S, activeShortDramaSteps, nextShortDramaSteps } from "../src/lib/short-drama-steps";
@@ -10,11 +10,12 @@ import type { GenerationTask } from "../src/services/api/task-center";
 import { defaultShortDramaSettings } from "../src/lib/short-drama-settings";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import { CanvasScreenplayNodeContent } from "../src/components/canvas/canvas-screenplay-audit";
+import { CanvasScreenplayAuditPanel, CanvasScreenplayNodeContent } from "../src/components/canvas/canvas-screenplay-audit";
 import { buildCanvasCustomNodeScopes } from "../src/pages/canvas/use-canvas-scoped-node-renderers";
 import { retryWorkflowGeneration } from "../src/services/workflow-generation-retry";
 import { defaultConfig } from "../src/stores/use-config-store";
 import { canonicalize } from "json-canonicalize";
+import { resetScreenplayReviewNodes, isTransientReviewFailure, recoverReviewBody } from "../src/pages/canvas/use-screenplay-auto-review";
 
 function fixture() {
     const outline = createCanvasNode(CanvasNodeType.Text, { x: 0, y: 0 }, { content: "## 第 1 集\n主角面对阻力后作出决定。\n## 第 2 集\n决定的后果。\n## 第 3 集\n后续独有内容", status: "success", shortDrama: { step: S.Episodes, stage: "story", pipelineId: "p", role: "document", sourceNodeIds: [], sourceSignatures: {} } });
@@ -252,6 +253,17 @@ test("a failed inline diagnosis keeps the正文 eligible for single retry and ba
     expect(selected.bodies.map((node) => node.id)).toEqual([f.audit.id]);
 });
 
+test("a body whose inline diagnosis failed can still feed storyboard generation", () => {
+    const f = fixture();
+    f.audit.metadata!.status = "error";
+    nodeWorkflow(f.audit)!.screenplayAudit!.rawResult = "模型暂时没有返回合法报告";
+    const request = { ...f.request, step: S.Shots, sourceNodeIds: [f.audit.id] };
+    expect(workflowGenerationSources(request, f.nodes).some(node => node.id === f.audit.id)).toBe(true);
+    // 没有诊断绑定的正文失败仍然不能作为来源。
+    delete nodeWorkflow(f.audit)!.screenplayAudit;
+    expect(() => workflowGenerationSources(request, f.nodes)).toThrow("请先完成");
+});
+
 test("a diagnosis remains valid during its own loading submission", () => {
     const f = fixture();
     f.audit.metadata!.status = "loading";
@@ -352,4 +364,177 @@ test("audit does not reuse the正文 generation guard when an upstream outline h
     expect(result.created).toHaveLength(1);
     expect(() => workflowBodyTaskInput(result.created[0], result.nodes, result.connections)).not.toThrow();
     expect(nodeWorkflow(result.created[0])?.screenplayAudit?.contextSignatures?.[f.outline.id]).toBe(workflowSignature(f.outline));
+});
+
+test("a current audit that rejects the body for storyboard use blocks downstream sources until it passes", () => {
+    const f = fixture();
+    const value = complete(f);
+    expect(value.usability).toBe("不通过");
+    expect(() => workflowAncestors([f.audit.id], f.nodes, "p")).toThrow("审读未通过");
+    const passed: ScreenplayAuditReport = { ...value, usability: "有条件通过", quality: "有条件通过", checks: value.checks.map(item => ({ ...item, verdict: "有条件通过" })), findings: [], repairPrompt: "" };
+    f.audit.metadata = { ...f.audit.metadata, shortDrama: { ...nodeWorkflow(f.audit)!, screenplayAudit: { ...nodeWorkflow(f.audit)!.screenplayAudit!, report: passed, reportSignature: canonicalize(passed), reportMarkdown: screenplayReportMarkdown(passed) } } };
+    expect(() => workflowAncestors([f.audit.id], f.nodes, "p")).not.toThrow();
+});
+
+function passingReport(f: ReturnType<typeof fixture>): ScreenplayAuditReport {
+    const value = report(f);
+    return { ...value, quality: "有条件通过", usability: "有条件通过", checks: value.checks.map(item => ({ ...item, verdict: "有条件通过" })), findings: [], repairPrompt: "" };
+}
+
+function withFinding(f: ReturnType<typeof fixture>, severity: "P0" | "P1" | "P2" | "P3", certainty: "确认错误" | "待核实风险" | "创作建议"): ScreenplayAuditReport {
+    const value = passingReport(f);
+    return { ...value, findings: [{ ...report(f).findings[0], severity, certainty }] };
+}
+
+function stubRound(blocking: number) {
+    return { round: 1, auditedAt: "t", quality: "不通过", usability: "不通过", summary: "", blocking, findings: [], result: "failed" } as ReturnType<typeof autoReviewRoundFromReport>;
+}
+
+test("auto review passes only without confirmed P0-P2 findings and treats unknown verdicts as failing", () => {
+    const f = fixture();
+    expect(autoReviewPassed(passingReport(f))).toBe(true);
+    expect(autoReviewPassed(withFinding(f, "P1", "确认错误"))).toBe(false);
+    expect(autoReviewPassed(withFinding(f, "P0", "确认错误"))).toBe(false);
+    expect(autoReviewPassed(withFinding(f, "P3", "确认错误"))).toBe(true);
+    expect(autoReviewPassed(withFinding(f, "P1", "待核实风险"))).toBe(true);
+    expect(autoReviewPassed(withFinding(f, "P2", "创作建议"))).toBe(true);
+    expect(autoReviewPassed({ ...passingReport(f), usability: "信息不足" })).toBe(false);
+    expect(autoReviewPassed({ ...passingReport(f), quality: "未评估" })).toBe(false);
+    expect(autoReviewPassed({ ...passingReport(f), usability: "不通过" })).toBe(false);
+});
+
+test("auto review round records blocking findings with their evidence", () => {
+    const f = fixture();
+    const round = autoReviewRoundFromReport(withFinding(f, "P1", "确认错误"), 2, "2026-01-01T00:00:00Z");
+    expect(round).toMatchObject({ round: 2, blocking: 1, result: "failed", auditedAt: "2026-01-01T00:00:00Z" });
+    expect(round.findings[0]).toMatchObject({ id: "F1", blocking: true, evidence: ["两人沉默。"] });
+    const ok = autoReviewRoundFromReport(withFinding(f, "P3", "创作建议"), 1);
+    expect(ok.result).toBe("passed");
+    expect(ok.findings[0].blocking).toBe(false);
+});
+
+test("auto review stalls only after three rounds without a falling blocking count", () => {
+    const rounds = (...counts: number[]) => counts.map(stubRound);
+    expect(autoReviewStalled(rounds(3, 3))).toBe(false);
+    expect(autoReviewStalled(rounds(3, 3, 3))).toBe(true);
+    expect(autoReviewStalled(rounds(2, 3, 3))).toBe(true);
+    expect(autoReviewStalled(rounds(3, 2, 2))).toBe(false);
+    expect(autoReviewStalled(rounds(3, 2, 1))).toBe(false);
+    expect(autoReviewStalled(rounds(1, 1, 3, 3, 4))).toBe(true);
+    expect(autoReviewStalled(rounds(5, 5, 4))).toBe(false);
+});
+
+test("auto review record is outdated only when a finished record no longer matches the body", () => {
+    const f = fixture();
+    const signature = screenplayBodySignature(f.body);
+    expect(autoReviewOutdated({ status: "passed", bodySignature: signature }, f.body)).toBe(false);
+    const edited = { ...f.body, metadata: { ...f.body.metadata, content: `${f.body.metadata!.content}\n新增一句。` } };
+    expect(autoReviewOutdated({ status: "passed", bodySignature: signature }, edited)).toBe(true);
+    expect(autoReviewOutdated({ status: "manual", bodySignature: signature }, edited)).toBe(true);
+    expect(autoReviewOutdated({ status: "settled", bodySignature: signature }, edited)).toBe(true);
+    expect(autoReviewOutdated({ status: "settled", bodySignature: signature }, f.body)).toBe(false);
+    expect(autoReviewOutdated({ status: "repairing", bodySignature: signature }, edited)).toBe(false);
+    expect(autoReviewOutdated({ status: "auditing", bodySignature: signature }, edited)).toBe(false);
+    expect(autoReviewOutdated({ status: "passed" }, edited)).toBe(false);
+});
+
+test("resetting review nodes drops the old report but keeps the auto review history", () => {
+    const f = fixture();
+    const autoReview = { status: "auditing" as const, round: 2, maxRounds: 4, startedAt: "t", rounds: [stubRound(1)] };
+    f.body.metadata = { ...f.body.metadata, shortDrama: { ...nodeWorkflow(f.body)!, autoReview, screenplayAudit: { bodyNodeId: f.body.id, contextNodeIds: [], bodySignature: "x" }, screenplayRepair: { bodyNodeId: f.body.id, reportSignature: "y", contextNodeIds: [] } } };
+    const other = f.outline;
+    const next = resetScreenplayReviewNodes([other, f.body], f.body.id);
+    const data = nodeWorkflow(next[1])!;
+    expect(data.autoReview).toEqual(autoReview);
+    expect(data.screenplayAudit).toBeUndefined();
+    expect(data.screenplayRepair).toBeUndefined();
+    expect(next[0]).toBe(other);
+});
+
+test("only upstream and network style failures are retried automatically", () => {
+    expect(isTransientReviewFailure("任务失败:上游流式请求失败,生成未完成")).toBe(true);
+    expect(isTransientReviewFailure("网关返回 502")).toBe(true);
+    expect(isTransientReviewFailure("request timeout")).toBe(true);
+    expect(isTransientReviewFailure("内容审核未通过")).toBe(false);
+    expect(isTransientReviewFailure("诊断报告待核对")).toBe(false);
+    expect(isTransientReviewFailure("提交结果待确认")).toBe(false);
+});
+
+test("a failed repair restores the body so the report is valid and repair is offered again", () => {
+    const f = fixture(); complete(f);
+    const original = f.body.metadata!.content as string;
+    f.body.metadata = { ...f.body.metadata, status: "error", shortDrama: { ...nodeWorkflow(f.body)!, screenplayRepair: { bodyNodeId: f.body.id, contextNodeIds: [], reportSignature: "x" } } };
+    expect(screenplayAuditState(f.body, f.nodes).report).toBeUndefined();
+    const next = recoverReviewBody(f.nodes, f.body.id, { content: original, stage: "x" });
+    const body = next.find(node => node.id === f.body.id)!;
+    expect(body.metadata?.status).toBe("success");
+    expect(nodeWorkflow(body)?.screenplayRepair).toBeUndefined();
+    const state = screenplayAuditState(body, next);
+    expect(state.report).toBeDefined();
+    expect(state.stale).toBeFalsy();
+});
+
+test("an interrupted auto review offers a retry entry without asking for manual handling", () => {
+    const f = fixture(); complete(f);
+    f.body.metadata = { ...f.body.metadata, shortDrama: { ...nodeWorkflow(f.body)!, autoReview: { status: "manual", round: 1, maxRounds: 3, startedAt: "t", stopReason: "修复失败:上游流式请求失败", rounds: [] } } };
+    const props = { node: f.body, nodes: f.nodes, onEdit: () => {}, onReport: () => {}, onAudit: () => {}, onRepair: () => {} };
+    const withResume = renderToStaticMarkup(createElement(CanvasScreenplayNodeContent, { ...props, onResume: () => {} }));
+    expect(withResume).toContain("重试自动修复");
+    expect(withResume).toContain("已中断");
+    expect(withResume).not.toContain("人工");
+    expect(withResume).not.toContain("手动");
+    expect(renderToStaticMarkup(createElement(CanvasScreenplayNodeContent, props))).not.toContain("重试自动修复");
+});
+
+function withAutoReview(f: ReturnType<typeof fixture>, status: "settled" | "manual", rounds: ReturnType<typeof autoReviewRoundFromReport>[]) {
+    f.body.metadata = { ...f.body.metadata, shortDrama: { ...nodeWorkflow(f.body)!, autoReview: { status, round: rounds.length, maxRounds: 3, startedAt: "t", finishedAt: "t2", stopReason: "连续两轮阻塞数没有下降", rounds } } };
+}
+
+test("a settled auto review shows remaining items and a retry entry without manual wording", () => {
+    const f = fixture(); complete(f);
+    withAutoReview(f, "settled", [autoReviewRoundFromReport(report(f), 1, "2026-01-01T00:00:00Z")]);
+    const props = { node: f.body, nodes: f.nodes, onEdit: () => {}, onReport: () => {}, onAudit: () => {}, onRepair: () => {}, onResume: () => {} };
+    const html = renderToStaticMarkup(createElement(CanvasScreenplayNodeContent, props));
+    expect(html).toContain("已完成，仍有1项待留意");
+    expect(html).toContain("重试自动修复");
+    expect(html).not.toContain("人工");
+    expect(html).not.toContain("手动");
+});
+
+test("round details sit inside the round and the outer report does not repeat them", () => {
+    const f = fixture(); complete(f);
+    withAutoReview(f, "settled", [autoReviewRoundFromReport(report(f), 1, "2026-01-01T00:00:00Z")]);
+    const html = renderToStaticMarkup(createElement(CanvasScreenplayAuditPanel, {
+        node: f.body, nodes: f.nodes, onClose: () => {}, onRepair: () => {}, onReaudit: () => {}, onBody: () => {}, onResume: () => {},
+    }));
+    for (const text of ["正文验收维度", "审读范围与未验证项", "复检条件", "综合修复提示词"]) expect(html).toContain(text);
+    const first = html.indexOf("<details");
+    const last = html.lastIndexOf("</details>");
+    expect(first).toBeGreaterThan(-1);
+    expect(html.slice(0, first)).not.toContain("复检条件");
+    expect(html.slice(last)).not.toContain("正文验收维度");
+    expect(html).toContain("重试自动修复");
+    expect(html).not.toContain("手动");
+});
+
+test("rounds saved before the detail fields existed still render", () => {
+    const f = fixture(); complete(f);
+    withAutoReview(f, "manual", [stubRound(0)]);
+    const html = renderToStaticMarkup(createElement(CanvasScreenplayAuditPanel, {
+        node: f.body, nodes: f.nodes, onClose: () => {}, onRepair: () => {}, onReaudit: () => {}, onBody: () => {}, onResume: () => {},
+    }));
+    expect(html).toContain("第1轮");
+    expect(html).toContain("本轮未发现问题");
+});
+
+test("auto review round keeps checks, coverage, limitations and repair prompts", () => {
+    const f = fixture();
+    const value = report(f);
+    const round = autoReviewRoundFromReport(value, 1, "t");
+    expect(round.checks).toEqual(value.checks);
+    expect(round.coverage).toEqual(value.coverage);
+    expect(round.limitations).toEqual(value.limitations);
+    expect(round.repairPrompt).toBe(value.repairPrompt);
+    expect(round.findings[0].basis).toBe(value.findings[0].basis);
+    expect(round.findings[0].repairPrompt).toBe(value.findings[0].repairPrompt);
 });

@@ -1,3 +1,4 @@
+import { canonicalize } from "json-canonicalize";
 import type { StoryDevelopmentBrief } from "@/types/canvas";
 import { DramaSource, DramaVisualForm, DramaVisualStyle, DramaNarration, DramaAspectRatio, DramaLanguage, DramaVoiceLanguage, DramaRegion, DramaEra, DramaDuration, DramaAudience, DramaMarket, DramaTargetMarket, DramaEnding, DramaComplexity, DramaContentRating, dramaSettingOptions, dramaSettingLabels, type DramaSettingValues } from "./short-drama-settings-catalog";
 import { dramaMarketProfiles } from "./short-drama-market-profiles";
@@ -127,6 +128,34 @@ export function validateShortDramaSettings(value: ShortDramaGlobalSettings) {
     return value;
 }
 
+// Non-blocking hints for settings that pass validation but tend to produce
+// thin or oversized production plans. They never change what is accepted.
+export const SHORT_DRAMA_THIN_PREMISE_LENGTH = 60;
+export const SHORT_DRAMA_LARGE_TOTAL_MINUTES = 360;
+
+export function shortDramaSettingWarnings(settings: ShortDramaGlobalSettings): string[] {
+    const warnings: string[] = [];
+    const premiseLength = settings.premise.trim().length;
+    const defaults = defaultShortDramaSettings();
+    if (settings.source === DramaSource.Original && premiseLength === 0) warnings.push("补充设定为空，故事总纲只能依据通用文案展开，建议写明主角、核心冲突与结局走向");
+    else if (premiseLength < SHORT_DRAMA_THIN_PREMISE_LENGTH && settings.episodeCount === defaults.episodeCount) warnings.push("总集数仍是默认值且补充设定较短，请确认集数符合题材体量");
+    const totalMinutes = settings.episodeCount * dramaDurationSeconds[settings.duration].max / 60;
+    if (totalMinutes > SHORT_DRAMA_LARGE_TOTAL_MINUTES) warnings.push(`总集数与单集时长相乘最长约 ${Math.round(totalMinutes)} 分钟，制作成本与上下文压力较大，请确认体量`);
+    return warnings;
+}
+
+// The revision is a persistence version, not a creative constraint. Compare
+// the creative fields only so a harmless version bump does not mark
+// downstream content stale while real setting changes still do.
+export function settingsCreativeFingerprint(settings: ShortDramaGlobalSettings) {
+    const { revision: _revision, ...creativeSettings } = settings;
+    return canonicalize(creativeSettings);
+}
+
+export function shortDramaSettingsChanged(saved: ShortDramaGlobalSettings | undefined, current: ShortDramaGlobalSettings) {
+    return !saved || settingsCreativeFingerprint(saved) !== settingsCreativeFingerprint(current);
+}
+
 export function dramaSettingLabel<K extends keyof SettingValues>(key: K, value: SettingValues[K] | undefined) {
     return dramaSettingOptions[key].find((option) => option.value === value)?.label || "";
 }
@@ -156,6 +185,18 @@ export function dramaWorldSettingsPrompt(settings: ShortDramaGlobalSettings, inc
     return `故事世界与输出语言必须分开解释：\n故事发生地是权威世界设定：${region}。${distribution}正文语言是${language}，只决定正文、对白、文稿和提示词使用的书写语言，不决定人物国籍、族裔、姓名、制度或生活方式。\n${dramaWorldPolicyModes[mode]}\n即使使用中文输出，也应使用所选地区真实或合理的本地人物与环境细节；本地姓名可以按中文习惯音译或译写，但不能把本地身份改写成中国背景。除非选题、补充创作材料或原文明确提出，不能擅自添加跨地域身份转换。`;
 }
 
+// Chinese text for a non-mainland market: Chinese only carries the production
+// side description, while narration craft still follows the target market.
+export function chineseOutputForForeignMarket(settings: ShortDramaGlobalSettings) {
+    const chinese = settings.language === DramaLanguage.SimplifiedChinese || settings.language === DramaLanguage.TraditionalChinese;
+    return chinese && resolvedDramaTargetMarket(settings) !== DramaTargetMarket.China;
+}
+
+function dramaNarrativeLanguageLayerPrompt(settings: ShortDramaGlobalSettings) {
+    const market = dramaSettingLabel("targetMarket", resolvedDramaTargetMarket(settings));
+    return `叙述语言层要求：正文语言为中文，中文只是制作端描述、文稿和提示词的显示语言，不代表内容按国内观众构思。叙述方式、对白节奏、含蓄或直白程度、幽默方式、俗语、比喻、意境和潜台词的措辞，一律按目标市场“${market}”观众的母语表达习惯构思，再译写成中文呈现；译写保留当地说话方式和言外之意，不套用国内短剧腔、中文网络用语和中文成语堆砌，也不改变人物身份与故事发生地。`;
+}
+
 function dramaLocalStorycraftPrompt(settings: ShortDramaGlobalSettings) {
     const region = dramaSettingLabel("region", settings.region);
     return `本土叙事执行要求：故事地点“${region}”必须参与核心关系、权力来源、可行策略及选择后果；从本故事人物欲望和对抗关系出发，不预设全部题材都讲日常生活或现实事务。大区域不是同质文化，具体地点、角色圈层及其语言须连贯；不把任何国家或族群简化成刻板标签，不把无来源的法律、制度、习俗写成事实。中文仅是输出语言，不代表国内叙事腔；对白按角色关系、目的、性格和潜台词创作。\n${dramaGenreContract(settings.genre, settings.tone)}`;
@@ -173,6 +214,7 @@ export function globalSettingsPrompt(settings: ShortDramaGlobalSettings | undefi
         : stage === "story" ? ["source", "genre", "tone", "narration", "language", "voiceLanguage", "subtitleLanguage", "region", "era", "audience", "ending", "complexity", "contentRating", "visualForm", "visualStyle"]
         : ["genre", "tone", "visualForm", "visualStyle", "narration", "language", "voiceLanguage", "subtitleLanguage", "region", "era", "aspectRatio", "complexity", "contentRating"];
     const target = settings.targetMarket ? `\n目标市场：${dramaSettingLabel("targetMarket", settings.targetMarket)}（发行受众；故事发生地与语言以各自设定为准）` : "";
-    const storycraft = stage === "story" && media === "text" ? `\n${dramaLocalStorycraftPrompt(settings)}` : "";
+    const languageLayer = media === "text" && chineseOutputForForeignMarket(settings) ? `\n${dramaNarrativeLanguageLayerPrompt(settings)}` : "";
+    const storycraft = `${languageLayer}${stage === "story" && media === "text" ? `\n${dramaLocalStorycraftPrompt(settings)}` : ""}`;
     return `全局创作设定（第 ${settings.revision} 版，明确约束不得擅自替换）：\n发行方向：${dramaSettingLabel("market", settings.market)}${target}\n${keys.map((key) => `${dramaSettingLabels[key]}：${dramaSettingLabel(key, settings[key])}`).join("\n")}\n${dramaWorldSettingsPrompt(settings)}${storycraft}\n总集数：${settings.episodeCount}；单集时长：${dramaSettingLabel("duration", settings.duration)}${media === "image" && stage === "assets" ? "\n资产设定板继续采用统一横向排版，成片画幅不改变设定板布局。" : ""}${settings.premise.trim() ? `\n补充创作材料：${JSON.stringify(settings.premise.trim())}` : ""}`;
 }

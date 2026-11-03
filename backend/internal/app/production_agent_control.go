@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -51,6 +53,39 @@ type ProductionParallelProgress struct {
 	TaskID   string `json:"taskId,omitempty"`
 	Status   string `json:"status"`
 	Severity string `json:"severity,omitempty"`
+	// Abandoned items were set aside after automatic retries; the UI offers a retry entry.
+	Abandoned bool `json:"abandoned,omitempty"`
+	// Execution detail so the UI can show why a document is still pending.
+	Step               int      `json:"step,omitempty"`
+	Attempts           int      `json:"attempts,omitempty"`
+	ValidationAttempts int      `json:"validationAttempts,omitempty"`
+	RetryAt            int64    `json:"retryAt,omitempty"`
+	ValidationIssues   []string `json:"validationIssues,omitempty"`
+}
+
+const productionProgressIssueLimit = 3
+const productionProgressIssueRunes = 120
+
+// productionProgressIssues returns a few short, display-safe validation messages.
+func productionProgressIssues(issues []cloudAgentValidationIssue) []string {
+	result := []string{}
+	for _, issue := range issues {
+		text := strings.TrimSpace(issue.Message)
+		if text == "" {
+			text = strings.TrimSpace(issue.Issue)
+		}
+		if text == "" {
+			continue
+		}
+		if runes := []rune(text); len(runes) > productionProgressIssueRunes {
+			text = string(runes[:productionProgressIssueRunes]) + "…"
+		}
+		result = append(result, text)
+		if len(result) >= productionProgressIssueLimit {
+			break
+		}
+	}
+	return result
 }
 
 type ProductionPlanGroupProgress struct {
@@ -83,7 +118,10 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 	for _, key := range productionParallelKeys(state.ProductionParallel) {
 		work := state.ProductionParallel[key]
 		status := "queued"
-		if work.Error != "" {
+		if work.Abandoned {
+			// Set aside after automatic retries; Error may be empty, so state it explicitly.
+			status = "warning"
+		} else if work.Error != "" {
 			status = "error"
 		} else if work.TaskID != "" {
 			status = string(taskStates[work.TaskID])
@@ -100,8 +138,9 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 				status = "warning"
 			}
 		}
-		view.ParallelItems = append(view.ParallelItems, ProductionParallelProgress{Key: key, Name: work.Name, TaskID: work.TaskID, Status: status, Severity: severity})
-		if work.Error == "" {
+		item := ProductionParallelProgress{Key: key, Name: work.Name, TaskID: work.TaskID, Status: status, Severity: severity, Abandoned: work.Abandoned, Step: work.Step, Attempts: work.Attempts, ValidationAttempts: work.ValidationAttempts, RetryAt: work.RetryAt, ValidationIssues: productionProgressIssues(work.ValidationIssues)}
+		view.ParallelItems = append(view.ParallelItems, item)
+		if work.Error == "" && !work.Abandoned {
 			view.ConcurrentItems = append(view.ConcurrentItems, work.Name)
 			view.WaitingForBoundary = view.WaitingForBoundary || (state.ProductionPaused && work.TaskID != "")
 		}
@@ -122,7 +161,7 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 				continue
 			}
 			items = append(items, item)
-			if item.Status != "error" {
+			if item.Status != "error" && !item.Abandoned {
 				view.ConcurrentItems = append(view.ConcurrentItems, item.Name)
 			}
 		}
@@ -371,8 +410,8 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 	if err != nil {
 		return err
 	}
-	if task.RemovedAt != nil {
-		return BadAuthRequest("对应节点已删除，制作任务已移除")
+	if err := s.ensureProductionRunActive(userID, task, "对应节点已删除，制作任务已移除"); err != nil {
+		return err
 	}
 	if action == "generate_assets" {
 		return s.startProductionPlanAssets(userID, runID)
@@ -455,23 +494,29 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 				}
 			}
 		}
-		if cloudAgentRunTerminal(run.Status) && run.Status != "failed" {
+		resumeCancelled := action == "resume" && run.Status == "cancelled"
+		if cloudAgentRunTerminal(run.Status) && run.Status != "failed" && !resumeCancelled {
 			return BadAuthRequest("该作业已结束，请新建版本")
 		}
 		if action == "pause" && run.Status == "failed" {
 			return BadAuthRequest("失败作业已停止")
 		}
-		if action == "resume" && run.Status == "failed" && state.ActiveTaskID != "" {
+		if resumeCancelled && run.CleanupPending {
+			return BadAuthRequest("已取消的任务仍在清理，请稍后继续")
+		}
+		if action == "resume" && (run.Status == "failed" || resumeCancelled) && state.ActiveTaskID != "" {
 			task, err := s.repo.TaskForUser(userID, state.ActiveTaskID)
 			if err != nil {
 				return err
 			}
-			if task.Status == model.TaskStatusFailed {
-				if task.ProviderCancelStatus == model.ProviderCancelStatusRequested || task.ProviderCancelStatus == model.ProviderCancelStatusUncertain {
-					return BadAuthRequest("原调用上游状态待确认，未重新提交")
-				}
-				if err := s.taskBilling().CheckManualRetryEligibility(task.BillingOrderID); err != nil {
-					return err
+			if task.Status == model.TaskStatusFailed || (resumeCancelled && cloudAgentTaskTerminal(task.Status) && task.Status != model.TaskStatusSucceeded) {
+				if !resumeCancelled {
+					if task.ProviderCancelStatus == model.ProviderCancelStatusRequested || task.ProviderCancelStatus == model.ProviderCancelStatusUncertain {
+						return BadAuthRequest("原调用上游状态待确认，未重新提交")
+					}
+					if err := s.taskBilling().CheckManualRetryEligibility(task.BillingOrderID); err != nil {
+						return err
+					}
 				}
 				for key, id := range state.ProductionModelReceipts {
 					if id == task.ID {
@@ -481,7 +526,7 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 				state.ActiveTaskID = ""
 			}
 		}
-		if action == "resume" && (run.Status == "failed" || run.Status == "waiting_user") {
+		if action == "resume" && (run.Status == "failed" || run.Status == "waiting_user" || resumeCancelled) {
 			if state.ProductionPaused && len(state.ProductionParallel) == 0 {
 				if _, manifest, document, loadErr := productionLoad(s.repo, run, &state); loadErr != nil {
 					return loadErr
@@ -510,10 +555,17 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 						continue
 					}
 					if task.ProviderCancelStatus == model.ProviderCancelStatusRequested || task.ProviderCancelStatus == model.ProviderCancelStatusUncertain {
+						if resumeCancelled {
+							// 取消后的续跑只重提可以确认的条目，单项待核对不拦住整批。
+							continue
+						}
 						return BadAuthRequest("并发调用上游状态待确认，未重新提交")
 					}
 					if task.Status != model.TaskStatusSucceeded {
 						if err := s.taskBilling().CheckManualRetryEligibility(task.BillingOrderID); err != nil {
+							if resumeCancelled {
+								continue
+							}
 							return err
 						}
 					}
@@ -549,7 +601,8 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 			}
 		}
 		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
-			if action == "resume" && (current.Status == "failed" || current.Status == "waiting_user") {
+			if action == "resume" && (current.Status == "failed" || current.Status == "waiting_user" || current.Status == "cancelled") {
+				current.CleanupPending = false
 				if _, _, _, err := productionLoad(repo, current, &state); err != nil {
 					return err
 				}
@@ -583,7 +636,7 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 		}
 		if err == nil && action == "resume" {
 			s.projectProductionAgentStatus(userID, runID)
-			if run.Status == "failed" || run.Status == "waiting_user" {
+			if run.Status == "failed" || run.Status == "waiting_user" || run.Status == "cancelled" {
 				s.resumeCloudAgentPi(userID, runID)
 			} else {
 				s.startCloudAgentPi(userID, runID)
@@ -596,11 +649,32 @@ func (s *Service) ControlProductionAgent(userID, runID, action string, ceilings 
 
 // Run status is authoritative. Projection failures never undo cancellation or
 // failure recording; a later control operation may repair the display.
+
+// errProductionStatusUnchanged 让事务回滚：节点内容没变时不写画布、不发事件、不加版本号。
+var errProductionStatusUnchanged = errors.New("production status projection unchanged")
+
+// canvasDocumentFingerprint 忽略 updatedAt，只比较画布实际内容。
+func canvasDocumentFingerprint(doc map[string]any) string {
+	updatedAt, had := doc["updatedAt"]
+	delete(doc, "updatedAt")
+	raw, err := json.Marshal(doc)
+	if had {
+		doc["updatedAt"] = updatedAt
+	}
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
 func (s *Service) projectProductionAgentStatus(userID, runID string) {
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return
 	}
+	// Backfill outside the storage lock: the helper takes it internally.
+	_, _ = s.ensureProductionPlanDocumentPlaceholders(userID, runID)
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
 	for attempt := 0; attempt < 4; attempt++ {
@@ -621,6 +695,7 @@ func (s *Service) projectProductionAgentStatus(userID, runID string) {
 			if err != nil {
 				return err
 			}
+			baseline := canvasDocumentFingerprint(doc)
 			node := productionNode(doc, state.Request.Production.TargetNodeID)
 			if node == nil {
 				return nil
@@ -685,6 +760,9 @@ func (s *Service) projectProductionAgentStatus(userID, runID string) {
 				}
 			}
 			before := canvas.PayloadJSON
+			if !assetExecutionFailure && baseline != "" && baseline == canvasDocumentFingerprint(doc) {
+				return errProductionStatusUnchanged
+			}
 			if err := saveCloudAgentDocument(repo, canvas, doc, policy); err != nil {
 				return err
 			}
@@ -693,6 +771,9 @@ func (s *Service) projectProductionAgentStatus(userID, runID string) {
 			}
 			return cloudAgentSave(current, &state)
 		})
+		if errors.Is(err, errProductionStatusUnchanged) {
+			return
+		}
 		if !errors.Is(err, repository.ErrCreationConflict) {
 			return
 		}

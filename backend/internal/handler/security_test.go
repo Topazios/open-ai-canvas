@@ -58,6 +58,7 @@ func TestAuthorizeCustomRelayAllowsModelsAndAgentEndpoints(t *testing.T) {
 		{method: http.MethodGet, target: "https://api.example.com/v1/video/generations/task-1", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://api.x.ai/v1/videos/generations", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodGet, target: "https://api.x.ai/v1/videos/request-1", apiFormat: "openai"},
+		{method: http.MethodGet, target: "https://api.example.com/v1/videos/generations/task-1", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://api.novita.ai/v3/video/create", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodGet, target: "https://api.novita.ai/v3/async/task-result?task_id=task-1", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://ark.cn-beijing.volces.com/api/v3/images/generations", apiFormat: "openai", contentType: "application/json"},

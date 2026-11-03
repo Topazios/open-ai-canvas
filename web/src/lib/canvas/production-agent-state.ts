@@ -2,6 +2,7 @@ import type { AgentRun, CreateAgentRunInput } from "@/services/api/agent";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { canvasNodeWarning } from "../execution-warning";
 import { productionRunExternalFailure } from "./production-agent-journal";
+import { isPlanPlaceholder } from "./plan-placeholder";
 
 /** A task can target a root node or a node inside a workflow container. */
 export function productionAgentNodePresent(nodes: CanvasNodeData[], nodeId?: string) {
@@ -48,6 +49,14 @@ export function productionPlanNeedsContinuation(run?: AgentRun) {
         (progress.documentTotal || 0) > 0 && (progress.documentCount || 0) < progress.documentTotal!);
 }
 
+/** Names the plan document that failed validation, so a 4/5 count is explained rather than left as a bare number. */
+export function productionPlanMissingDocumentNote(run?: AgentRun) {
+    const progress = run?.production;
+    if (!progress || !productionPlanNeedsContinuation(run)) return "";
+    const missing = progress.documentTotal! - (progress.documentCount || 0);
+    const detail = progress.inventoryComplete === false ? "资产总表与编码未通过校验" : `有 ${missing} 份文档未通过校验`;
+    return `方案文档 ${progress.documentCount || 0}/${progress.documentTotal}：${detail}，点击“继续生成”补齐。`;
+}
 export function productionPlanAssetSelectorVisible(run?: AgentRun) {
     const progress = run?.production;
     return progress?.workKind === "plan" && (progress.assetGenerationReady === true || (progress.assetGenerationReady === undefined && progress.planReady === true && (progress.assetTotal || 0) > 0));
@@ -66,6 +75,7 @@ export function productionPlanCanvasNeedsRefresh(nodes: CanvasNodeData[], run: A
         const data = node.metadata?.shortDrama;
         const belongsToFrame = node.parentId === frame.id || (!node.parentId && sourceIds.has(node.id));
         return belongsToFrame && node.id !== target.id && node.type !== CanvasNodeType.Frame &&
+            !isPlanPlaceholder(node) &&
             data?.step === "story.plan" && data.role === "document" && data.assetKey !== "$summary" &&
             (typeof data.planSection === "string" || data.planVersion === undefined);
     }).length;
@@ -83,13 +93,22 @@ export function hasMissingCompletedProductionOutput(localNodes: CanvasNodeData[]
     });
 }
 
-export function productionPlanCanvasDocumentCount(frame: CanvasNodeData, children: CanvasNodeData[]) {
+/** Plan documents that live outside the container (the standalone outline) but are still its members. */
+export function productionPlanDetachedMembers(frame: CanvasNodeData, nodeById: ReadonlyMap<string, CanvasNodeData>): CanvasNodeData[] {
+    const data = frame.metadata?.shortDrama;
+    if (data?.role !== "collection" || data.step !== "story.plan" || data.planGroup) return [];
+    return data.sourceNodeIds.map(id => nodeById.get(id)).filter((node): node is CanvasNodeData => Boolean(node && !node.parentId && node.type !== CanvasNodeType.Frame));
+}
+
+export function productionPlanCanvasDocumentCount(frame: CanvasNodeData, children: CanvasNodeData[], detached: CanvasNodeData[] = []) {
     const data = frame.metadata?.shortDrama;
     if (frame.type !== CanvasNodeType.Frame || data?.role !== "collection" || data.step !== "story.plan" || data.planGroup) return 0;
     const manifestId = data.assetGroup?.manifestId;
-    return children.filter(node => {
+    const sourceIds = new Set(data.sourceNodeIds || []);
+    return [...children, ...detached].filter(node => {
         const workflow = node.metadata?.shortDrama;
-        return node.parentId === frame.id && node.id !== manifestId && node.type !== CanvasNodeType.Frame && workflow?.step === "story.plan" &&
+        return (node.parentId === frame.id || (!node.parentId && sourceIds.has(node.id))) && node.id !== manifestId && node.type !== CanvasNodeType.Frame && workflow?.step === "story.plan" &&
+            !isPlanPlaceholder(node) &&
             workflow.role === "document" && workflow.assetKey !== "$summary" &&
             (typeof workflow.planSection === "string" || workflow.planVersion === undefined);
     }).length;
@@ -107,8 +126,9 @@ export function productionAssetGroupState(group: CanvasNodeData, anchor?: Canvas
     const active = progress.status === "running" && task.active;
     const failed = progress.status === "error" && task.failed;
     const label = progress.status === "waiting_standards" ? "等待前置规范完成"
-        : progress.status === "waiting_manual" ? "等待手动生成资产"
+        : progress.status === "waiting_manual" ? "等待资产生成"
         : progress.status === "complete" ? "制作完成"
+        : run?.status === "cancelled" ? "已取消，可继续制作"
         : failed ? "此类资产失败，可在详情重试"
         : progress.status === "error" ? "当前项未完成"
         : task.failed ? "任务已停止，尚未完成"

@@ -12,6 +12,7 @@ import type { CanvasBatchConnectionPreview } from "@/lib/canvas/canvas-batch-con
 import { sortCanvasNodesByStackOrder, type CanvasNodeStackOrder } from "@/lib/canvas/canvas-node-stack-order";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { isFrameNode } from "@/lib/canvas/canvas-frame";
+import { productionPlanDetachedMembers } from "@/lib/canvas/production-agent-state";
 import type { RuntimeLimits } from "@/stores/use-user-store";
 import type { AgentRun } from "@/services/api/agent";
 import type { CanvasNodeRenderLOD } from "@/lib/canvas/canvas-node-lod";
@@ -90,6 +91,7 @@ type CanvasProjectWorldLayersProps = {
     onOpenInfo: (node: CanvasNodeData) => void;
     onOpenTaskDetails: (node: CanvasNodeData) => void;
     onRetryFailed?: (frame: CanvasNodeData, failedNodes: CanvasNodeData[]) => void;
+    onAutoReview?: (frame: CanvasNodeData, bodyNodes: CanvasNodeData[]) => void;
     onCancelTask: (node: CanvasNodeData) => void;
     onOpenVersions: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
@@ -129,6 +131,16 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
             .filter((child): child is CanvasNodeData => Boolean(child && child.metadata?.batchRootId === node.id))
             .slice(0, 5),
     ])), [props.visibleNodes, props.nodeById]));
+    // The standalone outline sits outside its plan container but still counts as a member.
+    const detachedPlanMembers = useCanvasDerivedArrayMap(useMemo(() => {
+        const result = new Map<string, CanvasNodeData[]>();
+        for (const node of props.visibleNodes) {
+            if (!isFrameNode(node)) continue;
+            const members = productionPlanDetachedMembers(node, props.nodeById);
+            if (members.length) result.set(node.id, members);
+        }
+        return result;
+    }, [props.visibleNodes, props.nodeById]));
     const framePreviewNodes = (node: CanvasNodeData) => {
         const assetFolderId = node.metadata?.folder?.assetFolderId;
         if (assetFolderId) return props.linkedFolderPreviewNodesById.get(assetFolderId) || EMPTY_CANVAS_NODES;
@@ -169,6 +181,7 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         renderLOD={props.nodeRenderLODById.get(node.id) || "full"}
                         dragOffset={props.dragPreview?.nodeIds.has(node.id) ? props.dragPreview : undefined}
                         childNodes={framePreviewNodes(node)}
+                        detachedNodes={detachedPlanMembers.get(node.id)}
                         taskAnchor={props.nodeById.get(node.metadata?.shortDrama?.assetGroup?.manifestId || "")}
                         productionRun={props.productionRuns?.find((run) => run.production?.targetNodeId === node.metadata?.shortDrama?.assetGroup?.manifestId)}
                         onGeneratePlanAssets={props.onGeneratePlanAssets}
@@ -186,6 +199,7 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         onContextMenu={props.onNodeContextMenu}
                         onOpenTaskDetails={props.onOpenTaskDetails}
                         onRetryFailed={props.onRetryFailed}
+                        onAutoReview={props.onAutoReview}
                     />
                 ) : (
                     <CanvasNodeGraphScope key={node.id} nodeId={node.id} upstreamNodes={props.upstreamNodesById.get(node.id)}>

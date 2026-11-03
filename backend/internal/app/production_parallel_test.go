@@ -109,8 +109,8 @@ func TestNewV5PlanAutomaticallySchedulesAllPlanDocumentsAfterStory(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !manifest.Plan.PlansStarted || strings.Join(manifest.Plan.SelectedPlanKeys, ",") != "inventory,visual,direction,generation" {
-		t.Fatalf("new v5 plan did not persist its automatic scope: %+v", manifest.Plan)
+	if manifest.Plan.PlansStarted || len(manifest.Plan.SelectedPlanKeys) != 0 {
+		t.Fatalf("a new v5 plan must only produce the story until plans are started: %+v", manifest.Plan)
 	}
 	ready := productionParallelReady(manifest, doc, nil)
 	if len(ready) != 1 || ready[0].Key != "story" {
@@ -127,6 +127,18 @@ func TestNewV5PlanAutomaticallySchedulesAllPlanDocumentsAfterStory(t *testing.T)
 	artifacts, err := s.repo.ProductionAgentArtifacts("user", run.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ready = productionParallelReady(manifest, doc, artifacts); len(ready) != 0 {
+		t.Fatalf("the remaining documents must wait until plans are started: %+v", ready)
+	}
+	startPlansForTest(t, s, run.ID)
+	runRecord, state = productionRuntimeState(t, s, run.ID)
+	_, manifest, doc, err = productionLoad(s.repo, runRecord, &state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(manifest.Plan.SelectedPlanKeys, ",") != "inventory,visual,direction,generation" {
+		t.Fatalf("started plan scope is wrong: %+v", manifest.Plan)
 	}
 	ready = productionParallelReady(manifest, doc, artifacts)
 	if len(ready) != 1 || ready[0].Key != "inventory" || manifest.Plan.AssetsStarted {
@@ -406,6 +418,36 @@ func TestProductionParallelDependenciesPauseRestartAndOutOfOrder(t *testing.T) {
 	}
 }
 
+func TestProductionParallelStreamCutRetriesWithBackoff(t *testing.T) {
+	s, db, runID := parallelPlanFixture(t)
+	for _, key := range []string{"visual", "direction", "generation"} {
+		submitOrderedPlan(t, s, runID, key, "", key)
+	}
+	startPlanAssetsForTest(t, s, runID)
+	cancel, done := startParallel(t, s, runID)
+	state := waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return len(state.ProductionParallel) == 3 })
+	cancel()
+	<-done
+	work := state.ProductionParallel["character"]
+	if work.TaskID == "" {
+		t.Fatal("missing initial task")
+	}
+	if err := db.Model(&model.Task{}).Where("id = ?", work.TaskID).Updates(map[string]any{"status": model.TaskStatusFailed, "error": "test failure"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.ApiCallLog{ID: newID(), TaskID: work.TaskID, StatusCode: 200, ErrorCode: "upstream_stream_read_error"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	task, _ := s.repo.Task(work.TaskID)
+	if err := s.settleProductionParallel("user", runID, work, task); err != nil {
+		t.Fatal(err)
+	}
+	_, state = productionRuntimeState(t, s, runID)
+	got := state.ProductionParallel["character"]
+	if got.TaskID != "" || got.Error != "" || got.TransientAttempts != 1 || got.RetryAt <= time.Now().UnixMilli() {
+		t.Fatal("stream cut was not scheduled for a delayed retry", got)
+	}
+}
 func TestProductionParallelFailureDrainsIndependentWorkAndDelayedRetries(t *testing.T) {
 	s, db, runID := parallelPlanFixture(t)
 	for _, key := range []string{"visual", "direction", "generation"} {
@@ -498,6 +540,11 @@ func TestProductionPlanRegroupPreservesReceiptsAndFillsFirstCell(t *testing.T) {
 	submitOrderedPlan(t, s, runID, "direction", "", "导演规范")
 	submitOrderedPlan(t, s, runID, "generation", "", "生成规范")
 	startPlanAssetsForTest(t, s, runID)
+	// Receipts can only be submitted once their group exists, so the groups
+	// are created first. This first call is the one that creates them.
+	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
+		t.Fatal(changed, err)
+	}
 	submitOrderedPlan(t, s, runID, "character", "character", "测试character")
 	submitOrderedPlan(t, s, runID, "sound", "sound", "测试sound")
 	_, before, rows := orderedPlanState(t, s, runID)
@@ -508,16 +555,16 @@ func TestProductionPlanRegroupPreservesReceiptsAndFillsFirstCell(t *testing.T) {
 		contents[row.NodeID] = node["metadata"].(map[string]any)["content"].(string)
 		identities[row.NodeID] = productionStoredValueHash(productionWorkflow(node)["assetIdentity"])
 	}
-	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
-		t.Fatal(changed, err)
-	}
 	m, doc, rows := orderedPlanState(t, s, runID)
 	for _, row := range rows {
 		node := productionNode(doc, row.NodeID)
 		if node["metadata"].(map[string]any)["content"] != contents[row.NodeID] || productionStoredValueHash(productionWorkflow(node)["assetIdentity"]) != identities[row.NodeID] || !productionPlanArtifactValid(m, doc, rows, row.Key) {
 			t.Fatalf("regroup changed content or invalidated receipt: %s", row.Key)
 		}
-		if row.Key == "story" || row.Key == "character" {
+		if row.Key == "story" && stringValue(node["parentId"]) != "" && stringValue(node["parentId"]) != m.FrameID {
+			t.Fatalf("story must stay outside the plan container: %v", node["parentId"])
+		}
+		if row.Key == "character" {
 			frame := productionNode(doc, productionPlanParent(m, row.Key))
 			p := frame["position"].(map[string]any)
 			np := node["position"].(map[string]any)
@@ -631,6 +678,28 @@ func TestProductionParallelCancellationCleansAllChildren(t *testing.T) {
 	}
 }
 
+func TestProductionParallelResumesCancelledRun(t *testing.T) {
+	s, _, runID := parallelPlanFixture(t)
+	cancel, done := startParallel(t, s, runID)
+	state := waitParallel(t, s, runID, func(state cloudAgentRuntime) bool { return len(state.ProductionParallel) == 2 })
+	cancel()
+	<-done
+	if err := s.CancelCloudAgent(context.Background(), "user", runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ControlProductionAgent("user", runID, "resume"); err != nil {
+		t.Fatal("cancelled run should accept resume", err)
+	}
+	run, after := productionRuntimeState(t, s, runID)
+	if run.Status == "cancelled" || run.CleanupPending {
+		t.Fatal("resume left the run cancelled", run.Status)
+	}
+	for key, old := range state.ProductionParallel {
+		if item, ok := after.ProductionParallel[key]; ok && item.TaskID != "" && item.TaskID == old.TaskID {
+			t.Fatal("resume kept the cancelled task", key, item.TaskID)
+		}
+	}
+}
 func TestProductionPlanLayoutReservesTitleSpaceAndIgnoresTaskAnchor(t *testing.T) {
 	m := productionManifest{FrameID: "root", Plan: &productionPlan{Version: 2}}
 	frame := map[string]any{"id": "root", "position": map[string]any{"x": 10.0, "y": 20.0}}
@@ -642,12 +711,21 @@ func TestProductionPlanLayoutReservesTitleSpaceAndIgnoresTaskAnchor(t *testing.T
 		byKey[key] = node
 	}
 	productionLayoutPlanGroup(m, frame, nodes)
-	for index, key := range []string{"story", "inventory", "visual", "direction", "generation"} {
+	lead := byKey["story"]
+	lp := lead["position"].(map[string]any)
+	if numberValue(lp["x"], 0) != 34 || numberValue(lp["y"], 0) != 120 || numberValue(lead["width"], 0) != productionPlanLeadWidth || numberValue(lead["height"], 0) != productionPlanLeadHeight {
+		t.Fatal("outline lead card position or size", lead)
+	}
+	gridTop := 120 + productionPlanLeadHeight + productionPlanLeadGap
+	for index, key := range []string{"inventory", "visual", "direction", "generation"} {
 		node := byKey[key]
 		p := node["position"].(map[string]any)
-		if numberValue(p["x"], 0) != 34+float64(index%3)*424 || numberValue(p["y"], 0) != 120+float64(index/3)*productionPlanRowPitch || node["width"] != 400 || node["height"] != 280 {
+		if numberValue(p["x"], 0) != 34+float64(index%3)*424 || numberValue(p["y"], 0) != gridTop+float64(index/3)*productionPlanRowPitch || node["width"] != 400 || node["height"] != 280 {
 			t.Fatal("grid order or size", key, node)
 		}
+	}
+	if numberValue(lp["y"], 0)+productionPlanLeadHeight+productionPlanLeadGap > gridTop {
+		t.Fatal("outline overlaps the first grid row")
 	}
 	if productionPlanRowPitch-280 < 48 {
 		t.Fatal("titles overlap preceding cards")
@@ -748,5 +826,21 @@ func TestProductionParallelInvalidOutputAndExplicitResumeKeepCompletedSibling(t 
 	ready := productionParallelReady(m, doc, rows)
 	if len(ready) != 1 || ready[0].Key != "visual" {
 		t.Fatalf("resume redoes saved work: %+v", ready)
+	}
+}
+
+func TestProductionParallelDeterministicErrorHoldsStateConflicts(t *testing.T) {
+	conflict := productionParallelDeterministicError(BadAuthRequest("前置文稿尚未完成或版本已变化"))
+	var stale productionParallelStaleResultError
+	if !errors.As(conflict, &stale) || stale.message == "" {
+		t.Fatalf("400 conflict must become a stale result, got %T %v", conflict, conflict)
+	}
+	for _, err := range []error{errors.New("boom"), NotFound("missing"), productionParallelOutputError{errors.New("bad output")}} {
+		if got := productionParallelDeterministicError(err); got != err {
+			t.Fatalf("non-400 error must pass through unchanged, got %T %v", got, got)
+		}
+	}
+	if productionParallelDeterministicError(nil) != nil {
+		t.Fatal("nil must stay nil")
 	}
 }

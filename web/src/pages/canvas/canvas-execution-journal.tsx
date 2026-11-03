@@ -4,13 +4,13 @@ import { AIMessageMarkdown } from "@/components/ai/ai-message-markdown";
 import type { ReactNode } from "react";
 import type { ExecutionJournalRow } from "@/lib/task-execution-journal";
 
-export function CanvasExecutionJournal({ rows, order, onOrder, children, empty = "暂无关键进展记录" }: {
-    rows: ExecutionJournalRow[]; order: "desc" | "asc"; onOrder: (order: "desc" | "asc") => void; children?: ReactNode; empty?: string;
+export function CanvasExecutionJournal({ rows, order, onOrder, children, empty = "暂无关键进展记录", compact = false, label = "逐次执行记录" }: {
+    rows: ExecutionJournalRow[]; order: "desc" | "asc"; onOrder: (order: "desc" | "asc") => void; children?: ReactNode; empty?: string; compact?: boolean; label?: string;
 }) {
     return <>
-        <div className="production-agent-journal-heading"><strong>执行记录</strong><Segmented aria-label="执行记录排序" size="small" value={order} onChange={(value) => onOrder(value as "desc" | "asc")} options={[{ label: "最新在前", value: "desc" }, { label: "最早在前", value: "asc" }]} /></div>
+        {compact ? null : <div className="production-agent-journal-heading"><strong>执行记录</strong><Segmented aria-label="执行记录排序" size="small" value={order} onChange={(value) => onOrder(value as "desc" | "asc")} options={[{ label: "最新在前", value: "desc" }, { label: "最早在前", value: "asc" }]} /></div>}
         {children}
-        <div className="production-agent-journal" aria-label="逐次执行记录">
+        <div className="production-agent-journal" aria-label={label}>
             {rows.length === 0 ? <p className="production-agent-note">{empty}</p> : rows.map((row) => row.kind === "message" ? <div className="production-agent-commentary" key={row.id} data-event-seq={row.id}>
                 {row.source ? <div className="production-agent-note">{row.source}</div> : null}
                 <AIMessageMarkdown components={{ pre: ({ children }) => <pre>{children}</pre>, table: ({ children }) => <table>{children}</table>, img: ({ alt }) => <span>{alt}</span> }}>{row.detail}</AIMessageMarkdown>

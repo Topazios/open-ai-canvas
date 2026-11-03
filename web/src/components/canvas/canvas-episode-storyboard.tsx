@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useMemo, useState, type SyntheticEvent } from "react";
 import { App, Button, Input } from "antd";
-import { Images, Info, Pause, PencilLine, Play, RefreshCw, ScanSearch } from "lucide-react";
+import { Images, Info, Link2, Pause, PencilLine, Play, RefreshCw, ScanSearch } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -10,6 +10,7 @@ import { buildGenerationConfig } from "@/lib/canvas/canvas-project-generation";
 import { storyboardFrameGenerationConfig } from "@/lib/canvas/storyboard-frame-model";
 import { episodeStoryboardPromptPatch, episodeStoryboardTiming, resolveEpisodeShotAssets, storyboardRowIsReady } from "@/lib/canvas/workflow-episode-storyboard";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
+import { bindingForConnectedNode } from "@/lib/canvas/canvas-storyboard-materializer";
 import { CanvasNodeType, type CanvasNodeData, type StoryboardRow } from "@/types/canvas";
 import type { GenerationTask } from "@/services/api/task-center";
 import type { AgentRun } from "@/services/api/agent";
@@ -191,6 +192,19 @@ export function CanvasEpisodeStoryboard({
             }),
         [rows, node, nodes, byId],
     );
+    // Assets resolved by code but not yet written into the row bindings (e.g. generated after the storyboard was split).
+    const pendingBindings = (row: StoryboardRow, assets?: ReturnType<typeof resolveEpisodeShotAssets>) => {
+        if (!assets) return [];
+        const bound = new Set((row.assetBindings || []).map((binding) => binding.nodeId));
+        return [...new Set(assets.referenceNodeIds)].flatMap((id) => {
+            const binding = bound.has(id) ? null : bindingForConnectedNode(byId.get(id) as CanvasNodeData);
+            return binding ? [binding] : [];
+        });
+    };
+    const bindAssets = (row: StoryboardRow, assets?: ReturnType<typeof resolveEpisodeShotAssets>) => {
+        const next = pendingBindings(row, assets);
+        if (next.length) onUpdate(row.id, { assetBindings: [...(row.assetBindings || []), ...next] });
+    };
     const selected = items.find((item) => item.row.id === selectedId);
     const playing = playingId ? byId.get(playingId) || items.find((item) => item.video?.id === playingId)?.video : undefined;
     const { url, loading } = useVideoPlaybackUrl(playing || node, Boolean(playing));
@@ -342,7 +356,15 @@ export function CanvasEpisodeStoryboard({
                                 <div className="canvas-episode-storyboard-reference-block">
                                     {detailReady ? <CanvasEpisodeAssetReferences assets={assets} onPreview={onPreviewFrame} /> : null}
                                     {!detailReady ? <span style={{ color: theme.node.muted }}>{row.detailDependencies?.length ? `前置镜头：${row.detailDependencies.join("、")}` : "等待分镜详情"}</span> : null}
-                                    {detailReady && !assets?.media.some((image) => image.type === CanvasNodeType.Image) ? (
+                                    {detailReady && assets?.missingCodes.length ? (
+                                        <span className="canvas-episode-storyboard-empty-reference" style={{ color: theme.node.muted }} title={`资产生成后会按编码自动引用：${assets.missingCodes.join("、")}`}>
+                                            {assets.missingCodes.length} 项资产待引用：{assets.missingCodes.slice(0, 3).join("、")}{assets.missingCodes.length > 3 ? "等" : ""}
+                                        </span>
+                                    ) : null}
+                                    {detailReady && pendingBindings(row, assets).length ? (
+                                        <CanvasNodeActionButton theme={theme} label={`引用 ${pendingBindings(row, assets).length} 项资产`} icon={<Link2 size={14} />} onClick={() => bindAssets(row, assets)} />
+                                    ) : null}
+                                    {detailReady && !assets?.missingCodes.length && !assets?.media.some((image) => image.type === CanvasNodeType.Image) ? (
                                         <span className="canvas-episode-storyboard-empty-reference" style={{ color: theme.node.muted }} title={assets?.codes.join("、") || row.assetKeys?.join("、")}>
                                             {assets?.codes.length ? `${assets.codes.length} 项资产，无图片` : "无图片引用"}
                                         </span>

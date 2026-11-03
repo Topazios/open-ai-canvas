@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { defaultShortDramaSettings, DramaSource, DramaDuration, DramaGenre, DramaLanguage, DramaRegion, DramaVisualForm, DramaVisualStyle, dramaSettingOptions, globalSettingsPrompt, storyBriefFromSettings, validateShortDramaSettings } from "../src/lib/short-drama-settings";
+import { defaultShortDramaSettings, DramaSource, DramaDuration, DramaGenre, DramaLanguage, DramaRegion, DramaVisualForm, DramaVisualStyle, dramaSettingOptions, globalSettingsPrompt, shortDramaSettingWarnings, shortDramaSettingsChanged, storyBriefFromSettings, validateShortDramaSettings } from "../src/lib/short-drama-settings";
 import { newDramaCanvasContent, workflowRequestWithCurrentSettings } from "../src/lib/canvas/canvas-global-settings";
 import { buildStoryDevelopmentPrompt } from "../src/lib/canvas/canvas-story-development";
 import { createWorkflowDocuments, nodeWorkflow, workflowParameters } from "../src/lib/canvas/canvas-short-drama-workflow";
@@ -132,6 +132,18 @@ describe("canvas global creation settings", () => {
     });
 
     test("distribution and locale reach generated prompts and saved task snapshots", () => {
+        const overseas = changeDramaSetting(defaultShortDramaSettings(), "market", DramaMarket.Overseas);
+        const chinese = changeDramaSetting(overseas, "language", DramaLanguage.SimplifiedChinese);
+        const layered = globalSettingsPrompt(chinese, "story");
+        expect(layered).toContain("叙述语言层要求");
+        expect(layered).toContain("目标市场“北美（英语）”");
+        expect(globalSettingsPrompt(chinese, "storyboard")).toContain("叙述语言层要求");
+        expect(globalSettingsPrompt(chinese, "assets", "image")).not.toContain("叙述语言层要求");
+        expect(globalSettingsPrompt(overseas, "story")).not.toContain("叙述语言层要求");
+        expect(globalSettingsPrompt(defaultShortDramaSettings(), "story")).not.toContain("叙述语言层要求");
+    });
+
+    test("distribution and locale reach generated prompts and saved task snapshots", () => {
         const settings = changeDramaSetting(defaultShortDramaSettings(), "market", DramaMarket.Overseas);
         const created = newDramaCanvasContent(settings);
         const topic = created.nodes[0];
@@ -259,5 +271,26 @@ describe("canvas global creation settings", () => {
         expect(restored.globalSettings).toEqual(created.globalSettings);
         expect(await canvasContentHash(restored)).toBe(await canvasContentHash(project));
         expect(await canvasContentHash({ ...restored, globalSettings: { ...restored.globalSettings!, episodeCount: 24 } })).not.toBe(await canvasContentHash(project));
+    });
+
+    test("settings staleness ignores revision bumps and treats missing snapshots as changed", () => {
+        const base = defaultShortDramaSettings();
+        expect(shortDramaSettingsChanged(base, { ...base, revision: base.revision + 3 })).toBe(false);
+        expect(shortDramaSettingsChanged(base, { ...base, episodeCount: base.episodeCount + 1 })).toBe(true);
+        expect(shortDramaSettingsChanged(base, { ...base, premise: "新的补充设定" })).toBe(true);
+        expect(shortDramaSettingsChanged(undefined, base)).toBe(true);
+    });
+
+    test("setting warnings flag thin premises and oversized totals without blocking validation", () => {
+        const base = defaultShortDramaSettings();
+        const empty = { ...base, source: DramaSource.Original, premise: "" };
+        expect(shortDramaSettingWarnings(empty).some(item => item.includes("补充设定为空"))).toBe(true);
+        const detailed = { ...base, premise: "苏州山塘街老照相馆关门前，退休摄影师与女儿围绕一组多年未冲洗的旧底片展开冲突，程序员邻居夹在承诺与知情权之间，结局和解并留下母亲希望女儿继续拍照的一句嘱托，节奏克制温情。" };
+        expect(shortDramaSettingWarnings(detailed)).toEqual([]);
+        const thinDefault = { ...detailed, premise: "短" };
+        expect(shortDramaSettingWarnings(thinDefault).some(item => item.includes("默认值"))).toBe(true);
+        const oversized = { ...detailed, episodeCount: 80, duration: DramaDuration.Long };
+        expect(shortDramaSettingWarnings(oversized).some(item => item.includes("分钟"))).toBe(true);
+        expect(() => validateShortDramaSettings(oversized)).not.toThrow();
     });
 });

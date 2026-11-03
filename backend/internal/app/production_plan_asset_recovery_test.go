@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"slices"
@@ -712,6 +713,136 @@ func TestProductionPlanAssetRecoveryRejectsChangedOrRetainedNodesAtomically(t *t
 			afterRows, _ := s.repo.ProductionAgentArtifacts("user", runID)
 			if afterJob.ManifestJSON != job.ManifestJSON || afterCanvas.PayloadJSON != canvas.PayloadJSON || len(afterRows) != len(rows) {
 				t.Fatal("rejected recovery partially changed saved state")
+			}
+		})
+	}
+}
+
+func TestDeletedQueuedAssetPlaceholderIsNotRebuilt(t *testing.T) {
+	s, db, runID := readyPlanForAssetRecovery(t)
+	m, doc, rows := orderedPlanState(t, s, runID)
+	saved := productionSavedKeys(rows)
+	var key, id string
+	for _, item := range m.Plan.Assets {
+		candidate := "pap-" + productionHash([]string{runID, item.Key})[:32]
+		if !saved[item.Key] && productionPlanAssetSelected(m, item.Key) && productionNode(doc, candidate) != nil {
+			key, id = item.Key, candidate
+			break
+		}
+	}
+	if key == "" {
+		t.Skip("fixture exposes no queued asset placeholder")
+	}
+	productionEditCanvas(t, s, db, func(doc map[string]any) {
+		nodes := []map[string]any{}
+		for _, node := range creationMaps(doc["nodes"]) {
+			if node["id"] != id {
+				nodes = append(nodes, node)
+			}
+		}
+		doc["nodes"] = nodes
+	})
+	canvas, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, _ := creationDocument(canvas.PayloadJSON)
+	if err := s.reconcileDeletedProductionPlanAssets(context.Background(), "user", "agent-canvas", live, map[string]bool{id: true}); err != nil {
+		t.Fatal(err)
+	}
+	m, _, _ = orderedPlanState(t, s, runID)
+	if productionPlanAssetSelected(m, key) {
+		t.Fatal("deleted queued placeholder is still selected and would be rebuilt")
+	}
+	if _, err := s.ensureProductionPlanGroups("user", runID); err != nil {
+		t.Fatal(err)
+	}
+	_, doc, _ = orderedPlanState(t, s, runID)
+	if productionNode(doc, id) != nil {
+		t.Fatal("deleted queued placeholder was rebuilt")
+	}
+}
+func TestProductionPlanAssetNeverFallsIntoPlanFrameWhileCollectionMissing(t *testing.T) {
+	for _, dropPlaceholders := range []bool{false, true} {
+		name := "keep_placeholders"
+		if dropPlaceholders {
+			name = "drop_placeholders"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, db, runID := readyPlanForAssetRecovery(t)
+			m, _, _ := orderedPlanState(t, s, runID)
+			oldGroup := m.Plan.Groups["environment"]
+			frameID := m.FrameID
+			productionEditCanvas(t, s, db, func(doc map[string]any) {
+				nodes := []map[string]any{}
+				for _, node := range creationMaps(doc["nodes"]) {
+					if productionWorkflow(node)["planGroup"] != nil || (dropPlaceholders && node["parentId"] == oldGroup) {
+						continue
+					}
+					nodes = append(nodes, node)
+				}
+				doc["nodes"] = nodes
+			})
+			failPlanForAssetRecovery(t, s, runID)
+			s.disablePiRuntime = true
+			if err := s.GenerateProductionPlanAssets("user", runID, []string{"environment"}); err != nil {
+				t.Fatal(err)
+			}
+			m, _, _ = orderedPlanState(t, s, runID)
+			if m.Plan.Groups["environment"] != "" {
+				t.Fatal("collection should stay missing until it is recreated", m.Plan.Groups)
+			}
+			res := productionCall(t, s, runID, "production_submit", map[string]any{
+				"key":          "environment",
+				"name":         "测试environment",
+				"expectedHash": productionDocumentTargetHash(mustPlanArtifacts(t, s, runID), "environment"),
+				"document":     orderedPlanDocument("environment", "environment"),
+				"factIds":      []string{},
+			}, true)
+			if res["error"] == nil {
+				t.Fatal("submit while the collection is missing must be refused", res)
+			}
+			_, doc, rows := orderedPlanState(t, s, runID)
+			for _, row := range rows {
+				if row.Key == "environment" {
+					t.Fatal("refused submit still left a receipt", row.NodeID)
+				}
+			}
+			for _, node := range creationMaps(doc["nodes"]) {
+				// Kept placeholders may still point at the deleted collection until it is
+				// recreated; the refused submit must never move anything into the plan frame.
+				if productionWorkflow(node)["assetKey"] == "environment" && node["parentId"] == frameID {
+					t.Fatal("environment node sits in the plan frame", node["id"], node["parentId"])
+				}
+			}
+			if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
+				t.Fatal("collection was not recreated", changed, err)
+			}
+			m, _, _ = orderedPlanState(t, s, runID)
+			newGroup := m.Plan.Groups["environment"]
+			if newGroup == "" || newGroup == oldGroup {
+				t.Fatal("collection ID was not renewed", newGroup)
+			}
+			_, doc, _ = orderedPlanState(t, s, runID)
+			for _, node := range creationMaps(doc["nodes"]) {
+				workflow := productionWorkflow(node)
+				if workflow["assetKey"] == "environment" && node["parentId"] != newGroup {
+					t.Fatal("environment placeholder was not moved into the recreated collection", node["id"], node["parentId"])
+				}
+			}
+			submitOrderedPlan(t, s, runID, "environment", "environment", "测试environment")
+			m, doc, rows = orderedPlanState(t, s, runID)
+			for _, row := range rows {
+				if row.Key != "environment" {
+					continue
+				}
+				node := productionNode(doc, row.NodeID)
+				if node == nil || node["parentId"] != newGroup {
+					t.Fatal("environment node is not under the recreated collection", row.NodeID)
+				}
+			}
+			if productionNode(doc, oldGroup) != nil {
+				t.Fatal("deleted collection came back")
 			}
 		})
 	}

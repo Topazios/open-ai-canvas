@@ -30,17 +30,25 @@ export function productionAssetMentions(nodes: CanvasNodeData[]): CanvasResource
     });
 }
 
-export function resolveProductionAssetReferences(prompt: string, sources: CanvasNodeData[], explicitCodes: string[] = [], renderContent?: (node: CanvasNodeData) => string) {
+export function resolveProductionAssetReferences(prompt: string, sources: CanvasNodeData[], explicitCodes: string[] = [], renderContent?: (node: CanvasNodeData) => string, options: { allowMissing?: boolean } = {}) {
     const documents = productionAssetDocuments(sources);
     const codes = [...new Set([...explicitCodes, ...productionAssetCodes(prompt, true)])];
-    const references = codes.map((code) => {
+    // With allowMissing, assets that are not generated yet become placeholders instead of errors.
+    const missing: string[] = [];
+    const references = codes.flatMap((code) => {
         const base = productionAssetBaseCode(code);
         const node = documents.find((item) => item.metadata!.shortDrama!.assetIdentity!.code === base) ||
             sources.find((item) => item.metadata?.shortDrama?.assetProfile && (item.metadata.shortDrama.assetKey === code || item.title === code));
-        if (!node || !node.metadata?.content?.trim() || node.metadata.status === "error" || node.metadata.status === "loading") throw new Error(`资产引用不存在或未完成：${code}`);
+        if (!node || !node.metadata?.content?.trim() || node.metadata.status === "error" || node.metadata.status === "loading") {
+            if (options.allowMissing) { missing.push(code); return []; }
+            throw new Error(`资产引用不存在或未完成：${code}`);
+        }
         const variant = code !== base ? node.metadata.shortDrama?.assetProfile?.variants.find((item) => item.code === code) : undefined;
-        if (code !== base && !variant) throw new Error(`资产状态不存在：${code}`);
-        return { node, code, variant };
+        if (code !== base && !variant) {
+            if (options.allowMissing) { missing.push(code); return []; }
+            throw new Error(`资产状态不存在：${code}`);
+        }
+        return [{ node, code, variant }];
     });
     const nodes = [...new Map(references.map((entry) => [entry.node.id, entry.node])).values()];
     const content = nodes.map((node) => {
@@ -50,5 +58,5 @@ export function resolveProductionAssetReferences(prompt: string, sources: Canvas
         if (!body && !variants.length) return "";
         return `${data.assetIdentity?.code || data.assetKey} · ${node.title}\n${body}${variants.length ? `\n指定状态：\n${variants.join("\n")}` : ""}`;
     }).filter(Boolean).join("\n\n");
-    return { nodes, content, codes };
+    return { nodes, content, codes: references.map((entry) => entry.code), missing };
 }

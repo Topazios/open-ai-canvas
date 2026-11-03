@@ -124,6 +124,27 @@ func TestCanvasNodeTasksOrdinaryAndSharedOutput(t *testing.T) {
 	}
 }
 
+func TestCanvasNodeTasksOneFailureDoesNotStopOthers(t *testing.T) {
+	s, db, _ := productionFixture(t)
+	boundAt := time.Now()
+	// 没有执行记录的 agent 任务，取消时必然报错；ID 排在前面，先于普通任务处理。
+	for _, task := range []model.Task{
+		{ID: "a-broken-agent", UserID: "user", ProjectID: "agent-canvas", Operation: cloudAgentOperation, Status: model.TaskStatusRunning, NodeBoundAt: &boundAt, InputJSON: `{"cloudAgent":{"request":{"production":{"targetNodeId":"gone"}}}}`},
+		{ID: "z-orphan", UserID: "user", ProjectID: "agent-canvas", Status: model.TaskStatusQueued, NodeBoundAt: &boundAt, InputJSON: `{"metadata":{"nodeId":"missing"}}`},
+	} {
+		if err := db.Create(&task).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ReconcileCanvasNodeTasks(context.Background(), "user", "agent-canvas"); err == nil {
+		t.Fatal("task failure was swallowed")
+	}
+	orphan, _ := s.repo.TaskForUser("user", "z-orphan")
+	if orphan.Status != model.TaskStatusCancelled || orphan.RemovedAt == nil {
+		t.Fatalf("later task blocked by earlier failure: %s", orphan.Status)
+	}
+}
+
 func TestCanvasNodeTasksDeletedContainerKeepsDocuments(t *testing.T) {
 	s, db, run := productionFixture(t)
 	if err := s.initializeProductionAgent("user", run.ID); err != nil {
@@ -166,5 +187,95 @@ func TestCanvasNodeTasksDeletedContainerKeepsDocuments(t *testing.T) {
 	doc, _ := creationDocument(canvas.PayloadJSON)
 	if productionNode(doc, "target") == nil {
 		t.Fatal("unframed document destroyed")
+	}
+}
+
+func TestCanvasNodeTasksDeletionReceiptCancelsWhileDocumentStillHasNodes(t *testing.T) {
+	s, _, run := productionFixture(t)
+	if err := s.initializeProductionAgent("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	// 云端文档保持原样(run 持续写画布，前端整画布保存被版本冲突拦下)，只有删除回执。
+	if err := s.ReconcileCanvasNodeTasks(context.Background(), "user", "agent-canvas"); err != nil {
+		t.Fatal(err)
+	}
+	if root, _ := s.repo.TaskForUser("user", run.ID); root.RemovedAt != nil {
+		t.Fatal("task removed without receipt")
+	}
+	if err := s.ReconcileCanvasNodeTasks(context.Background(), "user", "agent-canvas", "group"); err != nil {
+		t.Fatal(err)
+	}
+	execution, err := s.repo.CloudAgent("user", run.ID)
+	if err != nil || execution.Status != "cancelled" {
+		t.Fatalf("receipt did not cancel run: status=%s err=%v", execution.Status, err)
+	}
+	if root, _ := s.repo.TaskForUser("user", run.ID); root.RemovedAt == nil {
+		t.Fatal("cancelled task still listed")
+	}
+}
+
+func TestEnsureProductionRunActiveRevivesWhenNodeStillOnCanvas(t *testing.T) {
+	s, db, run := productionFixture(t)
+	if err := s.initializeProductionAgent("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Task{}).Where("id = ?", run.ID).Update("removed_at", time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.repo.TaskForUser("user", run.ID)
+	if err != nil || task.RemovedAt == nil {
+		t.Fatalf("setup: removed_at not set: %v", err)
+	}
+	if err := s.ensureProductionRunActive("user", task, "removed"); err != nil {
+		t.Fatalf("revive failed: %v", err)
+	}
+	if task.RemovedAt != nil {
+		t.Fatal("in-memory task still marked removed")
+	}
+	stored, _ := s.repo.TaskForUser("user", run.ID)
+	if stored.RemovedAt != nil {
+		t.Fatal("stored task still marked removed")
+	}
+}
+
+func TestEnsureProductionRunActiveKeepsFailingWhenNodeIsGone(t *testing.T) {
+	s, db, run := productionFixture(t)
+	if err := s.initializeProductionAgent("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Task{}).Where("id = ?", run.ID).Update("removed_at", time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+	productionEditCanvas(t, s, db, func(doc map[string]any) {
+		var kept []map[string]any
+		for _, n := range creationMaps(doc["nodes"]) {
+			if n["id"] != "target" {
+				kept = append(kept, n)
+			}
+		}
+		doc["nodes"] = kept
+	})
+	task, _ := s.repo.TaskForUser("user", run.ID)
+	err := s.ensureProductionRunActive("user", task, "removed")
+	ae, ok := err.(*AuthError)
+	if !ok || ae.Details["code"] != productionRunRemovedCode {
+		t.Fatalf("expected coded removal error, got %v", err)
+	}
+	if task.RemovedAt == nil {
+		t.Fatal("task revived although node is gone")
+	}
+	stored, _ := s.repo.TaskForUser("user", run.ID)
+	if stored.RemovedAt == nil {
+		t.Fatal("stored task revived although node is gone")
+	}
+}
+
+func TestCanvasRemovedNodeIDsOnlyReturnsNodesGoneAfterSave(t *testing.T) {
+	got := canvasRemovedNodeIDs([]string{"a", "b", "", "c"}, []string{"a", "c", "d"})
+	if len(got) != 1 || got[0] != "b" {
+		t.Fatalf("removed = %v, want [b]", got)
+	}
+	if got := canvasRemovedNodeIDs([]string{"a", "b"}, []string{"a", "b"}); len(got) != 0 {
+		t.Fatalf("existing nodes treated as deleted: %v", got)
 	}
 }

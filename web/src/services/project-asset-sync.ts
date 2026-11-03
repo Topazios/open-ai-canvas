@@ -69,6 +69,11 @@ function waitForCanvasAssetSyncRetry(delayMs: number, signal?: AbortSignal) {
     });
 }
 
+/** 画布版本冲突(409/428)会由画布同步自行合并，素材同步只需稍后重试。 */
+export function isCanvasVersionConflict(error: unknown) {
+    return error instanceof ApiError && error.reason !== "canvas_history_resources_missing" && (error.status === 409 || error.status === 428);
+}
+
 export async function retryCanvasAssetSyncAfterRateLimit<T>(operation: () => Promise<T>, options: CanvasAssetSyncRetryOptions = {}): Promise<T> {
     const maxRetries = Math.max(0, options.maxRetries ?? 2);
     const wait = options.wait ?? waitForCanvasAssetSyncRetry;
@@ -79,7 +84,8 @@ export async function retryCanvasAssetSyncAfterRateLimit<T>(operation: () => Pro
         } catch (error) {
             const rateLimited = error instanceof ApiError && error.status === 429;
             const canvasUpdating = error instanceof Error && /(?:画布仍在更新|本地画布仍在更新)/.test(error.message);
-            if ((!rateLimited && !canvasUpdating) || attempt >= maxRetries) throw error;
+            const canvasConflict = isCanvasVersionConflict(error);
+            if ((!rateLimited && !canvasUpdating && !canvasConflict) || attempt >= maxRetries) throw error;
             const delayMs = rateLimited
                 ? Math.min(MAX_RATE_LIMIT_RETRY_MS, Math.max(0, error.retryAfterMs ?? DEFAULT_RATE_LIMIT_RETRY_MS))
                 : Math.min(2_000, 250 * 2 ** attempt);
@@ -119,7 +125,7 @@ async function persistCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions): Pr
     }
     if (!options.domainProjectId) {
         // 个人画布也必须在返回成功前把素材提交到服务端，不能只依赖延迟自动同步。
-        await saveRemoteUserDataNow();
+        await saveRemoteUserDataNow({ assetsOnly: true });
         throwIfAborted(options.signal);
         return { assetId: asset.id, created, linkedToProject: false };
     }
@@ -138,7 +144,7 @@ async function syncAssetToProject(assetId: string, domainProjectId: string, cate
     }
 
     // 项目关联依赖后端 assets 记录，先强制完成素材同步，不能依赖延迟自动同步的时序。
-    await saveRemoteUserDataNow();
+    await saveRemoteUserDataNow({ assetsOnly: true });
     throwIfAborted(signal);
     const { asset: linkedAsset } = await linkProjectAsset(
         domainProjectId,
@@ -159,7 +165,7 @@ async function syncAssetToProject(assetId: string, domainProjectId: string, cate
         primaryVersionId: linked.primaryVersionId,
         metadata: { ...asset.metadata, projectIds: [...new Set([...linkedProjectIds, domainProjectId])] },
     });
-    await saveRemoteUserDataNow();
+    await saveRemoteUserDataNow({ assetsOnly: true });
     throwIfAborted(signal);
 }
 

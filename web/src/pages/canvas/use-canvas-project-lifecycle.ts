@@ -12,7 +12,7 @@ import { removeCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
 import { normalizeCanvasNodeTimestamps } from "@/lib/canvas/canvas-node-timestamps";
 import { hydrateAssistantImages, resetInterruptedGeneration } from "@/lib/canvas/canvas-project-generation";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
-import { deleteCanvasProjectsWithRemoteSync, forceOverwriteRemoteCanvasSync, loadCanvasProjectForEditing, saveRemoteUserDataNow, subscribeAgentCanvasRefresh } from "@/services/user-data-sync";
+import { deleteCanvasProjectsWithRemoteSync, forceOverwriteRemoteCanvasSync, formatCanvasSaveWarning, loadCanvasProjectForEditing, saveRemoteUserDataNow, subscribeAgentCanvasRefresh } from "@/services/user-data-sync";
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasThemeStore } from "@/stores/canvas/use-canvas-theme-store";
 import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
@@ -212,7 +212,7 @@ export function useCanvasProjectLifecycle({
                     pendingReloadRef.current = null;
                     pendingReload?.reject(error);
                 }
-                if (useSyncProgressStore.getState().syncingProjects[projectId]?.phase !== "conflict") useSyncProgressStore.getState().setProjectProgress(projectId, { phase: "error", message: error instanceof Error ? error.message : "读取云端版本失败" });
+                if (useSyncProgressStore.getState().syncingProjects[projectId]?.phase !== "conflict") useSyncProgressStore.getState().setProjectProgress(projectId, { phase: "error", kind: "load", message: `读取云端版本失败：${error instanceof Error ? error.message : "请重试"}` });
                 const detail = error instanceof Error ? error.message : "读取画布失败，请重试";
                 if (keepEditor) message.error(detail);
                 else setLoadError(detail);
@@ -375,9 +375,8 @@ export function useCanvasProjectLifecycle({
             await saveRemoteUserDataNow(projectId);
             message.success("画布已保存到云端");
         } catch (error) {
-            const detail = error instanceof Error ? error.message : "未知错误";
             if (options.quiet) throw error;
-            if (!options.quiet) message.warning(`本地画布布局已保存，云端同步失败：${detail}`);
+            message.warning({ key: "canvas-cloud-sync-warning", content: formatCanvasSaveWarning(error) });
             // Imports can retain their durable local result; sharing requires cloud success.
             return options.requireRemote === false;
         }

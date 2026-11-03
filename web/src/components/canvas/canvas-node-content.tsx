@@ -215,7 +215,11 @@ function DrawingContent({ node, theme, drawingProjectId }: CanvasNodeContentProp
 }
 
 function TextContent({ node, theme, isEditingContent, textareaRef, mentionReferences, onContentChange, onStopEditing }: CanvasNodeContentProps) {
-    const fontSize = canvasTextFontSize(node.width, node.height, node.metadata?.fontSize);
+    const PLAN_DOCUMENT_FONT_SIZE = 13;
+    // 制作方案里的文稿(总纲与各规范)字号固定,不随卡片宽高缩放,避免同一容器内大小不一。
+    const shortDrama = node.metadata?.shortDrama;
+    const planDocument = shortDrama?.step === "story.plan" && shortDrama.role === "document" && !shortDrama.planGroup && Boolean(shortDrama.planSection);
+    const fontSize = planDocument ? PLAN_DOCUMENT_FONT_SIZE : canvasTextFontSize(node.width, node.height, node.metadata?.fontSize);
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as CSSProperties;
     const source = node.metadata?.content || "";
     const richTextHTML = useMemo(() => canvasRichTextHTML(node.metadata?.richText), [node.metadata?.richText]);
@@ -241,7 +245,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                     onWheel={(event) => event.stopPropagation()}
                 />
             ) : source ? (
-                <CanvasMarkdownPreview source={source} theme={theme} className="px-4 pb-4 pt-0 font-mono" style={textStyle} />
+                <CanvasMarkdownPreview source={source} theme={theme} className={`px-4 pb-4 pt-0 ${planDocument ? "font-sans" : "font-mono"}`} style={textStyle} />
             ) : richTextHTML ? (
                 <div
                     className="thin-scrollbar block h-full w-full select-text overflow-y-auto break-words bg-transparent px-4 pb-4 font-mono [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:opacity-70 [&_code]:rounded [&_code]:bg-black/6 [&_code]:px-1 dark:[&_code]:bg-white/8 [&_h1]:my-2 [&_h1]:text-[1.55em] [&_h1]:font-semibold [&_h2]:my-2 [&_h2]:text-[1.3em] [&_h2]:font-semibold [&_h3]:my-1.5 [&_h3]:text-[1.12em] [&_h3]:font-semibold [&_hr]:my-3 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-black/90 [&_pre]:p-2 [&_pre]:text-white [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"

@@ -73,7 +73,7 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
     // the production progress still carries the resumable checkpoint. Keep
     // the resume control visible so a run does not become a silent dead end.
     const planNeedsContinuation = productionPlanNeedsContinuation(run);
-    const resumable = Boolean(run && (["failed", "waiting_user"].includes(run.status) || (active && progress?.paused) || planNeedsContinuation));
+    const resumable = Boolean(run && (["failed", "rejected", "waiting_user"].includes(run.status) || (active && progress?.paused) || planNeedsContinuation));
     const label = !run
         ? runId
             ? "正在核对后台状态"
@@ -100,8 +100,8 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
                     ? progress?.workKind === "plan"
                         ? progress.assetsStarted
                             ? "所选资产已完成 · 可继续选择"
-                            : "方案已完成 · 资产待手动生成"
-                        : "已完成 · 待人工验收"
+                            : "方案已完成 · 资产待生成"
+                        : "已完成 · 可抽查"
                     : active && progress?.waitingForSharedFacts
                       ? progress.workKind === "storyboard"
                           ? "等待共享制作约束"
@@ -170,7 +170,7 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
                 )}
                 {parallelWarnings.length ? (
                     <div className="production-agent-error" role="alert">
-                        {parallelWarnings.map((item) => item.name).join("、")} 未通过本地校验，任务已暂停；点击“继续任务”会从已保存文稿继续。
+                        {parallelWarnings.map((item) => item.name).join("、")} 未通过本地校验，系统已自动重试并先跳过，其余文稿不受影响；可在容器详情中点击“重试此项”。
                     </div>
                 ) : null}
             </div>

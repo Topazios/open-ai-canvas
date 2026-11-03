@@ -42,6 +42,13 @@ func materializeStoryboardRows(target map[string]any, m productionManifest, doc 
 				shots = append(shots, shot)
 			}
 		}
+		sceneCode := storyboardSceneAssetCode(shots)
+		filled := storyboardAutoCraft(scene, shots)
+		filledByID := map[string]productionShot{}
+		for _, item := range filled {
+			filledByID[item.ID] = item
+		}
+		sceneRowStart := len(rows)
 		for _, shot := range shots {
 			id := fmt.Sprintf("%v:%s", target["id"], shot.ID)
 			if shot.Visual == "" && len(scene.Layout) > 0 {
@@ -80,6 +87,9 @@ func materializeStoryboardRows(target map[string]any, m productionManifest, doc 
 				rows = append(rows, old)
 				continue
 			}
+			if auto, ok := filledByID[shot.ID]; ok {
+				shot = auto
+			}
 			codes := append([]string{}, shot.AssetIDs...)
 			if len(codes) == 0 {
 				text := strings.Join([]string{shot.Visual, shot.Dialogue}, "\n")
@@ -96,13 +106,16 @@ func materializeStoryboardRows(target map[string]any, m productionManifest, doc 
 					unique = append(unique, code)
 				}
 			}
-			prompt := fmt.Sprintf("镜头 %s · %.1f秒\n画面：%s\n镜头：%s\n对白：%s\n声音：%s\n衔接：%s", shot.ID, shot.Duration, shot.Visual, shot.Camera, shot.Dialogue, shot.Sound, shot.Continuity)
+			if sceneCode != "" && !storyboardHasSceneCode(unique) {
+				unique = append(unique, sceneCode)
+			}
+			prompt := storyboardVideoPrompt(shot)
 			row := map[string]any{
 				"id": id, "shotCode": shot.ID, "shotNumber": len(rows) + 1, "sourceShotHash": hash,
 				"sceneId": scene.ID, "sceneDurationSeconds": scene.Duration,
 				"durationSeconds": shot.Duration, "plotDescription": shot.Visual, "camera": shot.Camera,
 				"dialogue": shot.Dialogue, "audioEffects": shot.Sound, "continuityOut": shot.Continuity,
-				"videoMotionPrompt": prompt, "imageGenerationPrompt": shot.Visual + "\n" + shot.Camera,
+				"videoMotionPrompt": prompt, "imageGenerationPrompt": storyboardImagePrompt(shot),
 				"assetKeys": unique, "assetBindings": []any{}, "characters": []any{},
 				"mustHave": []any{}, "optionalDetails": []any{}, "status": "idle",
 				"detailStatus": "ready",
@@ -113,8 +126,10 @@ func materializeStoryboardRows(target map[string]any, m productionManifest, doc 
 			for _, field := range []string{"narrativeIntent", "viewerPOV", "performanceBlocking", "shotSize", "emotion", "lightingAndAtmosphere", "motion", "timeBeats", "negativePrompt"} {
 				row[field] = ""
 			}
+			applyStoryboardCraftFields(row, shot)
 			rows = append(rows, row)
 		}
+		applyStoryboardCraftWarnings(rows[sceneRowStart:], filled)
 	}
 	target["type"] = "script"
 	if width, _ := target["width"].(float64); width < 1120 {

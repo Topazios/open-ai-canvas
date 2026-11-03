@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -22,6 +23,12 @@ type taskTerminalCoordinator struct {
 	outputs           taskOutputLifecycle
 	userFacingMessage func(error) string
 	logFailedAttempt  func(model.Task, error)
+	// canvasWriteback 为 nil 时跳过画布回写（单元测试用结构体字面量构造）。
+	canvasWriteback canvasTaskWriteback
+}
+
+type canvasTaskWriteback interface {
+	writeTaskResultToCanvas(context.Context, model.Task) error
 }
 
 type taskTerminalRepository interface {
@@ -57,7 +64,37 @@ func newTaskTerminalCoordinator(s *Service) *taskTerminalCoordinator {
 		outputs:           s,
 		userFacingMessage: s.UserFacingErrorMessage,
 		logFailedAttempt:  s.ensureFailedProviderAttemptLogged,
+		canvasWriteback:   s,
 	}
+}
+
+// writeCanvas 把终态结果写回画布。失败只记日志，不改变任务终态和计费结果；
+// 画布节点的补偿由 ReconcileCanvasNodeTasks 周期性完成。
+func (c *taskTerminalCoordinator) writeCanvas(task model.Task) {
+	if c.canvasWriteback == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	err := c.canvasWriteback.writeTaskResultToCanvas(ctx, task)
+	cancel()
+	if err == nil {
+		return
+	}
+	log.Printf("task %s canvas writeback failed: %v", task.ID, err)
+	// 后台带退避重试，不阻塞终态流程；回写本身幂等。
+	writeback := c.canvasWriteback
+	go func() {
+		for attempt, delay := range []time.Duration{3 * time.Second, 10 * time.Second, 30 * time.Second} {
+			time.Sleep(delay)
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			retryErr := writeback.writeTaskResultToCanvas(retryCtx, task)
+			retryCancel()
+			if retryErr == nil {
+				return
+			}
+			log.Printf("task %s canvas writeback retry %d failed: %v", task.ID, attempt+1, retryErr)
+		}
+	}()
 }
 
 func (s *Service) terminalCoordinator() *taskTerminalCoordinator {
@@ -80,6 +117,7 @@ func (c *taskTerminalCoordinator) markPreparationFailure(task *model.Task, stage
 	if terminalErr := c.markTerminalState(task); terminalErr != nil {
 		return errors.Join(err, terminalErr)
 	}
+	c.writeCanvas(*task)
 	var billingErr error
 	if billingUncertain {
 		billingErr = c.billing.MarkBillingUncertain(task.BillingOrderID, task.Error)
@@ -112,6 +150,7 @@ func (c *taskTerminalCoordinator) handleExecutionFailure(task *model.Task, err e
 		if terminalErr := c.markTerminalState(task); terminalErr != nil {
 			return terminalErr
 		}
+		c.writeCanvas(*task)
 		var billingErr error
 		if channelSlotFailedBeforeRequest {
 			billingErr = c.billing.RefundBilling(task.BillingOrderID, "等待渠道槽位期间取消，上游请求未发出")
@@ -162,6 +201,7 @@ func (c *taskTerminalCoordinator) handleExecutionFailure(task *model.Task, err e
 	if terminalErr := c.markTerminalState(task); terminalErr != nil {
 		return errors.Join(err, terminalErr)
 	}
+	c.writeCanvas(*task)
 	c.finalizeReplay(task, model.TaskStatusFailed, "文本回放草稿归并失败")
 	var billingErr error
 	if providerSucceeded || (!channelSlotFailedBeforeRequest && c.billing.BillingFailureRequiresReview(task.BillingOrderID, task.ID, err)) {
@@ -183,12 +223,14 @@ func (c *taskTerminalCoordinator) handleExecutionFailure(task *model.Task, err e
 
 func (c *taskTerminalCoordinator) handleAlreadyCancelled(task model.Task) error {
 	c.finalizeReplay(&task, model.TaskStatusCancelled, "文本回放草稿归并失败")
+	c.writeCanvas(task)
 	_ = c.logger.log(task.UserID, task.ID, "warn", "任务已取消，worker 已停止执行", "")
 	return nil
 }
 
 func (c *taskTerminalCoordinator) handleCancelledResult(task model.Task) error {
 	c.finalizeReplay(&task, model.TaskStatusCancelled, "文本回放草稿归并失败")
+	c.writeCanvas(task)
 	billingErr := c.billing.MarkBillingUncertain(task.BillingOrderID, "上游已返回结果，但任务被取消")
 	_ = c.logger.log(task.UserID, task.ID, "warn", "任务已取消，丢弃生成结果", "")
 	var resultErr error
@@ -218,6 +260,7 @@ func (c *taskTerminalCoordinator) handleResultPersistenceFailure(task *model.Tas
 	if terminalErr := c.markTerminalState(task); terminalErr != nil {
 		return false, errors.Join(saveErr, terminalErr)
 	}
+	c.writeCanvas(*task)
 	c.finalizeReplay(task, model.TaskStatusFailed, "文本回放草稿归并失败")
 	billingErr := c.billing.MarkBillingUncertain(task.BillingOrderID, "上游已成功但任务结果未保存："+task.Error)
 	_ = c.logger.log(task.UserID, task.ID, "warn", "任务结果尚未保存，请检查本地处理", task.Error)
@@ -248,6 +291,9 @@ func (c *taskTerminalCoordinator) handleSuccess(task *model.Task) error {
 			_ = c.logger.log(task.UserID, task.ID, "error", "任务成功但项目产物登记失败", registerErr.Error())
 			completionErr = fmt.Errorf("任务成功后的项目产物登记失败：%w", registerErr)
 		}
+	}
+	if fetchErr == nil {
+		c.writeCanvas(*completedTask)
 	}
 	if err := c.billing.SettleBilling(task.BillingOrderID, ""); err != nil {
 		uncertainErr := c.billing.MarkBillingUncertain(task.BillingOrderID, "生成成功但积分结算失败："+err.Error())

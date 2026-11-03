@@ -31,7 +31,7 @@ func cloudAgentModelFailure(task *model.Task) (string, string) {
 		detail, reason = "上游连续返回空内容（通常是思考占满输出预算）；已自动关思考并放大预算重试仍失败，建议换用非思考模型或调小上下文", "model_empty_output"
 	case strings.Contains(task.Error, cloudAgentStepTimeoutError):
 		detail, reason = "单步模型调用超过执行时限仍未返回（长思考或上下文过大时常见）；已自动关思考重试仍超时，可在管理端调大 Agent 单步超时", "model_step_timeout"
-	case strings.Contains(raw, "connection reset by peer"):
+	case strings.Contains(raw, "connection reset by peer"), strings.Contains(raw, "forcibly closed by the remote host"), strings.Contains(raw, "connection was aborted"):
 		detail, reason = "模型连接被对端或中间网络设备重置", "model_connection_reset"
 	case strings.Contains(raw, "timeout"), strings.Contains(raw, "deadline exceeded"):
 		detail, reason = "模型请求超时", "model_request_timeout"

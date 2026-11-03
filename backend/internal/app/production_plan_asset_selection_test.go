@@ -50,6 +50,9 @@ func TestProductionPlanSelectedAssetsFinishAndAppend(t *testing.T) {
 	if err := s.GenerateProductionPlanAssets("user", runID, []string{"sound"}); err != nil {
 		t.Fatal("cannot append after restart", err)
 	}
+	if _, err := s.ensureProductionPlanGroups("user", runID); err != nil {
+		t.Fatal(err)
+	}
 	m, doc, rows = orderedPlanState(t, s, runID)
 	ready := productionParallelReady(m, doc, rows)
 	if len(ready) != 1 || ready[0].Key != "sound" || len(rows) != len(before) {

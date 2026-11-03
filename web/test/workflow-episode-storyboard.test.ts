@@ -94,9 +94,16 @@ test("editing a prompt replaces its explicit asset codes and preserves source-in
     expect(episodeStoryboardPromptPatch({ ...row, ...patch }, "空镜头").assetKeys).toEqual(["SCN-0001"]);
 });
 
-test("missing, conflicting and changed reference versions fail before paid submission", () => {
+test("assets that are not generated yet stay as placeholders and resolve once they exist", () => {
     const f = fixture();
-    expect(() => resolveEpisodeShotAssets(f.script, { ...f.row, assetKeys: ["CHR-9999"] }, f.nodes)).toThrow("未完成");
+    const resolved = resolveEpisodeShotAssets(f.script, { ...f.row, assetKeys: ["CHR-9999"] }, f.nodes);
+    expect(resolved.missingCodes).toContain("CHR-9999");
+    expect(resolved.codes).not.toContain("CHR-9999");
+    expect(resolveEpisodeShotAssets(f.script, f.row, f.nodes).missingCodes).toEqual([]);
+});
+
+test("conflicting and changed reference versions fail before paid submission", () => {
+    const f = fixture();
     f.image.metadata!.content = "data:image/png;base64,NEW=";
     expect(() => resolveEpisodeShotAssets(f.script, f.row, f.nodes)).toThrow("参考版本");
     f.script.metadata!.shortDrama!.sourceNodeIds.push(f.foreign.id);

@@ -201,7 +201,7 @@ func retryableProtocolMediaDownload(err error) bool {
 		return true
 	}
 	message := strings.ToLower(err.Error())
-	for _, marker := range []string{"tls handshake timeout", "connection reset", "unexpected eof", "broken pipe"} {
+	for _, marker := range []string{"tls handshake timeout", "connection reset", "forcibly closed by the remote host", "connection was aborted", "unexpected eof", "broken pipe"} {
 		if strings.Contains(message, marker) {
 			return true
 		}

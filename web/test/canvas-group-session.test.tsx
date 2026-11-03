@@ -73,12 +73,23 @@ test("group counts and rows retain structured warning semantics without marking 
     expect(groupExecutionRows([member], { "task:task": task }, "asc").find(row => String(row.id).endsWith("terminal"))).toMatchObject({ warning: true, failed: false });
 });
 
-test("group detail renders one journal without per-child execution-record buttons", () => {
+test("group detail lists tasks without the all-nodes filter or a shared journal", () => {
     const html = renderToStaticMarkup(<CanvasGroupTaskDetails node={group} nodes={[group, node("one", group.id), node("two", group.id)]} submitting={false} onResume={() => {}} onRetry={() => {}} onCancel={() => {}} agentState={{ runs: [], nodeErrors: {}, readErrors: {}, syncError: "", busy: {}, control: async () => {}, refresh: () => {} }} />);
-    expect(html.match(/aria-label="逐次执行记录"/g)).toHaveLength(1);
-    expect(html).toContain("2 个节点");
-    expect(html).toContain("全部节点");
+    expect(html).toContain("2 个任务");
+    expect(html).toContain('aria-label="任务列表"');
+    expect(html).not.toContain("全部节点");
+    expect(html).not.toContain('aria-label="逐次执行记录"');
     expect(html).not.toContain(">执行记录</button>");
+});
+
+test("group detail shows each task collapsed and defers its journal until opened", () => {
+    const nodes = [group, node("角色甲", group.id, "task-a"), node("角色乙", group.id, "task-b")];
+    const html = renderToStaticMarkup(<CanvasGroupTaskDetails node={group} nodes={nodes} submitting={false} onResume={() => {}} onRetry={() => {}} onCancel={() => {}} agentState={{ runs: [], nodeErrors: {}, readErrors: {}, syncError: "", busy: {}, control: async () => {}, refresh: () => {} }} />);
+    expect(html).toContain("角色甲");
+    expect(html).toContain("角色乙");
+    expect(html.match(/production-agent-task"/g)).toHaveLength(2);
+    expect(html).not.toContain("production-agent-task-body");
+    expect(html).not.toContain("逐次执行记录");
 });
 
 test("plan task details do not expand the asset checklist", () => {
@@ -90,6 +101,20 @@ test("plan task details do not expand the asset checklist", () => {
     expect(html).not.toContain("选择 角色");
 });
 
+test("container without child nodes still lists running tasks from the parallel detail", () => {
+    const { owner, manifest } = coordinatorFixture();
+    const run = { id: "run", canvasId: "canvas", status: "running", permissionMode: "auto", createdAt: "2026-10-24", updatedAt: "2026-10-24", events: [], production: { targetNodeId: manifest.id, workKind: "plan", parallelItems: [
+        { key: "story", name: "故事总纲", status: "running" },
+        { key: "world", name: "世界规则", status: "queued" },
+    ] } } as any;
+    const html = renderToStaticMarkup(<CanvasGroupTaskDetails node={owner} nodes={[owner, manifest]} submitting={false} onResume={() => {}} onRetry={() => {}} onCancel={() => {}} agentState={{ runs: [run], nodeErrors: {}, readErrors: {}, syncError: "", busy: {}, control: async () => {}, refresh: () => {} }} />);
+    expect(html).not.toContain("本组暂无任务");
+    expect(html).toContain("2 个任务");
+    expect(html).toContain("故事总纲");
+    expect(html).toContain("执行中");
+    expect(html).toContain("世界规则");
+    expect(html).toContain("排队中");
+});
 function coordinatorFixture() {
     const manifest = { ...node("manifest", group.id), metadata: { shortDrama: { pipelineId: "pipeline", assetKey: "$summary", productionAgent: { runId: "run" } } } } as CanvasNodeData;
     const owner = { ...group, metadata: { shortDrama: { pipelineId: "pipeline", role: "collection", sourceNodeIds: [manifest.id], assetGroup: { manifestId: manifest.id } } } } as CanvasNodeData;
@@ -156,7 +181,7 @@ test("earlier history is offered only when an unread older page exists", () => {
 test("coordinator control errors stay visible before first artifact", () => {
     const { manifest, owner } = coordinatorFixture();
     const html = renderToStaticMarkup(<CanvasGroupTaskDetails node={owner} nodes={[owner, manifest]} submitting={false} onResume={() => {}} onRetry={() => {}} onCancel={() => {}} agentState={{ runs: [], nodeErrors: { [manifest.id]: "暂停操作未成功" }, readErrors: {}, syncError: "", busy: {}, control: async () => {}, refresh: () => {} }} />);
-    expect(html).toContain("0 个节点");
+    expect(html).toContain("0 个任务");
     expect(html).toContain("暂停操作未成功");
     expect(html).not.toContain("读取更早记录");
 });

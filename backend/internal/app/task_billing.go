@@ -136,7 +136,7 @@ func billingFailureUncertain(err error) bool {
 		return false
 	}
 	message := strings.ToLower(err.Error())
-	for _, marker := range []string{"524", "timeout", "超时", "deadline exceeded", "context canceled", "connection reset", "unexpected eof", "broken pipe"} {
+	for _, marker := range []string{"524", "timeout", "超时", "deadline exceeded", "context canceled", "connection reset", "forcibly closed by the remote host", "connection was aborted", "unexpected eof", "broken pipe"} {
 		if strings.Contains(message, marker) {
 			return true
 		}

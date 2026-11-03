@@ -3,7 +3,7 @@ import { Alert, Button, Input, InputNumber } from "antd";
 import { ChevronDown, FileUp, Save, X } from "lucide-react";
 import { Select } from "@/components/ui/base/select";
 import { AppModal } from "@/components/ui/product/app-modal";
-import { changeDramaSetting, defaultShortDramaSettings, DramaMarket, DramaSource, dramaOptionsForSettings, dramaSettingLabels, dramaSettingOptions, dramaSettingSections, resolvedDramaTargetMarket, validateShortDramaSettings, type ShortDramaGlobalSettings } from "@/lib/short-drama-settings";
+import { changeDramaSetting, defaultShortDramaSettings, DramaMarket, DramaSource, dramaOptionsForSettings, dramaSettingLabels, dramaSettingOptions, dramaSettingSections, resolvedDramaTargetMarket, shortDramaSettingWarnings, validateShortDramaSettings, type ShortDramaGlobalSettings } from "@/lib/short-drama-settings";
 import "./canvas-global-settings-dialog.css";
 import { projectVoiceCalibration } from "@/lib/production-sound";
 
@@ -28,6 +28,7 @@ export function CanvasGlobalSettingsDialog({ title: initialTitle, settings, edit
     const fileInput = useRef<HTMLInputElement>(null);
     const saving = useRef(false);
     const initialRevision = useRef(settings?.revision || 0);
+    const warnings = Number.isInteger(draft.episodeCount) && draft.episodeCount >= 1 ? shortDramaSettingWarnings(draft) : [];
     const field = (key: keyof typeof dramaSettingOptions | "episodeCount") => key === "episodeCount"
         ? <div className="canvas-global-setting-field" key={key}><label htmlFor="drama-episodeCount">总集数</label><InputNumber id="drama-episodeCount" aria-label="总集数" min={1} max={200} precision={0} value={draft.episodeCount} disabled={busy} onChange={(value) => setDraft((current) => ({ ...current, episodeCount: value ?? 0 }))} /></div>
         : <div className="canvas-global-setting-field" key={key}>
@@ -57,6 +58,7 @@ export function CanvasGlobalSettingsDialog({ title: initialTitle, settings, edit
             <header><h2>{editing ? "全局创作设定" : "新建短剧画布"}</h2><Button type="text" icon={<X size={18} />} title="关闭" aria-label="关闭全局设定" disabled={busy} onClick={onClose} /></header>
             <div className="canvas-global-settings-body">
                 {error ? <Alert type="error" showIcon title={error} /> : null}
+                {warnings.length ? <Alert type="warning" showIcon title="创作设定提示" description={warnings.map(item => <div key={item}>{item}</div>)} /> : null}
                 <div className="canvas-global-setting-field"><label htmlFor="drama-title">作品名称</label><Input id="drama-title" aria-label="作品名称" value={title} maxLength={100} disabled={busy} onChange={(event) => setTitle(event.target.value)} /></div>
                 {dramaSettingSections.map((section, index) => <section className="canvas-global-settings-section" key={section.id} aria-labelledby={`drama-section-${section.id}`}>
                     <h3 id={`drama-section-${section.id}`}><span>{String(index + 1).padStart(2, "0")}</span>{section.title}</h3>
