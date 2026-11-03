@@ -103,6 +103,25 @@ export function workflowSourceSignaturesMatch(data: ShortDramaWorkflowData, node
     });
 }
 
+/** A deleted group can leave a dangling root index; only recover an unambiguous replacement. */
+export function workflowPlanGroupRelationValid(group: CanvasNodeData, nodes: CanvasNodeData[]) {
+    const data = nodeWorkflow(group)?.planGroup;
+    if (!data) return false;
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const root = byId.get(data.rootFrameId);
+    const rootData = nodeWorkflow(root);
+    if (root?.type !== CanvasNodeType.Frame || rootData?.role !== "collection" || rootData.pipelineId !== nodeWorkflow(group)?.pipelineId) return false;
+    const indexedGroupId = rootData.planGroups?.[data.kind];
+    if (indexedGroupId === group.id) return true;
+    if (!indexedGroupId || byId.has(indexedGroupId)) return false;
+    const candidates = nodes.filter((candidate) => {
+        const candidateData = nodeWorkflow(candidate);
+        return candidate.type === CanvasNodeType.Frame && candidateData?.role === "collection" && candidateData.pipelineId === rootData.pipelineId &&
+            candidateData.planGroup?.rootFrameId === root.id && candidateData.planGroup.kind === data.kind;
+    });
+    return candidates.length === 1 && candidates[0].id === group.id;
+}
+
 /** Restore workflow edges from the immutable source ids already stored on each generated node. */
 export function restoreWorkflowSourceConnections(nodes: CanvasNodeData[], connections: CanvasConnection[]) {
     const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -321,7 +340,7 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
         }
         if (data.planGroup) {
             const root = byId.get(data.planGroup.rootFrameId);
-            if (nodeWorkflow(root)?.planGroups?.[data.planGroup.kind] !== id || nodeWorkflow(root)?.pipelineId !== pipelineId) throw new Error("资产分组与制作方案关联已变化");
+            if (nodeWorkflow(root)?.pipelineId !== pipelineId || !workflowPlanGroupRelationValid(node!, nodes)) throw new Error("资产分组与制作方案关联已变化");
             if (connections && !connections.some((edge) => edge.fromNodeId === root!.id && edge.toNodeId === id)) throw new Error("资产分组的方案来源连线已移除");
             visit(root!.id);
         }

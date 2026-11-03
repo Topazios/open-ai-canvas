@@ -1,7 +1,7 @@
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 import { assetSheetKind } from "../asset-reference-sheet";
 import { ShortDramaStep, shortDramaStep, type ShortDramaWorkflowData } from "../short-drama-steps";
-import { nodeWorkflow, workflowSignatureMatches, type WorkflowGenerationRequest } from "./canvas-short-drama-workflow";
+import { nodeWorkflow, workflowPlanGroupRelationValid, workflowSignatureMatches, type WorkflowGenerationRequest } from "./canvas-short-drama-workflow";
 import { workflowSourceMatches } from "./canvas-production-sources";
 import { workflowImageSubjects } from "./canvas-workflow-images";
 
@@ -29,7 +29,7 @@ export function workflowAssetImageSources(request: ImageSourceRequest, nodes: Ca
         if (data.pipelineId !== request.pipelineId) throw new Error("资产分组不属于当前制作流程");
         if (data.planGroup) {
             const root = byId.get(data.planGroup.rootFrameId);
-            if (nodeWorkflow(root)?.pipelineId !== request.pipelineId || nodeWorkflow(root)?.planGroups?.[data.planGroup.kind] !== node.id) throw new Error("资产分组与制作方案关联已变化");
+            if (nodeWorkflow(root)?.pipelineId !== request.pipelineId || !workflowPlanGroupRelationValid(node, nodes)) throw new Error("资产分组与制作方案关联已变化");
             if (!linked(root!.id, node.id)) throw new Error("资产分组的方案来源连线已移除");
         }
     };

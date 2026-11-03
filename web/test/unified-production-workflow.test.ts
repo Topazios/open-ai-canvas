@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createShortDramaPipeline, deriveShortDramaProgress } from "../src/lib/canvas/canvas-short-drama";
-import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, restoreWorkflowSourceConnections, workflowAncestors, workflowGenerationSources } from "../src/lib/canvas/canvas-short-drama-workflow";
+import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, restoreWorkflowSourceConnections, workflowAncestors, workflowGenerationSources, workflowPlanGroupRelationValid } from "../src/lib/canvas/canvas-short-drama-workflow";
 import { createWorkflowImages, workflowImageSubjects } from "../src/lib/canvas/canvas-workflow-images";
 import { restorePlanGroupConnections } from "../src/lib/canvas/canvas-plan-group-connections";
 import { productionAssetMentions, resolveProductionAssetReferences } from "../src/lib/canvas/production-asset-references";
@@ -60,6 +60,25 @@ test("asset groups reject broken ownership and removed group links", () => {
     expect(() => workflowAncestors([f.frame.id], f.result.nodes, f.request.pipelineId, f.result.connections.filter((edge) => edge.toNodeId !== groupId))).toThrow("来源连线");
     nodeWorkflow(group)!.planGroup!.rootFrameId = "missing";
     expect(() => workflowAncestors([f.frame.id], f.result.nodes, f.request.pipelineId, f.result.connections)).toThrow("关联已变化");
+});
+
+test("asset images recover a dangling plan-group index only when the replacement is unambiguous", () => {
+    const f = groupedPlan();
+    const groupId = nodeWorkflow(f.frame)!.planGroups!.character!;
+    const group = f.result.nodes.find((node) => node.id === groupId)!;
+    nodeWorkflow(f.frame)!.planGroups!.character = "deleted-character-group";
+    expect(workflowPlanGroupRelationValid(group, f.result.nodes)).toBe(true);
+    expect(() => workflowAncestors([groupId], f.result.nodes, f.request.pipelineId, f.result.connections)).not.toThrow();
+    const request = { ...f.request, step: "assets.character_references" as const, sourceNodeIds: [groupId], imageSubjectIds: [f.docs[1].id], model: "fixture-image", imageSettings: { size: "1536x1024", quality: "auto", transparentBackground: "false" } };
+    expect(createWorkflowImages(request, f.result.nodes, f.result.connections, { x: 0, y: 0 }).created).toHaveLength(1);
+
+    const duplicate = structuredClone(group);
+    duplicate.id = "duplicate-character-group";
+    f.result.nodes.push(duplicate);
+    expect(workflowPlanGroupRelationValid(group, f.result.nodes)).toBe(false);
+    expect(() => workflowAncestors([groupId], f.result.nodes, f.request.pipelineId, f.result.connections)).toThrow("关联已变化");
+    nodeWorkflow(f.frame)!.planGroups!.character = duplicate.id;
+    expect(workflowPlanGroupRelationValid(group, f.result.nodes)).toBe(false);
 });
 
 test("asset image generation restores a missing plan-group link from reciprocal metadata", () => {

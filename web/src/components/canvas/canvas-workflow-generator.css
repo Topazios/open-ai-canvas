@@ -4,6 +4,8 @@
 .canvas-workflow-generator-fields label { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 12px; }
 .canvas-workflow-generator-fields > .reasoning-effort-select { flex-direction: row; justify-content: space-between; }
 .canvas-workflow-generator-fields .ant-select, .canvas-workflow-generator-fields .ant-input-number { width: 100%; min-width: 0; }
+.canvas-workflow-omitted-tags { display: flex; flex-wrap: wrap; gap: 4px; max-height: 280px; max-width: 320px; overflow-y: auto; white-space: normal; }
+.canvas-workflow-omitted-tags .ant-tag { max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
 .canvas-workflow-generator-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .canvas-workflow-generator-progress { display: flex; flex-direction: column; gap: 8px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .canvas-workflow-generator-progress > span { color: var(--workflow-muted); }

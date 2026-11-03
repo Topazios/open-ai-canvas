@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from "react";
-import { Button, Checkbox, Input, InputNumber, Select } from "antd";
+import { Button, Checkbox, Input, InputNumber, Select, Tag, Tooltip } from "antd";
 import { Sparkles, X } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { workflowSourceMatches } from "@/lib/canvas/canvas-production-sources";
@@ -195,7 +195,7 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
                             }}>{isSheet ? "全选资产与状态" : "全选当前组"}</Checkbox>
                         <span role="status" aria-label="资产选择数量">已选 {isSheet ? defaultAssetTargetKeys.length : imageSubjectIds.length} / {isSheet ? selectableAssetTargetOptions.length : selectableImageSubjects.length} 项{imageSubjects.length > selectableImageSubjects.length ? ` · 已生成 ${imageSubjects.length - selectableImageSubjects.length} 项` : ""}</span>
                     </div> : null}
-                    <label>{step.stage === "assets" ? "生成资产" : "镜头来源"}<Select aria-label="图片生成对象" showSearch optionFilterProp="label" mode={step.stage === "assets" ? "multiple" : undefined} value={step.stage === "assets" ? (isSheet ? defaultAssetTargetKeys : imageSubjectIds) : imageSubjectIds[0]} onChange={(value: string | string[]) => {
+                    <label>{step.stage === "assets" ? "生成资产" : "镜头来源"}<Select aria-label="图片生成对象" showSearch optionFilterProp="label" mode={step.stage === "assets" ? "multiple" : undefined} maxTagCount={step.stage === "assets" ? "responsive" : undefined} maxTagTextLength={step.stage === "assets" ? 24 : undefined} maxTagPlaceholder={(omittedValues) => <Tooltip title={<div className="canvas-workflow-omitted-tags">{omittedValues.map((item) => <Tag key={String(item.value)}>{item.label}</Tag>)}</div>}>+{omittedValues.length}</Tooltip>} value={step.stage === "assets" ? (isSheet ? defaultAssetTargetKeys : imageSubjectIds) : imageSubjectIds[0]} onChange={(value: string | string[]) => {
                         if (isSheet) setSelectedAssetTargetKeys(Array.isArray(value) ? value : [value]);
                         else setSelectedSubjectIds(Array.isArray(value) ? value : [value]);
                         setImagePrompt(null); setSelectedShotId(null);
