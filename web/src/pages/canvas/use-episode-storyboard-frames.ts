@@ -44,12 +44,12 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
         return () => controller.abort();
     }, [projectId]);
     const confirm = useCallback(
-        (count: number, label: string, retry = false) =>
+        (count: number, label: string, retry = false, regenerate = false) =>
             new Promise<boolean>((resolve) => {
                 const signal = lifetime.current.signal;
                 const dialog = modal.confirm({
                     title: `确认${label}`,
-                    content: `本次提交 ${count} 个${label}任务，沿用系统并发与正常计费。${retry ? "仅重试失败图片，保留已生成和在途图片。上游超时不代表未生成或未扣费，请核对原任务后确认；重试可能再次产生费用。" : ""}`,
+                    content: `本次提交 ${count} 个${label}任务，沿用系统并发与正常计费。${regenerate ? "新结果会替换当前分镜引用，旧图片节点仍保留。" : retry ? "仅重试失败图片，保留已生成和在途图片。上游超时不代表未生成或未扣费，请核对原任务后确认；重试可能再次产生费用。" : ""}${regenerate || retry ? "操作可能再次产生费用。" : ""}`,
                     okText: "确认生成",
                     cancelText: "取消",
                     onOk: () => resolve(true),
@@ -175,7 +175,8 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                         const keyframes = kind === "keyframes" ? shotKeyframes(row, nodesRef.current) : undefined;
                         if (keyframes?.error) throw new Error(keyframes.error);
                         if (kind === "keyframes" && !keyframes?.frames.length) throw new Error("请先提取当前镜头关键帧");
-                        return { row, frames: keyframes?.frames || storyboardBoundaryFrames(row) };
+                        const frames = keyframes?.frames || storyboardBoundaryFrames(row);
+                        return { row, frames: options.frameIds ? frames.filter((frame) => options.frameIds!.includes(frame.id)) : frames };
                     });
                     const selectedNodes = selectStoryboardFrameModel(nodesRef.current, scriptId, "image", imageConfig.model);
                     return materializeStoryboardFrames(script, requests, selectedNodes, connectionsRef.current, imageConfig.model, settings, options);
@@ -183,7 +184,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                 const preview = prepare();
                 const requestedRow = rowId ? nodesRef.current.find((node) => node.id === scriptId)?.metadata?.storyboard?.rows.find((row) => row.id === rowId) : undefined;
                 const requestedRowHash = requestedRow ? storyboardFrameHash(requestedRow) : undefined;
-                if (rowId && kind === "boundary" && !options.failedOnly) {
+                if (rowId && kind === "boundary" && !options.failedOnly && !options.regenerate) {
                     const script = nodesRef.current.find((node) => node.id === scriptId);
                     const failed = script ? failedStoryboardBoundaryImagesForRow(script, rowId, nodesRef.current) : [];
                     if (failed.length) {
@@ -217,7 +218,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                     message.info("已关联现有画面；生成失败的画面可在详情重试");
                     return;
                 }
-                if (!(await confirm(preview.targets.length, options.failedOnly ? "失败首尾帧重试" : kind === "keyframes" ? "关键帧生图" : "首尾帧生图", options.failedOnly))) return;
+                if (!(await confirm(preview.targets.length, options.failedOnly ? "失败首尾帧重试" : options.regenerate ? "首尾帧重新生成" : kind === "keyframes" ? "关键帧生图" : "首尾帧生图", options.failedOnly, options.regenerate))) return;
                 if (signal.aborted || scope !== getActiveUserScope()) return;
                 if (snapshot !== currentSnapshot()) throw new Error("分镜或关键帧方案已变化，请重新确认生成");
                 let prepared = prepare();
@@ -268,7 +269,11 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
             try {
                 const row = nodesRef.current.find((node) => node.id === binding.scriptId)?.metadata?.storyboard?.rows.find((row) => row.id === binding.rowId);
                 if (!row || binding.sourcePromptHash !== storyboardFrameHash(row)) throw new Error("分镜已修改，请生成当前版本的画面");
-                if (isCanvasNodeGenerating(node) || node.metadata?.content || node.metadata?.storageKey) return;
+                if (isCanvasNodeGenerating(node)) return;
+                if (node.metadata?.content || node.metadata?.storageKey) {
+                    await generateFrames(binding.scriptId, binding.rowId, "boundary", { regenerate: true, frameIds: [binding.frameId] });
+                    return;
+                }
                 if (!(await confirm(1, "首尾帧重试", true))) return;
                 if (signal.aborted || scope !== getActiveUserScope()) return;
                 await retryGeneration(node);
@@ -276,7 +281,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                 if (!signal.aborted && scope === getActiveUserScope()) message.error(error instanceof Error ? error.message : "画面重试失败");
             }
         },
-        [confirm, message, nodesRef, retryGeneration],
+        [confirm, generateFrames, message, nodesRef, retryGeneration],
     );
     return { extractStoryboardKeyframes: extract, generateStoryboardFrames: generateFrames, retryStoryboardFrame: retryFrame, selectStoryboardFrameModel: selectModel };
 }

@@ -3,9 +3,10 @@ import { App, Button, Input } from "antd";
 import { Images, Info, Link2, Pause, PencilLine, Play, RefreshCw, ScanSearch } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { ModelPicker } from "@/components/model-picker";
+import { CanvasVideoSettingsPopover } from "@/components/canvas/canvas-video-settings-popover";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
-import { useEffectiveConfig } from "@/stores/use-config-store";
+import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-project-generation";
 import { storyboardFrameGenerationConfig } from "@/lib/canvas/storyboard-frame-model";
 import { episodeStoryboardPromptPatch, episodeStoryboardTiming, resolveEpisodeShotAssets, storyboardRowIsReady } from "@/lib/canvas/workflow-episode-storyboard";
@@ -22,7 +23,7 @@ import { CanvasEpisodeShotFrames } from "./canvas-episode-shot-frames";
 import { CanvasEpisodeFrameGallery } from "./canvas-episode-frame-gallery";
 import { CanvasEpisodeAssetReferences } from "./canvas-episode-asset-references";
 import { CanvasImagePreview } from "./canvas-image-preview";
-import { failedStoryboardBoundaryImageCount, failedStoryboardBoundaryImagesForRow, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
+import { failedStoryboardBoundaryImageCount, failedStoryboardBoundaryImagesForRow, generatedStoryboardBoundaryImagesForRow, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
 import "./canvas-episode-storyboard.css";
 
 const VideoPlayer = lazy(() => import("@/components/video-player").then((module) => ({ default: module.VideoPlayer })));
@@ -62,6 +63,7 @@ export function CanvasEpisodeStoryboard({
     const theme = canvasThemes[useActiveTheme()];
     const { modal } = App.useApp();
     const config = useEffectiveConfig();
+    const updateConfig = useConfigStore((state) => state.updateConfig);
     const videoConfig = buildGenerationConfig(config, undefined, "video");
     const imageConfig = storyboardFrameGenerationConfig(config, node, "image");
     const [frameRowId, setFrameRowId] = useState<string>();
@@ -173,12 +175,12 @@ export function CanvasEpisodeStoryboard({
                         : undefined);
                 const batches = (node.metadata?.generationBatches || []).filter((batch) => batch.mode === "storyboard_video").flatMap((batch) => batch.items.map((item) => ({ batch, item })));
                 const current = batches.filter((entry) => entry.item.rowId === row.id).at(-1);
-                const active =
-                    Boolean(inline && ["queued", "running"].includes(inline.taskStatus || "")) ||
-                    isCanvasNodeGenerating(legacyVideo) ||
-                    Boolean(current && !current.batch.paused && ["waiting", "submitting", "queued", "running"].includes(current.item.status));
                 const ready = Boolean(inline?.content || inline?.storageKey || legacyVideo?.metadata?.content || legacyVideo?.metadata?.storageKey);
-                const failed = !ready && !active && (inline?.taskStatus === "failed" || (legacyVideo?.metadata?.status === "error" && legacyVideo.metadata.taskStatus !== "cancelled") || current?.item.status === "failed");
+                const active = Boolean(inline && ["queued", "running"].includes(inline.taskStatus || "")) || !ready && (
+                    isCanvasNodeGenerating(legacyVideo) ||
+                    Boolean(current && !current.batch.paused && ["waiting", "submitting", "queued", "running"].includes(current.item.status))
+                );
+                const failed = !active && (inline?.taskStatus === "failed" || (legacyVideo?.metadata?.status === "error" && legacyVideo.metadata.taskStatus !== "cancelled") || current?.item.status === "failed") && (!ready || Boolean(inline?.errorDetails));
                 let assets: ReturnType<typeof resolveEpisodeShotAssets> | undefined;
                 let assetError = "";
                 if (detailReady)
@@ -188,7 +190,8 @@ export function CanvasEpisodeStoryboard({
                         assetError = error instanceof Error ? error.message : "资产解析失败";
                     }
                 const failedFrames = failedStoryboardBoundaryImagesForRow(node, row.id, nodes);
-                return { row, video, active, failed, ready, detailReady, assets, assetError, paused: current?.batch.paused, failedFrames };
+                const generatedFrames = generatedStoryboardBoundaryImagesForRow(node, row.id, nodes);
+                return { row, video, active, failed, ready, detailReady, assets, assetError, paused: current?.batch.paused, failedFrames, generatedFrames };
             }),
         [rows, node, nodes, byId],
     );
@@ -232,11 +235,11 @@ export function CanvasEpisodeStoryboard({
             setPausing(false);
         }
     };
-    const generateFrames = async (rowId?: string, failedOnly = false) => {
+    const generateFrames = async (rowId?: string, options: StoryboardFrameGenerationOptions = {}) => {
         if (preparingFrames || pausing) return;
-        setPreparingFrames({ rowId, failedOnly });
+        setPreparingFrames({ rowId, failedOnly: Boolean(options.failedOnly) });
         try {
-            await onGenerateFrames(rowId, "boundary", { failedOnly });
+            await onGenerateFrames(rowId, "boundary", options);
         } finally {
             setPreparingFrames(undefined);
         }
@@ -264,6 +267,7 @@ export function CanvasEpisodeStoryboard({
                 <div className="w-48 min-w-0">
                     <ModelPicker fullWidth config={videoConfig} value={videoConfig.model} capability="video" placeholder="选择视频模型" showSelectedPrice={false} onChange={onModelChange} />
                 </div>
+                <CanvasVideoSettingsPopover config={videoConfig} placement="bottomRight" resolutionOnly onConfigChange={(key, value) => updateConfig(key, value)} />
                 <Button size="small" type="primary" icon={<Play size={14} />} loading={submitting} disabled={pausing || !remaining.length} onClick={() => void generate(remaining.map((item) => item.row.id))}>
                     全部生成
                 </Button>
@@ -288,7 +292,7 @@ export function CanvasEpisodeStoryboard({
                     生成全部首尾帧
                 </Button>
                 {failedFrameCount ? (
-                    <Button size="small" icon={<RefreshCw size={14} />} loading={Boolean(preparingFrames?.failedOnly)} disabled={pausing || Boolean(preparingFrames)} onClick={() => void generateFrames(undefined, true)}>
+                    <Button size="small" icon={<RefreshCw size={14} />} loading={Boolean(preparingFrames?.failedOnly)} disabled={pausing || Boolean(preparingFrames)} onClick={() => void generateFrames(undefined, { failedOnly: true })}>
                         重试失败首尾帧（影响 {failedFrameCount}）
                     </Button>
                 ) : null}
@@ -315,7 +319,7 @@ export function CanvasEpisodeStoryboard({
             ) : null}
             <div className="thin-scrollbar canvas-episode-storyboard-scroll min-h-0 flex-1 overflow-auto" aria-label="分镜内容">
                 <div className="canvas-episode-storyboard-rows">
-                    {items.map(({ row, video, active, failed, ready, detailReady, assets, assetError, paused, failedFrames }) => (
+                    {items.map(({ row, video, active, failed, ready, detailReady, assets, assetError, paused, failedFrames, generatedFrames }) => (
                         <article key={row.id} className="canvas-episode-storyboard-card" data-storyboard-row={row.id} data-storyboard-detail-status={row.detailStatus} style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
                             <div className="canvas-episode-storyboard-card-main">
                                 <div className="canvas-episode-storyboard-meta">
@@ -335,7 +339,7 @@ export function CanvasEpisodeStoryboard({
                                         {detailReady ? row.videoMotionPrompt || row.plotDescription : row.plannedGoal || "已规划镜头"}
                                     </p>
                                     <p role="status" className="canvas-episode-storyboard-status line-clamp-2" style={{ color: row.detailStatus === "error" ? theme.accent.danger : theme.node.muted }}>
-                                        {detailReady ? (active ? video?.metadata?.taskStage || "排队中" : failed ? "生成失败" : paused || video?.metadata?.taskStatus === "cancelled" ? "已暂停" : "待生成") : detailLabel(row)}
+                                        {detailReady ? (active ? video?.metadata?.taskStage || "排队中" : failed ? (ready ? "重新生成失败，保留原视频" : "生成失败") : ready ? "已生成" : paused || video?.metadata?.taskStatus === "cancelled" ? "已暂停" : "待生成") : detailLabel(row)}
                                     </p>
                                     {row.detailError ? (
                                         <p role="alert" className="line-clamp-2 break-words" style={{ color: theme.accent.danger }}>
@@ -385,7 +389,7 @@ export function CanvasEpisodeStoryboard({
                                     </button>
                                 ) : (
                                     <div className="canvas-episode-storyboard-video-status" role="status" style={{ color: failed ? theme.accent.danger : theme.node.muted }}>
-                                        {detailReady ? (active ? video?.metadata?.taskStage || "排队中" : failed ? "生成失败" : paused || video?.metadata?.taskStatus === "cancelled" ? "已暂停" : "待生成") : "等待分镜详情"}
+                                        {detailReady ? (active ? video?.metadata?.taskStage || "排队中" : failed ? (ready ? "重新生成失败，保留原视频" : "生成失败") : ready ? "已生成" : paused || video?.metadata?.taskStatus === "cancelled" ? "已暂停" : "待生成") : "等待分镜详情"}
                                     </div>
                                 )}
                             </div>
@@ -397,16 +401,19 @@ export function CanvasEpisodeStoryboard({
                                         {!ready && !failed ? (
                                             <CanvasNodeActionButton theme={theme} label="生成" icon={<Play size={14} />} disabled={active || submitting || pausing || Boolean(assetError)} onClick={() => void generate([row.id])} primary />
                                         ) : null}
+                                        {ready ? (
+                                            <CanvasNodeActionButton theme={theme} label="重新生成" icon={<RefreshCw size={14} />} disabled={active || submitting || pausing || Boolean(assetError)} onClick={async () => { if (await confirmRegeneration("视频")) await generate([row.id]); }} />
+                                        ) : null}
                                         <CanvasNodeActionButton theme={theme} label="详情" icon={<Info size={14} />} onClick={() => setSelectedId(row.id)} />
                                         <CanvasNodeActionButton
                                             theme={theme}
-                                            label={failedFrames.length ? `重试首尾帧 (${failedFrames.length})` : "首尾帧"}
-                                            icon={failedFrames.length ? <RefreshCw size={14} /> : <Images size={14} />}
+                                            label={generatedFrames.length ? "重新生成首尾帧" : failedFrames.length ? `重试首尾帧 (${failedFrames.length})` : "首尾帧"}
+                                            icon={generatedFrames.length || failedFrames.length ? <RefreshCw size={14} /> : <Images size={14} />}
                                             disabled={Boolean(preparingFrames) || pausing || active}
-                                            onClick={() => void generateFrames(row.id)}
+                                            onClick={() => void generateFrames(row.id, generatedFrames.length ? { regenerate: true } : {})}
                                         />
                                         <CanvasNodeActionButton theme={theme} label="关键帧" icon={<ScanSearch size={14} />} onClick={() => setFrameRowId(row.id)} />
-                                        {failed ? (
+                                        {failed && !ready ? (
                                             <CanvasNodeActionButton
                                                 theme={theme}
                                                 label="重试"

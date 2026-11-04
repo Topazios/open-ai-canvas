@@ -6,7 +6,6 @@ import (
 	"log"
 	"math/rand"
 	"strings"
-	"sync"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -23,23 +22,6 @@ import (
 //   - 同一画布的回写在进程内串行，减少与自身的竞争。
 
 const canvasWritebackMaxAttempts = 5
-
-var canvasWritebackLocks = struct {
-	mu    sync.Mutex
-	items map[string]*sync.Mutex
-}{items: map[string]*sync.Mutex{}}
-
-func canvasWritebackLock(userID, canvasID string) *sync.Mutex {
-	key := userID + "\x00" + canvasID
-	canvasWritebackLocks.mu.Lock()
-	defer canvasWritebackLocks.mu.Unlock()
-	lock := canvasWritebackLocks.items[key]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		canvasWritebackLocks.items[key] = lock
-	}
-	return lock
-}
 
 func canvasTaskStatusTerminal(status string) bool {
 	switch model.TaskStatus(status) {
@@ -110,9 +92,6 @@ func (s *Service) writeTaskResultToCanvasID(ctx context.Context, task model.Task
 // saveCanvasDocumentWithRetry 每次尝试都基于最新画布重新应用补丁。
 // 补丁返回 false 表示无需写入。画布不存在时视为无事可做。
 func saveCanvasDocumentWithRetry(ctx context.Context, repo *repository.Repository, userID, canvasID string, policy RuntimePolicySetting, patch func(doc map[string]any) bool) error {
-	lock := canvasWritebackLock(userID, canvasID)
-	lock.Lock()
-	defer lock.Unlock()
 	var lastErr error
 	for attempt := 0; attempt < canvasWritebackMaxAttempts; attempt++ {
 		if attempt > 0 {
@@ -179,9 +158,13 @@ func applyTaskResultToCanvasDoc(doc map[string]any, task model.Task, targetID st
 		return false
 	}
 	meta := canvasNodeMetadata(node)
+	isScreenplayReview := false
 	if _, ok := meta["shortDrama"].(map[string]any); ok {
 		sd := meta["shortDrama"].(map[string]any)
 		if sd["screenplayRepair"] != nil || sd["screenplayAudit"] != nil {
+			isScreenplayReview = true
+		}
+		if isScreenplayReview && task.Status == model.TaskStatusSucceeded {
 			return false
 		}
 	}
@@ -190,6 +173,34 @@ func applyTaskResultToCanvasDoc(doc map[string]any, task model.Task, targetID st
 	}
 	boundID := stringValue(meta["taskId"])
 	content := stringValue(meta["content"])
+	if isScreenplayReview {
+		if boundID != "" && boundID != task.ID {
+			log.Printf("canvas writeback skipped: diagnostic node %s bound to task %s, finished task=%s", targetID, boundID, task.ID)
+			return false
+		}
+		if boundID == "" {
+			state := stringValue(meta["status"])
+			if state != "loading" && state != "idle" {
+				log.Printf("canvas writeback skipped: diagnostic node %s is not awaiting a task, task=%s", targetID, task.ID)
+				return false
+			}
+		}
+		switch task.Status {
+		case model.TaskStatusFailed:
+			meta["status"] = "error"
+			meta["errorDetails"] = cloudAgentSafeMediaTaskError(&task)
+		case model.TaskStatusCancelled:
+			if content != "" {
+				meta["status"] = "success"
+			} else {
+				meta["status"] = "idle"
+			}
+		default:
+			return false
+		}
+		writeCommonTaskMetadata(meta, task)
+		return true
+	}
 	switch {
 	case boundID == task.ID:
 	case boundID == "":

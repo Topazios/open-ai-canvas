@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 49
+const CurrentSchemaVersion int64 = 50
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -187,6 +187,9 @@ var schemaMigrations = []migration{
 	}},
 	{version: 49, name: "canvas_task_events", checksum: "sha256:canvas-task-events-v49-20261028", apply: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.CanvasTaskEvent{})
+	}},
+	{version: 50, name: "canvas_node_deletion_receipts", checksum: "sha256:canvas-node-deletion-receipts-v50-20261103", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.CanvasNodeDeletionReceipt{})
 	}},
 }
 

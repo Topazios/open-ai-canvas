@@ -24,8 +24,37 @@ func storyboardAssetTestDoc() (productionManifest, map[string]any) {
 		storyboardAssetTestNode("a5", "p1", "PRP-001", "旧账本", "prop", nil),
 		storyboardAssetTestNode("a6", "other", "SCN-009", "别的项目", "environment", nil),
 	}}
-	m := productionManifest{Sources: []productionSource{{NodeID: "body", Step: "story.body", Episode: 1}}}
+	m := productionManifest{Sources: []productionSource{{NodeID: "body", Step: "story.body", Episode: 1}}, AssetCatalogNodeIDs: []string{"a1", "a2", "a5"}}
 	return m, doc
+}
+
+func TestStoryboardAssetCatalogUsesOnlyBoundPlanVersion(t *testing.T) {
+	m, doc := storyboardAssetTestDoc()
+	// A different plan version may reuse the code with conflicting details.
+	doc["nodes"] = append(doc["nodes"].([]any), storyboardAssetTestNode("other-version", "p1", "CHR-001", "错误版本角色", "character", []any{float64(1)}))
+	assets := storyboardAssetCatalog(m, doc)
+	for _, item := range assets {
+		if item["code"] == "CHR-001" && item["name"] != "伟哥" {
+			t.Fatalf("catalog selected an unbound version: %#v", item)
+		}
+	}
+}
+
+func TestStoryboardManifestPinsOnlyAssetsFromSelectedBodyVersion(t *testing.T) {
+	manifest, err := storyboardManifestAfterEdit(t, func(doc map[string]any) {
+		pipeline := productionWorkflow(productionNode(doc, "body"))["pipelineId"]
+		productionWorkflow(productionNode(doc, "body"))["sourceSignatures"] = map[string]any{"pinned-asset": "signature"}
+		doc["nodes"] = append(creationMaps(doc["nodes"]),
+			storyboardAssetTestNode("pinned-asset", stringValue(pipeline), "CHR-001", "当前版角色", "character", []any{float64(1)}),
+			storyboardAssetTestNode("other-plan-version", stringValue(pipeline), "CHR-001", "旧版角色", "character", []any{float64(1)}),
+		)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.AssetCatalogNodeIDs) != 1 || manifest.AssetCatalogNodeIDs[0] != "pinned-asset" {
+		t.Fatalf("asset catalog IDs = %v, want only the asset pinned by the body", manifest.AssetCatalogNodeIDs)
+	}
 }
 
 func TestStoryboardAssetCatalogFiltersEpisodeAndPlaceholders(t *testing.T) {

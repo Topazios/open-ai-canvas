@@ -28,24 +28,25 @@ type productionPlanAsset struct {
 }
 
 type productionPlan struct {
-	Groups                 map[string]string                  `json:"groups,omitempty"`
-	Version                int                                `json:"version,omitempty"`
-	ContinuityVersion      int                                `json:"continuityVersion,omitempty"`
-	StoryStructureVersion  int                                `json:"storyStructureVersion,omitempty"`
-	InventoryReviewVersion int                                `json:"inventoryReviewVersion,omitempty"`
-	InventoryReview        []productionInventorySectionReview `json:"inventoryReview,omitempty"`
-	Relationships          []productionRelationshipRecord     `json:"relationships,omitempty"`
-	Assets                 []productionPlanAsset              `json:"assets"`
-	Absent                 map[string]string                  `json:"absent"`
-	StoryHash              string                             `json:"storyHash"`
-	Complete               bool                               `json:"complete,omitempty"`
-	AssetsStarted          bool                               `json:"assetsStarted,omitempty"`
-	PlansStarted           bool                               `json:"plansStarted,omitempty"`
-	SelectedPlanKeys       []string                           `json:"selectedPlanKeys,omitempty"`
-	SelectedAssetKeys      []string                           `json:"selectedAssetKeys,omitempty"`
-	SelectedAssetKinds     []string                           `json:"selectedAssetKinds,omitempty"`
-	NewVersionAssetKeys    []string                           `json:"newVersionAssetKeys,omitempty"`
-	SummaryHash            string                             `json:"summaryHash,omitempty"`
+	Groups                  map[string]string                  `json:"groups,omitempty"`
+	AssetPlaceholderNodeIDs map[string]string                  `json:"assetPlaceholderNodeIds,omitempty"`
+	Version                 int                                `json:"version,omitempty"`
+	ContinuityVersion       int                                `json:"continuityVersion,omitempty"`
+	StoryStructureVersion   int                                `json:"storyStructureVersion,omitempty"`
+	InventoryReviewVersion  int                                `json:"inventoryReviewVersion,omitempty"`
+	InventoryReview         []productionInventorySectionReview `json:"inventoryReview,omitempty"`
+	Relationships           []productionRelationshipRecord     `json:"relationships,omitempty"`
+	Assets                  []productionPlanAsset              `json:"assets"`
+	Absent                  map[string]string                  `json:"absent"`
+	StoryHash               string                             `json:"storyHash"`
+	Complete                bool                               `json:"complete,omitempty"`
+	AssetsStarted           bool                               `json:"assetsStarted,omitempty"`
+	PlansStarted            bool                               `json:"plansStarted,omitempty"`
+	SelectedPlanKeys        []string                           `json:"selectedPlanKeys,omitempty"`
+	SelectedAssetKeys       []string                           `json:"selectedAssetKeys,omitempty"`
+	SelectedAssetKinds      []string                           `json:"selectedAssetKinds,omitempty"`
+	NewVersionAssetKeys     []string                           `json:"newVersionAssetKeys,omitempty"`
+	SummaryHash             string                             `json:"summaryHash,omitempty"`
 }
 
 var productionPlanKinds = []string{"character", "environment", "prop", "special"}

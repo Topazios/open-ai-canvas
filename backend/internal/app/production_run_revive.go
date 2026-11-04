@@ -15,9 +15,9 @@ func productionRunRemovedError(message string) error {
 	return err
 }
 
-// ensureProductionRunActive accepts a run that was removed by canvas cleanup while
-// its target node is still on the canvas, and brings it back. A run whose node is
-// really gone keeps failing, now with a machine-readable code.
+// ensureProductionRunActive accepts a run removed by cleanup only while its target
+// is still present and has no deletion receipt. Tombstones fence stale canvas saves
+// and must also fence idempotent task retries from reviving deleted work.
 func (s *Service) ensureProductionRunActive(userID string, task *model.Task, message string) error {
 	if task == nil || task.RemovedAt == nil {
 		return nil
@@ -28,6 +28,28 @@ func (s *Service) ensureProductionRunActive(userID string, task *model.Task, mes
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
+	receipts, err := s.repo.CanvasNodeDeletionReceipts(userID, task.ProjectID)
+	if err != nil {
+		return err
+	}
+	deleted := make(map[string]bool, len(receipts))
+	for _, receipt := range receipts {
+		deleted[receipt.NodeID] = true
+	}
+	canvas, err := s.repo.CanvasProjectForUser(userID, task.ProjectID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return productionRunRemovedError(message)
+		}
+		return err
+	}
+	doc, err := creationDocument(canvas.PayloadJSON)
+	if err != nil {
+		return err
+	}
+	if canvasAgentDeletedByReceipt(doc, target, deleted) {
+		return productionRunRemovedError(message)
+	}
 	missing, err := s.canvasTaskTargetMissing(userID, task.ProjectID, task.ID, target, true)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

@@ -14,7 +14,7 @@ import (
 func associationFixture(t *testing.T) (*Service, *gorm.DB, model.Project, model.ProjectUnit, model.CanvasProject) {
 	t.Helper()
 	service, db := newProjectWorkflowV2TestService(t)
-	if err := db.AutoMigrate(&model.CanvasUnitLink{}, &model.CanvasNodeShotLink{}, &model.CanvasSnapshot{}, &model.CanvasSnapshotResource{}); err != nil {
+	if err := db.AutoMigrate(&model.CanvasUnitLink{}, &model.CanvasNodeShotLink{}, &model.CanvasNodeDeletionReceipt{}, &model.CanvasSnapshot{}, &model.CanvasSnapshotResource{}); err != nil {
 		t.Fatal(err)
 	}
 	project, unit := seedWorkflowProject(t, db)

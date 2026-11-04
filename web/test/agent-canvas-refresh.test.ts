@@ -4,7 +4,7 @@ import { canvasContentHash } from "@/lib/canvas/canvas-content";
 import { readCanvasSyncDrafts } from "@/services/canvas-sync-drafts";
 import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { http } from "@/services/api/request";
-import { applyAgentCanvasPatches, initializeRemoteUserDataSession, loadCanvasProjectForEditing, refreshCanvasAfterAgent, resetRemoteUserDataSync, subscribeAgentCanvasRefresh, saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { acknowledgeCanvasNodeDeletions, applyAgentCanvasPatches, initializeRemoteUserDataSession, loadCanvasProjectForEditing, refreshCanvasAfterAgent, registerCanvasNodeDeletion, resetRemoteUserDataSync, subscribeAgentCanvasRefresh, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType } from "@/types/canvas";
 import { mergeAgentCanvasEditor } from "@/lib/canvas/agent-canvas-patch";
@@ -17,11 +17,16 @@ const originalGet = localforage.getItem;
 const originalSet = localforage.setItem;
 const originalWindow = globalThis.window;
 const indexed = new Map<string, unknown>();
+const localStorageValues = new Map<string, string>([["infinite-canvas:active-user-scope", "agent-user"]]);
 beforeEach(() => {
     resetRemoteUserDataSync();
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
         setTimeout: () => 1, clearTimeout: () => {},
-        localStorage: { getItem: () => "agent-user", setItem: () => {} },
+        localStorage: {
+            getItem: (key: string) => localStorageValues.get(key) ?? null,
+            setItem: (key: string, value: string) => { localStorageValues.set(key, value); },
+            removeItem: (key: string) => { localStorageValues.delete(key); },
+        },
     } });
     indexed.clear();
     localforage.getItem = (async (key: string) => indexed.get(key) ?? null) as typeof localforage.getItem;
@@ -55,6 +60,19 @@ test("successful Agent refresh projects nodes into the open editor and store", a
     await refreshCanvasAfterAgent(initial.id);
     expect(editor.nodes).toEqual(remote.nodes);
     expect(useCanvasStore.getState().projects[0].nodes).toEqual(remote.nodes);
+});
+
+test("a late Agent snapshot cannot restore a locally deleted node", async () => {
+    const deleted = { ...remote.nodes[0], id: "deleted-node" };
+    const cloud = { ...remote, nodes: [...remote.nodes, deleted] };
+    await setup(cloud);
+    registerCanvasNodeDeletion(initial.id, [deleted.id]);
+    await refreshCanvasAfterAgent(initial.id);
+    expect(useCanvasStore.getState().projects[0].nodes.map((node) => node.id)).toEqual(["text-1"]);
+
+    acknowledgeCanvasNodeDeletions(initial.id, [deleted.id]);
+    await refreshCanvasAfterAgent(initial.id);
+    expect(useCanvasStore.getState().projects[0].nodes.map((node) => node.id)).toEqual(["text-1", "deleted-node"]);
 });
 
 test("saved production documents reach the live editor despite a newer local receipt", async () => {

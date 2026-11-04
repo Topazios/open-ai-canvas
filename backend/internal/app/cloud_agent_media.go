@@ -742,6 +742,9 @@ func applyCloudAgentResolvedMediaDefaults(req *CreateTaskRequest, plan *cloudAge
 }
 
 func saveCloudAgentDocument(repo *repository.Repository, canvas *model.CanvasProject, doc map[string]any, policy RuntimePolicySetting) error {
+	if err := applyCanvasNodeDeletionReceipts(repo, canvas.UserID, canvas.ID, doc); err != nil {
+		return err
+	}
 	doc["updatedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
 	raw, err := json.Marshal(doc)
 	if err != nil {
@@ -760,6 +763,68 @@ func saveCloudAgentDocument(repo *repository.Repository, canvas *model.CanvasPro
 	before := canvas.PayloadJSON
 	canvas.PayloadJSON = string(raw)
 	return saveCreationCanvasWithHistory(repo, canvas, before)
+}
+
+func applyCanvasNodeDeletionReceipts(repo *repository.Repository, userID, canvasID string, doc map[string]any) error {
+	receipts, err := repo.CanvasNodeDeletionReceipts(userID, canvasID)
+	if err != nil || len(receipts) == 0 {
+		return err
+	}
+	deleted := make(map[string]bool, len(receipts))
+	for _, receipt := range receipts {
+		deleted[receipt.NodeID] = true
+	}
+	cascadeParents := make(map[string]bool)
+	for id := range deleted {
+		if canvasNodeIsPlanContainer(productionNode(doc, id)) {
+			cascadeParents[id] = true
+		}
+	}
+	nodes := creationMaps(doc["nodes"])
+	for changed := true; changed; {
+		changed = false
+		for _, node := range nodes {
+			parentID := stringValue(node["parentId"])
+			if !cascadeParents[parentID] || deleted[stringValue(node["id"])] {
+				continue
+			}
+			id := stringValue(node["id"])
+			deleted[id] = true
+			cascadeParents[id] = true
+			changed = true
+		}
+	}
+	kept := make([]map[string]any, 0, len(nodes))
+	for _, node := range nodes {
+		if deleted[stringValue(node["id"])] {
+			continue
+		}
+		if deleted[stringValue(node["parentId"])] {
+			delete(node, "parentId")
+		}
+		if workflow := productionWorkflow(node); workflow != nil {
+			ids := productionIDs(workflow["sourceNodeIds"])
+			filtered := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if !deleted[id] {
+					filtered = append(filtered, id)
+				}
+			}
+			if len(filtered) != len(ids) {
+				workflow["sourceNodeIds"] = filtered
+			}
+		}
+		kept = append(kept, node)
+	}
+	connections := creationMaps(doc["connections"])
+	keptConnections := make([]map[string]any, 0, len(connections))
+	for _, edge := range connections {
+		if !deleted[stringValue(edge["fromNodeId"])] && !deleted[stringValue(edge["toNodeId"])] {
+			keptConnections = append(keptConnections, edge)
+		}
+	}
+	doc["nodes"], doc["connections"] = kept, keptConnections
+	return nil
 }
 
 // Called inside the same transaction as the task, charge reservation and Agent checkpoint.

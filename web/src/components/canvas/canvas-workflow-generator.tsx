@@ -68,8 +68,6 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
     const [imagePrompt, setImagePrompt] = useState<string | null>(null);
     const [selectedShotId, setSelectedShotId] = useState<string | null>(null);
     const [instruction, setInstruction] = useState("");
-    const [shotDurationSeconds, setShotDuration] = useState(10);
-    const [shotDurationToleranceSeconds, setShotTolerance] = useState(3);
     const [error, setError] = useState("");
     const productionAgent = step.output === "asset-group";
     const imageSubjects = isAudio ? workflowSoundSubjects({ pipelineId: target.pipelineId, sourceNodeIds: sources.filter(Boolean) }, nodes) : workflowImageSubjects({ step: target.step, sourceNodeIds: sources.filter(Boolean) }, nodes);
@@ -129,6 +127,11 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
             && node.metadata?.status !== "loading" && (node.metadata?.status !== "error" || diagnosticNode);
     }).map((node) => nodeWorkflow(node)!.episodeNumber!).sort((a, b) => a - b);
     const collections = sources.map((id) => nodes.find((node) => node.id === id)).filter((node) => nodeWorkflow(node)?.role === "collection" && !nodeWorkflow(node)?.assetGroup && !nodeWorkflow(node)?.mediaGroup);
+    const storyboardBodySource = sources.map((id) => nodes.find((node) => node.id === id)).find((node) => nodeWorkflow(node)?.step === ShortDramaStep.Body);
+    const storyboardScenesSource = sources.map((id) => nodes.find((node) => node.id === id)).find((node) => nodeWorkflow(node)?.step === ShortDramaStep.Scenes);
+    const storyboardEpisodeNumbers = storyboardBodySource ? (nodeWorkflow(storyboardBodySource)?.role === "collection"
+        ? nodeWorkflow(storyboardBodySource)!.sourceNodeIds.map((id) => nodes.find((node) => node.id === id)).filter((node): node is CanvasNodeData => Boolean(node && nodeWorkflow(node)?.step === ShortDramaStep.Body && node.metadata?.content?.trim() && node.metadata?.status !== "loading")).map((node) => nodeWorkflow(node)!.episodeNumber!).filter(Number.isInteger).sort((a, b) => a - b)
+        : nodeWorkflow(storyboardBodySource)?.episodeNumber ? [nodeWorkflow(storyboardBodySource)!.episodeNumber!] : []) : [];
     const directIds = new Set(sources.flatMap((id) => {
         const source = nodeWorkflow(nodes.find((node) => node.id === id));
         return source?.role === "collection" ? source.sourceNodeIds : [id];
@@ -136,12 +139,23 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
     const sourceLength = ancestors.filter((node) => step.stage === "story" || directIds.has(node.id) || nodeWorkflow(node)?.step === ShortDramaStep.Plan).reduce((total, node) => total + (workflowContextContent(node, step.id)?.length || 0), 0);
     const [episodeCount, setEpisodeCount] = useState(total);
     const [minutes, setMinutes] = useState(parameters.minutesPerEpisode);
+    const [shotDurationSeconds, setShotDuration] = useState(10);
+    const [shotDurationToleranceSeconds, setShotTolerance] = useState(3);
     const continuation = workflowContinuationRange(progress);
     const auditInitialStart = auditReadyEpisodes[0] || auditEpisodes[0] || 1;
     const auditInitialEnd = auditReadyEpisodes.at(-1) || auditEpisodes.at(-1) || auditInitialStart;
     const initialStart = isAudit ? auditInitialStart : target.continueGeneration && step.id === ShortDramaStep.Body ? continuation.start : nodeWorkflow(nodes.find((node) => node.id === target.anchorId))?.episodeNumber || progress.next;
     const [start, setStart] = useState(initialStart);
-    const [count, setCount] = useState(isAudit ? Math.max(1, auditInitialEnd - auditInitialStart + 1) : target.continueGeneration && step.id === ShortDramaStep.Body ? continuation.count : Math.min(continuation.count, Math.max(1, total - initialStart + 1)));
+    const storyboardStart = storyboardEpisodeNumbers.includes(initialStart) ? initialStart : storyboardEpisodeNumbers[0] || 1;
+    const [count, setCount] = useState(isAudit ? Math.max(1, auditInitialEnd - auditInitialStart + 1) : step.id === ShortDramaStep.Shots ? 1 : target.continueGeneration && step.id === ShortDramaStep.Body ? continuation.count : Math.min(continuation.count, Math.max(1, total - initialStart + 1)));
+    const [storyboardStartEpisode, setStoryboardStartEpisode] = useState(storyboardStart);
+    const [storyboardEpisodeCount, setStoryboardEpisodeCount] = useState(1);
+    const storyboardRangeEpisodes = storyboardEpisodeNumbers.filter((episode) => episode >= storyboardStartEpisode);
+    const storyboardRangeCountMax = storyboardRangeEpisodes.findIndex((episode, index) => episode !== storyboardStartEpisode + index) < 0
+        ? storyboardRangeEpisodes.length
+        : storyboardRangeEpisodes.findIndex((episode, index) => episode !== storyboardStartEpisode + index);
+    const storyboardRangeError = step.id === ShortDramaStep.Shots && (!storyboardRangeCountMax || storyboardEpisodeCount > storyboardRangeCountMax)
+        ? "所选范围内没有完整、可用的正文，请缩小范围或先补齐正文。" : "";
     const auditEnd = start + count - 1;
     const auditSelectedReady = auditReadyEpisodes.filter((episode) => episode >= start && episode <= auditEnd);
     const auditRangeError = isAudit && !auditSelectedReady.length ? "所选范围内没有已生成完成的正文" : "";
@@ -184,8 +198,29 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
                 </> : null}
                 {capability === "text" ? <ReasoningEffortSelect disabled={submitting} /> : null}
                 {isImage && imageSettings && model ? <details className="canvas-workflow-image-settings"><summary>{isSheet ? "统一设定板" : "图片规格"} · {imageSettings.size} · {imageSettings.quality}</summary><ImageSettingsPanel config={{ ...config, model, imageModel: model, ...imageSettings }} onConfigChange={(key, value) => setImageValues((current) => ({ ...current, [key]: value }))} theme={theme} showTitle={false} showCount={false} showSize={!isSheet} showTransparent={!isSheet} className="min-w-0 space-y-3" /></details> : null}
-                {requirements.map((required, index) => isImage && step.optionalRequires?.includes(required) ? null : sourceField(required, index))}
+                {step.id !== ShortDramaStep.Shots ? requirements.map((required, index) => isImage && step.optionalRequires?.includes(required) ? null : sourceField(required, index)) : null}
                 {optionalSources.length ? <details className="canvas-workflow-image-settings"><summary>参考画面（可选） · 已选 {optionalSources.filter(({ index }) => sources[index]).length}</summary><div className="canvas-workflow-optional-sources">{optionalSources.map(({ required, index }) => sourceField(required, index))}</div></details> : null}
+                {step.id === ShortDramaStep.Shots ? <>
+                    <div className="canvas-workflow-generator-progress" role="status" aria-label="分镜生成依据">
+                        <strong>{storyboardBodySource?.title || "当前分集正文"}</strong>
+                        <span>项目单集时长范围：{parameters.minutesPerEpisode} 分钟 · 自动沿用当前版本资产编码{storyboardScenesSource ? ` · 已匹配${storyboardScenesSource.title}` : ""}</span>
+                        <span>本次处理第 {storyboardStartEpisode}–{storyboardStartEpisode + storyboardEpisodeCount - 1} 集正文</span>
+                    </div>
+                    <div className="canvas-workflow-generator-pair">
+                        <label>起始集数<InputNumber aria-label="分镜起始集数" min={storyboardEpisodeNumbers[0] || 1} max={storyboardEpisodeNumbers.at(-1) || 1} precision={0} value={storyboardStartEpisode} onChange={(value) => {
+                            const next = Math.max(storyboardEpisodeNumbers[0] || 1, Math.min(storyboardEpisodeNumbers.at(-1) || 1, Math.floor(value || storyboardEpisodeNumbers[0] || 1)));
+                            setStoryboardStartEpisode(next);
+                            const remaining = storyboardEpisodeNumbers.filter((episode) => episode >= next);
+                            const gap = remaining.findIndex((episode, index) => episode !== next + index);
+                            setStoryboardEpisodeCount((old) => Math.max(1, Math.min(old, gap < 0 ? remaining.length : gap)));
+                        }} /></label>
+                        <label>本次生成集数<InputNumber aria-label="分镜生成集数" min={1} max={Math.max(1, storyboardRangeCountMax)} precision={0} value={storyboardEpisodeCount} onChange={(value) => setStoryboardEpisodeCount(Math.max(1, Math.min(storyboardRangeCountMax, Math.floor(value || 1))))} /></label>
+                    </div>
+                    <div className="canvas-workflow-generator-pair">
+                        <label>目标镜头时长（秒）<InputNumber aria-label="目标镜头时长" min={5} max={60} precision={0} value={shotDurationSeconds} onChange={(value) => setShotDuration(Math.max(5, Math.min(60, Math.floor(value || 10))))} /></label>
+                        <label>时长浮动<Select aria-label="镜头时长浮动" value={shotDurationToleranceSeconds} onChange={setShotTolerance} options={[3, 4, 5].map((value) => ({ value, label: `±${value} 秒` }))} /></label>
+                    </div>
+                </> : null}
                 {isImage || isAudio ? <>
                     {step.stage === "assets" ? <div className="canvas-workflow-asset-selection">
                         <Checkbox disabled={submitting || !(isSheet ? selectableAssetTargetOptions.length : selectableImageSubjects.length)} checked={(isSheet ? defaultAssetTargetKeys.length === selectableAssetTargetOptions.length : imageSubjectIds.length === selectableImageSubjects.length) && (isSheet ? selectableAssetTargetOptions.length > 0 : selectableImageSubjects.length > 0)} indeterminate={isSheet ? defaultAssetTargetKeys.length > 0 && defaultAssetTargetKeys.length < selectableAssetTargetOptions.length : imageSubjectIds.length > 0 && imageSubjectIds.length < selectableImageSubjects.length}
@@ -215,19 +250,18 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
                     {sourceLength > WORKFLOW_CONTEXT_LIMIT && !productionAgent && !isImage && step.id !== ShortDramaStep.Audit && !isRepair ? <span aria-label="自动分批">长正文 · 按集/单元分批提取后汇总 · 每批独立调用模型</span> : null}
                 </div> : null}
                 {step.id === ShortDramaStep.Plan ? <div className="canvas-workflow-generator-pair"><label>计划集数<InputNumber aria-label="计划集数" readOnly={Boolean(globalSettings)} min={1} max={200} precision={0} value={globalSettings ? total : episodeCount} onChange={(value) => setEpisodeCount(value || 1)} /></label><label>单集时长（分钟）<Input aria-label="单集时长" readOnly={Boolean(globalSettings)} value={globalSettings ? parameters.minutesPerEpisode : minutes} onChange={(event) => setMinutes(event.target.value)} /></label></div> : null}
-                {step.id === ShortDramaStep.Shots ? <div className="canvas-workflow-generator-pair"><label>目标镜头时长（秒）<InputNumber aria-label="目标镜头时长" min={5} max={60} precision={0} value={shotDurationSeconds} onChange={value => setShotDuration(Math.max(5, Math.min(60, value || 10)))} /></label><label>时长浮动<Select aria-label="镜头时长浮动" value={shotDurationToleranceSeconds} onChange={setShotTolerance} options={[3, 4, 5].map(value => ({ value, label: `±${value} 秒` }))} /></label></div> : null}
                 {step.id === ShortDramaStep.Body && !isRepair ? <div className="canvas-workflow-generator-pair"><label>起始集数<InputNumber aria-label="起始集数" min={1} max={total} precision={0} value={start} onChange={(value) => { const next = Math.max(1, Math.min(total, value || 1)); setStart(next); setCount((old) => target.continueGeneration ? Math.min(DEFAULT_WORKFLOW_CONTINUATION_SPAN, total - next + 1) : Math.min(old, total - next + 1)); }} /></label><label>本次生成集数<InputNumber aria-label="本次生成集数" min={1} max={Math.max(1, total - start + 1)} step={target.continueGeneration ? DEFAULT_WORKFLOW_CONTINUATION_SPAN : 1} precision={0} value={count} onChange={(value) => setCount(Math.max(1, Math.min(total - start + 1, value || 1)))} /></label></div> : null}
                 {isAudit ? auditEpisodes.length > 1 ? <div className="canvas-workflow-generator-pair"><label>起始集数<InputNumber aria-label="诊断起始集数" min={1} max={total} precision={0} value={start} onChange={(value) => { const next = Math.max(1, Math.min(total, value || 1)); setStart(next); setCount((old) => Math.min(old, total - next + 1)); }} /></label><label>结束集数<InputNumber aria-label="诊断结束集数" min={start} max={total} precision={0} value={auditEnd} onChange={(value) => { const next = Math.max(start, Math.min(total, value || start)); setCount(next - start + 1); }} /></label></div> : <div className="canvas-workflow-generator-progress" role="status"><strong>当前第 {auditEpisodes[0] || "—"} 集</strong><span>单集正文一键诊断，不读取其他集和无关资产</span></div> : null}
                 <label>补充要求<CanvasResourceMentionTextarea aria-label="补充要求" value={instruction} onChange={setInstruction} references={assetMentions} rows={4} sendOnEnter={false} style={{ height: 96, minHeight: 96, width: "100%", padding: 8, border: "1px solid var(--workflow-border)", borderRadius: 6, color: "var(--workflow-text)", background: "var(--workflow-bg)" }} /></label>
-                {dependencyError || error || imageError || auditRangeError ? <span role="alert">{error || dependencyError || imageError || auditRangeError}</span> : null}
-                <Button type="primary" icon={<Sparkles size={15} />} loading={submitting} disabled={submitting || Boolean(dependencyError || imageError || auditRangeError) || !selectableModelsByCapability(config, capability).includes(model)} onClick={() => {
+                {dependencyError || error || imageError || auditRangeError || storyboardRangeError ? <span role="alert">{error || dependencyError || imageError || auditRangeError || storyboardRangeError}</span> : null}
+                <Button type="primary" icon={<Sparkles size={15} />} loading={submitting} disabled={submitting || Boolean(dependencyError || imageError || auditRangeError || storyboardRangeError) || !selectableModelsByCapability(config, capability).includes(model)} onClick={() => {
                     setError("");
                     try {
-                        void onGenerate({ ...target, globalSettings, sourceNodeIds: sources.filter(Boolean), model, ...(step.id === ShortDramaStep.Shots ? { shotDurationSeconds, shotDurationToleranceSeconds } : {}), ...(isImage ? { imageSubjectIds, ...(isSheet ? { assetImageTargets: selectedAssetTargets.map((asset) => ({ subjectId: asset.subjectId, variantCode: asset.variantCode || undefined })) } : {}), imagePrompt: effectiveImagePrompt, imageShotId, imageSettings } : isAudio ? { imageSubjectIds, soundVoices, soundSettings: { kind: soundKind, text: calibrationText, voice: audioValues.audioVoice, format: audioValues.audioFormat, speed: audioValues.audioSpeed, instructions: audioValues.audioInstructions } } : { reasoningEffort: config.textReasoningEffort || "medium" }), instruction, episodeCount: step.id === ShortDramaStep.Plan && !globalSettings ? episodeCount : total, minutesPerEpisode: step.id === ShortDramaStep.Plan && !globalSettings ? minutes : parameters.minutesPerEpisode, start, count });
+                        void onGenerate({ ...target, globalSettings, sourceNodeIds: sources.filter(Boolean), model, ...(step.id === ShortDramaStep.Shots ? { start: storyboardStartEpisode, count: storyboardEpisodeCount, shotDurationSeconds, shotDurationToleranceSeconds } : {}), ...(isImage ? { imageSubjectIds, ...(isSheet ? { assetImageTargets: selectedAssetTargets.map((asset) => ({ subjectId: asset.subjectId, variantCode: asset.variantCode || undefined })) } : {}), imagePrompt: effectiveImagePrompt, imageShotId, imageSettings } : isAudio ? { imageSubjectIds, soundVoices, soundSettings: { kind: soundKind, text: calibrationText, voice: audioValues.audioVoice, format: audioValues.audioFormat, speed: audioValues.audioSpeed, instructions: audioValues.audioInstructions } } : { reasoningEffort: config.textReasoningEffort || "medium" }), instruction, episodeCount: step.id === ShortDramaStep.Plan && !globalSettings ? episodeCount : total, minutesPerEpisode: step.id === ShortDramaStep.Plan && !globalSettings ? minutes : parameters.minutesPerEpisode, start, count });
                         onClose();
                     }
                     catch (failure) { setError(failure instanceof Error ? failure.message : "生成提交失败"); }
-                }}>{isRepair ? "修复正文并生成新版" : step.id === ShortDramaStep.Audit ? `诊断第 ${start}–${auditEnd} 集` : isAssetRevision ? `重做 ${revisionCount} 项资产` : isImage ? `生成 ${imageTargetCount} 张图片` : isAudio ? `生成 ${imageTargetCount} 份试听` : step.id === ShortDramaStep.Episodes ? "生成全剧集纲" : target.aggregate ? "生成跨集汇总" : step.id === ShortDramaStep.Body ? `生成 ${count} 集正文` : `生成${step.label}`}</Button>
+                }}>{isRepair ? "修复正文并生成新版" : step.id === ShortDramaStep.Audit ? `诊断第 ${start}–${auditEnd} 集` : isAssetRevision ? `重做 ${revisionCount} 项资产` : isImage ? `生成 ${imageTargetCount} 张图片` : isAudio ? `生成 ${imageTargetCount} 份试听` : step.id === ShortDramaStep.Episodes ? "生成全剧集纲" : target.aggregate ? "生成跨集汇总" : step.id === ShortDramaStep.Body ? `生成 ${count} 集正文` : step.id === ShortDramaStep.Shots ? `生成 ${storyboardEpisodeCount} 集分镜` : `生成${step.label}`}</Button>
             </fieldset>
         </section>
     </AppModal>;

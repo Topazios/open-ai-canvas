@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
@@ -140,6 +141,36 @@ func TestVideoPollTreatsCircuitAndInterruptedReadsAsTransient(t *testing.T) {
 		if !retry || notFound {
 			t.Fatalf("error %T classified as retry=%v notFound=%v", err, retry, notFound)
 		}
+	}
+}
+
+func TestVideoPollRetriesHTTP2ConnectionLostAgainstSameProviderTask(t *testing.T) {
+	var events []videoPollEvent
+	policy := fastVideoPollPolicy()
+	policy.Notify = func(_ context.Context, _ string, event videoPollEvent, _ error) {
+		events = append(events, event)
+	}
+	queries := 0
+	result, err := runVideoPollLoop(context.Background(), "provider-task-1", policy, func(context.Context) (videoPollOutcome, error) {
+		queries++
+		switch queries {
+		case 1:
+			return videoPollOutcome{}, &url.Error{Op: "Get", URL: "https://provider.example/tasks/provider-task-1", Err: errors.New("http2: client connection lost")}
+		case 2:
+			return videoPollOutcome{}, nil
+		default:
+			return videoPollOutcome{Done: true, Result: map[string]interface{}{"mode": "video"}}, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queries != 3 || result["mode"] != "video" {
+		t.Fatalf("queries = %d, result = %#v; want retry and complete existing provider task", queries, result)
+	}
+	wantEvents := []videoPollEvent{videoPollEventRetrying, videoPollEventRecovered}
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
 	}
 }
 

@@ -14,6 +14,7 @@ import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textare
 import { Tooltip } from "@/components/ui/base/tooltip";
 import { Button } from "antd";
 import { agentAttachmentReferences, type CloudAgentChatAttachment } from "./canvas-cloud-agent-attachments";
+import { CanvasImagePreview, type CanvasImagePreviewItem } from "./canvas-image-preview";
 
 export const MIN_AGENT_PROMPT_HEIGHT = 60;
 
@@ -527,13 +528,13 @@ export function AgentChatComposer({
     );
 }
 
-export function AgentImagePreview({ attachment, onClose }: { attachment: CloudAgentChatAttachment; onClose: () => void }) {
-    return (
-        <div className="fixed inset-0 z-[var(--z-dialog-popover)] grid place-items-center bg-black/80 p-6" role="dialog" aria-label={attachment.name} onClick={onClose}>
-            <img src={attachment.url} alt={attachment.name} className="max-h-[90vh] max-w-[92vw] rounded-xl object-contain shadow-2xl" onClick={(event) => event.stopPropagation()} />
-            <button type="button" className="absolute right-5 top-5 rounded-full bg-black/60 p-2 text-white" onClick={onClose} aria-label="关闭图片预览">
-                <X className="size-5" />
-            </button>
-        </div>
-    );
+export function AgentImagePreview({ attachment, onClose, items = [attachment], index = 0, onNavigate }: {
+    attachment: CloudAgentChatAttachment;
+    onClose: () => void;
+    items?: CloudAgentChatAttachment[];
+    index?: number;
+    onNavigate?: (index: number) => void;
+}) {
+    const previewItems: CanvasImagePreviewItem[] = items.map((item) => ({ src: item.url, alt: item.name }));
+    return <CanvasImagePreview items={previewItems} index={index} onNavigate={onNavigate} onClose={onClose} />;
 }

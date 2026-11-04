@@ -12,7 +12,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router";
-import { loadAssetsForUse, saveCanvasGlobalSettingsWithRemoteSync, saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { acknowledgeCanvasNodeDeletions, loadAssetsForUse, registerCanvasNodeDeletion, saveCanvasGlobalSettingsWithRemoteSync, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { reserveProductionVariantCode } from "@/services/api/user-data";
 import { canvasAssetHandoffIds } from "@/lib/canvas/canvas-asset-handoff";
 import { logicalModelIDForConfig, modelOptionName, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -1001,6 +1001,7 @@ function InfiniteCanvasPage() {
                 void Promise.all(removedDrawingIds.map((drawingId) => removeCanvasDrawing(projectId, drawingId))).catch(() => message.warning("绘图节点已删除，但本地绘图缓存清理失败"));
             }
             cleanupCanvasFiles({ projectId, nodes: nextNodes, chatSessions });
+            registerCanvasNodeDeletion(projectId, removedIds);
             void (async () => {
                 // Deletion receipts do not depend on the canvas save: the backend cancels by deleted ids.
                 await saveCanvasProject({ requireRemote: true }).catch(() => false);
@@ -1009,6 +1010,7 @@ function InfiniteCanvasPage() {
                     if (attempt) await new Promise((resolve) => window.setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
                     try {
                         await reconcileCanvasNodeTasks(projectId, [...removedIds]);
+                        acknowledgeCanvasNodeDeletions(projectId, removedIds);
                         return;
                     } catch (error) {
                         lastError = error;
@@ -3583,7 +3585,7 @@ function InfiniteCanvasPage() {
                                     } }] : []),
                                     ...(data.assetGroup ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => openWorkflowGenerator(data.step, anchorId) }] : []),
                                     ...(data.submission === "planned" ? [{ label: "继续提交此节点", disabled: workflowGeneration.submitting, run: () => void workflowGeneration.resume(anchorId) }] : []),
-                                    ...(data.step !== ShortDramaStep.Topic && data.role !== "collection" && !supportingDocument ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => data.aggregate ? setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId: data.sourceNodeIds[0], aggregate: true }) : openWorkflowGenerator(data.step, anchorId) }] : []),
+                                    ...(data.step !== ShortDramaStep.Topic && data.role !== "collection" && !supportingDocument ? [{ label: data.step === ShortDramaStep.Body ? "生成新版正文" : `生成另一版${shortDramaStep(data.step)!.label}`, run: () => data.aggregate ? setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId: data.sourceNodeIds[0], aggregate: true }) : openWorkflowGenerator(data.step, anchorId) }] : []),
                                     ...(stepDefinition?.mediaOutput === "image" && contextMenuNode.type === CanvasNodeType.Text && data.role !== "collection" && Boolean(contextMenuNode.metadata?.content?.trim()) ? [{ label: stepDefinition.mediaActionLabel || "根据当前资产生成图片", disabled: contextMenuNode.metadata?.status === "loading", run: () => generateImageFromTextNode(contextMenuNode) }] : []),
                                     ...(supportingDocument ? [] : nextShortDramaStepGroups(data.step)).map((group) => ({ label: `下一步：${group.label}`, disabled: data.role !== "collection" && (!contextMenuNode.metadata?.content?.trim() || contextMenuNode.metadata?.status === "loading" || contextMenuNode.metadata?.status === "error"), run: () => openWorkflowGenerator(group.entryStepId, anchorId, [...group.stepIds]) })),
                                 ];
@@ -3639,7 +3641,7 @@ function InfiniteCanvasPage() {
                         <input ref={imageInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
 
                         <CanvasNodeInfoModal key={`${infoNode?.id}:${infoNode?.metadata?.shortDrama?.productionAgent?.runId || "pending"}`} node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} onMetadataChange={handleConfigNodeChange}>
-                            {infoNode?.type === CanvasNodeType.Frame ? <CanvasGroupTaskDetails key={infoNode.id} node={infoNode} nodes={nodes} submitting={workflowGeneration.submitting} onResume={(id) => void workflowGeneration.resume(id)} onContinueGeneration={(id) => { const target = nodesRef.current.find((entry) => entry.id === id); const targetData = nodeWorkflow(target); if (targetData) { setInfoNodeId(null); setWorkflowGenerator({ step: ShortDramaStep.Body, pipelineId: targetData.pipelineId, anchorId: id, continueGeneration: true }); } }} onRetry={retryCanvasNode} onCancel={cancelCanvasTask} agentState={productionAgentRuns} />
+                            {infoNode?.type === CanvasNodeType.Frame ? <CanvasGroupTaskDetails key={infoNode.id} node={infoNode} nodes={nodes} submitting={workflowGeneration.submitting} onResume={(id) => void workflowGeneration.resume(id)} onContinueGeneration={(id) => { const target = nodesRef.current.find((entry) => entry.id === id); const targetData = nodeWorkflow(target); if (targetData) { setInfoNodeId(null); setWorkflowGenerator({ step: ShortDramaStep.Body, pipelineId: targetData.pipelineId, anchorId: id, continueGeneration: true }); } }} onNewVersionGeneration={(id) => { const target = nodesRef.current.find((entry) => entry.id === id); const targetData = nodeWorkflow(target); if (targetData) { setInfoNodeId(null); setWorkflowGenerator({ step: ShortDramaStep.Body, pipelineId: targetData.pipelineId, anchorId: id }); } }} onRetry={retryCanvasNode} onCancel={cancelCanvasTask} agentState={productionAgentRuns} />
                                 : infoNode?.metadata?.shortDrama?.productionAgent && infoNode.metadata.shortDrama.submission !== "planned" ? <CanvasProductionAgentDetails key={infoNode.id} node={infoNode} state={productionAgentRuns} />
                                 : infoNode?.metadata?.taskId ? <CanvasGenerationTaskDetails key={infoNode.id} node={infoNode} onRetry={retryCanvasNode} onCancel={cancelCanvasTask} />
                                 : infoNode?.metadata?.shortDrama ? <CanvasWorkflowTaskDetails node={infoNode} nodes={nodes} submitting={workflowGeneration.submitting} onResume={(id) => void workflowGeneration.resume(id)} onOpenTask={openCanvasNodeTaskDetails} /> : null}

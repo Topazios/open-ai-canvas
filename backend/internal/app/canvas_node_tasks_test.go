@@ -2,11 +2,52 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/repository"
 	"testing"
 	"time"
 )
+
+func TestCanvasNodeDeletionReceiptFencesLateCreationSave(t *testing.T) {
+	s, _, _ := productionFixture(t)
+	before, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.persistDeletedCanvasNodes(context.Background(), "user", before.ID, map[string]bool{"late-node": true}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.repo.CanvasProjectForUser("user", before.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision+1 {
+		t.Fatalf("deletion fence revision = %d, want %d", after.Revision, before.Revision+1)
+	}
+	var stale map[string]any
+	if err := json.Unmarshal([]byte(before.PayloadJSON), &stale); err != nil {
+		t.Fatal(err)
+	}
+	nodes := creationMaps(stale["nodes"])
+	nodes = append(nodes, map[string]any{"id": "late-node", "type": "text", "metadata": map[string]any{"content": "stale"}})
+	stale["nodes"] = nodes
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveCloudAgentDocument(s.repo, before, stale, policy); err == nil {
+		t.Fatal("late write with the pre-deletion revision was accepted")
+	}
+	stored, err := s.repo.CanvasProjectForUser("user", before.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := creationDocument(stored.PayloadJSON)
+	if err != nil || productionNode(doc, "late-node") != nil {
+		t.Fatalf("late node reappeared: err=%v", err)
+	}
+}
 
 func TestCanvasNodeTasksCancelBeforeRemoval(t *testing.T) {
 	s, db, run := productionFixture(t)
@@ -182,7 +223,7 @@ func TestCanvasNodeTasksDeletedContainerKeepsDocuments(t *testing.T) {
 	}
 	canvas, _ := s.repo.CanvasProjectForUser("user", "agent-canvas")
 	if canvas.Revision != before.Revision {
-		t.Fatal("cleanup rewrote the saved deletion and invalidated its revision")
+		t.Fatalf("cleanup rewrote the saved deletion and invalidated its revision: before=%d after=%d", before.Revision, canvas.Revision)
 	}
 	doc, _ := creationDocument(canvas.PayloadJSON)
 	if productionNode(doc, "target") == nil {
@@ -267,6 +308,32 @@ func TestEnsureProductionRunActiveKeepsFailingWhenNodeIsGone(t *testing.T) {
 	stored, _ := s.repo.TaskForUser("user", run.ID)
 	if stored.RemovedAt == nil {
 		t.Fatal("stored task revived although node is gone")
+	}
+}
+
+func TestEnsureProductionRunActiveCannotReviveNodeWithDeletionReceipt(t *testing.T) {
+	s, db, run := productionFixture(t)
+	if err := s.initializeProductionAgent("user", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Task{}).Where("id = ?", run.ID).Update("removed_at", time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.repo.AddCanvasNodeDeletionReceipts("user", "agent-canvas", []string{"group"}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.repo.TaskForUser("user", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.ensureProductionRunActive("user", task, "removed")
+	ae, ok := err.(*AuthError)
+	if !ok || ae.Details["code"] != productionRunRemovedCode {
+		t.Fatalf("expected coded removal error, got %v", err)
+	}
+	stored, _ := s.repo.TaskForUser("user", run.ID)
+	if stored.RemovedAt == nil {
+		t.Fatal("task revived although its container has a deletion receipt")
 	}
 }
 

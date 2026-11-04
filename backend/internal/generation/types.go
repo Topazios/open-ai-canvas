@@ -287,13 +287,15 @@ func (e HTTPError) Error() string {
 	switch e.StatusCode {
 	case 524:
 		return "上游网关超时（524）：模型请求可能仍在服务端执行并产生费用，请勿立即重试，请先到供应商后台核对任务或账单"
+	case http.StatusGatewayTimeout:
+		return "上游网关超时（504）：模型请求可能仍在服务端执行并产生费用，请勿立即重试，请先到供应商后台核对任务或账单"
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return "模型服务拒绝了请求，请检查模型和参数"
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return "模型服务鉴权失败，请检查 API Key 和模型权限"
 	case http.StatusNotFound:
 		return "上游返回 404：请求的接口路径或模型不存在，请核对渠道的接口类型、Base URL 和模型名"
-	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+	case http.StatusRequestTimeout:
 		return "模型服务响应超时，请稍后重试"
 	case http.StatusTooManyRequests:
 		return "模型服务请求过于频繁或额度不足，请稍后重试"

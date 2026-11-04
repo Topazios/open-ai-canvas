@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"sort"
 	"time"
@@ -112,6 +113,21 @@ func productionLayoutPlanGroup(m productionManifest, frame map[string]any, nodes
 // Move only verified generated artifacts. Updating their receipts in dependency
 // order keeps regrouping distinct from a user edit and preserves asset codes.
 func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...bool) (bool, error) {
+	var changed bool
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 50 * time.Millisecond)
+		}
+		changed, err = s.ensureProductionPlanGroupsOnce(userID, runID, relayout...)
+		if !errors.Is(err, repository.ErrCreationConflict) {
+			return changed, err
+		}
+	}
+	return false, err
+}
+
+func (s *Service) ensureProductionPlanGroupsOnce(userID, runID string, relayout ...bool) (bool, error) {
 	run, err := s.repo.CloudAgent(userID, runID)
 	if err != nil {
 		return false, err
@@ -282,6 +298,9 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 		if m.Plan.Groups == nil {
 			m.Plan.Groups = map[string]string{}
 		}
+		if m.Plan.AssetPlaceholderNodeIDs == nil {
+			m.Plan.AssetPlaceholderNodeIDs = map[string]string{}
+		}
 		p, _ := root["position"].(map[string]any)
 		x, y := numberValue(p["x"], 0), numberValue(p["y"], 0)
 		columnBottom := [2]float64{y, y}
@@ -358,6 +377,7 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 			for _, candidate := range nodes {
 				workflow := productionWorkflow(candidate)
 				if workflow["assetKey"] == item.Key && productionPlanPlaceholderOwned(candidate, runID) {
+					m.Plan.AssetPlaceholderNodeIDs[item.Key] = stringValue(candidate["id"])
 					workflow["sourceNodeIds"] = []string{m.FrameID}
 					workflow["sourceSignatures"] = map[string]string{}
 					workflow["sourceSteps"] = []string{"story.plan"}
@@ -396,10 +416,11 @@ func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...b
 					index++
 				}
 			}
-			id := "pap-" + productionHash([]string{runID, item.Key})[:32]
-			if productionNode(doc, id) != nil {
+			id := "pap-" + newID()
+			for productionNode(doc, id) != nil {
 				id = "pap-" + newID()
 			}
+			m.Plan.AssetPlaceholderNodeIDs[item.Key] = id
 			workflow := map[string]any{
 				"stage": "story", "step": "story.plan", "pipelineId": data["pipelineId"],
 				"role": "document", "assetKey": item.Key, "sourceNodeIds": []string{m.FrameID},

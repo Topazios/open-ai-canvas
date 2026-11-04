@@ -54,8 +54,8 @@ export const shortDramaSteps: readonly ShortDramaStepDefinition[] = [
     { id: S.Style, stage: "assets", label: "全局风格", requires: [S.Body], scope: "project", requirement: "基于已提供的正文总结全剧统一的视觉与声音风格：类型情绪、画风、色彩、光影、摄影、材质、节奏及声音美学、正负提示词基准和跨集不变规则。标注覆盖集数和具体正文依据，区分原文明确事实、推断、设计建议及冲突待确认项。不把未指定的画风当成既定事实，不代写世界观设定。" },
     { id: S.Settings, stage: "assets", label: "全局设定", requires: [S.Body], scope: "project", requirement: "基于已提供的正文总结全剧设定：时代地域、世界观及能力规则和限制、时间线、人物身份关系、组织称谓、空间关系、关键道具规则、不可变事实与连续性约束。每项附出现集数场次和正文依据，归并别名、列出矛盾和待确认项；不虚构未提供的剧情，不用视觉画风代替世界规则。" },
     { id: S.AssetApproval, stage: "assets", label: "资产一致性检查", requires: [S.Characters, S.Environments, S.Props, S.Voices], scope: "project", requirement: "对照资产总表与全局规范检查人物、场景、道具服化、声音的编号、别名、版本、覆盖范围和跨集一致性，输出差异、缺件及待人工确认项，不把检查文稿视为实际资产审核通过。", production: true },
-    { id: S.Scenes, stage: "storyboard", label: "场次目标、走位与空间关系", requires: [S.Body, S.Characters, S.Environments, S.Bible], optionalRequires: [S.Special], requirement: "逐场次设计目标、冲突、调度、轴线、出入场及空间连续性。遵循所选制作规范和关联资产的状态版本。" },
-    { id: S.Shots, stage: "storyboard", label: "场次与镜头拆解", requires: [S.Body], optionalRequires: [S.Scenes], requirement: "一次完成场次调度与逐镜头拆解。先按场次明确目标、冲突、人物走位、轴线、出入口和空间关系，再按镜头编号给出景别、机位、构图、运动、时长、动作、表情、对白、音效和剪辑点。一个镜头只承担一个主要动作或信息，复杂动作拆为可控镜头；逐项核对服装、道具状态、光线、视线和前后镜头连续性。已有场次设计时沿用并补全，不重复另写一套。遵循所选制作规范与资产版本，缺失信息标明待设计。" },
+    { id: S.Scenes, stage: "storyboard", label: "场次脚本与空间调度", requires: [S.Body, S.Characters, S.Environments, S.Bible], optionalRequires: [S.Special], requirement: "把小说正文忠实拆解为可执行的场次脚本，按实际空间和时间变化划分场次，并逐场写明地点、时间、出场人物、戏剧目标、冲突、行动因果、完整关键对白、人物状态变化、走位、道具使用及状态衔接、场景中的关键物件和出入场。保留正文中的有效细节、情节推进和信息顺序，不把完整故事压成几句摘要，不增删或改写关键因果；正文未说明但拍摄必须确定的内容标为待设计。此阶段解决场次组织和表演调度，不代替逐镜头设计。遵循所选制作规范和关联资产版本。" },
+    { id: S.Shots, stage: "storyboard", label: "分镜与拍摄参数拆解", requires: [S.Body], optionalRequires: [S.Scenes], requirement: "依据小说正文及已有场次脚本拆解逐镜头拍摄方案。先核对每场的目标、冲突、剧情信息、人物走位、轴线、出入口、空间关系及道具状态，再逐镜头标注镜号、景别、机位高度/角度/方向、构图与主体位置、镜头运动、焦段或等效视角、光圈/景深，以及需要控制运动模糊或低照度时的快门/感光度等参数、镜头时长、动作与表演变化、对白/旁白、音效、剪辑点。说明场景内实际或合理依据的光源、光线方向/质感/色温及变化、人物受光关系；不为每镜头机械填满参数，缺少依据时标为待设计，不虚构正文事实。一个镜头承担一个主要动作或信息，复杂动作拆成连续可拍镜头；逐项核对服装、道具拿放/交接/状态，及场景中座椅、床、餐具、容器等物件的使用位置和动作逻辑、视线、动作方向、光线和前后镜头连续性。忠实覆盖正文的情节、选择、反应和结果，不跳过关键剧情，不擅自新增剧情；缺少制作信息时标为待设计。已有场次脚本时沿用其分场与调度，不重复另写一套。遵循所选制作规范与资产版本。" },
     { id: S.Production, stage: "storyboard", label: "资产绑定与镜头提示词", requires: [S.Shots, S.Bible], optionalRequires: [S.Reconcile, S.Characters, S.Environments, S.Props, S.Special], requirement: '逐镜头绑定角色场景道具及特殊资产的版本、出场状态和已选定参考，给出生成路线、正负提示词、首尾帧和连续性约束。统一核对镜头编号、资产状态、服装、视线、轴线、动作与声音衔接。仅描述或候选参考须标为待确认，不能假称媒体已完成。直接输出一个 JSON 对象，不重复另写文稿：{"shots":[{"id":"原镜头编号","title":"画面名称","assetKeys":["所用资产编号"],"assetStates":"版本和出场状态","route":"生成路线","prompt":"完整生图提示词","negativePrompt":"负面约束","startFramePrompt":"动作起点提示词","endFramePrompt":"动作终点提示词","keyframes":[{"id":"关键帧编号","time":"镜头内时间位置","prompt":"此时刻完整提示词"}],"continuity":"前后镜头衔接与声画约束"}],"checks":"差异、缺件与待验收项"}。每镜头一个条目，沿用原镜头编号；关键帧仅在必要时列出，没有则为空数组。每份提示词应可独立使用并遵循统一规范。' },
     { id: S.Boards, stage: "storyboard", label: "分镜图生成", requires: [S.Shots], mediaOutput: "image", mediaActionLabel: "根据镜头提示词生成分镜图", requirement: "生成所选镜头的一幅分镜画面，遵循镜头构图、人物状态、景别、机位、光线、资产参考和前后镜头连续性。不要将整集剧情拼成多格图。", production: true },
     { id: S.StartFrame, stage: "storyboard", label: "镜头首帧生成", requires: [S.Shots], optionalRequires: [S.Boards], optional: true, mediaOutput: "image", mediaActionLabel: "生成镜头首帧", requirement: "生成所选镜头动作起点的首帧画面。固定主体位置、视线、姿态、景别、光线与前一镜头连续性，遵循关联人物和场景参考。" , production: true },
@@ -102,7 +102,11 @@ export type ShortDramaNextStepGroup = {
 };
 
 const contextNextStepGroups: Partial<Record<ShortDramaStepId, readonly ShortDramaNextStepGroup[]>> = {
-    [S.Scenes]: [{ id: "direction.shots", label: "场次与镜头拆解", stepIds: [S.Shots], entryStepId: S.Shots }],
+    [S.Body]: [
+        { id: "story.audit", label: "正文质量审核", stepIds: [S.Audit], entryStepId: S.Audit },
+        { id: "direction.shots", label: "分镜与拍摄参数拆解", stepIds: [S.Shots], entryStepId: S.Shots },
+    ],
+    [S.Scenes]: [{ id: "direction.shots", label: "分镜与拍摄参数拆解", stepIds: [S.Shots], entryStepId: S.Shots }],
     [S.Shots]: [
         { id: "direction.boards", label: "分镜图生成", stepIds: [S.Boards], entryStepId: S.Boards },
         { id: "video.generate", label: "简单视频生成", stepIds: [S.Video], entryStepId: S.Video },

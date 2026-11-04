@@ -39,6 +39,7 @@ import { modelDisplayName, modelOptionName, resolveModelChannel, resolveModelReq
 import { modelQuoteRequest, requestCreditCost } from "@/lib/model-pricing";
 import type { LogicalModelQuote } from "@/services/api/logical-models";
 import type { ModelRequirements } from "@/lib/model-selection";
+import { modelCompatibilityError } from "@/lib/model-selection";
 import {
     CanvasNodeType,
     type CanvasConnection,
@@ -417,6 +418,17 @@ export function useCanvasStoryboard({
             else message.warning("请先补充镜头画面描述");
             return;
         }
+        const unsupportedDuration = targetRows.find((row) => {
+            const videoSeconds = String(Math.max(1, Math.round(row.durationSeconds)));
+            const rowConfig = { ...effectiveConfig, model: videoModel, videoSeconds };
+            return modelCompatibilityError(rowConfig, videoModel, { capability: "video", videoSeconds });
+        });
+        if (unsupportedDuration) {
+            const videoSeconds = Math.max(1, Math.round(unsupportedDuration.durationSeconds));
+            const reason = modelCompatibilityError({ ...effectiveConfig, model: videoModel, videoSeconds: String(videoSeconds) }, videoModel, { capability: "video", videoSeconds: String(videoSeconds) });
+            message.error(`镜头 ${unsupportedDuration.shotCode || unsupportedDuration.shotNumber} 设计时长为 ${videoSeconds} 秒，所选模型不支持该时长（${reason}）；尚未提交视频任务。`);
+            return;
+        }
         if (!await confirmGenerationSubmission(targetRows.length, videoModel, "视频生成", "video", { capability: "video", videoSeconds: effectiveConfig.videoSeconds, options: { size: effectiveConfig.size, vquality: effectiveConfig.vquality, videoSeconds: Number(effectiveConfig.videoSeconds), videoGenerateAudio: effectiveConfig.videoGenerateAudio === "true" } })) return;
         signal.throwIfAborted();
         if (scope !== getActiveUserScope()) return;
@@ -491,6 +503,17 @@ export function useCanvasStoryboard({
             return !row.videoGeneration?.content && !row.videoGeneration?.storageKey && !["queued", "running"].includes(row.videoGeneration?.taskStatus || "") && !activeRowIds.has(row.id);
         });
         if (!targetRows.length) return message.info("所选镜头视频已生成或正在生成");
+        const unsupportedDuration = targetRows.find((row) => {
+            const videoSeconds = String(Math.max(1, Math.round(row.durationSeconds)));
+            const rowConfig = { ...effectiveConfig, model: videoModel, videoSeconds };
+            return modelCompatibilityError(rowConfig, videoModel, { capability: "video", videoSeconds });
+        });
+        if (unsupportedDuration) {
+            const videoSeconds = Math.max(1, Math.round(unsupportedDuration.durationSeconds));
+            const reason = modelCompatibilityError({ ...effectiveConfig, model: videoModel, videoSeconds: String(videoSeconds) }, videoModel, { capability: "video", videoSeconds: String(videoSeconds) });
+            message.error(`镜头 ${unsupportedDuration.shotCode || unsupportedDuration.shotNumber} 设计时长为 ${videoSeconds} 秒，所选模型不支持该时长（${reason}）；尚未提交视频任务。`);
+            return;
+        }
         if (!await confirmGenerationSubmission(targetRows.length, videoModel, "视频生成", "video", { capability: "video", videoSeconds: effectiveConfig.videoSeconds, options: { size: effectiveConfig.size, vquality: effectiveConfig.vquality, videoSeconds: Number(effectiveConfig.videoSeconds), videoGenerateAudio: effectiveConfig.videoGenerateAudio === "true" } })) return;
         if (enqueueGenerationBatch(nodeId, "storyboard_video", targetRows.map(row => ({ rowId: row.id, nodeId, targetKind: "storyboard_video" as const })))) message.success("镜头视频已加入分镜列表生成队列");
     }, [confirmGenerationSubmission, effectiveConfig, enqueueGenerationBatch, isAiConfigReady, message, nodesRef]);

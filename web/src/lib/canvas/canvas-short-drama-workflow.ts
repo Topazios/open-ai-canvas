@@ -260,7 +260,7 @@ function bodyAuditRejected(body: CanvasNodeData, nodes: CanvasNodeData[]) {
     return !state.stale && state.report?.usability === "不通过";
 }
 
-export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], pipelineId: string, connections?: CanvasConnection[]) {
+export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], pipelineId: string, connections?: CanvasConnection[], options?: { allowStaleSourceLineage?: boolean }) {
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const endpoint = (id: string) => {
         const node = byId.get(id);
@@ -361,13 +361,13 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
                 (edge.fromNodeId === sourceId && edge.toNodeId === id) ||
                 (endpoint(edge.fromNodeId) === endpoint(sourceId) && endpoint(edge.toNodeId) === endpoint(id)))) throw new Error(`${node.title}的来源连线已移除，请恢复关联或重新生成`);
             const source = byId.get(sourceId);
-            if (source && data.sourceSignatures[sourceId] && !workflowSignatureMatches(source, data.sourceSignatures[sourceId])) throw new Error(`${node.title}的前文已更新，请重新生成对应版本`);
+            if (!options?.allowStaleSourceLineage && source && data.sourceSignatures[sourceId] && !workflowSignatureMatches(source, data.sourceSignatures[sourceId])) throw new Error(`${node.title}的前文已更新，请重新生成对应版本`);
             visit(sourceId);
         }
         for (const [sourceId, signature] of Object.entries(data.sourceSignatures)) {
             const source = byId.get(sourceId);
             if (!source) throw new Error(`${node.title}的前置节点已删除，请重新选择来源`);
-            if (!workflowSignatureMatches(source, signature)) throw new Error(`${node.title}的前文已更新，请重新生成对应版本`);
+            if (!options?.allowStaleSourceLineage && !workflowSignatureMatches(source, signature)) throw new Error(`${node.title}的前文已更新，请重新生成对应版本`);
         }
         const definition = shortDramaStep(data.step);
         if (data.aggregate && (data.sourceNodeIds.length !== 1 || nodeWorkflow(byId.get(data.sourceNodeIds[0]))?.role !== "collection" || nodeWorkflow(byId.get(data.sourceNodeIds[0]))?.step !== data.step)) throw new Error("汇总文稿缺少同一步骤的分集容器来源");
@@ -392,14 +392,16 @@ export function workflowSources(stepId: ShortDramaStepId, pipelineId: string, no
     const step = shortDramaStep(stepId)!;
     const requires = sourceSteps || step.requires;
     const allowed = [...requires, ...(sourceSteps ? [] : step.optionalRequires || [])];
-    const selectedSteps = sourceIds.map((id) => nodeWorkflow(nodes.find((node) => node.id === id))?.step);
     for (const required of requires) {
         if (!sourceIds.some((id) => workflowSourceMatches(nodes.find((node) => node.id === id), required, nodes))) throw new Error(`请选择${required === ShortDramaStep.Bible ? "项目制作方案或已有制作规范" : shortDramaStep(required)!.label}节点`);
     }
-    if (new Set(selectedSteps).size !== sourceIds.length) throw new Error("请为每个前置步骤选择一个来源节点");
+    // A plan can expose several independent asset groups (for example人物 and
+    // 场景) while all of them carry the same story.plan step id.  The source
+    // category is therefore determined by workflowSourceMatches above, not by
+    // requiring every selected node to have a different persisted step id.
     if (sourceIds.some((id) => !allowed.some((required) => workflowSourceMatches(nodes.find((node) => node.id === id), required, nodes)))) throw new Error("请为每个前置步骤选择一个来源节点");
     if (sourceIds.some((id) => nodeWorkflow(nodes.find((node) => node.id === id))?.assetKey)) throw new Error("请选择完整的资产提示词分组容器");
-    const ancestors = workflowAncestors(sourceIds, nodes, pipelineId, connections);
+    const ancestors = workflowAncestors(sourceIds, nodes, pipelineId, connections, stepId === ShortDramaStep.Body ? { allowStaleSourceLineage: true } : undefined);
     const directEpisodes = new Set(sourceIds.map((id) => nodeWorkflow(nodes.find((node) => node.id === id))?.episodeNumber).filter((number) => number !== undefined));
     if (directEpisodes.size > 1) throw new Error("前置节点属于不同集，请选择同一集的来源");
     const episodes = new Set(ancestors.map((node) => nodeWorkflow(node)?.episodeNumber).filter((number) => number !== undefined));
@@ -423,7 +425,11 @@ export function defaultWorkflowSources(stepId: ShortDramaStepId, pipelineId: str
         const ids = nodeWorkflow(selected)!.sourceNodeIds;
         selected = ids.length === 1 ? nodes.find((node) => node.id === ids[0]) : undefined;
     }
-    const anchor = nodes.find((node) => node.id === selected?.parentId && (nodeWorkflow(node)?.assetGroup || nodeWorkflow(node)?.assetRevisionGroup)) || selected;
+    let anchor = nodes.find((node) => node.id === selected?.parentId && (nodeWorkflow(node)?.assetGroup || nodeWorkflow(node)?.assetRevisionGroup)) || selected;
+    if (stepId === ShortDramaStep.Shots && nodeWorkflow(anchor)?.step === ShortDramaStep.Body && nodeWorkflow(anchor)?.role !== "collection") {
+        const bodyCollection = nodes.find((node) => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === ShortDramaStep.Body && nodeWorkflow(node)?.role === "collection" && nodeWorkflow(node)?.sourceNodeIds.includes(anchor!.id));
+        if (bodyCollection) anchor = bodyCollection;
+    }
     let ancestors: CanvasNodeData[] = [];
     if (anchor && nodeWorkflow(anchor)?.pipelineId === pipelineId) {
         try { ancestors = workflowAncestors([anchor.id], nodes, pipelineId); } catch { ancestors = [anchor]; }
@@ -626,8 +632,19 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
     const mentionedAssets = resolveProductionAssetReferences(request.instruction, sources);
     const collections = request.sourceNodeIds.map((id) => nodes.find((node) => node.id === id)!).filter((node) => nodeWorkflow(node)?.role === "collection" && !nodeWorkflow(node)?.assetGroup);
     if (collections.length && !request.aggregate && step.scope !== "project") {
-        const episodeNumbers = nodeWorkflow(collections[0])!.sourceNodeIds.map((id) => nodeWorkflow(nodes.find((node) => node.id === id))!.episodeNumber!).sort((a, b) => a - b);
-        if (collections.some((collection) => JSON.stringify(nodeWorkflow(collection)!.sourceNodeIds.map((id) => nodeWorkflow(nodes.find((node) => node.id === id))!.episodeNumber!).sort((a, b) => a - b)) !== JSON.stringify(episodeNumbers))) throw new Error("前置分集容器的集数范围不一致，请补齐对应集或选择单集来源");
+        const availableEpisodes = step.id === ShortDramaStep.Shots
+            ? nodeWorkflow(collections[0])!.sourceNodeIds.map((id) => nodes.find((node) => node.id === id)).filter((node): node is CanvasNodeData => Boolean(node && nodeWorkflow(node)?.step === ShortDramaStep.Body && node.metadata?.content?.trim() && node.metadata?.status !== "loading" && node.metadata?.status !== "error")).map((node) => nodeWorkflow(node)!.episodeNumber!).sort((a, b) => a - b)
+            : nodeWorkflow(collections[0])!.sourceNodeIds.map((id) => nodeWorkflow(nodes.find((node) => node.id === id))!.episodeNumber!).sort((a, b) => a - b);
+        const episodeNumbers = step.id === ShortDramaStep.Shots
+            ? Array.from({ length: request.count }, (_, index) => request.start + index)
+            : availableEpisodes;
+        if (step.id === ShortDramaStep.Shots && (!Number.isInteger(request.start) || !Number.isInteger(request.count) || request.start < 1 || request.count < 1 || episodeNumbers.some((episode) => !availableEpisodes.includes(episode)))) throw new Error("所选分镜集数范围内缺少对应正文，请补齐正文后重试");
+        if (collections.some((collection) => {
+            const memberEpisodes = nodeWorkflow(collection)!.sourceNodeIds.map((id) => nodeWorkflow(nodes.find((node) => node.id === id))!.episodeNumber!).sort((a, b) => a - b);
+            return step.id === ShortDramaStep.Shots
+                ? episodeNumbers.some((episode) => !memberEpisodes.includes(episode))
+                : JSON.stringify(memberEpisodes) !== JSON.stringify(availableEpisodes);
+        })) throw new Error(step.id === ShortDramaStep.Shots ? "所选分镜集数范围内缺少对应场次材料，请缩小范围或补齐材料" : "前置分集容器的集数范围不一致，请补齐对应集或选择单集来源");
         let result = { nodes, connections, created: [] as CanvasNodeData[] };
         for (const episode of episodeNumbers) {
             const sourceNodeIds = request.sourceNodeIds.map((id) => {

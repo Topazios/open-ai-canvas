@@ -232,7 +232,7 @@ func (s *Service) UserCanvasProject(userID string, id string) (json.RawMessage, 
 }
 
 func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (UserDataSummary, error) {
-	return s.upsertUserCanvasProjectWithHistory(userID, raw, "automatic")
+	return s.upsertUserCanvasProjectWithHistory(userID, raw, "client_save")
 }
 
 func (s *Service) upsertUserCanvasProjectWithHistory(userID string, raw json.RawMessage, reason string) (UserDataSummary, error) {

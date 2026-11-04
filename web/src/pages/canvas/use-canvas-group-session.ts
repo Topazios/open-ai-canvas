@@ -23,7 +23,7 @@ export function useCanvasGroupSession(groupId: string, targets: GroupSessionTarg
         const current: GroupSessionTarget[] = JSON.parse(signature);
         let first = true;
         const poll = async () => {
-            setLoading(true);
+            if (first) setLoading(true);
             await Promise.allSettled(current.map(async target => {
                 const old = cache.current[target.key];
                 const status = old?.kind === "task" ? old.detail.task.status : old?.run.status;
@@ -49,11 +49,20 @@ export function useCanvasGroupSession(groupId: string, targets: GroupSessionTarg
                         return { kind: "agent", run: { ...run, events } };
                     }, controller.signal);
                     if (controller.signal.aborted) return;
+                    const unchanged = JSON.stringify(cache.current[target.key]) === JSON.stringify(snapshot);
                     cache.current[target.key] = snapshot;
-                    setSnapshots(value => ({ ...value, [target.key]: snapshot }));
-                    setErrors(value => { const next = { ...value }; delete next[target.key]; return next; });
+                    if (!unchanged) setSnapshots(value => ({ ...value, [target.key]: snapshot }));
+                    setErrors(value => {
+                        if (!(target.key in value)) return value;
+                        const next = { ...value };
+                        delete next[target.key];
+                        return next;
+                    });
                 } catch (error) {
-                    if (!controller.signal.aborted) setErrors(value => ({ ...value, [target.key]: error instanceof Error ? error.message : "执行记录读取失败" }));
+                    if (!controller.signal.aborted) {
+                        const message = error instanceof Error ? error.message : "执行记录读取失败";
+                        setErrors(value => value[target.key] === message ? value : { ...value, [target.key]: message });
+                    }
                 }
             }));
             if (controller.signal.aborted) return;

@@ -9,11 +9,15 @@ const storyboardAssetInstruction = "assetIds 从 availableAssets 里选，填本
 
 var storyboardAssetKindOrder = map[string]int{"environment": 0, "character": 1, "prop": 2, "special": 3, "sound": 4}
 
-// storyboardAssetCatalog lists the registered assets of the body's pipeline
-// that apply to the current episode, scenes first. Placeholder nodes without
-// an assigned code are skipped, so a shot only receives codes that can resolve.
+// storyboardAssetCatalog lists only assets pinned by the selected body version
+// that apply to the current episode, scenes first. Placeholder nodes without an
+// assigned code are skipped, so a shot only receives codes that can resolve.
 func storyboardAssetCatalog(m productionManifest, doc map[string]any) []map[string]any {
 	pipelineID, episode := "", 0
+	boundAssetIDs := make(map[string]struct{}, len(m.AssetCatalogNodeIDs))
+	for _, id := range m.AssetCatalogNodeIDs {
+		boundAssetIDs[id] = struct{}{}
+	}
 	for _, src := range m.Sources {
 		if src.Step != "story.body" {
 			continue
@@ -31,6 +35,9 @@ func storyboardAssetCatalog(m productionManifest, doc map[string]any) []map[stri
 	entries := []entry{}
 	seen := map[string]bool{}
 	for _, node := range creationMaps(doc["nodes"]) {
+		if _, bound := boundAssetIDs[stringValue(node["id"])]; !bound {
+			continue
+		}
 		wd := productionWorkflow(node)
 		if wd == nil || stringValue(wd["pipelineId"]) != pipelineID {
 			continue

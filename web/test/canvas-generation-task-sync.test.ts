@@ -1,8 +1,10 @@
 import { describe, expect, spyOn, test } from "bun:test";
 
-import { applyGeneratedMediaResultMetadata, applyGenerationTaskResultToNodes, buildGenerationTaskNodeResult, videoMetadata } from "@/lib/canvas/canvas-generation-task-sync";
+import { applyGeneratedMediaResultMetadata, applyGenerationTaskResultToNodes, buildGenerationTaskNodeResult, buildStoryboardVideoGeneration, videoMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import * as imageStorage from "@/services/image-storage";
+import * as fileStorage from "@/services/file-storage";
+import * as resourceBlobCache from "@/services/resource-blob-cache";
 
 function videoNode(assetId: string, storageKey: string): CanvasNodeData {
     return {
@@ -71,5 +73,24 @@ describe("applyGeneratedMediaResultMetadata", () => {
         expect(next.content).toBe("https://example.test/new.mp4");
         expect(next.prompt).toBe("新提示词");
         expect(next.status).toBe("success");
+    });
+
+    test("successful storyboard video is materialized even when browser blob caching fails", async () => {
+        const cache = spyOn(resourceBlobCache, "getCachedResourceBlob").mockRejectedValue(new Error("cache unavailable"));
+        const resolve = spyOn(fileStorage, "resolveMediaUrl").mockResolvedValue("https://example.test/generated.mp4");
+        try {
+            const result = await buildStoryboardVideoGeneration(videoNode("old-asset", "resource:old"), {
+                id: "video-task", type: "canvas_video", status: "succeeded", prompt: "镜头运动", model: "video-model", attempts: 1, createdAt: "", updatedAt: "",
+                resultJson: JSON.stringify({ video: { storageKey: "resource:generated", width: 1280, height: 720, bytes: 256, mimeType: "video/mp4", durationMs: 5000 } }),
+            });
+
+            expect(result.taskStatus).toBe("succeeded");
+            expect(result.storageKey).toBe("resource:generated");
+            expect(result.content).toBe("https://example.test/generated.mp4");
+            expect(result.taskStage).not.toBe("上游生成中");
+        } finally {
+            cache.mockRestore();
+            resolve.mockRestore();
+        }
     });
 });

@@ -1,10 +1,11 @@
 // 节点提示词面板的参考素材区：已连接参考的缩略图货架、自动 @ 引用工具与拖拽排序。
 
-import { Image as AntImage, Popover } from "antd";
+import { Popover } from "antd";
 import { AtSign, FileText, GripVertical, ImageIcon, Link2, Maximize2, Music2, Pencil, SlidersHorizontal, UserRound, Video, X } from "lucide-react";
 import { type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { useState } from "react";
 import { CanvasNodeType } from "@/types/canvas";
+import { CanvasImagePreview } from "./canvas-image-preview";
 import type { CanvasTheme } from "./canvas-node-prompt-panel";
 
 export function ReferenceToolsPopover({
@@ -262,21 +263,16 @@ export function ConnectedReferenceShelf({
                     })}
                 </div>
             </div>
-            {imagePreview?.previewUrl ? (
-                <AntImage
-                    src={imagePreview.previewUrl}
-                    alt={imagePreview.title || imagePreview.label}
-                    style={{ display: "none" }}
-                    preview={{
-                        open: true,
-                        movable: true,
-                        minScale: 0.5,
-                        maxScale: 12,
-                        scaleStep: 0.25,
-                        onOpenChange: (open) => !open && setImagePreview(null),
-                    }}
-                />
-            ) : null}
+            {imagePreview?.previewUrl ? (() => {
+                const previewReferences = activeReferences.filter((reference) => reference.previewUrl && (reference.kind === "image" || reference.kind === "character"));
+                const index = Math.max(0, previewReferences.findIndex((reference) => reference.nodeId === imagePreview.nodeId));
+                return <CanvasImagePreview
+                    items={previewReferences.map((reference) => ({ src: reference.previewUrl, alt: reference.title || reference.label }))}
+                    index={index}
+                    onNavigate={(next) => setImagePreview(previewReferences[next] || imagePreview)}
+                    onClose={() => setImagePreview(null)}
+                />;
+            })() : null}
         </>
     );
 }

@@ -25,6 +25,7 @@ const parallelStateLabels: Record<string, string> = {
     cancelled: "已取消",
     warning: "内容待处理",
 };
+const assetKindLabels: Record<string, string> = { character: "人物", environment: "场景", prop: "道具", special: "特殊资产", sound: "声音" };
 
 type ParallelDetail = { status?: string; attempts?: number; validationAttempts?: number; retryAt?: number; validationIssues?: string[] };
 
@@ -47,6 +48,7 @@ export function CanvasGroupTaskDetails({
     onRetry,
     onCancel,
     agentState,
+    onNewVersionGeneration,
 }: {
     node: CanvasNodeData;
     nodes: CanvasNodeData[];
@@ -56,6 +58,7 @@ export function CanvasGroupTaskDetails({
     onCancel: (task: GenerationTask) => void;
     agentState: ReturnType<typeof useProductionAgentRuns>;
     onContinueGeneration?: (id: string) => void;
+    onNewVersionGeneration?: (id: string) => void;
 }) {
     const members = useMemo(() => groupSessionMembers(node, nodes), [node, nodes]);
     const visibleMembers = members.filter((member) => member.metadata?.shortDrama?.assetKey !== "$summary");
@@ -90,13 +93,18 @@ export function CanvasGroupTaskDetails({
         session.refresh();
     };
     const planAssetAction = productionPlanAssetAction(node, planRun);
-    const active = run && ["running", "queued"].includes(run.status);
+    const activeRun = run || planRun;
+    const active = activeRun && ["running", "queued"].includes(activeRun.status);
     const planNeedsContinuation = productionPlanNeedsContinuation(run);
     const resumable = Boolean(run && (["failed", "rejected", "waiting_user", "cancelled"].includes(run.status) || planNeedsContinuation));
     const parallelWarnings = progress?.parallelItems?.filter((item) => item.severity === "warning" || item.status === "warning") || [];
     const retired = node.metadata?.shortDrama?.step === "assets.reconcile";
     const workflow = nodeWorkflow(node);
     const assetGeneration = Boolean(workflow?.assetGroup || workflow?.mediaGroup);
+    const assetGroupKind = workflow?.planGroup?.kind;
+    const activityLabel = assetGeneration && progress?.assetsStarted
+        ? `生成${assetKindLabels[assetGroupKind || ""] || "资产"}资产`
+        : progress?.phaseLabel?.trim() || (progress?.phase && productionPlanPhaseLabels[progress.phase]) || "制作方案";
     const bodyProgress = workflow?.step === ShortDramaStep.Body && workflow?.role === "collection" ? workflowEpisodeProgress(nodes, workflow.pipelineId, undefined, node.id) : undefined;
     const continuation = bodyProgress ? workflowContinuationRange(bodyProgress) : undefined;
     const canContinueBody = Boolean(continuation && (bodyProgress!.missing > 0 || bodyProgress!.failed > 0 || bodyProgress!.pending > 0));
@@ -162,7 +170,7 @@ export function CanvasGroupTaskDetails({
                     <div className="production-agent-note" role="status">
                         {groupMemberState(controlled || node, snapshot)} ·{" "}
                         {progress?.workKind === "plan"
-                            ? `${progress.phaseLabel?.trim() || (progress.phase && productionPlanPhaseLabels[progress.phase]) || "制作方案"} · 已保存 ${progress.documentCount ?? progress.processedPages ?? 0}${progress.documentTotal ? `/${progress.documentTotal}` : ""} 份文档 · ${progress.assetCount || 0} 项资产`
+                            ? `${activityLabel} · 已保存 ${progress.documentCount ?? progress.processedPages ?? 0}${progress.documentTotal ? `/${progress.documentTotal}` : ""} 份文档 · ${progress.assetCount || 0} 项资产`
                             : progress?.workKind === "storyboard"
                               ? `已完成 ${progress.processedPages}/${progress.totalPages} 场 · 已保存 ${progress.artifactCount} 镜头`
                               : `已解析 ${progress?.processedPages || 0}/${progress?.totalPages || 0} 集正文 · 已产出 ${progress?.artifactCount || 0} 项`}
@@ -203,6 +211,11 @@ export function CanvasGroupTaskDetails({
                 {canContinueBody && onContinueGeneration ? (
                     <Button icon={<Play size={14} />} loading={submitting} disabled={submitting} onClick={() => onContinueGeneration(node.id)}>
                         继续生成{continuation ? `（第 ${continuation.start} 集起，默认 ${continuation.count} 集）` : ""}
+                    </Button>
+                ) : null}
+                {workflow?.step === ShortDramaStep.Body && workflow.role === "collection" && onNewVersionGeneration ? (
+                    <Button icon={<RotateCcw size={14} />} loading={submitting} disabled={submitting} onClick={() => onNewVersionGeneration(node.id)}>
+                        生成新版正文
                     </Button>
                 ) : null}
                 <Button aria-label="刷新分组记录" title="刷新分组记录" loading={session.loading} icon={<RefreshCw size={14} />} onClick={session.refresh} />
@@ -281,6 +294,11 @@ export function CanvasGroupTaskDetails({
                         <div className="production-agent-task-summary">
                             <span className="production-agent-task-title">{row.title}</span>
                             <span className="production-agent-task-state">{row.state}</span>
+                            {controlled && active && ["执行中", "排队中", "重试中"].includes(row.state) ? (
+                                <Button size="small" title="取消此任务及本轮全部子任务" aria-label={`取消${row.title}及本轮全部子任务`} icon={<Square size={14} />} loading={agentState.busy[controlled.id]} disabled={agentState.busy[controlled.id]} onClick={() => void agentState.control(controlled.id, "cancel").then(session.refresh)}>
+                                    取消
+                                </Button>
+                            ) : null}
                             {row.detail ? <span className="production-agent-note" role="status">{row.detail}</span> : null}
                             {row.retryable && controlled ? (
                                 <Button size="small" icon={<RotateCcw size={14} />} disabled={agentState.busy[controlled.id]} onClick={() => void retryItem(row.itemKey)}>
@@ -298,7 +316,11 @@ export function CanvasGroupTaskDetails({
                     const itemActive = !!itemRun && ["running", "queued"].includes(itemRun.status);
                     const canRetryItem = !!itemTask && ["failed", "cancelled"].includes(itemTask.status);
                     const canCancelItem = !!itemTask && canCancelGenerationTask(itemTask);
+                    const parallelItem = parallelItemOf(member);
+                    const parallelActive = ["running", "queued", "retrying"].includes(parallelItem?.status || "");
                     const state = groupMemberState(member, itemSnapshot, snapshot, parallelStatusOf(member));
+                    const cancelAgentNodeId = itemActive && itemTarget?.kind === "agent" ? itemTarget.nodeId : controlled?.id;
+                    const canCancelAgentRun = Boolean(cancelAgentNodeId && state !== "已完成" && state !== "已取消" && (itemActive || (parallelActive && active)));
                     const itemError = (itemTarget && session.errors[itemTarget.key]) || (!itemSnapshot ? member.metadata?.errorDetails : undefined);
                     const limit = visibleByKey[key] || 100;
                     const placeholder = isPlanPlaceholder(member);
@@ -315,14 +337,22 @@ export function CanvasGroupTaskDetails({
                                 <ChevronRight size={14} className="production-agent-chevron" aria-hidden />
                                 <span className="production-agent-task-title">{member.title}</span>
                                 <span className="production-agent-task-state">{state}</span>
+                                {canCancelAgentRun ? (
+                                    <Button size="small" title="取消此任务及本轮全部子任务" aria-label={`取消${member.title}及本轮全部子任务`} icon={<Square size={14} />} loading={agentState.busy[cancelAgentNodeId!]} disabled={agentState.busy[cancelAgentNodeId!]} onClick={(event) => { event.preventDefault(); event.stopPropagation(); void agentState.control(cancelAgentNodeId!, "cancel").then(session.refresh); }}>
+                                        取消
+                                    </Button>
+                                ) : canCancelItem ? (
+                                    <Button size="small" title="取消此任务" aria-label={`取消${member.title}`} icon={<Square size={14} />} onClick={(event) => { event.preventDefault(); event.stopPropagation(); if (itemTask) onCancel(itemTask); }}>
+                                        取消
+                                    </Button>
+                                ) : null}
                             </summary>
                             {open ? (
                                 <div className="production-agent-task-body">
                                     {itemError ? <div role="alert" className="production-agent-error">{itemError}</div> : null}
-                                    {canRetryItem || canCancelItem ? (
+                                    {canRetryItem ? (
                                         <div className="production-agent-task-actions">
                                             {canRetryItem ? <Button size="small" icon={<RotateCcw size={14} />} onClick={() => onRetry(member)}>重试此任务</Button> : null}
-                                            {canCancelItem && itemTask ? <Button size="small" icon={<Square size={14} />} onClick={() => onCancel(itemTask)}>取消此任务</Button> : null}
                                         </div>
                                     ) : null}
                                     {canRetryPlaceholder && placeholderKey ? (

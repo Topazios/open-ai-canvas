@@ -696,6 +696,12 @@ func (s *Service) projectProductionAgentStatus(userID, runID string) {
 				return err
 			}
 			baseline := canvasDocumentFingerprint(doc)
+			if job, jobErr := repo.ProductionAgentJob(userID, runID); jobErr == nil {
+				var manifest productionManifest
+				if json.Unmarshal([]byte(job.ManifestJSON), &manifest) == nil && manifest.FrameID != "" && productionNode(doc, manifest.FrameID) == nil {
+					return nil
+				}
+			}
 			node := productionNode(doc, state.Request.Production.TargetNodeID)
 			if node == nil {
 				return nil

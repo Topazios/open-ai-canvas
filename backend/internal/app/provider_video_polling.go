@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -211,6 +212,24 @@ func retryableVideoPollError(ctx context.Context, err error) (retry bool, notFou
 		default:
 			return httpErr.StatusCode >= http.StatusInternalServerError, false
 		}
+	}
+	var requestError *url.Error
+	if errors.As(err, &requestError) {
+		message := strings.ToLower(fmt.Sprint(requestError.Err))
+		for _, marker := range []string{
+			"http2: client connection lost",
+			"http2: server sent goaway",
+			"http2: stream",
+		} {
+			if strings.Contains(message, marker) {
+				return true, false
+			}
+		}
+		var requestNetworkError net.Error
+		if errors.As(requestError.Err, &requestNetworkError) {
+			return requestNetworkError.Timeout() || requestNetworkError.Temporary(), false
+		}
+		return false, false
 	}
 	var networkError net.Error
 	if errors.As(err, &networkError) {

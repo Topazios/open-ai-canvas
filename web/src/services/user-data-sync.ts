@@ -45,6 +45,7 @@ let sessionRecovery: Promise<void> | null = null;
 const verifiedProjects = new Set<string>();
 const verifiedAssets = new Set<string>();
 const remoteProjectLoadPromises = new Map<string, Promise<CanvasProject | undefined>>();
+const pendingCanvasNodeDeletions = new Map<string, Set<string>>();
 const REMOTE_SYNC_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 16_000, 30_000] as const;
 
 export async function initializeRemoteUserDataSession(userId: string, options: { preserveExisting?: boolean } = {}) {
@@ -180,6 +181,84 @@ function mergeCompletedProductionAdditions(local: CanvasProject, remote: CanvasP
     };
 }
 
+function filterPendingCanvasNodeDeletions(project: CanvasProject, canvasId: string) {
+    const deleted = canvasNodeDeletionSet(canvasId);
+    if (!deleted?.size) return project;
+    let changed = false;
+    const nodes = project.nodes.filter((node) => {
+        const keep = !deleted.has(node.id);
+        changed ||= !keep;
+        return keep;
+    }).map((node) => {
+        if (node.parentId && deleted.has(node.parentId)) {
+            changed = true;
+            return { ...node, parentId: undefined };
+        }
+        return node;
+    });
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const connections = project.connections.filter((edge) => {
+        const keep = !deleted.has(edge.id) && nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId);
+        changed ||= !keep;
+        return keep;
+    });
+    return changed ? { ...project, nodes, connections } : project;
+}
+
+function canvasNodeDeletionStorageKey(canvasId: string) {
+    return "canvas-node-deletions:" + getActiveUserScope() + ":" + canvasId;
+}
+
+function canvasNodeDeletionSet(canvasId: string) {
+    const pending = pendingCanvasNodeDeletions.get(canvasId) ?? new Set<string>();
+    try {
+        const raw = window.localStorage.getItem(canvasNodeDeletionStorageKey(canvasId));
+        const stored: unknown = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(stored)) for (const id of stored) if (typeof id === "string" && id) pending.add(id);
+    } catch {
+        // Storage may be unavailable in private browsing; the in-memory receipt still applies.
+    }
+    if (pending.size) pendingCanvasNodeDeletions.set(canvasId, pending);
+    return pending;
+}
+
+function persistCanvasNodeDeletionSet(canvasId: string, deleted: Set<string>) {
+    try {
+        const key = canvasNodeDeletionStorageKey(canvasId);
+        if (deleted.size) window.localStorage.setItem(key, JSON.stringify([...deleted]));
+        else window.localStorage.removeItem(key);
+    } catch {
+        // The server receipt remains authoritative if local storage is unavailable.
+    }
+}
+
+function acknowledgeRestoredCanvasNodeDeletions(canvasId: string, saved: CanvasProject, live: CanvasProject | undefined) {
+    const deleted = canvasNodeDeletionSet(canvasId);
+    if (!deleted) return;
+    const savedIds = new Set(saved.nodes.map((node) => node.id));
+    const liveIds = new Set(live?.nodes.map((node) => node.id) || []);
+    for (const id of deleted) if (savedIds.has(id) && liveIds.has(id)) deleted.delete(id);
+    persistCanvasNodeDeletionSet(canvasId, deleted);
+    if (!deleted.size) pendingCanvasNodeDeletions.delete(canvasId);
+}
+
+export function acknowledgeCanvasNodeDeletions(canvasId: string, nodeIds: Iterable<string>) {
+    const deleted = canvasNodeDeletionSet(canvasId);
+    if (!deleted) return;
+    for (const id of nodeIds) deleted.delete(id);
+    persistCanvasNodeDeletionSet(canvasId, deleted);
+    if (!deleted.size) pendingCanvasNodeDeletions.delete(canvasId);
+}
+
+export function registerCanvasNodeDeletion(canvasId: string, nodeIds: Iterable<string>) {
+    const ids = [...new Set([...nodeIds].filter(Boolean))];
+    if (!ids.length) return;
+    const deleted = canvasNodeDeletionSet(canvasId);
+    ids.forEach((id) => deleted.add(id));
+    pendingCanvasNodeDeletions.set(canvasId, deleted);
+    persistCanvasNodeDeletionSet(canvasId, deleted);
+}
+
 async function canvasMergeBaseline(local: CanvasProject, remote: CanvasProject, scope: string) {
     if (!Number.isSafeInteger(local.revision) || remote.revision! < local.revision!) return undefined;
     const known = acknowledgedProjects.get(local.id);
@@ -232,19 +311,20 @@ async function reconcileCanvasSnapshot(remote: CanvasProject, onLoad?: (project:
     const projected = recovered
         ? { ...recovered, remoteContentHash: hash }
         : { ...mergeCanvasSnapshotLenient(baseline, current, remote, () => { conflicted = true; }), remoteContentHash: hash };
+    const deletionFiltered = filterPendingCanvasNodeDeletions(projected, remote.id);
     if (conflicted && baseline) {
         // 字段冲突已按归属自动取舍,本地版本另存一份草稿以便抽查。
         const draftCount = await preserveCanvasSyncDraft(current, scope);
         if (epoch !== sessionEpoch || scope !== getActiveUserScope()) return undefined;
         useSyncProgressStore.getState().setProjectProgress(remote.id, { draftCount });
     }
-    if (onLoad) onLoad(projected);
-    else if (!sameCanvasContent(current, projected)) {
-        for (const listener of agentCanvasListeners) listener(projected, current);
+    if (onLoad) onLoad(deletionFiltered);
+    else if (!sameCanvasContent(current, deletionFiltered)) {
+        for (const listener of agentCanvasListeners) listener(deletionFiltered, current);
     }
     acknowledgedProjects.set(remote.id, { ...remote, remoteContentHash: hash });
     verifiedProjects.add(remote.id);
-    useCanvasStore.setState((state) => ({ projects: state.projects.map((project) => project === current ? projected : project) }));
+    useCanvasStore.setState((state) => ({ projects: state.projects.map((project) => project === current ? deletionFiltered : project) }));
     // 合并结果已另存草稿,按替换落盘以清除旧冲突标记,否则下一轮 409 仍无法自愈。
     authorizeCanvasProjectReplacement(remote.id, { merged: true });
     await flushCanvasStorePersistence();
@@ -255,7 +335,7 @@ async function reconcileCanvasSnapshot(remote: CanvasProject, onLoad?: (project:
     const pending = !sameCanvasContent(remote, useCanvasStore.getState().openProject(remote.id) || undefined);
     useSyncProgressStore.getState().setProjectProgress(remote.id, { phase: pending ? "pending" : "done", message: pending ? "已合并云端更新，本地修改等待保存" : "已同步云端最新版本" });
     if (pending) scheduleRemoteUserDataSync();
-    return projected;
+    return deletionFiltered;
 }
 
 export async function loadCanvasProjectForEditing(id: string, options: { latest?: boolean; historyRestore?: { snapshotId: string; revision: number }; onLoad?: (project: CanvasProject) => void } = {}) {
@@ -283,6 +363,7 @@ export async function loadCanvasProjectForEditing(id: string, options: { latest?
                 const saved = await restoreRemoteCanvasHistory(id, snapshotId, revision);
                 if (epoch !== sessionEpoch || getActiveUserScope() !== scope) throw new Error("账号已切换，请重新打开画布查看恢复结果");
                 if (saved.project.revision !== revision + 1) throw new Error("恢复结果的版本无效，请重新核对云端内容");
+                acknowledgeCanvasNodeDeletions(id, [...canvasNodeDeletionSet(id)]);
             } catch (error) {
                 if (epoch === sessionEpoch && getActiveUserScope() === scope && error instanceof ApiError && (error.status === 409 || error.status === 428)) {
                     useSyncProgressStore.getState().setProjectProgress(id, { phase: "conflict", message: error.message });
@@ -293,7 +374,7 @@ export async function loadCanvasProjectForEditing(id: string, options: { latest?
         let remote: CanvasProject;
         try {
             const knownRemote = verifiedProjects.has(id) ? acknowledgedProjects.get(id) : undefined;
-            remote = await restoreCanvasTextResources((await getRemoteCanvasProject(id, knownRemote)).project);
+            remote = filterPendingCanvasNodeDeletions(await restoreCanvasTextResources((await getRemoteCanvasProject(id, knownRemote)).project), id);
         } catch (error) {
             if (epoch !== sessionEpoch) throw new Error("账号已切换，请重新打开画布");
             const local = useCanvasStore.getState().openProject(id);
@@ -417,7 +498,7 @@ export async function refreshCanvasAfterAgent(id: string) {
         if (epoch !== sessionEpoch || !activeRemoteUserId) throw new Error("账号已切换或未登录，已停止 Agent 画布同步");
         const knownRemote = verifiedProjects.has(id) ? acknowledgedProjects.get(id) : undefined;
         const { project: remoteProject } = await getRemoteCanvasProject(id, knownRemote);
-        const project = await restoreCanvasTextResources(remoteProject);
+        const project = filterPendingCanvasNodeDeletions(await restoreCanvasTextResources(remoteProject), id);
         if (epoch !== sessionEpoch) throw new Error("账号已切换");
         const current = useCanvasStore.getState().projects.find((candidate) => candidate.id === id);
         const baseline = acknowledgedProjects.get(id);
@@ -453,7 +534,7 @@ export async function applyAgentCanvasPatches(id: string, patches: AgentCanvasPa
         const current = useCanvasStore.getState().projects.find((project) => project.id === id);
         if (!baseline || !current) throw new Error("缺少画布同步基线，需要重新读取画布");
         let remote = baseline;
-        let projected = current;
+        let projected = filterPendingCanvasNodeDeletions(current, id);
         // A rejected delta requests a snapshot through createAgentCanvasSync.
         // Only that reconciliation can distinguish stale replay from a conflict.
         if (incrementalSession && !verifiedProjects.has(id) && baseline.remoteContentHash !== await canvasContentHash(baseline)) throw new Error("本地缓存尚未核对，正在自动对齐云端版本");
@@ -464,12 +545,14 @@ export async function applyAgentCanvasPatches(id: string, patches: AgentCanvasPa
             if (patch.baseRevision !== remote.revision || patch.revision !== patch.baseRevision! + 1) throw new Error("Agent 画布增量版本不连续，请重新读取画布");
             remote = { ...applyAgentCanvasPatch(remote, patch), revision: patch.revision };
             projected = { ...applyAgentCanvasPatch(projected, patch), revision: patch.revision };
+            projected = filterPendingCanvasNodeDeletions(projected, id);
         }
         const recovered = recoverCompletedProductionDocuments(projected, patches);
         if (recovered !== projected) {
             recoveredDocuments = true;
             projected = recovered;
         }
+        projected = filterPendingCanvasNodeDeletions(projected, id);
         if (projected === current) return current;
         const hash = await canvasContentHash(remote);
         if (epoch !== sessionEpoch || useCanvasStore.getState().openProject(id) !== current) throw new Error("画布仍在更新，请重新同步 Agent 结果");
@@ -629,6 +712,7 @@ export function resetRemoteUserDataSync() {
     verifiedProjects.clear();
     verifiedAssets.clear();
     remoteProjectLoadPromises.clear();
+    pendingCanvasNodeDeletions.clear();
     activeRemoteUserId = "";
     remoteUserDataPhase = "inactive";
     acknowledgedAssets.clear();
@@ -1194,6 +1278,7 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: R
             }
             await flushCanvasStorePersistence();
             await persistCanvasSyncBaseline(acknowledged, scope);
+            acknowledgeRestoredCanvasNodeDeletions(source.id, source, useCanvasStore.getState().openProject(source.id) || undefined);
             const pending = !sameCanvasContent(source, useCanvasStore.getState().openProject(source.id) || undefined);
             useSyncProgressStore.getState().setProjectProgress(source.id, { phase: pending ? "pending" : "done", message: pending ? "有新修改等待保存" : "已保存到云端" });
             if (pending) syncQueued = true;

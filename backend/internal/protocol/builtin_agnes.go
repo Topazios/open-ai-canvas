@@ -66,9 +66,7 @@ func buildAgnesCreate(r GenerationRequest) (RequestSpec, error) {
 
 func buildAgnesV25Body(r GenerationRequest) (map[string]any, error) {
 	frameImages, referenceImages, _ := splitVideoImages(r.Images)
-	if len(frameImages) > 0 && (len(referenceImages) > 0 || len(r.Videos)+len(r.Audios) > 0) {
-		return nil, fmt.Errorf("Agnes 2.5 不能同时混用首尾帧和角色、视频或音频参考素材")
-	}
+	mixedFrameReferences := len(frameImages) > 0 && (len(referenceImages) > 0 || len(r.Videos)+len(r.Audios) > 0)
 	mode := firstString(r.Extra, "mode")
 	if mode == "" {
 		switch strings.TrimSpace(r.Operation) {
@@ -90,6 +88,12 @@ func buildAgnesV25Body(r GenerationRequest) (map[string]any, error) {
 				mode = "text"
 			}
 		}
+	}
+	// Agnes exposes mutually exclusive keyframe and reference modes. Keep every
+	// selected image by switching mixed requests to reference mode and labeling
+	// the ordered frame images in the prompt instead of silently dropping assets.
+	if mixedFrameReferences && mode == "keyframe" {
+		mode = "reference"
 	}
 	if mode != "text" && mode != "keyframe" && mode != "reference" {
 		return nil, fmt.Errorf("Agnes 2.5 mode 必须是 text、keyframe 或 reference")
@@ -121,7 +125,7 @@ func buildAgnesV25Body(r GenerationRequest) (map[string]any, error) {
 	}
 	body := map[string]any{
 		"model":        r.Model,
-		"prompt":       r.Prompt,
+		"prompt":       agnesV25Prompt(r.Prompt, r.Images, mixedFrameReferences),
 		"mode":         mode,
 		"seconds":      strconv.Itoa(seconds),
 		"size":         size,
@@ -157,7 +161,7 @@ func buildAgnesV25Body(r GenerationRequest) (map[string]any, error) {
 			return nil, fmt.Errorf("Agnes 2.5 reference 模式至少需要一种参考媒体")
 		}
 		if len(r.Images) > 0 {
-			body["images"] = mediaValues(r.Images)
+			body["images"] = mediaValues(agnesV25ReferenceImages(r.Images))
 		}
 		if len(r.Audios) > 0 {
 			body["audios"] = mediaValues(r.Audios)
@@ -171,6 +175,32 @@ func buildAgnesV25Body(r GenerationRequest) (map[string]any, error) {
 		}
 	}
 	return compactMap(body), nil
+}
+
+func agnesV25ReferenceImages(images []MediaReference) []MediaReference {
+	frames, references, unspecified := splitVideoImages(images)
+	ordered := orderedFrameImages(frames)
+	ordered = append(ordered, references...)
+	return append(ordered, unspecified...)
+}
+
+func agnesV25Prompt(prompt string, images []MediaReference, mixed bool) string {
+	if !mixed {
+		return prompt
+	}
+	ordered := agnesV25ReferenceImages(images)
+	roles := make([]string, 0, len(ordered))
+	for index, image := range ordered {
+		switch strings.TrimSpace(image.Role) {
+		case "first_frame":
+			roles = append(roles, fmt.Sprintf("<Picture %d> 是镜头首帧，按其构图和人物状态作为动作起点", index+1))
+		case "last_frame":
+			roles = append(roles, fmt.Sprintf("<Picture %d> 是镜头尾帧，按其构图和人物状态作为动作落点", index+1))
+		default:
+			roles = append(roles, fmt.Sprintf("<Picture %d> 是人物、场景或道具资产参考，保持其身份和视觉特征", index+1))
+		}
+	}
+	return strings.TrimSpace(prompt) + "\n\n参考图对应关系：" + strings.Join(roles, "；") + "。"
 }
 
 func normalizeAgnesV25Resolution(value string) (string, error) {

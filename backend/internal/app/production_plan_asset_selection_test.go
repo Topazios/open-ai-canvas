@@ -291,6 +291,72 @@ func TestProductionPlanActiveCategoryAppendPreservesLiveWork(t *testing.T) {
 	}
 }
 
+func TestProductionPlanActiveAppendRecreatesDeletedAssetGroup(t *testing.T) {
+	s, db, runID := parallelPlanFixture(t)
+	s.disablePiRuntime = true
+	for _, key := range []string{"visual", "direction", "generation"} {
+		submitOrderedPlan(t, s, runID, key, "", key)
+	}
+	productionCall(t, s, runID, "production_check", map[string]any{}, false)
+	if err := s.completeCloudAgentPiRun("user", runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.GenerateProductionPlanAssets("user", runID, []string{"character", "prop"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ensureProductionPlanGroups("user", runID); err != nil {
+		t.Fatal(err)
+	}
+	run, state := productionRuntimeState(t, s, runID)
+	manifest, doc, rows := orderedPlanState(t, s, runID)
+	var characterWork productionParallelWork
+	for _, candidate := range productionParallelReady(manifest, doc, rows) {
+		if candidate.Key == "character" {
+			characterWork = candidate
+			break
+		}
+	}
+	if characterWork.Key == "" {
+		t.Fatal("character asset was not eligible for a generation call")
+	}
+	if err := s.enqueueProductionParallel(run, &state, manifest, doc, rows, characterWork); err != nil {
+		t.Fatal(err)
+	}
+	manifest, doc, _ = orderedPlanState(t, s, runID)
+	oldGroupID := manifest.Plan.Groups["prop"]
+	oldPlaceholderID := manifest.Plan.AssetPlaceholderNodeIDs["prop"]
+	productionEditCanvas(t, s, db, func(doc map[string]any) {
+		kept := make([]map[string]any, 0, len(creationMaps(doc["nodes"])))
+		for _, node := range creationMaps(doc["nodes"]) {
+			if stringValue(node["id"]) == oldGroupID || stringValue(node["id"]) == oldPlaceholderID {
+				continue
+			}
+			kept = append(kept, node)
+		}
+		doc["nodes"] = kept
+	})
+	if err := s.GenerateProductionPlanAssets("user", runID, []string{"prop"}, ProductionAssetModelSelection{ContinueAppend: true}); err != nil {
+		t.Fatalf("append after container deletion: %v", err)
+	}
+	if _, err := s.ensureProductionPlanGroups("user", runID); err != nil {
+		t.Fatal(err)
+	}
+	manifest, doc, _ = orderedPlanState(t, s, runID)
+	newGroupID := manifest.Plan.Groups["prop"]
+	newPlaceholderID := manifest.Plan.AssetPlaceholderNodeIDs["prop"]
+	if newGroupID == "" || newGroupID == oldGroupID || productionNode(doc, newGroupID) == nil {
+		t.Fatalf("deleted prop container was not recreated: old=%s new=%s", oldGroupID, newGroupID)
+	}
+	placeholder := productionNode(doc, newPlaceholderID)
+	if placeholder == nil || placeholder["parentId"] != newGroupID {
+		t.Fatalf("prop placeholder is not inside its recreated container: node=%#v group=%s", placeholder, newGroupID)
+	}
+	_, state = productionRuntimeState(t, s, runID)
+	if state.ProductionParallel["character"].TaskID == "" {
+		t.Fatalf("active task was not retained during container recovery: %+v", state.ProductionParallel)
+	}
+}
+
 func TestProductionPlanActiveAppendPreservesSavedAssetReceiptsAndRetriesOnlyTarget(t *testing.T) {
 	s, _, runID := parallelPlanFixture(t)
 	for _, key := range []string{"visual", "direction", "generation"} {

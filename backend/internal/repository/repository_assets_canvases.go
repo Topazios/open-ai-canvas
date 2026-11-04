@@ -154,6 +154,9 @@ func (r *Repository) DeleteCanvasProject(userID string, id string) error {
 		if err := tx.Where("canvas_id = ?", id).Delete(&model.CanvasNodeShotLink{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("user_id = ? AND canvas_id = ?", userID, id).Delete(&model.CanvasNodeDeletionReceipt{}).Error; err != nil {
+			return err
+		}
 		// 任务和会话是审计记录，不随独立画布实体保留归属 ID，避免删除后继续挂住画布上下文。
 		if err := New(tx).DeleteProductionAgentCanvas(userID, id); err != nil {
 			return err

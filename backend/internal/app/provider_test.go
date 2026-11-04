@@ -914,9 +914,11 @@ data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta"
 }
 
 func TestProviderHTTPErrorWarnsAboutUncertain524Billing(t *testing.T) {
-	message := (providerHTTPError{StatusCode: 524, Status: "524 A Timeout Occurred"}).Error()
-	if !strings.Contains(message, "可能仍在服务端执行并产生费用") || !strings.Contains(message, "请勿立即重试") {
-		t.Fatalf("providerHTTPError.Error() = %q", message)
+	for _, status := range []int{http.StatusGatewayTimeout, 524} {
+		message := (providerHTTPError{StatusCode: status}).Error()
+		if !strings.Contains(message, "可能仍在服务端执行并产生费用") || !strings.Contains(message, "请勿立即重试") || !strings.Contains(message, "核对任务或账单") {
+			t.Fatalf("providerHTTPError(%d).Error() = %q", status, message)
+		}
 	}
 }
 

@@ -166,6 +166,38 @@ func TestWritebackFailedAndCancelled(t *testing.T) {
 	}
 }
 
+func TestWritebackFailedScreenplayAuditPreservesBodyAndMarksRetryableError(t *testing.T) {
+	s, db, _ := productionFixture(t)
+	shortDrama := map[string]any{
+		"step":            "body",
+		"screenplayAudit": map[string]any{"bodyNodeId": "body", "contextNodeIds": []any{}},
+	}
+	node := loadingNode("audit", "text", map[string]any{
+		"content":    "第1集正文原文",
+		"shortDrama": shortDrama,
+	})
+	writebackAddNode(t, s, db, node)
+	task := writebackTask(t, db, "audit-timeout", "text", "audit", "", model.TaskStatusFailed)
+	task.Error = "上游模型请求超时"
+	if err := s.writeTaskResultToCanvas(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := writebackMeta(writebackNode(t, s, "audit"))
+	if meta["status"] != "error" || meta["taskStatus"] != string(model.TaskStatusFailed) || meta["taskId"] != task.ID {
+		t.Fatalf("diagnosis task state was not written back: %#v", meta)
+	}
+	if meta["content"] != "第1集正文原文" {
+		t.Fatalf("diagnosis failure overwrote the source body: %#v", meta["content"])
+	}
+	if got := meta["errorDetails"]; got == nil || got == "" {
+		t.Fatalf("diagnosis failure is not visible: %#v", meta)
+	}
+	if _, ok := meta["shortDrama"].(map[string]any)["screenplayAudit"]; !ok {
+		t.Fatalf("diagnosis binding was lost: %#v", meta["shortDrama"])
+	}
+}
+
 func TestWritebackRetriesAfterConflictAndKeepsUserEdits(t *testing.T) {
 	s, db, _ := productionFixture(t)
 	writebackAddNode(t, s, db, loadingNode("img", "image", map[string]any{"taskId": "t1"}))

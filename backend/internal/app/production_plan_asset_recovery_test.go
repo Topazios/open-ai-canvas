@@ -724,7 +724,7 @@ func TestDeletedQueuedAssetPlaceholderIsNotRebuilt(t *testing.T) {
 	saved := productionSavedKeys(rows)
 	var key, id string
 	for _, item := range m.Plan.Assets {
-		candidate := "pap-" + productionHash([]string{runID, item.Key})[:32]
+		candidate := m.Plan.AssetPlaceholderNodeIDs[item.Key]
 		if !saved[item.Key] && productionPlanAssetSelected(m, item.Key) && productionNode(doc, candidate) != nil {
 			key, id = item.Key, candidate
 			break
@@ -734,32 +734,35 @@ func TestDeletedQueuedAssetPlaceholderIsNotRebuilt(t *testing.T) {
 		t.Skip("fixture exposes no queued asset placeholder")
 	}
 	productionEditCanvas(t, s, db, func(doc map[string]any) {
-		nodes := []map[string]any{}
+		nodes := make([]map[string]any, 0, len(creationMaps(doc["nodes"])))
 		for _, node := range creationMaps(doc["nodes"]) {
-			if node["id"] != id {
+			if stringValue(node["id"]) != id {
 				nodes = append(nodes, node)
 			}
 		}
 		doc["nodes"] = nodes
 	})
-	canvas, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
-	if err != nil {
-		t.Fatal(err)
-	}
-	live, _ := creationDocument(canvas.PayloadJSON)
-	if err := s.reconcileDeletedProductionPlanAssets(context.Background(), "user", "agent-canvas", live, map[string]bool{id: true}); err != nil {
+	if err := s.ReconcileCanvasNodeTasks(context.Background(), "user", "agent-canvas", id); err != nil {
 		t.Fatal(err)
 	}
 	m, _, _ = orderedPlanState(t, s, runID)
 	if productionPlanAssetSelected(m, key) {
 		t.Fatal("deleted queued placeholder is still selected and would be rebuilt")
 	}
+	s.disablePiRuntime = true
+	if err := s.GenerateProductionPlanAssets("user", runID, []string{key}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.ensureProductionPlanGroups("user", runID); err != nil {
 		t.Fatal(err)
 	}
-	_, doc, _ = orderedPlanState(t, s, runID)
-	if productionNode(doc, id) != nil {
-		t.Fatal("deleted queued placeholder was rebuilt")
+	m, doc, _ = orderedPlanState(t, s, runID)
+	newID := m.Plan.AssetPlaceholderNodeIDs[key]
+	if newID == "" || newID == id || productionNode(doc, newID) == nil {
+		t.Fatalf("reselected asset did not get a fresh placeholder: old=%s new=%s", id, newID)
+	}
+	if node := productionNode(doc, newID); node["parentId"] != m.Plan.Groups[productionPlanGroupKind(*productionPlanItem(m, key))] {
+		t.Fatalf("new placeholder was not kept in its asset container: node=%#v groups=%#v", node, m.Plan.Groups)
 	}
 }
 func TestProductionPlanAssetNeverFallsIntoPlanFrameWhileCollectionMissing(t *testing.T) {

@@ -1218,17 +1218,17 @@ function AgentTimelineMarker({ theme, tone, icon }: { theme: (typeof canvasTheme
 }
 
 function AgentMessageAttachments({ attachments }: { attachments: CloudAgentChatAttachment[] }) {
-    const [preview, setPreview] = useState<CloudAgentChatAttachment | null>(null);
+    const [previewIndex, setPreviewIndex] = useState<number | null>(null);
     return (
         <>
             <div className="mt-2 grid grid-cols-3 gap-1.5">
                 {attachments.map((item) => (
-                    <button key={item.id} type="button" className="group relative overflow-hidden rounded-lg" onClick={() => setPreview(item)} onDoubleClick={() => setPreview(item)} aria-label={`查看图片 ${item.name}`}>
+                    <button key={item.id} type="button" className="group relative overflow-hidden rounded-lg" onClick={() => setPreviewIndex(attachments.indexOf(item))} onDoubleClick={() => setPreviewIndex(attachments.indexOf(item))} aria-label={`查看图片 ${item.name}`}>
                         <img src={item.url} alt={item.name} className="aspect-square w-full object-cover transition-transform group-hover:scale-105" />
                     </button>
                 ))}
             </div>
-            {preview ? <AgentImagePreview attachment={preview} onClose={() => setPreview(null)} /> : null}
+            {previewIndex !== null ? <AgentImagePreview attachment={attachments[previewIndex]} items={attachments} index={previewIndex} onNavigate={setPreviewIndex} onClose={() => setPreviewIndex(null)} /> : null}
         </>
     );
 }

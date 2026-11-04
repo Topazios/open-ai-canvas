@@ -104,6 +104,7 @@ func (s *Service) reconcileDeletedProductionPlanAssets(ctx context.Context, user
 						}
 					}
 					currentManifest.Plan.SelectedAssetKeys = slices.DeleteFunc(currentManifest.Plan.SelectedAssetKeys, func(key string) bool { return key == row.Key })
+					delete(currentManifest.Plan.AssetPlaceholderNodeIDs, row.Key)
 					encoded, err := json.Marshal(currentManifest)
 					if err != nil {
 						return err
@@ -170,7 +171,10 @@ func (s *Service) dropDeletedProductionPlanPlaceholders(userID, runID string, do
 			saved := productionSavedKeys(artifacts)
 			var dropped []string
 			for _, item := range manifest.Plan.Assets {
-				id := "pap-" + productionHash([]string{runID, item.Key})[:32]
+				id := manifest.Plan.AssetPlaceholderNodeIDs[item.Key]
+				if id == "" {
+					id = "pap-" + productionHash([]string{runID, item.Key})[:32]
+				}
 				if !deleted[id] || productionNode(doc, id) != nil || saved[item.Key] || !productionPlanAssetSelected(manifest, item.Key) {
 					continue
 				}
@@ -185,6 +189,9 @@ func (s *Service) dropDeletedProductionPlanPlaceholders(userID, runID string, do
 				}
 			}
 			manifest.Plan.SelectedAssetKeys = slices.DeleteFunc(manifest.Plan.SelectedAssetKeys, func(key string) bool { return slices.Contains(dropped, key) })
+			for _, key := range dropped {
+				delete(manifest.Plan.AssetPlaceholderNodeIDs, key)
+			}
 			encoded, err := json.Marshal(manifest)
 			if err != nil {
 				return err

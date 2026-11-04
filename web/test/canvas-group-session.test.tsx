@@ -52,6 +52,12 @@ test("streaming drafts are not reported completed and planned failures stay visi
     expect(groupMemberState({ ...node("a"), metadata: { status: "error" } })).toBe("执行失败");
 });
 
+test("a fully validated storyboard is not shown as executing when its run status lags", () => {
+    const member = node("storyboard-run");
+    const snapshot: GroupSessionSnapshot = { kind: "agent", run: { id: "run", status: "running", production: { workKind: "storyboard", validated: true, processedPages: 3, totalPages: 3 } } as any };
+    expect(groupMemberState(member, snapshot)).toBe("已完成");
+});
+
 test("retained content on a warning node stays pending until a current receipt proves recovery", () => {
     const retained: CanvasNodeData = { ...node("a"), metadata: { status: "idle", content: "保留的原稿", generationWarning: { severity: "warning", message: "待补齐" } } };
     expect(groupMemberState(retained)).toBe("内容待处理");
@@ -114,6 +120,7 @@ test("container without child nodes still lists running tasks from the parallel 
     expect(html).toContain("执行中");
     expect(html).toContain("世界规则");
     expect(html).toContain("排队中");
+    expect(html.match(/取消(?:故事总纲|世界规则)及本轮全部子任务/g)).toHaveLength(2);
 });
 function coordinatorFixture() {
     const manifest = { ...node("manifest", group.id), metadata: { shortDrama: { pipelineId: "pipeline", assetKey: "$summary", productionAgent: { runId: "run" } } } } as CanvasNodeData;

@@ -61,7 +61,7 @@ const concurrencyFields: PolicyField[] = [
 
 const timeoutFields: PolicyField[] = [
     { group: "task", name: "imageTimeoutMinutes", label: "图片任务超时", extra: "图片任务进入失败状态前的最长执行时间。", unit: "分钟", max: 9_999 },
-    { group: "task", name: "providerRequestTimeoutSeconds", label: "单次上游请求超时", extra: "文本、音频、视频按单次请求总时长限制；图片按等待响应及接收数据的连续空闲时长限制，有数据返回则继续接收。所有任务仍受对应类型任务总超时约束。", unit: "秒", min: 10, max: 3_600 },
+    { group: "task", name: "providerRequestTimeoutSeconds", label: "单次上游请求超时", extra: "所有模型请求均使用这里配置的单次上游请求超时；图片在收到数据后会按同一参数重新计算连续空闲窗口。所有任务仍受对应类型任务总超时约束。", unit: "秒", min: 10, max: 3_600 },
     { group: "task", name: "textTimeoutMinutes", label: "文本任务超时", extra: "文本任务的最长执行时间。", unit: "分钟", max: 9_999 },
     { group: "task", name: "audioTimeoutMinutes", label: "音频任务超时", extra: "音频任务的最长执行时间。", unit: "分钟", max: 9_999 },
     { group: "task", name: "videoTimeoutMinutes", label: "视频任务超时", extra: "视频任务的最长执行时间。", unit: "分钟", max: 9_999 },

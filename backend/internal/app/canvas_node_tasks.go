@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/repository"
 )
 
 func (s *Service) startCanvasNodeTaskCleanup(ctx context.Context) {
@@ -78,6 +79,13 @@ func (s *Service) ReconcileCanvasNodeTasks(ctx context.Context, userID, canvasID
 	deleted := map[string]bool{}
 	for _, id := range deletedNodeIDs {
 		deleted[id] = true
+	}
+	if len(deleted) > 0 {
+		latestDoc, persistErr := s.persistDeletedCanvasNodes(ctx, userID, canvasID, deleted)
+		if persistErr != nil {
+			return persistErr
+		}
+		doc = latestDoc
 	}
 	tasks, err := s.repo.CanvasNodeTasks(userID, canvasID)
 	if err != nil {
@@ -186,6 +194,131 @@ func (s *Service) ReconcileCanvasNodeTasks(ctx context.Context, userID, canvasID
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// A deletion receipt is an explicit user operation. Persist it against the
+// latest server revision so a stale whole-canvas save cannot immediately undo it.
+func (s *Service) persistDeletedCanvasNodes(ctx context.Context, userID, canvasID string, deleted map[string]bool) (map[string]any, error) {
+	if len(deleted) == 0 {
+		return nil, nil
+	}
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		return nil, err
+	}
+	s.storageMu.Lock()
+	defer s.storageMu.Unlock()
+	for attempt := 0; attempt < 6; attempt++ {
+		canvas, err := s.repo.CanvasProjectForUser(userID, canvasID)
+		if err != nil {
+			return nil, err
+		}
+		doc, err := creationDocument(canvas.PayloadJSON)
+		if err != nil {
+			return nil, err
+		}
+		all := creationMaps(doc["nodes"])
+		removed := make(map[string]bool, len(deleted))
+		for id := range deleted {
+			removed[id] = true
+		}
+		cascadeParents := make(map[string]bool)
+		for id := range removed {
+			if canvasNodeIsPlanContainer(productionNode(doc, id)) {
+				cascadeParents[id] = true
+			}
+		}
+		for changed := true; changed; {
+			changed = false
+			for _, node := range all {
+				parentID := stringValue(node["parentId"])
+				if !cascadeParents[parentID] || removed[stringValue(node["id"])] {
+					continue
+				}
+				id := stringValue(node["id"])
+				removed[id] = true
+				cascadeParents[id] = true
+				changed = true
+			}
+		}
+		for id := range removed {
+			deleted[id] = true
+		}
+		deletedIDs := make([]string, 0, len(removed))
+		for id := range removed {
+			deletedIDs = append(deletedIDs, id)
+		}
+		kept := make([]map[string]any, 0, len(all))
+		changed := false
+		for _, node := range all {
+			if removed[stringValue(node["id"])] {
+				changed = true
+				continue
+			}
+			if removed[stringValue(node["parentId"])] {
+				delete(node, "parentId")
+				changed = true
+			}
+			workflow := productionWorkflow(node)
+			if workflow != nil {
+				ids := productionIDs(workflow["sourceNodeIds"])
+				filtered := make([]string, 0, len(ids))
+				for _, id := range ids {
+					if !removed[id] {
+						filtered = append(filtered, id)
+					}
+				}
+				if len(filtered) != len(ids) {
+					workflow["sourceNodeIds"] = filtered
+					changed = true
+				}
+			}
+			kept = append(kept, node)
+		}
+		connections := creationMaps(doc["connections"])
+		keptConnections := make([]map[string]any, 0, len(connections))
+		for _, edge := range connections {
+			if removed[stringValue(edge["fromNodeId"])] || removed[stringValue(edge["toNodeId"])] {
+				changed = true
+				continue
+			}
+			keptConnections = append(keptConnections, edge)
+		}
+		if !changed {
+			added, err := s.repo.AddCanvasNodeDeletionReceipts(userID, canvasID, deletedIDs)
+			if err != nil {
+				return nil, err
+			}
+			if !added {
+				return doc, nil
+			}
+			if err := saveCloudAgentDocument(s.repo, canvas, doc, policy); err != nil {
+				if errors.Is(err, repository.ErrCreationConflict) {
+					continue
+				}
+				return nil, err
+			}
+			return doc, nil
+		}
+		doc["nodes"], doc["connections"] = kept, keptConnections
+		if _, err := s.repo.AddCanvasNodeDeletionReceipts(userID, canvasID, deletedIDs); err != nil {
+			return nil, err
+		}
+		if err := saveCloudAgentDocument(s.repo, canvas, doc, policy); err != nil {
+			if errors.Is(err, repository.ErrCreationConflict) {
+				continue
+			}
+			return nil, err
+		}
+		return doc, nil
+	}
+	return nil, repository.ErrCreationConflict
+}
+
+func canvasNodeIsPlanContainer(node map[string]any) bool {
+	workflow := productionWorkflow(node)
+	return workflow != nil && workflow["mediaGroup"] == nil &&
+		((workflow["step"] == "story.plan" && workflow["role"] == "collection") || workflow["planGroup"] != nil)
 }
 
 // canvasAgentDeletedByReceipt 判断删除回执是否覆盖了 run 的目标节点、其所属容器或计划根容器。

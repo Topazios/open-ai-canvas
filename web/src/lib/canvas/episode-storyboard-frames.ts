@@ -12,7 +12,7 @@ import { reconcileStoryboardFramesGroups } from "./storyboard-frame-groups";
 import { resetGenerationTaskMetadata } from "./canvas-task-state";
 import { storyboardFrameWaitingReason } from "./storyboard-frame-continuity";
 
-export type StoryboardFrameGenerationOptions = { failedOnly?: boolean };
+export type StoryboardFrameGenerationOptions = { failedOnly?: boolean; regenerate?: boolean; frameIds?: string[] };
 
 export const storyboardFrameLabels = { start: "首帧", end: "尾帧", key: "关键帧" };
 export function storyboardBoundaryFrames(row: StoryboardRow): StoryboardFrame[] {
@@ -133,6 +133,18 @@ export function failedStoryboardBoundaryImagesForRow(script: CanvasNodeData, row
     }
     return [...result.values()];
 }
+export function generatedStoryboardBoundaryImagesForRow(script: CanvasNodeData, rowId: string, nodes: CanvasNodeData[]): CanvasNodeData[] {
+    const row = script.metadata?.storyboard?.rows.find((item) => item.id === rowId);
+    if (!row) return [];
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const result = new Map<string, CanvasNodeData>();
+    for (const frame of storyboardDisplayFrames(row, nodes)) {
+        if (frame.kind === StoryboardFrameKind.Key || !frame.imageNodeId) continue;
+        const image = byId.get(frame.imageNodeId);
+        if (image && (image.metadata?.content || image.metadata?.storageKey)) result.set(image.id, image);
+    }
+    return [...result.values()];
+}
 export function failedStoryboardBoundaryImageCount(script: CanvasNodeData, nodes: CanvasNodeData[]): number {
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const { active, cancelled } = storyboardFrameQueue(script);
@@ -170,6 +182,7 @@ export function materializeStoryboardFrames(
     const { active, cancelled } = storyboardFrameQueue(script);
     const rowPatches = new Map<string, StoryboardFrame[]>();
     const rows = (script.metadata?.storyboard?.rows || []).map((row) => requests.find((request) => request.row.id === row.id)?.row || row);
+    const requestedFrames = new Set(requests.flatMap(({ row, frames }) => frames.filter((frame) => !options.frameIds || options.frameIds.includes(frame.id)).map((frame) => `${row.id}:${frame.id}`)));
     const processed = new Set<string>();
     const blockedRows = new Set<string>();
     const failedIds = options.failedOnly ? new Set(failedStoryboardBoundaryImages(script, nodes).map((node) => node.id)) : undefined;
@@ -214,7 +227,7 @@ export function materializeStoryboardFrames(
             }
         }
     }
-    const materialize = (row: StoryboardRow, frames: StoryboardFrame[]) => {
+    const materialize = (row: StoryboardRow, frames: StoryboardFrame[], dependency = false, forceRegenerate = false) => {
         if (!storyboardRowIsReady(row)) throw new Error("当前或前序镜头详情尚未完成，请等待对应分镜生成后制作画面");
         const merged = rowPatches.get(row.id) || [...(script.metadata?.storyboard?.rows.find((item) => item.id === row.id)?.frames || row.frames || [])];
         rowPatches.set(row.id, merged);
@@ -224,6 +237,7 @@ export function materializeStoryboardFrames(
             else merged[index] = value;
         };
         for (const frame of frames) {
+            if (!dependency && options.frameIds && !options.frameIds.includes(frame.id)) continue;
             if (frame.sourcePromptHash !== storyboardFrameHash(row)) throw new Error("分镜内容已变化，请重新提取画面");
             const key = `${row.id}:${frame.id}`;
             if (processed.has(key)) continue;
@@ -234,6 +248,7 @@ export function materializeStoryboardFrames(
                 materialize(
                     row,
                     storyboardBoundaryFrames(row).filter((item) => item.kind === StoryboardFrameKind.Start),
+                    true,
                 );
                 if (!merged.some((item) => item.kind === StoryboardFrameKind.Start && item.imageNodeId)) continue;
             }
@@ -248,6 +263,8 @@ export function materializeStoryboardFrames(
                 materialize(
                     source,
                     storyboardBoundaryFrames(source).filter((item) => item.kind === StoryboardFrameKind.End),
+                    true,
+                    options.regenerate && requestedFrames.has(key),
                 );
                 const end = rowPatches.get(source.id)?.find((item) => item.kind === StoryboardFrameKind.End);
                 if (!end?.imageNodeId) continue;
@@ -266,14 +283,16 @@ export function materializeStoryboardFrames(
             const sameFrame = previous?.sourcePromptHash === frame.sourcePromptHash && (frame.kind !== StoryboardFrameKind.Key || previous.prompt === frame.prompt);
             const metadata = existing?.metadata;
             const failed = metadata?.status === "error" || metadata?.taskStatus === "failed";
+            const completed = Boolean(metadata?.content || metadata?.storageKey);
+            const regenerate = options.regenerate && (forceRegenerate || requestedFrames.has(`${row.id}:${frame.id}`));
             const reusable =
                 existing && (active.has(existing.id) || Boolean(metadata?.content || metadata?.storageKey) || (!failed && metadata?.taskStatus !== "cancelled" && (metadata?.status === "loading" || Boolean(metadata?.taskId && !options.failedOnly))));
-            if (sameFrame && existing && reusable) {
+            if (sameFrame && existing && reusable && !(regenerate && completed)) {
                 store({ ...frame, imageNodeId: existing.id });
                 continue;
             }
             const refs = resolveEpisodeShotAssets(script, row, nodes);
-            const image = existing && sameFrame ? existing : createCanvasNode(CanvasNodeType.Image, script.position, {});
+            const image = existing && sameFrame && !(regenerate && completed) ? existing : createCanvasNode(CanvasNodeType.Image, script.position, {});
             const prompt = [globalSettingsPrompt(script.metadata?.shortDrama?.parameters?.globalSettings, "storyboard", "image"), frame.prompt].filter(Boolean).join("\n\n");
             const prepared: CanvasNodeData = {
                 ...image,

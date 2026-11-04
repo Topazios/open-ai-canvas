@@ -73,6 +73,10 @@ export type NodeGenerationInput = {
     character?: CharacterGenerationReference;
 };
 
+export function storyboardVideoSeconds(durationSeconds: number) {
+    return String(Math.max(1, Math.round(Number.isFinite(durationSeconds) ? durationSeconds : 1)));
+}
+
 /**
  * 资产设定板包含文字、尺寸线和多个小视图，不能作为视频模型的直接画面参考。
  * 设定板仍然可以用于生成单幅首帧；视频阶段应只接收已确认的干净首尾帧或普通单图。
@@ -114,7 +118,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
             }
         }
         const assetReferences = resolved.media.map(nodeReferenceImage).filter((item): item is ReferenceImage => Boolean(item));
-        const referenceImages = [...new Map((frameReferences.length ? frameReferences : assetReferences).map(image => [image.id, image])).values()];
+        const referenceImages = [...new Map([...frameReferences, ...assetReferences].map(image => [image.id, image])).values()];
         const referenceAudios = resolved.media.map(readReferenceAudio).filter((item): item is ReferenceAudio => Boolean(item));
         return {
             prompt,

@@ -70,9 +70,9 @@ function selectGenerationBatchCandidates(nodes: CanvasNodeData[], projectId: str
                 const inline = node ? inlineStoryboardVideoState(node, item) : undefined;
                 const isInlineStoryboardVideo = item.targetKind === "storyboard_video";
                 const inlineTaskIsTerminal = inline?.taskStatus === "failed" || inline?.taskStatus === "cancelled";
-                const hasPersistedTask = item.taskId || (isInlineStoryboardVideo ? Boolean(inline?.taskId && !inlineTaskIsTerminal) : Boolean(node?.metadata?.taskId || node?.metadata?.taskReceiptRecorded));
+                const hasPersistedTask = item.taskId || (isInlineStoryboardVideo ? !item.replaceExistingResult && Boolean(inline?.taskId && !inlineTaskIsTerminal) : Boolean(node?.metadata?.taskId || node?.metadata?.taskReceiptRecorded));
                 const hasPersistedResult = isInlineStoryboardVideo
-                    ? Boolean(inline?.content || inline?.storageKey || inline?.taskStatus === "succeeded")
+                    ? !item.replaceExistingResult && Boolean(inline?.content || inline?.storageKey || inline?.taskStatus === "succeeded")
                     : Boolean(node?.metadata?.content || node?.metadata?.storageKey);
                 const hasActiveInlineTask = isInlineStoryboardVideo && ["queued", "running"].includes(inline?.taskStatus || "");
                 const hasFailedNormalNode = !isInlineStoryboardVideo && (node?.metadata?.taskStatus === "cancelled" || node?.metadata?.status === "error");
@@ -131,7 +131,7 @@ export function reconcileGenerationBatches(nodes: CanvasNodeData[], projectId: s
                     return item;
                 } else if (!node) {
                     patch = { status: "failed", errorDetails: "目标节点已不存在" };
-                } else if (inline && (inline.taskStatus === "succeeded" || inline.content || inline.storageKey)) {
+                } else if (inline && (inline.taskStatus === "succeeded" || !item.replaceExistingResult && (inline.content || inline.storageKey))) {
                     patch = { status: "succeeded", taskId: inline.taskId, errorDetails: undefined, costUncertain: false };
                 } else if (item.targetKind !== "storyboard_video" && node?.metadata?.status === "success" && (node.metadata.content || node.metadata.storageKey)) {
                     patch = { status: "succeeded", taskId: node.metadata.taskId, errorDetails: undefined, costUncertain: false };

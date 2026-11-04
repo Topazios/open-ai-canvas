@@ -581,11 +581,7 @@ func (s *Service) startProductionPlanAssetsWithModel(userID, runID string, selec
 					state.Request = previousRequest
 				}
 			}
-			var modes []productionLoadMode
-			if !active {
-				modes = append(modes, productionLoadForAssetGeneration)
-			}
-			_, m, doc, err := productionLoad(repo, current, &state, modes...)
+			_, m, doc, err := productionLoad(repo, current, &state, productionLoadForAssetGeneration)
 			if err != nil {
 				return productionAssetStep("load production", err)
 			}
@@ -609,6 +605,20 @@ func (s *Service) startProductionPlanAssetsWithModel(userID, runID string, selec
 			if active {
 				// Other assets running never blocks this selection: it is appended
 				// to the live batch and runs as its own task.
+				artifacts, err = productionResetMissingPlanAssets(repo, current, &state, m, doc, artifacts, policy)
+				if err != nil {
+					return productionAssetStep("reset missing assets", err)
+				}
+				encoded, err := json.Marshal(m)
+				if err != nil {
+					return productionAssetStep("encode manifest", err)
+				}
+				if err := repo.UpdateProductionAgentManifest(userID, runID, string(encoded)); err != nil {
+					return productionAssetStep("update manifest", err)
+				}
+				if err := repo.ValidateProductionAgentJob(userID, runID, false); err != nil {
+					return productionAssetStep("validate job", err)
+				}
 				appended, err = productionAppendPlanAssets(repo, current, &state, m, doc, artifacts, selected)
 				if err != nil {
 					return productionAssetStep("append assets", err)
@@ -738,7 +748,6 @@ func (s *Service) startProductionPlanAssetsWithModel(userID, runID string, selec
 	log.Printf("start assets conflict exhausted: run=%s last=%s", runID, lastConflict)
 	return productionPlanConflict("资产任务数据刚被更新，请稍后重试")
 }
-
 func (s *Service) productionPlanPiRunnerActive(runID string) bool {
 	if s == nil || runID == "" {
 		return false

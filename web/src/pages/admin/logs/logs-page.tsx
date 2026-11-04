@@ -210,6 +210,7 @@ export default function LogsPage() {
             }
         >
             {loadError ? <Alert type="error" showIcon title="请求明细读取失败" description={loadError} action={<Button size="small" onClick={() => setRetry((value) => value + 1)}>重试</Button>} /> : null}
+            {page > 1 ? <Alert type="info" showIcon title={`当前为第 ${page} 页，最新请求记录位于前面的页码。`} action={<Button size="small" onClick={() => updateUrl({ page: 1 })}>查看最新请求</Button>} /> : null}
             <AdminDataTable
                 className={view === "all" ? "admin-logs-full" : "admin-logs-compact"}
                 trailing={<Segmented aria-label="请求明细视图" value={view} onChange={(value) => updateUrl({ view: value })} options={[{ label: "排障", value: "troubleshoot" }, { label: "计费", value: "billing" }, { label: "全部字段", value: "all" }]} />}

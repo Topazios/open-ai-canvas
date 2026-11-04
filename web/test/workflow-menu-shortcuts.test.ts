@@ -40,6 +40,6 @@ test("every current step remains reachable without turning reference inputs into
         for (const child of nextShortDramaSteps(step)) visit(child.id as S);
     };
     // Asset reference commands are offered on the corresponding asset nodes.
-    for (const root of [S.Topic, S.Characters, S.Environments, S.Props]) visit(root);
+    for (const root of [S.Topic, S.Characters, S.Environments, S.Props, S.Scenes]) visit(root);
     for (const step of activeShortDramaSteps) expect(reached.has(step.id)).toBe(true);
 });

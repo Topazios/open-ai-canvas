@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Image } from "antd";
-import { Image as ImageIcon, LoaderCircle, RotateCcw, RotateCw, Scan, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, Image as ImageIcon, LoaderCircle, RotateCcw, RotateCw, Scan, X, ZoomIn, ZoomOut } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { resourceStorageKeyFromURL } from "@/services/api/resources";
 import { resolveImageUrl } from "@/services/image-storage";
@@ -84,6 +84,11 @@ export function CanvasImagePreview({ src = "", storageKey, alt = "图片", items
             actionsRender: (_, { actions, transform }) => {
                 navigateRef.current = actions.onActive;
                 return <div className="canvas-image-preview-tools" data-canvas-no-zoom>
+                {previewItems.length > 1 ? <>
+                    <button type="button" aria-label="上一张图片" title="上一张" disabled={currentIndex <= 0} onClick={() => actions.onActive(-1)}><ChevronLeft size={18} /></button>
+                    <output aria-label="图片序号">{currentIndex + 1} / {previewItems.length}</output>
+                    <button type="button" aria-label="下一张图片" title="下一张" disabled={currentIndex >= previewItems.length - 1} onClick={() => actions.onActive(1)}><ChevronRight size={18} /></button>
+                </> : null}
                 <button type="button" aria-label="缩小图片" title="缩小" disabled={transform.scale <= 0.25} onClick={actions.onZoomOut}><ZoomOut size={18} /></button>
                 <output aria-label="图片缩放比例">{Math.round(transform.scale * 100)}%</output>
                 <button type="button" aria-label="放大图片" title="放大" disabled={transform.scale >= 8} onClick={actions.onZoomIn}><ZoomIn size={18} /></button>

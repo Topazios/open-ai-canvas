@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { createCanvasNode, createStoryboardRow } from "@/lib/canvas/canvas-project-domain";
-import { episodeStoryboardPromptPatch, episodeStoryboardRows, episodeStoryboardTiming, materializeEpisodeStoryboard, resolveEpisodeShotAssets, storyboardRowIsReady } from "@/lib/canvas/workflow-episode-storyboard";
+import { episodeStoryboardPromptPatch, episodeStoryboardRows, episodeStoryboardTiming, materializeEpisodeStoryboard, resolveEpisodeShotAssets, storyboardFrameHash, storyboardRowIsReady } from "@/lib/canvas/workflow-episode-storyboard";
 import { assetContentSignature, assetMediaSignature } from "@/lib/canvas/canvas-workflow-asset-profile";
 import { reconcileStoryboardTargetConnections, storyboardComposerContent } from "@/lib/canvas/canvas-storyboard-materializer";
-import { buildNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
+import { buildNodeGenerationContext, storyboardVideoSeconds } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { workflowSignature } from "@/lib/canvas/canvas-short-drama-workflow";
 
@@ -84,6 +84,35 @@ test("numbered shot references include the pinned text and selected base image, 
     expect(context.prompt).toContain("灰色外套");
     expect(context.prompt).not.toContain("不得混入");
     expect(context.prompt).not.toContain("不得带入");
+});
+
+test("inline video references retain both boundary frames and bound asset images", () => {
+    const f = fixture();
+    const hash = storyboardFrameHash(f.row);
+    const frame = (id: string, kind: "start" | "end") => {
+        const image = createCanvasNode(CanvasNodeType.Image, { x: 0, y: 0 }, {
+            status: "success",
+            content: `data:image/png;base64,${id}`,
+            storyboardFrame: { scriptId: f.script.id, rowId: f.row.id, frameId: id, kind, sourcePromptHash: hash },
+        });
+        image.id = id;
+        return image;
+    };
+    const start = frame("start-frame", "start");
+    const end = frame("end-frame", "end");
+    f.row.frames = [
+        { id: start.id, kind: "start", prompt: "", timeSeconds: 0, sourcePromptHash: hash, imageNodeId: start.id },
+        { id: end.id, kind: "end", prompt: "", timeSeconds: f.row.durationSeconds, sourcePromptHash: hash, imageNodeId: end.id },
+    ];
+    const context = buildNodeGenerationContext(f.script.id, [...f.nodes, start, end], [], f.row.videoMotionPrompt, [], false, f.row.id);
+    expect(context.referenceImages.map((image) => image.id)).toEqual([start.id, end.id, f.image.id]);
+    expect(context.videoStartFrameNodeId).toBe(start.id);
+    expect(context.videoEndFrameNodeId).toBe(end.id);
+});
+
+test("inline video duration comes from the storyboard row, not the global default", () => {
+    expect(storyboardVideoSeconds(18)).toBe("18");
+    expect(storyboardVideoSeconds(0)).toBe("1");
 });
 
 test("editing a prompt replaces its explicit asset codes and preserves source-inferred references", () => {

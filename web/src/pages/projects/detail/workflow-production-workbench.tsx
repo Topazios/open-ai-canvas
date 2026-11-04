@@ -2,7 +2,7 @@ import { ImageSizePicker } from "@/components/image-size-picker";
 import { imageResolutionUsesQuality } from "@/lib/image-size-presets";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { App, Button, Form, Image, Input, InputNumber } from "antd";
+import { App, Button, Form, Input, InputNumber } from "antd";
 import { SegmentedControl } from "@/components/ui/base/segmented-control";
 import { EmptyState } from "@/components/ui/product/empty-state";
 import { StatusBadge } from "@/components/ui/base/badges";
@@ -11,6 +11,7 @@ import { Box, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Image as I
 import { Link, useNavigate } from "react-router";
 
 import { CanvasResourceMentionTextarea } from "@/components/canvas/canvas-resource-mention-textarea";
+import { CanvasImagePreview } from "@/components/canvas/canvas-image-preview";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { ModelPicker } from "@/components/model-picker";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
@@ -596,17 +597,16 @@ export default function WorkflowProductionWorkbench(props: Props) {
                 </aside>
             </div>
 
-            <AppModal
-                flush
-                open={Boolean(imagePreviewArtifact?.resourceId)}
-                title={imagePreviewArtifact?.type === "action_board" ? "动作预演预览" : "分镜图预览"}
-                footer={null}
-                centered
-                width="min(960px, calc(100vw - 32px))"
-                onCancel={() => setImagePreviewArtifact(null)}
-            >
-                {imagePreviewArtifact?.resourceId ? <img className={`workflow-image-preview-modal ${imagePreviewArtifact.type === "action_board" ? "grayscale" : ""}`} src={resourceFileUrl(imagePreviewArtifact.resourceId)} alt={imagePreviewArtifact.type === "action_board" ? "动作预演大图" : "分镜图大图"} /> : null}
-            </AppModal>
+            {imagePreviewArtifact?.resourceId ? (() => {
+                const previewArtifacts = artifacts.filter((artifact) => artifact.resourceId);
+                const index = Math.max(0, previewArtifacts.findIndex((artifact) => artifact.id === imagePreviewArtifact.id));
+                return <CanvasImagePreview
+                    items={previewArtifacts.map((artifact) => ({ src: resourceFileUrl(artifact.resourceId!), alt: artifact.type === "action_board" ? "动作预演预览" : "分镜图预览" }))}
+                    index={index}
+                    onNavigate={(next) => setImagePreviewArtifact(previewArtifacts[next] || imagePreviewArtifact)}
+                    onClose={() => setImagePreviewArtifact(null)}
+                />;
+            })() : null}
 
             <ShotTimeline activeStage={activeStage} detail={detail} shots={shots} selectedShotId={selectedShot.id} submittingShotIds={submittingShotIds} onSelectShot={requestShotSelection} onAddShot={requestAddShot} addingShot={addingShot} />
         </div>
@@ -679,25 +679,30 @@ function ShotLibrary({ detail, shots, selectedShotId, onSelectShot }: { detail: 
 }
 
 function BoundAssets({ detail, shotId, changing, onUnlink }: { detail: ProjectDetail; shotId: string; changing: boolean; onUnlink: (reference: ShotAssetReference) => void }) {
+    const [previewIndex, setPreviewIndex] = useState<number | null>(null);
     const references = (detail.shotReferences || []).filter((item) => item.shotId === shotId);
     const assetByVersionId = useMemo(() => new Map(detail.assets.filter((asset) => asset.primaryVersionId).map((asset) => [asset.primaryVersionId as string, asset])), [detail.assets]);
+    const previewItems = references.flatMap((reference) => {
+        const asset = reference.asset || assetByVersionId.get(reference.assetVersionId);
+        return asset?.mediaType === "image" ? [{ src: assetPreviewUrl(asset), alt: `${asset.title}预览` }] : [];
+    });
     return (
         <div className="workflow-bound-assets">
             <div className="workflow-bound-assets-heading"><span className="workflow-field-label">镜头资产</span><small>{references.length ? `已绑定 ${references.length} 项` : "从左侧资产栏点击绑定"}</small></div>
-            <Image.PreviewGroup>
-                <div className="workflow-bound-assets-content">
+            <div className="workflow-bound-assets-content">
                     {references.length ? references.map((reference) => {
                         const asset = reference.asset || assetByVersionId.get(reference.assetVersionId);
                         const title = asset?.title || "历史资产版本";
                         const previewUrl = asset ? assetPreviewUrl(asset) : "";
+                        const imageIndex = previewItems.findIndex((item) => item.src === previewUrl);
                         return <div key={reference.id} className="workflow-bound-asset-chip">
-                            <span className="workflow-bound-asset-preview">{previewUrl ? <Image src={previewUrl} alt={`${title}预览`} width={40} height={40} loading="lazy" preview={{ mask: "预览" }} /> : <Box aria-hidden />}</span>
+                            <span className="workflow-bound-asset-preview">{previewUrl ? <button type="button" aria-label={`预览 ${title}`} onClick={() => imageIndex >= 0 && setPreviewIndex(imageIndex)}><img src={previewUrl} alt={`${title}预览`} width={40} height={40} loading="lazy" /></button> : <Box aria-hidden />}</span>
                             <span className="workflow-bound-asset-copy"><em>{asset ? assetCategoryLabel(asset.category) : "历史"}</em><strong title={title}>{title}</strong></span>
                             <button type="button" disabled={changing} aria-label={`取消引用 ${title}`} onClick={() => onUnlink(reference)}><X aria-hidden /></button>
                         </div>;
                     }) : <span>尚未绑定角色、场景或道具</span>}
-                </div>
-            </Image.PreviewGroup>
+            </div>
+            {previewIndex !== null ? <CanvasImagePreview items={previewItems} index={previewIndex} onNavigate={setPreviewIndex} onClose={() => setPreviewIndex(null)} /> : null}
         </div>
     );
 }

@@ -220,7 +220,21 @@ func productionParallelModelSelection(work productionParallelWork, state cloudAg
 }
 
 func productionParallelExternalFailure(work productionParallelWork) bool {
-	return work.Error != "" && work.Notice != nil && (work.Notice.ErrorSource == "upstream" || work.Notice.ErrorSource == "network")
+	if work.Error == "" || work.Notice == nil {
+		return false
+	}
+	if work.Notice.ErrorSource == "upstream" || work.Notice.ErrorSource == "network" {
+		return true
+	}
+	// A request timeout is recorded as an application warning because the
+	// local HTTP client stopped waiting. It is still an upstream failure for
+	// run recovery: once retries are exhausted, the run must become terminal.
+	switch strings.ToLower(strings.TrimSpace(work.Notice.Code)) {
+	case "provider_request_timeout", "provider_response_read_timeout", "upstream_timeout", "stream_timeout":
+		return true
+	default:
+		return false
+	}
 }
 
 func productionParallelQuietHeld(state cloudAgentRuntime) bool {

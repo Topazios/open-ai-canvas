@@ -178,7 +178,13 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
                         sync.reconcile();
                     }
                 }
-                setRuns((current) => [...current.filter((entry) => entry.id !== runId && entry.production?.targetNodeId !== node.id), run]);
+                setRuns((current) => {
+                    const retained = current.filter((entry) => entry.id !== runId && entry.production?.targetNodeId !== node.id);
+                    const existing = current.find((entry) => entry.id === runId);
+                    return existing && JSON.stringify(existing) === JSON.stringify(run) && retained.length === current.length - 1
+                        ? current
+                        : [...retained, run];
+                });
                 setReadErrors((current) => current[node.id] ? { ...current, [node.id]: "" } : current);
                 const receipt = `${run.status}:${run.updatedAt}`;
                 if (!terminalAgentStatuses.has(run.status)) {
@@ -199,7 +205,10 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
                     }
                 }
             } catch (cause) {
-                if (!closed) setReadErrors((current) => ({ ...current, [node.id]: cause instanceof Error ? cause.message : "制作任务状态暂不可用" }));
+                if (!closed) {
+                    const error = cause instanceof Error ? cause.message : "制作任务状态暂不可用";
+                    setReadErrors((current) => current[node.id] === error ? current : { ...current, [node.id]: error });
+                }
             } finally { checking.delete(node.id); }
         };
         const check = () => {
@@ -210,7 +219,10 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
                     .catch((cause) => { if (!closed) setSyncError(cause instanceof Error ? cause.message : "节点任务清理待重试"); })
                     .finally(() => { reconciling = false; });
             }
-            setRuns((current) => current.filter((run) => present(run.production?.targetNodeId) && nodesRef.current.find((node) => node.id === run.production?.targetNodeId)?.metadata?.shortDrama?.productionAgent?.runId === run.id));
+            setRuns((current) => {
+                const retained = current.filter((run) => present(run.production?.targetNodeId) && nodesRef.current.find((node) => node.id === run.production?.targetNodeId)?.metadata?.shortDrama?.productionAgent?.runId === run.id);
+                return retained.length === current.length ? current : retained;
+            });
             for (const node of nodesRef.current) {
                 const runId = node.metadata?.shortDrama?.productionAgent?.runId;
                 if (runId && present(node.id)) void checkNode(node, runId);

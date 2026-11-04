@@ -22,7 +22,11 @@ const canvasHistoryInterval = 5 * time.Minute
 
 // 浏览器、云端 Agent 和创作任务共用此入口；外层事务仍负责任务和画布的一致性。
 func SaveDocumentWithHistory(repo *repository.Repository, before *model.CanvasProject, after *model.CanvasProject, reason string) error {
-	snapshot, resourceIDs, err := buildCanvasSnapshot(before, *after, reason)
+	snapshotReason := reason
+	if snapshotReason == "client_save" {
+		snapshotReason = "automatic"
+	}
+	snapshot, resourceIDs, err := buildCanvasSnapshot(before, *after, snapshotReason)
 	if err != nil {
 		return err
 	}
@@ -30,7 +34,7 @@ func SaveDocumentWithHistory(repo *repository.Repository, before *model.CanvasPr
 	if err := assets.CollectOwnedDocumentReferences(after.PayloadJSON, refs); err != nil {
 		return err
 	}
-	return repo.SaveCanvasWithSnapshot(after, snapshot, resourceIDs, assets.SortedIDs(refs), after.UpdatedAt.Add(-canvasHistoryInterval), canvasHistoryLimit, reason == "before_restore" || reason == "before_resource_repair")
+	return repo.SaveCanvasWithSnapshot(after, snapshot, resourceIDs, assets.SortedIDs(refs), after.UpdatedAt.Add(-canvasHistoryInterval), canvasHistoryLimit, reason, reason == "before_restore" || reason == "before_resource_repair")
 }
 
 // Explicit repair keeps the damaged preimage for audit/undo, but only protects

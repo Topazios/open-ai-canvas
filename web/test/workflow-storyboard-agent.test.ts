@@ -23,6 +23,29 @@ test("storyboard uses durable production agent with compact prompt and existing 
     }
 });
 
+test("storyboard selects the matching body collection when launched from an episode", () => {
+	const f = workflowImageFixture();
+	const body = f.nodes.find((node) => nodeWorkflow(node)?.step === "story.body" && nodeWorkflow(node)?.episodeNumber === 1)!;
+	const sourceNodeIds = defaultWorkflowSources("direction.shots", f.request.pipelineId, f.nodes, body.id).filter(Boolean);
+	const bodyCollection = f.nodes.find((node) => nodeWorkflow(node)?.step === "story.body" && nodeWorkflow(node)?.role === "collection")!;
+	expect(sourceNodeIds).toContain(bodyCollection.id);
+	const result = createWorkflowDocuments({ ...f.request, step: "direction.shots", model: "fixture::text", sourceNodeIds }, f.nodes, f.connections, { x: 0, y: 0 });
+	expect(result.created).toHaveLength(2);
+	expect(nodeWorkflow(result.created[0])?.parameters).toMatchObject({ minutesPerEpisode: "2" });
+	const firstEpisodeStoryboard = result.created.find((node) => nodeWorkflow(node)?.episodeNumber === 1)!;
+	expect(nodeWorkflow(firstEpisodeStoryboard)?.sourceNodeIds).toContain(body.id);
+});
+
+test("storyboard range filters the selected episode bodies and persists timing controls", () => {
+	const f = workflowImageFixture();
+	const sourceNodeIds = defaultWorkflowSources("direction.shots", f.request.pipelineId, f.nodes).filter(Boolean);
+	const result = createWorkflowDocuments({ ...f.request, step: "direction.shots", model: "fixture::text", sourceNodeIds, start: 2, count: 1, shotDurationSeconds: 15, shotDurationToleranceSeconds: 5 }, f.nodes, f.connections, { x: 0, y: 0 });
+	expect(result.created).toHaveLength(1);
+	expect(nodeWorkflow(result.created[0])).toMatchObject({ episodeNumber: 2, parameters: { shotDurationSeconds: 15, shotDurationToleranceSeconds: 5 } });
+	const selectedBody = nodeWorkflow(result.nodes.find((node) => node.id === nodeWorkflow(result.created[0])!.sourceNodeIds.find((id) => nodeWorkflow(result.nodes.find((entry) => entry.id === id))?.step === "story.body"))!);
+	expect(selectedBody?.episodeNumber).toBe(2);
+});
+
 test("explicit shot duration reaches each episode target and its persisted collection", () => {
     const f = workflowImageFixture();
     const result = createWorkflowDocuments({ ...f.request, step: "direction.shots", model: "fixture::text", shotDurationSeconds: 15, shotDurationToleranceSeconds: 5, sourceNodeIds: defaultWorkflowSources("direction.shots", f.request.pipelineId, f.nodes).filter(Boolean) }, f.nodes, f.connections, { x: 0, y: 0 });

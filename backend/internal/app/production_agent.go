@@ -28,15 +28,16 @@ type productionSource struct {
 	Pages         []string                 `json:"pages"`
 }
 type productionManifest struct {
-	Assets        map[string]*productionAssetIdentity `json:"assets,omitempty"`
-	Plan          *productionPlan                     `json:"plan,omitempty"`
-	Storyboard    *productionStoryboard               `json:"storyboard,omitempty"`
-	Category      string                              `json:"category"`
-	BibleSections []string                            `json:"bibleSections,omitempty"`
-	FrameID       string                              `json:"frameId"`
-	TargetHash    string                              `json:"targetHash"`
-	Sources       []productionSource                  `json:"sources"`
-	Read          map[string]bool                     `json:"read"`
+	Assets              map[string]*productionAssetIdentity `json:"assets,omitempty"`
+	AssetCatalogNodeIDs []string                            `json:"assetCatalogNodeIds,omitempty"`
+	Plan                *productionPlan                     `json:"plan,omitempty"`
+	Storyboard          *productionStoryboard               `json:"storyboard,omitempty"`
+	Category            string                              `json:"category"`
+	BibleSections       []string                            `json:"bibleSections,omitempty"`
+	FrameID             string                              `json:"frameId"`
+	TargetHash          string                              `json:"targetHash"`
+	Sources             []productionSource                  `json:"sources"`
+	Read                map[string]bool                     `json:"read"`
 	// QueryCursors stores the next unread offset for each fact category. New
 	// jobs use a compact sequential cursor instead of persisting one boolean per
 	// fact, which keeps the manifest small and makes version boundaries explicit.
@@ -336,6 +337,27 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 		}
 	}
 	if m.Storyboard != nil {
+		// Keep the storyboard's asset index tied to the exact asset revisions
+		// already pinned by the selected body, without loading their full text.
+		assetIDs := map[string]bool{}
+		for _, source := range m.Sources {
+			if source.Step != "story.body" {
+				continue
+			}
+			bodyWorkflow := productionWorkflow(productionNode(doc, source.NodeID))
+			signatures, _ := bodyWorkflow["sourceSignatures"].(map[string]any)
+			for id := range signatures {
+				assetWorkflow := productionWorkflow(productionNode(doc, id))
+				if assetWorkflow["pipelineId"] == data["pipelineId"] && assetWorkflow["planAsset"] != nil && assetWorkflow["assetIdentity"] != nil {
+					assetIDs[id] = true
+				}
+			}
+		}
+		for id := range assetIDs {
+			m.AssetCatalogNodeIDs = append(m.AssetCatalogNodeIDs, id)
+		}
+		sort.Strings(m.AssetCatalogNodeIDs)
+
 		// The canvas records transitive provenance separately from direct edges.
 		// Bring only declared directing constraints into the brief, not the other
 		// episodes or unrelated project documents.

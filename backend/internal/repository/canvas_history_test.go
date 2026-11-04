@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -19,7 +20,7 @@ func testCanvasHistory(t *testing.T, db *gorm.DB) {
 			t.Fatal(err)
 		}
 	}
-	if err := db.AutoMigrate(&model.CanvasSnapshot{}, &model.CanvasSnapshotResource{}, &model.CanvasShare{}, &model.CanvasNodeShotLink{}, &model.Task{}); err != nil {
+	if err := db.AutoMigrate(&model.CanvasSnapshot{}, &model.CanvasSnapshotResource{}, &model.CanvasShare{}, &model.CanvasNodeShotLink{}, &model.CanvasNodeDeletionReceipt{}, &model.Task{}); err != nil {
 		t.Fatal(err)
 	}
 	repo := New(db)
@@ -27,6 +28,78 @@ func testCanvasHistory(t *testing.T, db *gorm.DB) {
 	project := model.CanvasProject{ID: "history-canvas", UserID: "owner", Title: "original", PayloadJSON: `{"nodes":[{"id":"video"}]}`, UpdatedAt: now}
 	if err := repo.UpsertCanvasProject(&project); err != nil {
 		t.Fatal(err)
+	}
+	receiptProject := model.CanvasProject{ID: "deletion-receipt-canvas", UserID: "owner", Title: "receipt", PayloadJSON: "{\"nodes\":[{\"id\":\"deleted-node\"}]}", UpdatedAt: now}
+	if err := repo.UpsertCanvasProject(&receiptProject); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.AddCanvasNodeDeletionReceipts("owner", receiptProject.ID, []string{"deleted-node"}); err != nil {
+		t.Fatal(err)
+	}
+	staleWrite := receiptProject
+	if err := repo.SaveCanvasWithSnapshot(&staleWrite, nil, nil, nil, now, 20, "automatic", false); err != nil {
+		t.Fatal(err)
+	}
+	receiptStored, err := repo.CanvasProjectForUser("owner", receiptProject.ID)
+	if err != nil || receiptStored.Revision != 2 || receiptStored.PayloadJSON == receiptProject.PayloadJSON {
+		t.Fatalf("automatic stale write restored deleted node: revision=%d payload=%s err=%v", receiptStored.Revision, receiptStored.PayloadJSON, err)
+	}
+	remainingIDs, err := canvasDocumentNodeIDs(receiptStored.PayloadJSON)
+	if err != nil || len(remainingIDs) != 0 {
+		t.Fatalf("automatic stale write retained deleted nodes: %v err=%v", remainingIDs, err)
+	}
+	receipts, err := repo.CanvasNodeDeletionReceipts("owner", receiptProject.ID)
+	if err != nil || len(receipts) != 1 {
+		t.Fatalf("automatic write cleared deletion receipt: %#v err=%v", receipts, err)
+	}
+	clientResurrection := *receiptStored
+	clientResurrection.PayloadJSON = receiptProject.PayloadJSON
+	if err := repo.SaveCanvasWithSnapshot(&clientResurrection, nil, nil, nil, now, 20, "client_save", false); err != nil {
+		t.Fatal(err)
+	}
+	receiptStored, err = repo.CanvasProjectForUser("owner", receiptProject.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remainingIDs, err = canvasDocumentNodeIDs(receiptStored.PayloadJSON)
+	if err != nil || len(remainingIDs) != 0 {
+		t.Fatalf("client save resurrected tombstoned node: %v err=%v", remainingIDs, err)
+	}
+	receipts, err = repo.CanvasNodeDeletionReceipts("owner", receiptProject.ID)
+	if err != nil || len(receipts) != 1 {
+		t.Fatalf("client save cleared deletion receipt: %#v err=%v", receipts, err)
+	}
+	restore := *receiptStored
+	restore.PayloadJSON = receiptProject.PayloadJSON
+	if err := repo.SaveCanvasWithSnapshot(&restore, nil, nil, nil, now, 20, "before_restore", true); err != nil {
+		t.Fatal(err)
+	}
+	receiptStored, err = repo.CanvasProjectForUser("owner", receiptProject.ID)
+	if err != nil || receiptStored.Revision != 4 || receiptStored.PayloadJSON != receiptProject.PayloadJSON {
+		t.Fatalf("explicit history restore did not restore node: revision=%d payload=%s err=%v", receiptStored.Revision, receiptStored.PayloadJSON, err)
+	}
+	receipts, err = repo.CanvasNodeDeletionReceipts("owner", receiptProject.ID)
+	if err != nil || len(receipts) != 0 {
+		t.Fatalf("explicit restore retained obsolete deletion receipt: %#v err=%v", receipts, err)
+	}
+	ordinary := model.CanvasProject{ID: "ordinary-deletion-canvas", UserID: "owner", Title: "ordinary", PayloadJSON: "{\"nodes\":[{\"id\":\"parent-node\"},{\"id\":\"child-node\",\"parentId\":\"parent-node\"}]}", UpdatedAt: now}
+	if err := repo.UpsertCanvasProject(&ordinary); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.AddCanvasNodeDeletionReceipts("owner", ordinary.ID, []string{"parent-node"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveCanvasWithSnapshot(&ordinary, nil, nil, nil, now, 20, "automatic", false); err != nil {
+		t.Fatal(err)
+	}
+	var ordinaryDocument struct {
+		Nodes []struct {
+			ID       string
+			ParentID string
+		}
+	}
+	if err := json.Unmarshal([]byte(ordinary.PayloadJSON), &ordinaryDocument); err != nil || len(ordinaryDocument.Nodes) != 1 || ordinaryDocument.Nodes[0].ID != "child-node" || ordinaryDocument.Nodes[0].ParentID != "" {
+		t.Fatalf("ordinary node deletion should preserve and detach its child: %#v err=%v", ordinaryDocument, err)
 	}
 	resource := model.Resource{ID: "history-video", UserID: "owner", Status: model.ResourceStatusReady}
 	if err := db.Create(&resource).Error; err != nil {
@@ -39,7 +112,7 @@ func testCanvasHistory(t *testing.T, db *gorm.DB) {
 		t.Helper()
 		old := project
 		project.Title = fmt.Sprintf("edit-%d", old.Revision)
-		if err := repo.SaveCanvasWithSnapshot(&project, snapshot(old, at), []string{resource.ID}, nil, at.Add(-5*time.Minute), 20, force); err != nil {
+		if err := repo.SaveCanvasWithSnapshot(&project, snapshot(old, at), []string{resource.ID}, nil, at.Add(-5*time.Minute), 20, "automatic", force); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -78,13 +151,16 @@ func testCanvasHistory(t *testing.T, db *gorm.DB) {
 	before := project
 	failed := project
 	failed.Title = "must rollback"
-	err = repo.SaveCanvasWithSnapshot(&failed, snapshot(project, now.Add(10*time.Minute)), []string{"missing"}, nil, now, 20, true)
+	err = repo.SaveCanvasWithSnapshot(&failed, snapshot(project, now.Add(10*time.Minute)), []string{"missing"}, nil, now, 20, "automatic", true)
 	if !errors.Is(err, ErrCanvasHistoryResourceMissing) {
 		t.Fatalf("missing resource = %v", err)
 	}
 	stored, _ := repo.CanvasProjectForUser("owner", project.ID)
 	if stored.Revision != before.Revision || stored.Title != before.Title || failed.Revision != before.Revision {
 		t.Fatal("failed snapshot changed content/revision")
+	}
+	if failed.PayloadJSON != before.PayloadJSON {
+		t.Fatal("failed snapshot mutated the caller's payload")
 	}
 
 	// Concurrent writers create exactly one history entry along with one new revision.
@@ -97,7 +173,7 @@ func testCanvasHistory(t *testing.T, db *gorm.DB) {
 			defer workers.Done()
 			copy := project
 			<-start
-			results <- repo.SaveCanvasWithSnapshot(&copy, snapshot(project, now.Add(10*time.Minute)), []string{resource.ID}, nil, now, 20, true)
+			results <- repo.SaveCanvasWithSnapshot(&copy, snapshot(project, now.Add(10*time.Minute)), []string{resource.ID}, nil, now, 20, "automatic", true)
 		}()
 	}
 	close(start)

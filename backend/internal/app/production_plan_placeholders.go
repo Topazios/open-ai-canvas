@@ -90,8 +90,8 @@ func productionPlanDocumentPlaceholders(m productionManifest, doc map[string]any
 		if !ok {
 			continue
 		}
-		id := "pap-" + productionHash([]string{runID, key})[:32]
-		if productionNode(doc, id) != nil {
+		id := "pap-" + newID()
+		for productionNode(doc, id) != nil {
 			id = "pap-" + newID()
 		}
 		workflow := map[string]any{

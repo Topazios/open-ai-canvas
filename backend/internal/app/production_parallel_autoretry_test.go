@@ -315,6 +315,26 @@ func TestProductionParallelUpstreamFailedTaskEscalatesToAutomaticRetry(t *testin
 	}
 }
 
+func TestProductionParallelProviderTimeoutExhaustionFailsRun(t *testing.T) {
+	s, _, runID := v5SubmittedStoryFixtureWithDB(t)
+	mutateParallelState(t, s, runID, func(_ *model.CloudAgentExecution, state *cloudAgentRuntime) {
+		state.ProductionParallel["story"] = productionParallelWork{
+			Key: "story", Name: "故事总纲与世界规则", Error: "等待模型响应超过单次上游请求超时（5m0s）",
+			Notice: &model.TaskExecutionDiagnostic{Severity: "warning", ErrorSource: "application", Code: "provider_request_timeout", Outcome: "needs_attention", Phase: "execution"},
+		}
+	})
+
+	s.failPiRunner(runID, "user", errors.New("故事总纲与世界规则生成失败"))
+
+	run, err := s.repo.CloudAgent("user", runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "failed" {
+		t.Fatalf("run remained recoverable after provider timeout exhaustion: status=%s", run.Status)
+	}
+}
+
 func TestProductionParallelRunningTaskDoesNotEscalate(t *testing.T) {
 	s, db, runID := v5SubmittedStoryFixtureWithDB(t)
 	upstreamFailedStoryWork(t, s, db, runID, model.TaskStatusRunning)

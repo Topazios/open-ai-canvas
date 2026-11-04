@@ -24,11 +24,31 @@ type VideoSettingsPanelProps = {
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
+    resolutionOnly?: boolean;
 };
 
-export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[292px] space-y-3" }: VideoSettingsPanelProps) {
+export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[292px] space-y-3", resolutionOnly = false }: VideoSettingsPanelProps) {
     const profile = modelCapabilityConfigFor(config, config.model).video!;
 	const priceTiers = modelPriceTiers(config);
+	if (resolutionOnly) {
+		const resolution = resolveVideoResolutionValue(profile, config.vquality);
+		return (
+			<ImageSettingsTheme theme={theme}>
+				<div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+					{showTitle ? <div className="text-sm font-semibold">视频分辨率</div> : null}
+					<SettingGroup title="分辨率" color={theme.node.muted}>
+						<div className="grid grid-cols-3 gap-1.5">
+							{profile.resolutions.map((value) => (
+								<OptionPill key={value} selected={isVideoResolutionMatch(resolution, value)} theme={theme} onClick={() => onConfigChange("vquality", value)}>
+									{videoResolutionLabel(value)}
+								</OptionPill>
+							))}
+						</div>
+					</SettingGroup>
+				</div>
+			</ImageSettingsTheme>
+		);
+	}
     if (resolveModelRequestConfig(config, config.model).interfaceType === "volcengine-jimeng-video") {
 		return <JiMengVideoSettingsPanel config={config} profile={profile} priceTiers={priceTiers} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }

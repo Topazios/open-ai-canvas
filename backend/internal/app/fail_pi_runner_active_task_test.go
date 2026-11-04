@@ -55,3 +55,23 @@ func TestFailPiRunnerReleasesFailedActiveModelTask(t *testing.T) {
 		t.Fatalf("missing terminal events: completed=%v failed=%v", completed, failed)
 	}
 }
+
+func TestFailPiRunnerStopsRetryLoopForDeterministicProductionError(t *testing.T) {
+	s, _, run := planFixture(t, 2)
+	message := "方案资产分组已删除或改变，未自动复活"
+	s.failPiRunner(run.ID, "user", BadAuthRequest(message))
+
+	stored, state := productionRuntimeState(t, s, run.ID)
+	if stored.Status != "failed" || stored.FailureMessage != message {
+		t.Fatalf("deterministic production error did not become visible terminal failure: status=%q message=%q", stored.Status, stored.FailureMessage)
+	}
+	failedEvent := false
+	for _, event := range state.Events {
+		if event.Type == "run_failed" && event.Payload["error"] == message {
+			failedEvent = true
+		}
+	}
+	if !failedEvent {
+		t.Fatal("deterministic production error did not emit a terminal failure event")
+	}
+}

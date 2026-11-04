@@ -37,6 +37,10 @@ func (s *Service) finishCloudAgentCleanup(ctx context.Context, run *model.CloudA
 	seen := map[string]bool{}
 	ids := []string{run.ID, activeID, mediaID}
 	if decodeErr == nil {
+		// TaskIDs is the durable history of every task admitted to this run,
+		// including work that is no longer the active step. Cancel every still
+		// queued/running entry so a sibling cannot outlive a cancelled run.
+		ids = append(ids, state.TaskIDs...)
 		for _, work := range state.ProductionParallel {
 			ids = append(ids, work.TaskID)
 		}

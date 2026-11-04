@@ -89,6 +89,41 @@ test("completed, failed and waiting frames are never silently billed again; edit
     expect(changed.nodes.some(node => node.id === ids[0] && node.metadata?.content)).toBe(true);
 });
 
+test("explicit regeneration creates replacement boundary images and preserves the previous results", () => {
+    const f = fixture();
+    const first = materializeStoryboardFrames(f.script, boundaries(f), f.nodes, [], "image-model", settings);
+    const completed = first.nodes.map(node => node.metadata?.storyboardFrame ? { ...node, metadata: { ...node.metadata, status: "success" as const, taskStatus: "succeeded" as const, content: `saved-${node.id}` } } : node);
+    const script = completed.find(node => node.id === f.script.id)!;
+    const oldIds = first.targets.map(target => target.nodeId);
+    const regenerated = materializeStoryboardFrames(script, boundaries(f), completed, first.connections, "image-model", settings, { regenerate: true });
+    expect(regenerated.targets).toHaveLength(3);
+    expect(regenerated.targets.every(target => !oldIds.includes(target.nodeId))).toBe(true);
+    for (const id of oldIds) expect(regenerated.nodes.find(node => node.id === id)?.metadata?.content).toBe(`saved-${id}`);
+    const rows = regenerated.nodes.find(node => node.id === script.id)!.metadata!.storyboard!.rows;
+    expect(rows[0].frames?.find(frame => frame.kind === "start")?.imageNodeId).not.toBe(oldIds[0]);
+    expect(rows[1].frames?.find(frame => frame.kind === "start")?.imageNodeId).toBe(rows[0].frames?.find(frame => frame.kind === "end")?.imageNodeId);
+});
+
+test("regeneration keeps active boundary tasks and regenerates only the requested completed frame", () => {
+    const f = fixture();
+    const first = materializeStoryboardFrames(f.script, boundaries(f), f.nodes, [], "image-model", settings);
+    const [start, end] = first.targets;
+    const completed = first.nodes.map(node => node.id === start.nodeId ? { ...node, metadata: { ...node.metadata, status: "success" as const, content: "old-start" } } : node.id === end.nodeId ? { ...node, metadata: { ...node.metadata, status: "success" as const, content: "old-end" } } : node);
+    const completedScript = completed.find(node => node.id === f.script.id)!;
+    const onlyEnd = materializeStoryboardFrames(completedScript, [{ row: f.rows[0], frames: storyboardBoundaryFrames(f.rows[0]) }], completed, first.connections, "image-model", settings, { regenerate: true, frameIds: ["end"] });
+    expect(onlyEnd.targets).toHaveLength(1);
+    expect(onlyEnd.nodes.find(node => node.id === completedScript.id)?.metadata?.storyboard?.rows?.[0]?.frames?.find(frame => frame.kind === "start")?.imageNodeId).toBe(start.nodeId);
+    expect(onlyEnd.nodes.find(node => node.id === start.nodeId)?.metadata?.content).toBe("old-start");
+    const nodes = first.nodes.map(node => node.id === start.nodeId ? { ...node, metadata: { ...node.metadata, status: "loading" as const, taskId: "active", taskStatus: "running" as const } } : node.id === end.nodeId ? { ...node, metadata: { ...node.metadata, status: "success" as const, content: "old-end" } } : node);
+    const script = nodes.find(node => node.id === f.script.id)!;
+    const regenerated = materializeStoryboardFrames(script, [{ row: f.rows[0], frames: storyboardBoundaryFrames(f.rows[0]) }], nodes, first.connections, "image-model", settings, { regenerate: true, frameIds: ["end"] });
+    expect(regenerated.targets).toHaveLength(1);
+    expect(regenerated.targets[0].nodeId).not.toBe(end.nodeId);
+    expect(regenerated.nodes.find(node => node.id === start.nodeId)?.metadata?.taskStatus).toBe("running");
+    expect(regenerated.nodes.find(node => node.id === end.nodeId)?.metadata?.content).toBe("old-end");
+    expect(regenerated.nodes.find(node => node.id === script.id)?.metadata?.storyboard?.rows?.[0]?.frames?.find(frame => frame.kind === "start")?.imageNodeId).toBe(start.nodeId);
+});
+
 test("pre-submission frame failures can be resubmitted in place without duplicating images", () => {
     const f = fixture();
     const first = materializeStoryboardFrames(f.script, boundaries(f), f.nodes, [], "image-model", settings);

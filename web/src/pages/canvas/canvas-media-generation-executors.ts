@@ -7,6 +7,7 @@ import { nextCanvasVersionLabel } from "@/lib/canvas/canvas-layout";
 import { buildAudioGenerationMetadata, buildVideoGenerationMetadata, generationReferenceUrls, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
 import { buildStoryboardVideoGeneration } from "@/lib/canvas/canvas-generation-task-sync";
 import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-submission";
+import { storyboardVideoSeconds } from "@/components/canvas/canvas-node-generation";
 import { producedModelCandidateForGeneration } from "@/lib/canvas/produced-model";
 import { CanvasNodeType, type CanvasNodeData, type CanvasVideoEditOperation } from "@/types/canvas";
 
@@ -39,6 +40,8 @@ export async function executeVideoGeneration({
 }: CanvasGenerationExecution) {
     const storyboardRowId = taskContext?.storyboardRowId;
     const inlineStoryboardVideo = sourceNode?.type === CanvasNodeType.Script && taskContext?.batchTargetKind === "storyboard_video" && Boolean(storyboardRowId);
+    const storyboardRow = inlineStoryboardVideo ? sourceNode?.metadata?.storyboard?.rows.find((row) => row.id === storyboardRowId) : undefined;
+    const inlineGenerationConfig = storyboardRow ? { ...generationConfig, videoSeconds: storyboardVideoSeconds(storyboardRow.durationSeconds) } : generationConfig;
     const inlineVideoSourceNode = inlineStoryboardVideo && sourceNode
         ? {
               ...sourceNode,
@@ -49,7 +52,7 @@ export async function executeVideoGeneration({
           }
         : sourceNode;
     const inlineVideoGenerationMetadata = inlineStoryboardVideo && sourceNode
-        ? buildVideoGenerationMetadata(inlineVideoSourceNode, generationContext, generationConfig)
+        ? buildVideoGenerationMetadata(inlineVideoSourceNode, generationContext, inlineGenerationConfig)
         : undefined;
     if (inlineStoryboardVideo && sourceNode && storyboardRowId) {
         setNodes(current => current.map(node => node.id !== sourceNode.id ? node : {
@@ -60,7 +63,7 @@ export async function executeVideoGeneration({
                     ...node.metadata?.storyboard!,
                     rows: (node.metadata?.storyboard?.rows || []).map(row => row.id !== storyboardRowId ? row : {
                         ...row,
-                        videoGeneration: { ...row.videoGeneration, taskStatus: "running", prompt: effectivePrompt, model: generationConfig.model, errorDetails: undefined },
+                        videoGeneration: { ...row.videoGeneration, taskStatus: "running", prompt: effectivePrompt, model: inlineGenerationConfig.model, errorDetails: undefined },
                     }),
                 },
             },
@@ -73,7 +76,7 @@ export async function executeVideoGeneration({
                     ...retryContext,
                     mode: "video",
                     prompt: effectivePrompt,
-                    config: generationConfig,
+                    config: inlineGenerationConfig,
                     referenceImages: generationContext.referenceImages,
                     referenceVideos: generationContext.referenceVideos,
                     referenceAudios: generationContext.referenceAudios,

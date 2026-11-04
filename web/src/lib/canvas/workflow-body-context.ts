@@ -20,42 +20,6 @@ export function episodeOutlineContext(content: string, episode: number) {
     return { current, context };
 }
 
-const bodyProductionOnlyHeadings = new Set([
-    "人物编码、别名、选题依据与预计出场", "场景编码、别名、选题依据与预计出场",
-    "道具编码、别名、选题依据与预计出场", "声音编码、别名、选题依据与预计出场",
-    "年龄感、体型、面部与辨识特征", "固定服装、配饰与材质配色", "发型、妆容与固定细节",
-    "音域、音高与共鸣位置", "可复用配音提示词", "人物参考图生成提示词",
-    "建筑材质、表面质感与配色", "固定光源、日夜与天气光照", "可用机位、遮挡与取景边界",
-    "场景参考图生成提示词", "道具参考图生成提示词", "道具材质、工艺、配色与表面细节",
-    "声音生成提示词与声线复用要求", "音色、频段、质感与声源构成", "距离、方位、混响与空间层次",
-    "音量层级、对白避让与混音边界", "生图参数", "负面提示词",
-]);
-
-const bodyAssetNoiseHeadings: Record<string, Set<string>> = {
-    character: new Set(["人物编码、别名、选题依据与预计出场", "人物经历与关键成因", "人物成长与阶段变化", "年龄感、体型、面部与辨识特征", "固定服装、配饰与材质配色", "发型、妆容与固定细节", "人物创作设计与未定事项", "人物参考图生成提示词"]),
-    environment: new Set(["场景编码、别名、选题依据与预计出场", "地理位置、时代与建筑类型", "建筑材质、表面质感与配色", "固定光源、日夜与天气光照", "可用机位、遮挡与取景边界", "场景创作设计与未定事项", "场景参考图生成提示词"]),
-    prop: new Set(["道具编码、别名、选题依据与预计出场", "道具形状、尺寸、比例与辨识特征", "道具材质、工艺、配色与表面细节", "道具创作设计与未定事项", "道具参考图生成提示词"]),
-    sound: new Set(["声音编码、别名、选题依据与预计出场", "音色、频段、质感与声源构成", "距离、方位、混响与空间层次", "音量层级、对白避让与混音边界", "声音创作设计与未定事项", "声音生成提示词与声线复用要求"]),
-};
-
-function bodyAssetContent(content: string, kind?: string) {
-    // Keep identity, personality, voice and causal rules; image production belongs downstream.
-    let excludedDepth = 0;
-    let fence = "";
-    const noise = bodyAssetNoiseHeadings[kind || ""] || new Set<string>();
-    const lines = content.split(/\r?\n/);
-    return lines.filter(line => {
-        const marker = line.match(/^\s*(`{3,}|~{3,})/)?.[1];
-        if (marker && (!fence || marker[0] === fence[0])) fence = fence ? "" : marker;
-        const heading = !fence && !marker ? line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/) : null;
-        if (heading) {
-            if (excludedDepth && heading[1].length <= excludedDepth) excludedDepth = 0;
-            if (!excludedDepth && (bodyProductionOnlyHeadings.has(heading[2]) || noise.has(heading[2]) || /参考图生成提示词|可复用配音提示词|生图参数|负面提示词/.test(heading[2]))) excludedDepth = heading[1].length;
-        }
-        return !excludedDepth;
-    }).join("\n").trim();
-}
-
 function bodyWorldRules(content: string) {
     const lines = content.split(/\r?\n/);
     if (!lines.some(line => /^#{1,2}\s/.test(line))) return content;
@@ -95,7 +59,14 @@ export function bodySourceRecords(sources: CanvasNodeData[], episode: number, in
         if (data?.planSection === "story") content = bodyWorldRules(content);
         if (data?.planSection === "direction") content = outlineDirectionContext(content);
         if (isAsset) {
-            content = bodyAssetContent(content, asset?.kind);
+            content = `本集关联资产编码索引（详细设定按需读取）：${JSON.stringify({
+                code: data?.assetIdentity?.code || asset?.key,
+                name: asset?.name || node.title,
+                kind: asset?.kind,
+                purpose: asset?.purpose,
+                plannedRange: asset?.plannedRange,
+                episodes: asset?.episodes,
+            })}`;
             const variants = data?.assetProfile?.variants.filter(variant => variant.code && mentions.includes(variant.code)) || [];
             if (variants.length) content += `\n\n本集指定状态：\n${variants.map(assetVariantMaterial).join("\n")}`;
         }

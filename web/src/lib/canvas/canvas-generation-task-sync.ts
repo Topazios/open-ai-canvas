@@ -273,18 +273,19 @@ type GeneratedVideoResult = {
  * 节点仍保存稳定的资源文件地址，Blob 只作为本地缓存和后续字节处理的加速层。
  */
 async function cacheGeneratedRemoteVideo(result: GeneratedVideoResult & { storageKey: string }): Promise<UploadedFile> {
-    const blob = await getCachedResourceBlob(result.storageKey);
-    if (!blob) throw new Error("生成视频资源缓存失败，未标记为成功");
-    const url = await resolveMediaUrl(result.storageKey, result.dataUrl || "");
-    if (!url) throw new Error("生成视频资源地址为空，未标记为成功");
+    // The resource is already durably stored upstream. Browser caching and access-URL
+    // resolution are playback optimizations and must not keep a completed task running.
+    const blob = await getCachedResourceBlob(result.storageKey).catch(() => null);
+    const resolvedUrl = await resolveMediaUrl(result.storageKey, result.dataUrl || result.storageKey).catch(() => "");
+    const url = resolvedUrl || result.dataUrl || result.storageKey;
     return {
         url,
         storageKey: result.storageKey,
         width: result.width,
         height: result.height,
         durationMs: result.durationMs,
-        bytes: result.bytes || blob.size,
-        mimeType: result.mimeType || blob.type || "video/mp4",
+        bytes: result.bytes || blob?.size || 0,
+        mimeType: result.mimeType || blob?.type || "video/mp4",
     };
 }
 

@@ -72,6 +72,33 @@ test("inline storyboard video ignores the script node's unrelated storyboard tas
     expect(generationBatchReservations([script], "project", [{ id: "storyboard-task" }], new Set(["video-batch:video-item"]), new Set())).toEqual({ image: 0, video: 1, text: 0 });
 });
 
+test("explicit storyboard video regeneration can replace an existing result", () => {
+    installRuntimeLimits({ video: 1 }, 0);
+    const script = createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, {
+        storyboard: {
+            rows: [createStoryboardRow(1, { id: "shot-regenerate", videoMotionPrompt: "人物转身离开", videoGeneration: { taskStatus: "succeeded", content: "https://example.test/old.mp4", storageKey: "resource:old" } })],
+            visibleColumns: [],
+            referenceNodeIds: [],
+        },
+    });
+    const row = script.metadata!.storyboard!.rows[0];
+    script.metadata!.generationBatches = [{
+        id: "regenerate-batch", projectId: "project", sourceNodeId: script.id, mode: "storyboard_video", status: "queued", createdAt: "", updatedAt: "",
+        items: [{ id: "regenerate-item", rowId: row.id, nodeId: script.id, targetKind: "storyboard_video", status: "waiting", retryCount: 0, replaceExistingResult: true }],
+    }];
+
+    expect(generationBatchQueueCandidates([script], "project")).toHaveLength(1);
+    const running = {
+        ...script,
+        metadata: {
+            ...script.metadata,
+            storyboard: { ...script.metadata!.storyboard!, rows: [{ ...row, videoGeneration: { ...row.videoGeneration, taskId: "new-task", taskStatus: "running" } }] },
+            generationBatches: [{ ...script.metadata!.generationBatches![0], items: [{ ...script.metadata!.generationBatches![0].items[0], status: "running" as const, taskId: "new-task" }] }],
+        },
+    };
+    expect(reconcileGenerationBatches([running], "project", new Set())[0].metadata!.generationBatches![0].items[0].status).toBe("running");
+});
+
 test("retrying an inline failed video is eligible even when the old row receipt remains", () => {
     installRuntimeLimits({ video: 1 }, 0);
     const script = createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, {

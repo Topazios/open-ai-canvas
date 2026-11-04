@@ -6,7 +6,8 @@ import { generationBatchKind, generationBatchQueueCandidates, generationBatchRet
 import { buildGenerationConfig, createGenerationRetryContext, generationTaskMetadata, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { storyboardFrameNodeSelection } from "@/lib/canvas/storyboard-frame-model";
 import { unchangedModeratedPrompt } from "@/lib/generation-error";
-import { cancelGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { cancelGenerationTask, queryGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { buildStoryboardVideoGeneration } from "@/lib/canvas/canvas-generation-task-sync";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { getActiveUserScope } from "@/lib/user-scope";
 import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchMode, CanvasNodeData, StoryboardVideoGeneration } from "@/types/canvas";
@@ -15,6 +16,7 @@ import type { CanvasNodeGenerationOptions } from "./use-canvas-generation-execut
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 
 const SCHEDULER_INTERVAL_MS = 2_000;
+const INLINE_TASK_RECOVERY_INTERVAL_MS = 5_000;
 const MAX_BATCH_HISTORY = 20;
 
 type BatchTarget = Pick<CanvasGenerationBatchItem, "rowId" | "nodeId" | "targetKind">;
@@ -38,12 +40,15 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
     const controllersRef = useRef(new Map<string, AbortController>());
     const cancellingRef = useRef(new Set<string>());
     const cancellationAttempts = useRef(new Set<string>());
+    const recoveringInlineTasks = useRef(new Set<string>());
+    const lastInlineTaskRecoveryAt = useRef(new Map<string, number>());
     const owner = useRef({ projectId, scope: getActiveUserScope() });
     owner.current = { projectId, scope: getActiveUserScope() };
 
-    const cancelPausedTask = useCallback(async (sourceNodeId: string, batchId: string, nodeId: string, task: GenerationTask, target?: Pick<CanvasGenerationBatchItem, "rowId" | "targetKind">) => {
-        const batch = findBatch(nodesRef.current, sourceNodeId, batchId);
-        const source = nodesRef.current.find(node => node.id === sourceNodeId);
+    const cancelPausedTask = useCallback(async (sourceNodeId: string, batchId: string, nodeId: string, task: GenerationTask, target?: Pick<CanvasGenerationBatchItem, "rowId" | "targetKind">, pausedSnapshot?: CanvasNodeData[]) => {
+        const snapshot = pausedSnapshot || nodesRef.current;
+        const batch = findBatch(snapshot, sourceNodeId, batchId);
+        const source = snapshot.find(node => node.id === sourceNodeId);
         const targetKey = generationBatchTargetKey({ nodeId, rowId: target?.rowId || "", targetKind: target?.targetKind });
         const latest = source?.metadata?.generationBatches?.findLast(batch => batch.items.some(item => generationBatchTargetKey(item) === targetKey));
         if (!batch?.paused || latest?.id !== batchId || batch.projectId !== projectId || !["queued", "running"].includes(task.status) || cancellingRef.current.has(task.id) || cancellationAttempts.current.has(task.id)) return;
@@ -80,10 +85,18 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
             const taskStatus = item.targetKind === "storyboard_video" ? node?.metadata?.storyboard?.rows.find(row => row.id === item.rowId)?.videoGeneration?.taskStatus : node?.metadata?.taskStatus;
             if (taskId && ["queued", "running"].includes(taskStatus || "")) tasks.set(taskId, { batchId: batch.id, nodeId: node!.id, target: { rowId: item.rowId, targetKind: item.targetKind } });
         }
+        for (const frameNode of next.filter((node) => (node.metadata?.storyboardFrame?.scriptId || node.metadata?.storyboardFramePlan?.scriptId) === sourceNodeId)) {
+            const taskId = frameNode.metadata?.taskId;
+            if (!taskId || !["queued", "running"].includes(frameNode.metadata?.taskStatus || "")) continue;
+            const batch = source?.metadata?.generationBatches?.findLast((entry) => entry.items.some((item) => item.nodeId === frameNode.id));
+            if (!batch) continue;
+            const item = batch.items.findLast((entry) => entry.nodeId === frameNode.id);
+            tasks.set(taskId, { batchId: batch.id, nodeId: frameNode.id, target: { rowId: item?.rowId || "", targetKind: item?.targetKind } });
+        }
         // Cancel sequentially to avoid another request burst during a pause.
         for (const [id, entry] of tasks) {
             cancellationAttempts.current.delete(id);
-            await cancelPausedTask(sourceNodeId, entry.batchId, entry.nodeId, { id, status: "running" } as GenerationTask, entry.target);
+            await cancelPausedTask(sourceNodeId, entry.batchId, entry.nodeId, { id, status: "running" } as GenerationTask, entry.target, next);
         }
         await persistence;
     }, [cancelPausedTask, message, nodesRef, persistBatches, setNodes]);
@@ -134,7 +147,10 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
                 sourceNodeId,
                 mode,
                 status: "queued",
-                items: availableTargets.map((target) => ({ id: nanoid(), ...target, status: "waiting", retryCount: 0 })),
+                items: availableTargets.map((target) => {
+                    const row = target.targetKind === "storyboard_video" ? sourceNode.metadata?.storyboard?.rows.find((candidate) => candidate.id === target.rowId) : undefined;
+                    return { id: nanoid(), ...target, status: "waiting", retryCount: 0, ...(row?.videoGeneration?.content || row?.videoGeneration?.storageKey ? { replaceExistingResult: true } : {}) };
+                }),
                 createdAt: now,
                 updatedAt: now,
             };
@@ -378,6 +394,58 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
         }, SCHEDULER_INTERVAL_MS);
         return () => window.clearInterval(timer);
     }, [projectLoaded, reconcileBatches, scheduleWaitingItems]);
+
+    useEffect(() => {
+        if (!projectLoaded) return;
+        let disposed = false;
+        const recoverCompletedInlineTasks = async () => {
+            const now = Date.now();
+            const pending = nodesRef.current.flatMap((node) => (node.metadata?.storyboard?.rows || []).flatMap((row) => {
+                const taskId = row.videoGeneration?.taskId;
+                if (!taskId || !["queued", "running"].includes(row.videoGeneration?.taskStatus || "")) return [];
+                const lastChecked = lastInlineTaskRecoveryAt.current.get(taskId) || 0;
+                if (now - lastChecked < INLINE_TASK_RECOVERY_INTERVAL_MS || recoveringInlineTasks.current.has(taskId)) return [];
+                lastInlineTaskRecoveryAt.current.set(taskId, now);
+                recoveringInlineTasks.current.add(taskId);
+                return [{ nodeId: node.id, rowId: row.id, taskId }];
+            }));
+            await Promise.all(pending.map(async ({ nodeId, rowId, taskId }) => {
+                try {
+                    const task = await queryGenerationTask(taskId);
+                    if (disposed || owner.current.projectId !== projectId) return;
+                    if (task.status !== "succeeded" && task.status !== "failed" && task.status !== "cancelled") return;
+                    const currentNode = nodesRef.current.find((node) => node.id === nodeId);
+                    const currentRow = currentNode?.metadata?.storyboard?.rows.find((row) => row.id === rowId);
+                    if (!currentNode || currentRow?.videoGeneration?.taskId !== taskId) return;
+                    const result = task.status === "succeeded"
+                        ? await buildStoryboardVideoGeneration(currentNode, task)
+                        : { ...currentRow.videoGeneration, ...generationTaskMetadata(task), errorDetails: task.error || (task.status === "cancelled" ? "任务已取消" : "视频生成失败") };
+                    if (disposed || owner.current.projectId !== projectId) return;
+                    setNodes((current) => current.map((node) => node.id !== nodeId ? node : {
+                        ...node,
+                        metadata: {
+                            ...node.metadata,
+                            storyboard: {
+                                ...node.metadata?.storyboard!,
+                                rows: (node.metadata?.storyboard?.rows || []).map((row) => row.id !== rowId || row.videoGeneration?.taskId !== taskId ? row : { ...row, videoGeneration: result }),
+                            },
+                        },
+                    }));
+                } catch (error) {
+                    console.warn("恢复分镜视频终态失败，将在稍后重试", { taskId, error });
+                    lastInlineTaskRecoveryAt.current.set(taskId, 0);
+                } finally {
+                    recoveringInlineTasks.current.delete(taskId);
+                }
+            }));
+        };
+        void recoverCompletedInlineTasks();
+        const timer = window.setInterval(() => void recoverCompletedInlineTasks(), INLINE_TASK_RECOVERY_INTERVAL_MS);
+        return () => {
+            disposed = true;
+            window.clearInterval(timer);
+        };
+    }, [nodesRef, projectId, projectLoaded, setNodes]);
 
     return {
         enqueueGenerationBatch,

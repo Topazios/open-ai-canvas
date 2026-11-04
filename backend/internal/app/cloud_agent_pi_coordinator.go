@@ -69,7 +69,7 @@ func (s *Service) startCloudAgentPi(userID, runID string) {
 
 		if err := s.runCloudAgentPiSession(ctx, userID, runID); err != nil && ctx.Err() == nil && !s.IsDraining() && !errors.Is(err, context.Canceled) {
 			log.Printf("[Agent] session failed run=%s: %v", runID, err)
-			s.failPiRunner(runID, userID, errors.New(cloudAgentUserFailureMessage(runID, err)))
+			s.failPiRunner(runID, userID, err)
 		}
 	}()
 }
@@ -155,7 +155,7 @@ func (s *Service) startApprovedCloudAgentMediaWaiter(userID, runID, mediaTaskID 
 
 		if err := s.finishApprovedCloudAgentMedia(ctx, userID, runID, mediaTaskID); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("[Agent] approved media resume failed run=%s: %v", runID, err)
-			s.failPiRunner(runID, userID, errors.New(cloudAgentUserFailureMessage(runID, err)))
+			s.failPiRunner(runID, userID, err)
 		}
 	}()
 }
@@ -224,15 +224,24 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 				if activeTaskFailed {
 					externalFailure = true
 				}
-				if externalFailure && !cloudAgentRunTerminal(current.Status) && current.Status != "waiting_user" {
-					current.Status, current.FailureMessage = "failed", cause.Error()
-					payload := map[string]any{"error": cause.Error()}
-					generationStopNotice(repo, &state, payload)
-					state.event(runID, "run_failed", payload)
+				var appErr *AppError
+				deterministicFailure := errors.As(cause, &appErr) && appErr != nil && appErr.Status >= 400 && appErr.Status < 500 && !appErr.Retryable && appErr.Status != 408 && appErr.Status != 409 && appErr.Status != 425 && appErr.Status != 429
+				activeTaskLive := false
+				if state.Request.Production != nil && state.ActiveTaskID != "" {
+					if task, taskErr := repo.TaskForUser(userID, state.ActiveTaskID); taskErr == nil {
+						activeTaskLive = task.Status == model.TaskStatusQueued || task.Status == model.TaskStatusRunning
+					}
+				}
+				if warning := generationRunWarning(repo, &state, runID); warning != nil && !externalFailure {
+					state.event(runID, "run_failed", warning)
 					return cloudAgentSave(current, &state)
 				}
-				if warning := generationRunWarning(repo, &state, runID); warning != nil {
-					state.event(runID, "run_failed", warning)
+				if (externalFailure || (deterministicFailure && !activeTaskLive)) && !cloudAgentRunTerminal(current.Status) && current.Status != "waiting_user" {
+					message := cloudAgentUserFailureMessage(runID, cause)
+					current.Status, current.FailureMessage = "failed", message
+					payload := map[string]any{"error": message}
+					generationStopNotice(repo, &state, payload)
+					state.event(runID, "run_failed", payload)
 					return cloudAgentSave(current, &state)
 				}
 				return nil
@@ -264,7 +273,8 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 				return nil
 			}
 			current.Status = "failed"
-			current.FailureMessage = cause.Error()
+			message := cloudAgentUserFailureMessage(runID, cause)
+			current.FailureMessage = message
 			state, decodeErr := cloudAgentDecode(current)
 			if decodeErr == nil {
 				if state.Request.Production != nil && state.ActiveTaskID != "" {
@@ -272,8 +282,8 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 						state.event(runID, "production_model_completed", productionModelCompletedPayload(task, state.Step, cloudAgentSafeMediaTaskError(task)))
 					}
 				}
-				state.LastError = cause.Error()
-				payload := map[string]any{"error": cause.Error()}
+				state.LastError = message
+				payload := map[string]any{"error": message}
 				generationStopNotice(repo, &state, payload)
 				state.event(runID, "run_failed", payload)
 				return cloudAgentSave(current, &state)

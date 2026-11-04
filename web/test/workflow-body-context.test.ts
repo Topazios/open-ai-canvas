@@ -51,10 +51,29 @@ test("body nodes persist references and assemble only the relevant episode and a
     expect(requestText(input)).toContain("本集独有剧情1");
     expect(requestText(input)).toContain("本集独有剧情2");
     expect(requestText(input)).not.toContain("本集独有剧情4");
-    expect(requestText(input)).toContain("声音低沉");
+    expect(requestText(input)).toContain("CHR-0001");
+    expect(requestText(input)).not.toContain("声音低沉");
     expect(requestText(input)).not.toContain("靠南入口");
     f.outline.metadata!.content += "\n改稿";
     expect(() => workflowBodyTaskInput(body, bodies.nodes)).toThrow("来源已变化");
+});
+
+test("each selected episode outline can create independent body versions after an earlier version is deleted", () => {
+    const f = fixture();
+    const story = f.plan.docs.find(node => node.metadata?.shortDrama?.planSection === "story")!;
+    story.metadata!.content += "\n制作方案后续补充，不要求先重做已选集纲";
+
+    const first = createWorkflowDocuments(f.bodyRequest, f.nodes, f.connections, { x: 0, y: 0 });
+    const second = createWorkflowDocuments(f.bodyRequest, first.nodes, first.connections, { x: 0, y: 0 });
+    expect(first.created[0].metadata!.shortDrama!.version).toBe(1);
+    expect(second.created[0].metadata!.shortDrama!.version).toBe(2);
+
+    const afterDelete = second.nodes.filter(node => node.id !== second.created[0].id);
+    const afterDeleteConnections = second.connections.filter(edge => edge.fromNodeId !== second.created[0].id && edge.toNodeId !== second.created[0].id);
+    const regenerated = createWorkflowDocuments(f.bodyRequest, afterDelete, afterDeleteConnections, { x: 0, y: 0 });
+
+    expect(regenerated.created[0].metadata!.shortDrama!.version).toBe(2);
+    expect(requestText(workflowBodyTaskInput(regenerated.created[0], regenerated.nodes, regenerated.connections))).toContain("本集独有剧情1");
 });
 
 test("body retry restores a missing canonical source edge before validating and building its prompt", () => {
@@ -95,7 +114,7 @@ test("60 planned bodies stay small even when the full-series outline is large", 
     expect(new TextEncoder().encode(JSON.stringify(result.nodes)).length).toBeLessThan(2 * 1024 * 1024);
 });
 
-test("current outline codes override planned appearances, keep voice and drop image prompts", () => {
+test("current outline codes override planned appearances without embedding full asset details", () => {
     const f = fixture();
     f.outline.metadata!.content = "## 第 1 集\nCHR-0001 SCN-0001\n## 第 2 集\n第二集\n## 第 3 集\n第三集\n## 第 4 集\n第四集";
     const character = f.plan.docs.find(node => node.metadata?.shortDrama?.planAsset?.kind === "character")!;
@@ -104,13 +123,15 @@ test("current outline codes override planned appearances, keep voice and drop im
     f.outline.metadata!.shortDrama!.sourceSignatures[character.id] = workflowSignature(character);
     const result = createWorkflowDocuments(f.bodyRequest, f.nodes, f.connections, { x: 0, y: 0 });
     const input = workflowBodyTaskInput(result.created[0], result.nodes, result.connections);
-    expect(requestText(input)).toContain("低沉而克制");
-    expect(requestText(input)).toContain("对母亲始终礼貌");
-    expect(requestText(input)).toContain("靠南入口");
+    expect(requestText(input)).toContain("CHR-0001");
+    expect(requestText(input)).not.toContain("低沉而克制");
+    expect(requestText(input)).not.toContain("对母亲始终礼貌");
+    expect(requestText(input)).toContain("SCN-0001");
+    expect(requestText(input)).not.toContain("靠南入口");
     expect(requestText(input)).not.toContain("三视图长篇参数");
 });
 
-test("body references remove production-only chapters while retaining voice, causal rules and user edits", () => {
+test("body references use compact asset indexes instead of embedding detailed asset archives", () => {
     const f = fixture();
     const character = f.plan.docs.find(node => node.metadata?.shortDrama?.planAsset?.kind === "character")!;
     character.metadata!.content = [
@@ -126,9 +147,20 @@ test("body references remove production-only chapters while retaining voice, cau
     ].join("\n");
     const records = bodySourceRecords([f.outline, character], 1, "");
     const text = records.find(record => record.id === character.id)!.content;
-    for (const fact of ["保留身份与动机", "声音低沉 @AUD-0001", "保留沙哑口吻", "保留口音和措辞", "保留能力代价与关系边界", "保留最新手工事实", "代码示例不是新章节"]) expect(text).toContain(fact);
+    expect(text).toContain("CHR-");
+    for (const detail of ["保留身份与动机", "声音低沉", "保留沙哑口吻", "保留口音和措辞", "保留能力代价与关系边界", "保留最新手工事实"]) expect(text).not.toContain(detail);
     for (const production of ["选择论证与全季出场排期", "不需要录音频段参数", "技术细节", "不需要三视图参数"]) expect(text).not.toContain(production);
     expect(records.find(record => record.id === character.id)?.assetIdentity).toEqual(character.metadata!.shortDrama!.assetIdentity);
+});
+
+test("body context includes a variant detail only when its version code is explicitly referenced", () => {
+    const f = fixture();
+    const character = f.plan.docs.find(node => node.metadata?.shortDrama?.planAsset?.kind === "character")!;
+    nodeWorkflow(character)!.assetProfile = { aliases: [], occurrences: [], variants: [{ code: "CHR-0001-V01", name: "年幼阶段", description: "明显低龄的面部与体态" }], sounds: [], conflicts: [], references: [], indexContent: "" };
+    f.outline.metadata!.content = "## 第 1 集\nCHR-0001-V01 出现在旧照片中";
+    const records = bodySourceRecords([f.outline, character], 1, "");
+    const text = records.find(record => record.id === character.id)!.content;
+    expect(text).toContain("明显低龄的面部与体态");
 });
 
 test("retry entry assembles reference-only body requests and keeps the existing task identity", async () => {

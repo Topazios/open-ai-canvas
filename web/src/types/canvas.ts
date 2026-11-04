@@ -209,6 +209,7 @@ export type CanvasGenerationBatchItem = {
     rowId: string;
     nodeId: string;
     targetKind?: "node" | "storyboard_video";
+    replaceExistingResult?: boolean;
     taskId?: string;
     status: CanvasGenerationBatchItemStatus;
     retryCount: number;

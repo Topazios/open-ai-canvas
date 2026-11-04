@@ -62,6 +62,8 @@ export function groupMemberState(node: CanvasNodeData, snapshot?: GroupSessionSn
         return "排队中";
     }
     if (snapshot?.kind === "task" && executionTaskWarning(snapshot.detail.task.status, snapshot.detail.task.diagnostic)) return "内容待处理";
+    if (snapshot?.kind === "agent" && snapshot.run.production?.workKind === "storyboard" && snapshot.run.production.validated &&
+        snapshot.run.production.totalPages > 0 && snapshot.run.production.processedPages >= snapshot.run.production.totalPages) return "已完成";
     const status = snapshot?.kind === "task" ? snapshot.detail.task.status : snapshot?.kind === "agent" ? snapshot.run.status : node.metadata?.taskStatus;
     if (!snapshot && !node.metadata?.shortDrama?.productionAgent?.runId && !["queued", "running", "succeeded", "completed", "cancelled"].includes(status || "") && canvasNodeWarning(node.metadata)) return "内容待处理";
     if (status === "succeeded" || status === "completed") return "已完成";

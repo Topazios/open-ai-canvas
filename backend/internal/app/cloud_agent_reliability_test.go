@@ -304,6 +304,67 @@ func TestCloudAgentReliabilityCancelReplayInterrupted(t *testing.T) {
 	}
 }
 
+func TestCloudAgentCancelStopsEveryTrackedAndParallelTask(t *testing.T) {
+	s, db, root := reliableAgentRoot(t)
+	queued := model.Task{ID: "cancel-queued-child", UserID: "user", ProjectID: "agent-canvas", AgentRunID: root.ID, Status: model.TaskStatusQueued, Operation: cloudAgentStepOperation}
+	running := model.Task{ID: "cancel-running-child", UserID: "user", ProjectID: "agent-canvas", AgentRunID: root.ID, Status: model.TaskStatusRunning, Operation: cloudAgentStepOperation}
+	parallel := model.Task{ID: "cancel-parallel-child", UserID: "user", ProjectID: "agent-canvas", AgentRunID: root.ID, Status: model.TaskStatusQueued, Operation: cloudAgentStepOperation}
+	for _, task := range []model.Task{queued, running, parallel} {
+		if err := db.Create(&task).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var taskCountBefore int64
+	if err := db.Model(&model.Task{}).Count(&taskCountBefore).Error; err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.repo.CloudAgent("user", root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := cloudAgentDecode(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.ActiveTaskID = ""
+	state.Request.Production = &ProductionAgentRequest{TargetNodeID: "production-node"}
+	state.Request.PermissionMode = "auto"
+	state.TaskIDs = append(state.TaskIDs, queued.ID, running.ID, parallel.ID)
+	state.ProductionParallel = map[string]productionParallelWork{
+		"queued":  {Key: "queued", Name: "排队中的任务"},
+		"running": {Key: "running", Name: "执行中的任务", TaskID: parallel.ID},
+		"pending": {Key: "pending", Name: "尚未派发的任务"},
+	}
+	if err = s.repo.MutateCloudAgent("user", root.ID, run.Revision, func(current *model.CloudAgentExecution, _ *repository.Repository) error {
+		return cloudAgentSave(current, &state)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.CancelCloudAgent(context.Background(), "user", root.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{queued.ID, running.ID, parallel.ID} {
+		got, readErr := s.repo.TaskForUser("user", id)
+		if readErr != nil || got.Status != model.TaskStatusCancelled {
+			t.Fatalf("child task %s was not cancelled: task=%+v err=%v", id, got, readErr)
+		}
+	}
+	latest, err := s.repo.CloudAgent("user", root.ID)
+	if err != nil || latest.Status != "cancelled" || latest.CleanupPending {
+		t.Fatalf("run cancellation did not settle: run=%+v err=%v", latest, err)
+	}
+	if err = s.advanceCloudAgentByID("user", root.ID); err != nil {
+		t.Fatal(err)
+	}
+	var taskCountAfter int64
+	if err = db.Model(&model.Task{}).Count(&taskCountAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+	if taskCountAfter != taskCountBefore {
+		t.Fatal("pending parallel work was dispatched after cancellation")
+	}
+}
+
 func TestCloudAgentReliabilityFailedContinuation(t *testing.T) {
 	s, db, root := reliableAgentRoot(t)
 	if err := db.Model(&model.Task{}).Where("id = ?", root.ID).Updates(map[string]any{"status": model.TaskStatusFailed, "error": "mock failure"}).Error; err != nil {

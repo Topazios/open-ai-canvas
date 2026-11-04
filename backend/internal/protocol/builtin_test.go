@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -348,6 +349,34 @@ func TestAgnesVideo25UsesRequestedReferenceOperationForSingleImage(t *testing.T)
 	body := spec.Body.(map[string]any)
 	if body["mode"] != "reference" || body["images"] == nil || body["first_frame"] != nil {
 		t.Fatalf("Agnes reference body = %#v", body)
+	}
+}
+
+func TestAgnesVideo25PreservesFramesAndAssetReferencesTogether(t *testing.T) {
+	adapter, _ := Builtins().Get("agnes-video")
+	spec, err := adapter.BuildCreate(context.Background(), RequestContext{Request: GenerationRequest{
+		Model: "agnes-video-2.5", Prompt: "人物从门口走向桌边", Duration: 10, Resolution: "960P", AspectRatio: "16:9",
+		Operation: "image_to_video",
+		Images: []MediaReference{
+			{URL: "https://cdn.example/start.png", Role: "first_frame", Order: 1},
+			{URL: "https://cdn.example/end.png", Role: "last_frame", Order: 2},
+			{URL: "https://cdn.example/character.png", Role: "reference_image", Order: 3},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := spec.Body.(map[string]any)
+	if body["mode"] != "reference" || body["first_frame"] != nil || body["last_frame"] != nil {
+		t.Fatalf("mixed request mode = %#v", body)
+	}
+	images, _ := body["images"].([]string)
+	want := []string{"https://cdn.example/start.png", "https://cdn.example/end.png", "https://cdn.example/character.png"}
+	if !reflect.DeepEqual(images, want) {
+		t.Fatalf("images = %#v, want %#v", images, want)
+	}
+	if !strings.Contains(body["prompt"].(string), "<Picture 1> 是镜头首帧") || !strings.Contains(body["prompt"].(string), "<Picture 2> 是镜头尾帧") || !strings.Contains(body["prompt"].(string), "<Picture 3> 是人物、场景或道具资产参考") {
+		t.Fatalf("prompt does not preserve mixed image roles: %q", body["prompt"])
 	}
 }
 

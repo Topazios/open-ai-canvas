@@ -11,21 +11,27 @@ test("body runtime comes from project settings and supports legacy minute ranges
     for (const value of ["", "wrong", "2-1", "0", "1-10000"]) expect(() => bodyWritingSpec(value)).toThrow("时长无效");
 });
 
-test("body contract separates actual drama from outline length and technical padding", () => {
+test("body contract asks for complete novel prose and leaves filming detail to storyboards", () => {
     const prompt = bodyWritingPrompt(bodyWritingSpec("1-2"));
     expect(prompt).toContain("60–120 秒");
     expect(prompt).toContain("约 90 秒");
     expect(prompt).toContain("675–1050 字");
-    expect(prompt).toContain("节拍时长：N秒");
+    expect(prompt).toContain("小说正文写作要求");
+    expect(prompt).toContain("完整小说正文");
+    expect(prompt).toContain("神态、语气、身体反应、心理变化");
+    expect(prompt).toContain("道具的拿取、使用、交接、放置、损坏和前后状态");
+    expect(prompt).toContain("由后续场次与分镜阶段完成");
+    expect(prompt).toContain("不写镜号、景别、机位、构图参数");
+    expect(prompt).not.toContain("节拍时长：N秒");
     expect(prompt).toContain("集纲的150–250字限制不适用于正文");
-    expect(prompt).toContain("仍需实测");
-    expect(prompt).toContain("先写完整行动与交锋");
-    expect(prompt).toContain("不设单段最短秒数");
+    expect(prompt).toContain("下游实测");
+    expect(prompt).toContain("关键对白写完整交锋过程");
+    expect(prompt).toContain("不将每个动作切成镜头式短句");
     expect(prompt).not.toContain("通常每段5–20秒");
-    expect(prompt).toContain("不消耗额外表演时间");
     expect(prompt).toContain("局面变化");
-    expect(bodyWritingRequirement).toContain("不是剧情摘要或分镜表");
-    expect(bodyWritingRequirement).toContain("交锋过程");
+    expect(bodyWritingRequirement).toContain("完整、连贯、细节充分的小说式正文");
+    expect(bodyWritingRequirement).toContain("不是剧情摘要、场次剧本或分镜表");
+    expect(bodyWritingRequirement).toContain("真实交锋");
     const settings = { ...defaultShortDramaSettings(), language: DramaLanguage.English, duration: DramaDuration.Short };
     expect(bodyWritingPrompt(bodyWritingSpec("1", settings))).toContain("270–420 词");
 });
