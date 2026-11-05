@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Tooltip } from "antd";
-import { ChevronRight, Play, RefreshCw, SlidersHorizontal, Square } from "lucide-react";
+import { Play, RefreshCw, Square } from "lucide-react";
 import { queryTaskExecutionDetails, type GenerationTask, type TaskExecutionDetails } from "@/services/api/task-center";
 import { generationTaskStageLabel, generationTaskStatusLabel, canCancelGenerationTask } from "@/lib/generation-task-display";
 import { taskElapsed, taskExecutionRows } from "@/lib/task-execution-journal";
 import { modelDisplayName, useEffectiveConfig } from "@/stores/use-config-store";
 import type { CanvasNodeData } from "@/types/canvas";
 import { CanvasExecutionJournal } from "./canvas-execution-journal";
+import { CanvasRunParameters } from "./canvas-run-parameters";
 
 export function CanvasGenerationTaskDetails({ node, onRetry, onCancel }: {
     node: CanvasNodeData; onRetry: (node: CanvasNodeData) => void; onCancel: (task: GenerationTask) => void;
@@ -62,12 +63,14 @@ export function CanvasGenerationTaskDetails({ node, onRetry, onCancel }: {
             {task && canCancelGenerationTask(task) && <Button icon={<Square size={14} />} onClick={() => onCancel(task)}>取消任务</Button>}
             <Tooltip title="刷新执行记录"><Button aria-label="刷新执行记录" loading={loading} icon={<RefreshCw size={14} />} onClick={() => setRefresh((value) => value+1)} /></Tooltip>
         </div>
-        <details className="production-agent-parameters"><summary><SlidersHorizontal size={14} /><span>运行参数</span><ChevronRight size={14} className="production-agent-chevron" /></summary><dl>
-            <div><dt>模型</dt><dd>{modelDisplayName(config,task?.model || node.metadata?.model || "") || "未记录"}</dd></div>
-            <div><dt>任务 ID</dt><dd>{id}</dd></div>
-            {Object.entries(current?.parameters || {}).map(([key,value]) => <div key={key}><dt>{names[key] || key}</dt><dd>{value}</dd></div>)}
-            <div className="production-agent-prompt"><dt>提示词</dt><dd>{task?.prompt || node.metadata?.prompt || "未记录"}</dd></div>
-        </dl></details>
+        <CanvasRunParameters
+            items={[
+                { label: "模型", value: modelDisplayName(config,task?.model || node.metadata?.model || "") || "未记录" },
+                { label: "任务 ID", value: id },
+                ...Object.entries(current?.parameters || {}).map(([key,value]) => ({ label: names[key] || key, value })),
+            ]}
+            prompt={task?.prompt || node.metadata?.prompt || ""}
+        />
         <CanvasExecutionJournal rows={rows} order={order} onOrder={setOrder} empty={error ? "记录暂时不可用，可刷新重试" : loading ? "正在读取执行记录" : "尚无执行记录"}>
             {current?.truncated && <p className="production-agent-note">当前展示最近的调用和关键事件，较早记录未全部展开。</p>}
         </CanvasExecutionJournal>

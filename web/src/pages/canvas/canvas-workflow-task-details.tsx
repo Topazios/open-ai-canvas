@@ -2,6 +2,7 @@ import { App, Button } from "antd";
 import { Copy, Info, Play } from "lucide-react";
 import { nodeWorkflow } from "@/lib/canvas/canvas-short-drama-workflow";
 import type { CanvasNodeData } from "@/types/canvas";
+import { CanvasRunParameters } from "./canvas-run-parameters";
 
 export function CanvasWorkflowTaskDetails({ node, nodes, submitting, onResume, onOpenTask }: {
     node: CanvasNodeData; nodes: CanvasNodeData[]; submitting: boolean;
@@ -32,7 +33,7 @@ export function CanvasWorkflowTaskDetails({ node, nodes, submitting, onResume, o
                 <div className="canvas-node-inspector-section-heading" style={{ flexWrap: "wrap" }}><span style={{ overflowWrap: "anywhere" }}>{member.title}</span><em>{state}</em></div>
                 {metadata?.taskStage && metadata.taskStage !== state ? <p>{metadata.taskStage}</p> : null}
                 {metadata?.errorDetails ? <p role="alert" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{metadata.errorDetails}</p> : null}
-                {metadata?.prompt ? <details className="production-agent-parameters"><summary>运行参数</summary><dl><div><dt>模型</dt><dd>{metadata.model || "未记录"}</dd></div><div><dt>推理强度</dt><dd>{metadata.reasoningEffort || "medium"}</dd></div><div className="production-agent-prompt"><dt>提示词</dt><dd style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{metadata.prompt}</dd></div></dl></details> : null}
+                {metadata?.prompt ? <CanvasRunParameters items={[{ label: "模型", value: metadata.model || "未记录" }, { label: "推理强度", value: metadata.reasoningEffort || "medium" }, { label: "任务 ID", value: metadata.taskId }]} prompt={metadata.prompt} /> : null}
                 {metadata?.taskId || workflow?.productionAgent?.runId ? <Button size="small" icon={<Info size={14} />} onClick={() => onOpenTask(member)}>执行记录</Button> : planned ? <p className="canvas-node-inspector-help">节点已保留。保存到云端后继续提交，当前尚未调用模型。</p> : null}
             </section>;
         })}

@@ -178,6 +178,9 @@ func (s *Service) productionAgentProgress(userID, runID string, state *cloudAgen
 			if view.EpisodeTaskStatus == "" {
 				view.EpisodeTaskStatus = "preparing"
 			}
+			if state.ActiveTaskID == "" && productionRuntimeQuietHold(state) {
+				view.EpisodeTaskStatus = "error"
+			}
 			view.PhaseLabel = "规划本集场次"
 			if len(m.Storyboard.Scenes) > 0 {
 				view.PhaseLabel = "规划镜头列表"

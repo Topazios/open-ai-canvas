@@ -259,9 +259,9 @@ test("a body whose inline diagnosis failed can still feed storyboard generation"
     nodeWorkflow(f.audit)!.screenplayAudit!.rawResult = "模型暂时没有返回合法报告";
     const request = { ...f.request, step: S.Shots, sourceNodeIds: [f.audit.id] };
     expect(workflowGenerationSources(request, f.nodes).some(node => node.id === f.audit.id)).toBe(true);
-    // 没有诊断绑定的正文失败仍然不能作为来源。
+    // 分镜只依赖保存的正文，不依赖失败是否来自诊断。
     delete nodeWorkflow(f.audit)!.screenplayAudit;
-    expect(() => workflowGenerationSources(request, f.nodes)).toThrow("请先完成");
+    expect(workflowGenerationSources(request, f.nodes).some(node => node.id === f.audit.id)).toBe(true);
 });
 
 test("a diagnosis remains valid during its own loading submission", () => {

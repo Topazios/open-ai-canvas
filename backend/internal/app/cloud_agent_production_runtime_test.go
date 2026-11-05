@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -353,6 +354,90 @@ func TestProductionRuntimeUnknownToolBlocksOnceAndResumes(t *testing.T) {
 				t.Fatalf("resumed model boundary failed: %v", got.err)
 			}
 		})
+	}
+}
+
+func TestProductionRuntimeContinuationRepairCheckpointIsValid(t *testing.T) {
+	s, _, run := planFixture(t)
+	err := s.setProductionRuntimeContinuation("user", run.ID, "", "checkpoint_recovery", errors.New("retry the production step"), false)
+	var continuation *productionRuntimeContinueError
+	if !errors.As(err, &continuation) {
+		t.Fatalf("continuation error was not returned: %v", err)
+	}
+	stored, state := productionRuntimeState(t, s, run.ID)
+	if stored.Status != "running" {
+		t.Fatalf("continuation should keep the production job running: %s", stored.Status)
+	}
+	repair, ok := state.ToolRepairs[productionRuntimeContinuationRepairKey]
+	if !ok || repair.Attempt != 1 || repair.GroupID == "" || repair.ProductionContextRevision != productionRuntimeContextRevision {
+		t.Fatalf("continuation repair identity was not persisted: %+v", repair)
+	}
+	if err := validateCloudAgentRuntime(stored, &state); err != nil {
+		t.Fatalf("saved continuation checkpoint is not reusable: %v", err)
+	}
+}
+
+func TestProductionRuntimeContextUpgradeReleasesOldQuietContinuation(t *testing.T) {
+	state := &cloudAgentRuntime{
+		ProductionProgressStep: 7,
+		ToolRepairs: map[string]cloudAgentToolRepair{
+			productionRuntimeContinuationRepairKey: {
+				Attempt: 2, ProductionProgressStep: 7, ProductionContextRevision: productionRuntimeContextRevision - 1,
+			},
+		},
+	}
+	if productionRuntimeQuietHold(state) {
+		t.Fatal("an old quiet hold should receive one retry after a context upgrade")
+	}
+	repair := state.ToolRepairs[productionRuntimeContinuationRepairKey]
+	repair.ProductionContextRevision = productionRuntimeContextRevision
+	state.ToolRepairs[productionRuntimeContinuationRepairKey] = repair
+	if !productionRuntimeQuietHold(state) {
+		t.Fatal("the retry allowance should remain bounded after the current context has been tried")
+	}
+}
+
+func TestProductionRuntimeToolRepairUsesFullAllowance(t *testing.T) {
+	state := &cloudAgentRuntime{ProductionProgressStep: 7, ToolRepairs: map[string]cloudAgentToolRepair{
+		"production_storyboard_layout": {Attempt: cloudAgentToolAttemptLimit - 1, ProductionProgressStep: 7},
+	}}
+	if productionRuntimeQuietHold(state) {
+		t.Fatal("layout correction was stopped before the last allowed attempt")
+	}
+	repair := state.ToolRepairs["production_storyboard_layout"]
+	repair.Attempt++
+	state.ToolRepairs["production_storyboard_layout"] = repair
+	if !productionRuntimeQuietHold(state) {
+		t.Fatal("exhausted corrections must remain bounded")
+	}
+}
+
+func TestStoryboardRuntimeExhaustionStopsWithVisibleReason(t *testing.T) {
+	s, _, run := storyboardFixture(t)
+	for i := 0; i < 2; i++ {
+		err := s.setProductionRuntimeContinuation("user", run.ID, "", "production_no_progress", cloudAgentFieldError("toolCalls", "missing_output", "episode budget exceeds the configured limit"), false)
+		var continuation *productionRuntimeContinueError
+		if !errors.As(err, &continuation) {
+			t.Fatal(err)
+		}
+	}
+	stored, state := productionRuntimeState(t, s, run.ID)
+	if stored.Status != "failed" || !strings.Contains(stored.FailureMessage, "episode budget exceeds") || state.ActiveTaskID != "" {
+		t.Fatal("exhausted storyboard remained falsely running", stored.Status, stored.FailureMessage)
+	}
+	warning := generationRunWarning(s.repo, &state, run.ID)
+	if warning == nil || warning["message"] == "" {
+		t.Fatal("missing actionable stop reason")
+	}
+	if err := s.ControlProductionAgent("user", run.ID, "resume"); err != nil {
+		t.Fatal(err)
+	}
+	stored, state = productionRuntimeState(t, s, run.ID)
+	if stored.Status != "running" || productionRuntimeQuietHold(&state) {
+		t.Fatal("retry did not clear the exhausted checkpoint")
+	}
+	if generationRunWarning(s.repo, &state, run.ID) != nil {
+		t.Fatal("retry retained the warning from an exhausted attempt")
 	}
 }
 

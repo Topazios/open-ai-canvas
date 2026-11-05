@@ -75,6 +75,9 @@ func generationRunWarning(repo *repository.Repository, state *cloudAgentRuntime,
 		if event.Type == "run_completed" || event.Type == "run_cancelled" {
 			return nil
 		}
+		if event.Type == "production_control" && event.Payload["action"] == "resume" {
+			return nil
+		}
 		if event.Type == "production_control" && event.Payload["action"] == "needs_revision" {
 			warning := map[string]any{}
 			for key, value := range event.Payload {

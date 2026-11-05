@@ -2042,6 +2042,8 @@ function InfiniteCanvasPage() {
         projectLoaded,
         nodes,
         nodesRef,
+        connectionsRef,
+        setConnections,
         setNodes,
         handleGenerateNode,
         persistBatches: persistGenerationBatches,
@@ -2568,7 +2570,7 @@ function InfiniteCanvasPage() {
                 if (contentNode.metadata?.shortDrama?.step === ShortDramaStep.Shots) return <CanvasEpisodeStoryboard
                     node={contentNode} nodes={scope.nodes}
                     progress={productionAgentRuns.runs.find(run => run.id === contentNode.metadata?.shortDrama?.productionAgent?.runId && run.production?.targetNodeId === contentNode.id)?.production}
-                    onGenerate={(ids) => createAndGenerateScriptVideos(contentNode.id, ids)}
+                    onGenerate={(ids, regenerate) => createAndGenerateScriptVideos(contentNode.id, ids, regenerate)}
                     onPause={() => pauseGenerationBatches(contentNode.id)}
                     onRetry={(video) => {
                         const row = contentNode.metadata?.storyboard?.rows.find(row => row.videoNodeId === video.id);

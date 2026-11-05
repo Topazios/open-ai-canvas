@@ -179,11 +179,19 @@ func TestStoryboardEpisodeReviewCanRebudgetOnlyReopenedScenes(t *testing.T) {
 	canonical := canonicalAgentRequest{Tools: storyboardTools()}
 	productionConstrainStoryboard(ctx, &canonical)
 	productionRuntimeAssertTools(t, canonical.Tools, []string{"production_storyboard_plan", "production_storyboard_layout"})
+	_, runtime := productionRuntimeState(t, s, runID)
+	runtime.ToolRepairs = map[string]cloudAgentToolRepair{"production_storyboard_layout": {
+		Attempt: 1, ProductionProgressStep: runtime.ProductionProgressStep, ValidationMessage: "budget mismatch",
+	}}
+	canonical = canonicalAgentRequest{Tools: storyboardTools()}
+	if _, err := s.correctProductionRuntimeCycle("user", runID, &runtime, "checkpoint", ctx, &canonical); err != nil {
+		t.Fatal(err)
+	}
+	productionConstrainStoryboard(ctx, &canonical)
+	productionRuntimeAssertTools(t, canonical.Tools, []string{"production_storyboard_plan", "production_storyboard_layout"})
 	m, _, _ := storyboardState(t, s, runID)
 	plans := append([]productionScene{}, m.Storyboard.Scenes...)
-	plans[0].Duration, plans[1].Duration = 11, 22
-	productionCall(t, s, runID, "production_storyboard_plan", storyboardPlanArgs(plans), true)
-	plans[0].Duration = 10
+	plans[1].Duration = 22
 	productionCall(t, s, runID, "production_storyboard_plan", storyboardPlanArgs(plans), false)
 	m, _, _ = storyboardState(t, s, runID)
 	if !m.Storyboard.Scenes[0].Complete || len(m.Storyboard.Scenes[0].Shots) != 1 || m.Storyboard.Scenes[1].Duration != 22 || len(m.Storyboard.Scenes[1].PreviousShots) != 2 {

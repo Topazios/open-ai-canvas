@@ -20,12 +20,11 @@ export function storyboardFramePrerequisite(node: CanvasNodeData, nodes: CanvasN
     if (!frame) return { ready: false, reason: "画面已不属于当前分镜版本，请从分镜列表重新生成" };
     if (frame.kind === StoryboardFrameKind.Start) return { ready: true, reason: "" };
     const start = row.frames?.find(item => item.kind === StoryboardFrameKind.Start);
-    if (!start || !storyboardFrameIsCurrent(row, start, nodes)) return { ready: false, waiting: true, reason: "等待当前镜头首帧，先生成或恢复首尾帧" };
+    // A finished start is an optional reference, never a prerequisite or an
+    // implicit extra generation request for another selected frame.
+    if (!start || !storyboardFrameIsCurrent(row, start, nodes)) return { ready: true, reason: "" };
     const reference = nodes.find(item => item.id === start.imageNodeId && item.type === CanvasNodeType.Image);
-    if (!reference || reference.id === node.id) return { ready: false, waiting: true, reason: "首帧不存在，请先恢复当前镜头首帧" };
-    if (reference.metadata?.taskStatus === "cancelled") return { ready: false, waiting: true, reason: "首帧已暂停，请先继续首帧" };
-    if (reference.metadata?.status === "error" || reference.metadata?.taskStatus === "failed") return { ready: false, waiting: true, reason: "首帧生成失败，请先重试首帧" };
-    if (!(reference.metadata?.content || reference.metadata?.storageKey) || reference.metadata.status === "loading") return { ready: false, waiting: true, reason: "等待首帧完成后保持画面一致性" };
+    if (!reference || reference.id === node.id || reference.metadata?.taskStatus === "cancelled" || reference.metadata?.status === "error" || reference.metadata?.taskStatus === "failed" || !(reference.metadata?.content || reference.metadata?.storageKey) || reference.metadata.status === "loading") return { ready: true, reason: "" };
     return { ready: true, reason: "", reference };
 }
 

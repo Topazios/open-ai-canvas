@@ -210,6 +210,12 @@ export type CanvasGenerationBatchItem = {
     nodeId: string;
     targetKind?: "node" | "storyboard_video";
     replaceExistingResult?: boolean;
+    frameGeneration?: {
+        sourcePromptHash: string;
+        regenerate?: boolean;
+        model: string;
+        settings: { size: string; quality: string; transparentBackground: string };
+    };
     taskId?: string;
     status: CanvasGenerationBatchItemStatus;
     retryCount: number;

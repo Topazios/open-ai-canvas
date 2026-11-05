@@ -394,7 +394,7 @@ export function useCanvasStoryboard({
         if (enqueueGenerationBatch(nodeId, "storyboard_image", targets.map((target) => ({ rowId: target.row.id, nodeId: target.node.id })))) message.success("分镜图已加入生成队列");
     }, [effectiveConfig, enqueueGenerationBatch, ensureScriptImageNodes, confirmGenerationSubmission, isAiConfigReady, message, nodesRef]);
 
-    const createAndGenerateScriptVideos = useCallback(async (nodeId: string, rowIds?: string[]) => {
+    const createAndGenerateScriptVideos = useCallback(async (nodeId: string, rowIds?: string[], regenerate = false) => {
         if (storyboardRequests.current.has(nodeId)) return;
         const signal = storyboardLifetime.current.signal;
         const scope = getActiveUserScope();
@@ -411,10 +411,11 @@ export function useCanvasStoryboard({
         const describedRows = rows.filter(storyboardRowIsReady);
         const activeRowIds = scriptNode ? activeGenerationBatchRowIds(scriptNode, "storyboard_video") : new Set<string>();
         const targetRows = describedRows.filter((row) => {
-            return !row.videoGeneration?.content && !row.videoGeneration?.storageKey && !["queued", "running"].includes(row.videoGeneration?.taskStatus || "") && !activeRowIds.has(row.id);
+            const hasResult = Boolean(row.videoGeneration?.content || row.videoGeneration?.storageKey);
+            return (!hasResult || regenerate) && !["queued", "running"].includes(row.videoGeneration?.taskStatus || "") && !activeRowIds.has(row.id);
         });
         if (!targetRows.length) {
-            if (describedRows.some((row) => row.videoGeneration?.content || row.videoGeneration?.storageKey)) message.info("镜头视频已存在");
+            if (describedRows.some((row) => row.videoGeneration?.content || row.videoGeneration?.storageKey)) message.info("所选镜头视频已存在；选择镜头后可重新生成");
             else message.warning("请先补充镜头画面描述");
             return;
         }

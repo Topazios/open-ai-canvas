@@ -20,7 +20,7 @@ plan：完整阅读当前集带编号正文，按真实场次或连续动作段�
 layout：一次提交所有未完成场次的轻量镜头清单，确定总数和列表占位。每镜包含稳定sceneId-001编号、start/end/duration/goal/entry/exit/camera/dependsOn，覆盖正文且符合预算。保留已完成镜头的编号、范围和时长。入出状态及同场共同构图基准明确，依赖只能指向前序镜头。此阶段不写长对白或完整提示词。
 scene：同一集仅一个持久执行通道，连续补全plannedShots中的1至8镜，一次调用production_storyboard_submit。offset、expectedHash、编号、范围和时长直接沿用检查点，不根据已存数量猜测，不覆盖历史乱序完成的槽位；本场全部镜头补全才complete=true。充分利用一次提交处理当前批次，不自行改成逐镜expand或反复读取已有内容。长场可分多批持续保存。
 每镜独立可制作，包含画面起落状态与动作全过程、景别机位运动、逐字对白、声音、连续性；不得用概述代替剧情和对白。连续动作、反应与对白可以组成同一镜头，切换主体、空间或动作转折才切镜。承接previousShot实际表演、服化、光线、轴线、站位与物件状态，并照顾nextPlannedShot的入口。assetIds从上下文availableAssets清单里选本镜实际使用的CHR-/SCN-/PRP-/AUD-（含-V状态号）编码，必须含本镜所在场景的SCN编码，同场次保持一致，清单没有则为空。系统按编号解析素材，不另遍历资产库或新建绑定任务。
-已有错误时：未完成场用production_storyboard_reset并说明具体问题，保留旧稿；已完成场用review指定repairSceneIds。canRebudget=true且返修要求改变场次预算时，先production_storyboard_plan保存完整新预算并保留场次ID和原文范围，再layout；不能直接提交与现有预算不符的镜头清单。只返修真正有问题的场次，不因固定措辞或格式标题反复重做。
+已有错误时：未完成场用production_storyboard_reset并说明具体问题，保留旧稿；已完成场用review指定repairSceneIds。canRebudget=true且返修要求改变场次预算时，先production_storyboard_plan保存完整新预算并保留场次ID和原文范围，再layout；不能直接提交与现有预算不符的镜头清单。若整集时长冲突无法仅靠返修场次解决，直接用plan统一重分配所有必要场次预算，无需再次review或用户许可；历史审查记录的局部返修范围不限制本次必要的整集重排。变更预算的场次保留旧镜头为PreviousShots占位并仅重做这些场次，绝不丢弃旧稿。只返修真正有问题的场次，不因固定措辞或格式标题反复重做。
 review：已直接提供当前集完整正文、全部镜头及简报，在一次审查中核对剧情、逐字对白、动作可执行性、时长、原文覆盖、空间构图与跨镜连续性。无需逐场重新读取。通过时提交当前hash、空repairSceneIds与具体结论；有真实矛盾时只返修对应场次。不伪称成片已经人工验收。
 任务以检查点与内容校验完成为结束条件，真实调用正常计费。来源变化停止混用，目标删除不可复活。失败只修当前批次，保留已完成结果。
 ` + storyboardCompositionPolicy + `

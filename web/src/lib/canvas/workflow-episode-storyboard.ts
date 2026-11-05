@@ -29,10 +29,15 @@ export function storyboardFrameHash(row: StoryboardRow) {
 export function storyboardReferenceSignature(node: CanvasNodeData) {
     return assetContentSignature(JSON.stringify([node.type, node.metadata?.storageKey || node.metadata?.content]));
 }
+export function storyboardSceneId(row: StoryboardRow) {
+    return row.sceneId || row.shotCode?.match(/(?:^|[-_])(S\d+)(?:[-_]|$)/i)?.[1];
+}
 export function storyboardPreviousFrameSource(row: StoryboardRow, rows: StoryboardRow[]) {
     const previous = rows[rows.findIndex(item => item.id === row.id) - 1];
     if (!previous || row.startFrameMode === StoryboardStartFrameMode.Independent) return undefined;
     if (row.startFrameMode === StoryboardStartFrameMode.ReusePrevious) return previous;
+    const previousScene = storyboardSceneId(previous), nextScene = storyboardSceneId(row);
+    if (previousScene && nextScene && previousScene !== nextScene) return undefined;
     const scenes = (item: StoryboardRow) => [...new Set([...(item.assetKeys || []), ...episodeStoryboardCodes(item.videoMotionPrompt || item.plotDescription)].filter(code => code.startsWith("SCN-")).map(productionAssetBaseCode))];
     const before = scenes(previous), after = scenes(row);
     if (before.length && after.length && !before.some(code => after.includes(code))) return undefined;
@@ -44,10 +49,9 @@ export function storyboardPreviousFrameSource(row: StoryboardRow, rows: Storyboa
     };
     const previousStates = states(previous), nextStates = states(row);
     if ([...nextStates].some(([base, code]) => previousStates.has(base) && previousStates.get(base) !== code)) return undefined;
-    // A cut keeps the world and identity, but cannot reuse the exact pixels
-    // of an incompatible camera angle or shot size.
-    if (previous.camera?.trim() && row.camera?.trim() && previous.camera.trim() !== row.camera.trim()) return undefined;
-    if (previous.shotSize && row.shotSize && previous.shotSize !== row.shotSize) return undefined;
+    // A shot boundary is one shared visual state within a continuous scene.
+    // The next shot's camera/framing can move away from that shared state after
+    // its opening instant; only explicit continuity/scene boundaries split it.
     const continuity = (previous.continuityOut || "").replace(/(?:无需|无须|不需要|没有|无|不)(?:转场|闪回|时间跳跃|黑场|淡入|淡出|叠化)/g, "");
     if (/(?:转场|闪回|时间跳跃|黑场|淡入|淡出|叠化|切至|切到)/.test(continuity)) return undefined;
     return previous;
@@ -57,8 +61,7 @@ export function storyboardFrameIsCurrent(row: StoryboardRow, frame: StoryboardFr
     const snapshot = nodes.find(node => node.id === frame.imageNodeId)?.metadata?.storyboardFrame?.continuityReference;
     if (snapshot && !frame.sharedFrom) {
         const reference = nodes.find(node => node.id === snapshot.nodeId);
-        const start = row.frames?.find(item => item.kind === "start");
-        if (frame.kind === "start" || !reference || start?.imageNodeId !== reference.id || storyboardReferenceSignature(reference) !== snapshot.signature || !storyboardFrameIsCurrent(row, start, nodes)) return false;
+        if (frame.kind === "start" || !reference || storyboardReferenceSignature(reference) !== snapshot.signature) return false;
     }
     if (!frame.sharedFrom) return true;
     const image = nodes.find(node => node.id === frame.imageNodeId);

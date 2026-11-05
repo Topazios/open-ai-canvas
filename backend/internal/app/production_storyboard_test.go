@@ -136,6 +136,80 @@ func TestProductionStoryboardRejectsMissingCoverageAndStaleWrites(t *testing.T) 
 	})
 	productionCall(t, s, run.ID, "production_storyboard_context", map[string]any{}, true)
 }
+
+func TestProductionStoryboardRecoversClearedCanvasCheckpoint(t *testing.T) {
+	s, db, run := storyboardFixtureWithTiming(t, 10, 3)
+	storyboardFixturePlan(t, s, run.ID)
+	raw, state := productionRuntimeState(t, s, run.ID)
+	if err := s.upgradeStoryboardLayout(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	productionEditCanvas(t, s, db, func(doc map[string]any) {
+		meta := productionNode(doc, "target")["metadata"].(map[string]any)
+		meta["content"] = ""
+		meta["storyboard"] = map[string]any{"rows": []any{}, "visibleColumns": []any{"shotNumber", "videoMotionPrompt", "assets"}, "referenceNodeIds": []any{}}
+	})
+	canvas, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDoc, err := creationDocument(canvas.PayloadJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := s.repo.ProductionAgentJob("user", run.ID)
+	var checkManifest productionManifest
+	if err := json.Unmarshal([]byte(job.ManifestJSON), &checkManifest); err != nil {
+		t.Fatal(err)
+	}
+	checkTarget := productionNode(checkDoc, "target")
+	if !productionStoryboardCheckpointCanRecover(checkTarget, productionNode(checkDoc, checkManifest.FrameID), run.ID, checkManifest) {
+		t.Fatal("cleared checkpoint did not qualify for recovery")
+	}
+	productionCall(t, s, run.ID, "production_storyboard_layout", map[string]any{"layouts": storyboardLayouts()}, false)
+
+	canvas, err = s.repo.CanvasProjectForUser("user", "agent-canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := creationDocument(canvas.PayloadJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := productionNode(doc, "target")["metadata"].(map[string]any)
+	if stringValue(meta["content"]) == "" || len(creationMaps(meta["storyboard"].(map[string]any)["rows"])) != 3 {
+		t.Fatal("saved storyboard checkpoint was not restored after a stale canvas write")
+	}
+}
+
+func TestProductionStoryboardDoesNotRecoverClearedOutputAfterInputChange(t *testing.T) {
+	for _, change := range []string{"source", "timing"} {
+		t.Run(change, func(t *testing.T) {
+			s, db, run := storyboardFixtureWithTiming(t, 10, 3)
+			storyboardFixturePlan(t, s, run.ID)
+			raw, state := productionRuntimeState(t, s, run.ID)
+			if err := s.upgradeStoryboardLayout(raw, &state); err != nil {
+				t.Fatal(err)
+			}
+			productionEditCanvas(t, s, db, func(doc map[string]any) {
+				meta := productionNode(doc, "target")["metadata"].(map[string]any)
+				meta["content"] = ""
+				meta["storyboard"] = map[string]any{"rows": []any{}, "visibleColumns": []any{"shotNumber", "videoMotionPrompt", "assets"}, "referenceNodeIds": []any{}}
+				if change == "source" {
+					productionNode(doc, "body")["metadata"].(map[string]any)["content"] = "新版正文"
+					return
+				}
+				parameters := productionWorkflow(productionNode(doc, "target"))["parameters"].(map[string]any)
+				parameters["shotDurationSeconds"] = 12
+			})
+			_, _, _, err := productionLoad(s.repo, raw, &state)
+			if err == nil {
+				t.Fatal("checkpoint recovery accepted changed storyboard inputs")
+			}
+		})
+	}
+}
+
 func TestProductionStoryboardStopsOnSourceChangeAndDeletion(t *testing.T) {
 	for _, kind := range []string{"source", "target"} {
 		t.Run(kind, func(t *testing.T) {

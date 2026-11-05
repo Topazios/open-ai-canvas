@@ -260,6 +260,8 @@ export function getAntThemeConfig(dark: boolean, skinID: unknown = "classic"): T
                 colorPrimary: color.checkBg,
                 colorPrimaryActive: color.checkActiveBg,
                 colorPrimaryHover: color.checkHoverBg,
+                // AntD 用 colorWhite 绘制对勾；深色主题选中底色近白，需改用前景色。
+                colorWhite: color.checkFg,
                 controlOutline: color.controlFocus,
             },
             Radio: {

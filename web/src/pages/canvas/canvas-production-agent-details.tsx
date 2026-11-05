@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Tooltip } from "antd";
-import { Pause, Play, Square, RefreshCw, ChevronRight, SlidersHorizontal } from "lucide-react";
+import { Pause, Play, Square, RefreshCw } from "lucide-react";
 import { CanvasExecutionJournal } from "./canvas-execution-journal";
+import { CanvasRunParameters } from "./canvas-run-parameters";
 import { getAgentRun, type AgentEvent } from "@/services/api/agent";
 import { mergeProductionEvents, productionJournalRows, productionParallelSummary, productionRunExternalFailure } from "@/lib/canvas/production-agent-journal";
 import { productionPlanPhaseLabels } from "@/lib/production-plan";
@@ -208,27 +209,14 @@ export function CanvasProductionAgentDetails({ node, state }: { node: CanvasNode
                     <Button aria-label="刷新任务状态" icon={<RefreshCw size={14} />} onClick={state.refresh} />
                 </Tooltip>
             </div>
-            <details className="production-agent-parameters">
-                <summary>
-                    <SlidersHorizontal size={14} />
-                    <span>运行参数</span>
-                    <ChevronRight size={14} className="production-agent-chevron" />
-                </summary>
-                <dl>
-                    <div>
-                        <dt>模型</dt>
-                        <dd>{run?.model || agent?.request?.model || "未记录"}</dd>
-                    </div>
-                    <div>
-                        <dt>推理强度</dt>
-                        <dd>{effort ? { low: "低", medium: "中", high: "高" }[effort] : "未记录"}</dd>
-                    </div>
-                    <div className="production-agent-prompt">
-                        <dt>提示词</dt>
-                        <dd>{agent?.request?.prompt || node.metadata?.prompt || "未记录"}</dd>
-                    </div>
-                </dl>
-            </details>
+            <CanvasRunParameters
+                items={[
+                    { label: "模型", value: run?.model || agent?.request?.model || "未记录" },
+                    { label: "推理强度", value: effort ? { low: "低", medium: "中", high: "高" }[effort] : "未记录" },
+                    { label: "运行 ID", value: runId },
+                ]}
+                prompt={agent?.request?.prompt || node.metadata?.prompt || ""}
+            />
             <CanvasExecutionJournal rows={rows} order={order} onOrder={setOrder} empty={runId ? "暂无关键进展记录" : "尚未调度模型"}>
                 {runId && !earliest && (events[0]?.seq || 0) > 1 && (
                     <Button className="production-agent-history" size="small" type="text" loading={loading} onClick={() => void loadEarlier()}>

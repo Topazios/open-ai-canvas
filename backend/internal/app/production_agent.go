@@ -130,6 +130,47 @@ func productionIDs(value any) []string {
 	_ = json.Unmarshal(encoded, &ids)
 	return ids
 }
+
+func productionStoryboardCheckpointCanRecover(target, frame map[string]any, runID string, m productionManifest) bool {
+	if target == nil || frame == nil || m.Storyboard == nil || len(m.Storyboard.Scenes) == 0 || m.TargetHash == "" || stringValue(target["parentId"]) != m.FrameID {
+		return false
+	}
+	meta, _ := target["metadata"].(map[string]any)
+	if strings.TrimSpace(stringValue(meta["content"])) != "" {
+		return false
+	}
+	expectedContent := renderStoryboard(m)
+	if strings.TrimSpace(expectedContent) == "" {
+		return false
+	}
+	storyboard, _ := meta["storyboard"].(map[string]any)
+	if storyboard["executionMode"] != nil || len(creationMaps(storyboard["rows"])) != 0 {
+		return false
+	}
+	workflow := productionWorkflow(target)
+	if workflow["step"] != "direction.shots" || stringValue(workflow["pipelineId"]) == "" || !cloudAgentContainsString(productionIDs(productionWorkflow(frame)["sourceNodeIds"]), stringValue(target["id"])) {
+		return false
+	}
+	agent, _ := workflow["productionAgent"].(map[string]any)
+	if stringValue(agent["runId"]) != runID {
+		return false
+	}
+	// Reconstruct the exact last saved target hash from the durable checkpoint.
+	// This only accepts a blanked projection; any changed target field, source
+	// relation, or generation parameter keeps the edit guard intact.
+	copy := make(map[string]any, len(target))
+	for key, value := range target {
+		copy[key] = value
+	}
+	metaCopy := make(map[string]any, len(meta))
+	for key, value := range meta {
+		metaCopy[key] = value
+	}
+	metaCopy["content"] = expectedContent
+	copy["metadata"] = metaCopy
+	return productionTargetHash(copy) == m.TargetHash
+}
+
 func productionNode(doc map[string]any, id string) map[string]any {
 	for _, node := range creationMaps(doc["nodes"]) {
 		if stringValue(node["id"]) == id {
@@ -282,10 +323,11 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 				if productionPlanPending(node) || strings.TrimSpace(text) == "" || meta["status"] == "loading" {
 					return nil
 				}
-			} else if productionPlanPending(node) || strings.TrimSpace(text) == "" || meta["status"] == "loading" {
-				return BadAuthRequest("该集正文为空或尚未完成，无法拆解分镜")
+			} else if strings.TrimSpace(text) == "" {
+				return BadAuthRequest("该集正文为空，无法拆解分镜")
 			}
-			// A failed run that still left body text is usable for storyboard.
+			// Use the persisted body snapshot even when its task/audit is still
+			// running or failed. Input hashes protect subsequent content changes.
 		} else {
 			if productionPlanPending(node) {
 				return BadAuthRequest("制作来源正文为空或尚未完成")
@@ -509,7 +551,10 @@ func productionLoad(repo *repository.Repository, run *model.CloudAgentExecution,
 		expectedTarget = m.Plan.SummaryHash
 	}
 	if productionTargetHash(productionNode(doc, state.Request.Production.TargetNodeID)) != expectedTarget {
-		return nil, m, nil, BadAuthRequest("目标提取记录或来源关联已人工修改，未覆盖")
+		target := productionNode(doc, state.Request.Production.TargetNodeID)
+		if m.Storyboard == nil || !productionStoryboardCheckpointCanRecover(target, productionNode(doc, m.FrameID), run.ID, m) {
+			return nil, m, nil, BadAuthRequest("目标提取记录或来源关联已人工修改，未覆盖")
+		}
 	}
 	for id, version := range m.Dependencies {
 		if node := productionNode(doc, id); node == nil || productionNodeHash(node) != version {

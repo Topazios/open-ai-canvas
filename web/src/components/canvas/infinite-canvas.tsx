@@ -188,8 +188,19 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
             const absX = Math.abs(deltaX);
             const absY = Math.abs(deltaY);
             const isPinchZoom = event.ctrlKey || event.metaKey;
-            if (target?.closest(CANVAS_WHEEL_IGNORE_SELECTOR) && !isPinchZoom) {
-                // 内部区域保留纵向滚动，但横向手势不能泄漏为 macOS 浏览器前进/后退。
+            
+            // 在可滚动区域内且不按 Ctrl/Meta 时,完全不处理事件,让容器自然滚动
+            const isInScrollArea = target?.closest('[data-canvas-wheel-scroll]');
+            if (isInScrollArea && !isPinchZoom) {
+                return;
+            }
+            
+            const isInIgnoreArea = target?.closest(CANVAS_WHEEL_IGNORE_SELECTOR);
+            
+            // 在其他忽略区域内(如 data-canvas-no-zoom):
+            // - 如果是 Ctrl/Meta+滚轮,继续执行画布缩放(不 return)
+            // - 否则阻止横向手势泄漏为浏览器导航
+            if (isInIgnoreArea && !isPinchZoom) {
                 if (event.shiftKey || absX > absY) event.preventDefault();
                 return;
             }
@@ -242,6 +253,9 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
         // AntD 浮层通过 Portal 渲染到节点 DOM 之外；若不统一排除，会被误判为画布空白并捕获指针。
         if (target?.closest(CANVAS_POINTER_IGNORE_SELECTOR)) return;
         const isBackgroundClick = !target?.closest("[data-node-id],[data-connection-id]");
+        // 画布后续会 preventDefault 阻止浏览器默认失焦，这里手动释放节点内控件的焦点。
+        const focused = document.activeElement;
+        if (isBackgroundClick && focused instanceof HTMLElement && event.currentTarget.contains(focused)) focused.blur();
         const isTouch = event.pointerType === "touch";
 
         const pointerIntent = resolveCanvasPointerIntent({
@@ -527,3 +541,4 @@ function wheelDeltaToPixels(delta: number, deltaMode: number) {
 function clampScale(scale: number) {
     return Math.min(Math.max(scale, 0.05), 2);
 }
+

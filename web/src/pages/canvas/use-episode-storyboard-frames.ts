@@ -3,7 +3,8 @@ import { App } from "antd";
 import { CanvasNodeType, type CanvasConnection, type CanvasGenerationBatchMode, type CanvasNodeData } from "@/types/canvas";
 import { createCanvasNode } from "@/lib/canvas/canvas-project-domain";
 import { createGenerationRetryContext, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
-import { failedStoryboardBoundaryImagesForRow, materializeStoryboardFrames, shotKeyframes, storyboardBoundaryFrames, storyboardFrameHash, storyboardKeyframePrompt, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
+import { failedStoryboardBoundaryImagesForRow, materializeStoryboardFrames, storyboardFrameHash, storyboardKeyframePrompt, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
+import { materializeStoryboardKeyframePlans, storyboardFrameRequests, type StoryboardFrameBatchTarget } from "@/lib/canvas/storyboard-frame-generation";
 import { reconcileStoryboardFramesGroups } from "@/lib/canvas/storyboard-frame-groups";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -23,7 +24,7 @@ type Options = {
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
     setConnections: Dispatch<SetStateAction<CanvasConnection[]>>;
     retry: (node: CanvasNodeData) => Promise<void>;
-    enqueue: (id: string, mode: CanvasGenerationBatchMode, targets: { rowId: string; nodeId: string }[]) => string | undefined;
+    enqueue: (id: string, mode: CanvasGenerationBatchMode, targets: StoryboardFrameBatchTarget[]) => string | undefined;
     save: () => Promise<boolean>;
 };
 export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef, setNodes, setConnections, retry: retryGeneration, enqueue, save }: Options) {
@@ -44,12 +45,12 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
         return () => controller.abort();
     }, [projectId]);
     const confirm = useCallback(
-        (count: number, label: string, retry = false, regenerate = false) =>
+        (count: number, label: string, retry = false, regenerate = false, planCount = 0) =>
             new Promise<boolean>((resolve) => {
                 const signal = lifetime.current.signal;
                 const dialog = modal.confirm({
                     title: `确认${label}`,
-                    content: `本次提交 ${count} 个${label}任务，沿用系统并发与正常计费。${regenerate ? "新结果会替换当前分镜引用，旧图片节点仍保留。" : retry ? "仅重试失败图片，保留已生成和在途图片。上游超时不代表未生成或未扣费，请核对原任务后确认；重试可能再次产生费用。" : ""}${regenerate || retry ? "操作可能再次产生费用。" : ""}`,
+                    content: `本次提交 ${count} 个${label}任务，沿用系统并发与正常计费。${planCount ? `其中 ${planCount} 个镜头自动提取关键帧，每镜提取完成后继续生成 1 至 8 张图片。` : ""}${regenerate ? "新结果会替换当前分镜引用，旧图片节点仍保留。" : retry ? "仅重试失败图片，保留已生成和在途图片。上游超时不代表未生成或未扣费，请核对原任务后确认；重试可能再次产生费用。" : ""}${regenerate || retry ? "操作可能再次产生费用。" : ""}`,
                     okText: "确认生成",
                     cancelText: "取消",
                     onOk: () => resolve(true),
@@ -150,7 +151,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
         [config, confirm, connectionsRef, enqueue, message, nodesRef, save, setConnections, setNodes],
     );
     const generateFrames = useCallback(
-        async (scriptId: string, rowId?: string, kind: "boundary" | "keyframes" = "boundary", options: StoryboardFrameGenerationOptions = {}) => {
+        async (scriptId: string, rowId?: string, kind: "all" | "boundary" | "keyframes" = "boundary", options: StoryboardFrameGenerationOptions = {}) => {
             const key = `${scriptId}:frames`,
                 signal = lifetime.current.signal,
                 scope = getActiveUserScope();
@@ -168,23 +169,22 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                         transparentBackground: "false",
                         count: "1",
                     });
-                    const rows = script.metadata!.storyboard!.rows.filter((row) => (!rowId || row.id === rowId) && storyboardRowIsReady(row));
+                    const rowIds = options.frameTargets ? new Set(options.frameTargets.map(target => target.rowId)) : options.rowIds ? new Set(options.rowIds) : undefined;
+                    const rows = script.metadata!.storyboard!.rows.filter((row) => (!rowId || row.id === rowId) && (!rowIds || rowIds.has(row.id)));
                     if (rowId && !rows.length) throw new Error("当前分镜已删除");
-                    if (kind === "keyframes" && !rowId) throw new Error("请选择需要生成关键帧的分镜");
-                    const requests = rows.map((row) => {
-                        const keyframes = kind === "keyframes" ? shotKeyframes(row, nodesRef.current) : undefined;
-                        if (keyframes?.error) throw new Error(keyframes.error);
-                        if (kind === "keyframes" && !keyframes?.frames.length) throw new Error("请先提取当前镜头关键帧");
-                        const frames = keyframes?.frames || storyboardBoundaryFrames(row);
-                        return { row, frames: options.frameIds ? frames.filter((frame) => options.frameIds!.includes(frame.id)) : frames };
-                    });
+                    if (kind === "keyframes" && !rows.length) throw new Error("请选择需要生成关键帧的分镜");
+                    const resolved = storyboardFrameRequests(rows, nodesRef.current, kind, options);
+                    const textConfig = storyboardFrameGenerationConfig(config, script, "text");
+                    if (resolved.planRows.length && !useConfigStore.getState().isAiConfigReady(textConfig, textConfig.model)) throw new Error("请选择可用文本模型，系统将自动提取关键帧并继续生图");
                     const selectedNodes = selectStoryboardFrameModel(nodesRef.current, scriptId, "image", imageConfig.model);
-                    return materializeStoryboardFrames(script, requests, selectedNodes, connectionsRef.current, imageConfig.model, settings, options);
+                    const images = materializeStoryboardFrames(script, resolved.requests, selectedNodes, connectionsRef.current, imageConfig.model, settings, resolved.options);
+                    const plans = materializeStoryboardKeyframePlans(scriptId, resolved.planRows, images.nodes, textConfig.model, { model: imageConfig.model, settings, regenerate: options.regenerate });
+                    return { ...images, nodes: plans.nodes, planTargets: plans.targets, planCount: resolved.planRows.length };
                 };
                 const preview = prepare();
                 const requestedRow = rowId ? nodesRef.current.find((node) => node.id === scriptId)?.metadata?.storyboard?.rows.find((row) => row.id === rowId) : undefined;
                 const requestedRowHash = requestedRow ? storyboardFrameHash(requestedRow) : undefined;
-                if (rowId && kind === "boundary" && !options.failedOnly && !options.regenerate) {
+                if (rowId && kind === "boundary" && !options.failedOnly && !options.regenerate && !options.frameTargets && !options.frameIds) {
                     const script = nodesRef.current.find((node) => node.id === scriptId);
                     const failed = script ? failedStoryboardBoundaryImagesForRow(script, rowId, nodesRef.current) : [];
                     if (failed.length) {
@@ -203,7 +203,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                 }
                 const currentSnapshot = () => JSON.stringify(nodesRef.current.find((node) => node.id === scriptId)?.metadata?.storyboard?.rows.map((row) => [row.id, storyboardFrameHash(row), row.framePlanNodeId, row.startFrameMode]));
                 const snapshot = currentSnapshot();
-                if (!preview.targets.length) {
+                if (!preview.targets.length && !preview.planCount) {
                     if (options.failedOnly) {
                         message.info("没有可重试的当前版本失败首尾帧");
                         return;
@@ -218,11 +218,11 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                     message.info("已关联现有画面；生成失败的画面可在详情重试");
                     return;
                 }
-                if (!(await confirm(preview.targets.length, options.failedOnly ? "失败首尾帧重试" : options.regenerate ? "首尾帧重新生成" : kind === "keyframes" ? "关键帧生图" : "首尾帧生图", options.failedOnly, options.regenerate))) return;
+                if (!(await confirm(preview.targets.length + preview.planCount, options.failedOnly ? "失败画面重试" : options.regenerate ? "画面生成/重生成" : "画面生成", options.failedOnly, options.regenerate, preview.planCount))) return;
                 if (signal.aborted || scope !== getActiveUserScope()) return;
                 if (snapshot !== currentSnapshot()) throw new Error("分镜或关键帧方案已变化，请重新确认生成");
                 let prepared = prepare();
-                if (prepared.targets.length > preview.targets.length) throw new Error("待生成画面已变化，请重新确认生成数量");
+                if (prepared.targets.length > preview.targets.length || prepared.planCount > preview.planCount) throw new Error("待生成画面已变化，请重新确认生成数量");
                 const retries = new Map<string, Awaited<ReturnType<typeof createGenerationRetryContext>>>();
                 for (const target of prepared.targets) {
                     const image = nodesRef.current.find((node) => node.id === target.nodeId);
@@ -235,7 +235,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                 if (snapshot !== currentSnapshot()) throw new Error("分镜已变化，请重新确认生成");
                 prepared = prepare();
                 if (
-                    prepared.targets.length > preview.targets.length ||
+                    prepared.targets.length > preview.targets.length || prepared.planCount > preview.planCount ||
                     prepared.targets.some((target) => {
                         const taskId = nodesRef.current.find((node) => node.id === target.nodeId)?.metadata?.taskId;
                         return taskId && retries.get(target.nodeId)?.retryOf !== taskId;
@@ -251,6 +251,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                 if (!(await save())) throw new Error("画面节点已保留，保存失败后请再次生成");
                 if (signal.aborted || scope !== getActiveUserScope()) return;
                 enqueue(scriptId, "storyboard_image", prepared.targets);
+                enqueue(scriptId, "storyboard_keyframes", prepared.planTargets);
                 await save();
             } catch (error) {
                 if (!signal.aborted && scope === getActiveUserScope()) message.error(error instanceof Error ? error.message : "画面生成失败");
@@ -271,7 +272,8 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                 if (!row || binding.sourcePromptHash !== storyboardFrameHash(row)) throw new Error("分镜已修改，请生成当前版本的画面");
                 if (isCanvasNodeGenerating(node)) return;
                 if (node.metadata?.content || node.metadata?.storageKey) {
-                    await generateFrames(binding.scriptId, binding.rowId, "boundary", { regenerate: true, frameIds: [binding.frameId] });
+                    const frame = row.frames?.find(frame => frame.id === binding.frameId);
+                    await generateFrames(binding.scriptId, binding.rowId, frame?.kind === "key" ? "keyframes" : "boundary", { regenerate: true, frameTargets: [{ rowId: binding.rowId, frameId: binding.frameId }] });
                     return;
                 }
                 if (!(await confirm(1, "首尾帧重试", true))) return;

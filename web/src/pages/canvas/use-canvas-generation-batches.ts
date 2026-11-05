@@ -5,12 +5,13 @@ import { nanoid } from "nanoid";
 import { generationBatchKind, generationBatchQueueCandidates, generationBatchRetryItems, generationBatchStatus, generationBatchTargetKey, pauseNodeGenerationBatches, reconcileGenerationBatches } from "@/lib/canvas/canvas-generation-batch";
 import { buildGenerationConfig, createGenerationRetryContext, generationTaskMetadata, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { storyboardFrameNodeSelection } from "@/lib/canvas/storyboard-frame-model";
+import { continueStoryboardFrameGeneration } from "@/lib/canvas/storyboard-frame-generation";
 import { unchangedModeratedPrompt } from "@/lib/generation-error";
 import { cancelGenerationTask, queryGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { buildStoryboardVideoGeneration } from "@/lib/canvas/canvas-generation-task-sync";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { getActiveUserScope } from "@/lib/user-scope";
-import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchMode, CanvasNodeData, StoryboardVideoGeneration } from "@/types/canvas";
+import type { CanvasConnection, CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchMode, CanvasNodeData, StoryboardVideoGeneration } from "@/types/canvas";
 
 import type { CanvasNodeGenerationOptions } from "./use-canvas-generation-executor";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
@@ -19,24 +20,27 @@ const SCHEDULER_INTERVAL_MS = 2_000;
 const INLINE_TASK_RECOVERY_INTERVAL_MS = 5_000;
 const MAX_BATCH_HISTORY = 20;
 
-type BatchTarget = Pick<CanvasGenerationBatchItem, "rowId" | "nodeId" | "targetKind">;
+type BatchTarget = Pick<CanvasGenerationBatchItem, "rowId" | "nodeId" | "targetKind" | "frameGeneration">;
 
 type UseCanvasGenerationBatchesOptions = {
     projectId: string;
     projectLoaded: boolean;
     nodes: CanvasNodeData[];
     nodesRef: { current: CanvasNodeData[] };
+    connectionsRef: { current: CanvasConnection[] };
+    setConnections: Dispatch<SetStateAction<CanvasConnection[]>>;
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
     handleGenerateNode: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: CanvasNodeGenerationOptions) => Promise<void>;
     persistBatches: () => Promise<void>;
 };
 
-export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, nodesRef, setNodes, handleGenerateNode, persistBatches }: UseCanvasGenerationBatchesOptions) {
+export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, nodesRef, connectionsRef, setConnections, setNodes, handleGenerateNode, persistBatches }: UseCanvasGenerationBatchesOptions) {
     const { message, modal } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const policyErrorRef = useRef("");
     const schedulingRef = useRef(false);
+    const pendingFramePersistence = useRef<string | undefined>(undefined);
     const controllersRef = useRef(new Map<string, AbortController>());
     const cancellingRef = useRef(new Set<string>());
     const cancellationAttempts = useRef(new Set<string>());
@@ -194,6 +198,16 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
         const scope = getActiveUserScope();
         schedulingRef.current = true;
         try {
+            const continuation = continueStoryboardFrameGeneration(nodesRef.current, connectionsRef.current, projectId);
+            if (continuation.nodes !== nodesRef.current) {
+                pendingFramePersistence.current = projectId;
+                setNodes(continuation.nodes);
+                setConnections(continuation.connections);
+            }
+            if (pendingFramePersistence.current === projectId) {
+                await persistBatches();
+                pendingFramePersistence.current = undefined;
+            }
             const currentNodes = nodesRef.current;
             // 没有当前画布的等待项时无需查询任务中心，避免空画布持续轮询。
             const hasWaitingItems = currentNodes.some((sourceNode) =>
@@ -249,7 +263,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
         } finally {
             schedulingRef.current = false;
         }
-    }, [cancelPausedTask, effectiveConfig, handleGenerateNode, isAiConfigReady, message, nodesRef, projectId, projectLoaded, reconcileBatches, updateBatch]);
+    }, [cancelPausedTask, effectiveConfig, handleGenerateNode, isAiConfigReady, message, nodesRef, connectionsRef, setConnections, setNodes, persistBatches, projectId, projectLoaded, reconcileBatches, updateBatch]);
 
     const retryFailedBatchItems = useCallback(
         (sourceNodeId: string, batchId: string, itemId?: string) => {

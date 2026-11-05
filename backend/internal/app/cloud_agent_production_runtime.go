@@ -206,7 +206,14 @@ func productionBlockRuntime(run *model.CloudAgentExecution, state *cloudAgentRun
 
 func productionRuntimeQuietHold(state *cloudAgentRuntime) bool {
 	for toolName, repair := range state.ToolRepairs {
-		if strings.HasPrefix(toolName, "production_") && repair.ProductionProgressStep == state.ProductionProgressStep && repair.Attempt >= 2 {
+		limit := cloudAgentToolAttemptLimit
+		if toolName == productionRuntimeContinuationRepairKey {
+			if repair.ProductionContextRevision < productionRuntimeContextRevision {
+				continue
+			}
+			limit = 2
+		}
+		if strings.HasPrefix(toolName, "production_") && repair.ProductionProgressStep == state.ProductionProgressStep && repair.Attempt >= limit {
 			return true
 		}
 	}
@@ -214,6 +221,9 @@ func productionRuntimeQuietHold(state *cloudAgentRuntime) bool {
 }
 
 func productionRuntimeNoProgressError(state *cloudAgentRuntime) error {
+	if repair := productionRuntimePendingRepair(state, ""); repair != nil && repair.ValidationMessage != "" {
+		return fmt.Errorf("%w；当前提交的本地校验问题：%s", errProductionRuntimeNoProgress, repair.ValidationMessage)
+	}
 	for i := len(state.Events) - 1; i >= 0; i-- {
 		event := state.Events[i]
 		if !strings.HasPrefix(stringValue(event.Payload["toolName"]), "production_") {
@@ -232,7 +242,7 @@ func productionRuntimeNoProgressError(state *cloudAgentRuntime) error {
 
 // Bump when the durable context contract changes. Old provider receipts and
 // loop evidence must not bypass a newly repaired context after deployment.
-const productionRuntimeContextRevision = 18
+const productionRuntimeContextRevision = 22
 
 // The checkpoint already supplies phase/status and the exact source range.
 // Scope provider tools without narrowing the durable execution whitelist: a
@@ -646,6 +656,12 @@ func (s *Service) correctProductionRuntimeCycle(userID, runID string, state *clo
 	for _, tool := range canonical.Tools {
 		fn, _ := tool["function"].(map[string]any)
 		toolName := stringValue(fn["name"])
+		// Layout repair may need a new episode budget first. Keep both write
+		// tools reachable instead of forcing a layout against an invalid budget.
+		if work["phase"] == "layout" && work["canRebudget"] == true && (toolName == "production_storyboard_plan" || toolName == "production_storyboard_layout") {
+			tools = append(tools, tool)
+			continue
+		}
 		if recovery.ValidationTool != "" {
 			if toolName == recovery.ValidationTool {
 				tools = append(tools, tool)
@@ -746,12 +762,16 @@ func (s *Service) setProductionRuntimeContinuation(userID, runID, taskID, reason
 			if err != nil {
 				return err
 			}
+			storyboard := false
 			if state.Request.Production != nil {
 				if job, err := s.repo.ProductionAgentJob(userID, runID); err == nil {
 					var manifest productionManifest
-					if json.Unmarshal([]byte(job.ManifestJSON), &manifest) == nil && manifest.Plan != nil && manifest.Plan.Version >= 5 {
-						forceQuiet = true
-						quiet = true
+					if json.Unmarshal([]byte(job.ManifestJSON), &manifest) == nil {
+						storyboard = manifest.Storyboard != nil
+						if manifest.Plan != nil && manifest.Plan.Version >= 5 {
+							forceQuiet = true
+							quiet = true
+						}
 					}
 				}
 			}
@@ -767,18 +787,33 @@ func (s *Service) setProductionRuntimeContinuation(userID, runID, taskID, reason
 			if repair.ProductionProgressStep != state.ProductionProgressStep {
 				repair = cloudAgentToolRepair{ProductionProgressStep: state.ProductionProgressStep}
 			}
+			if repair.GroupID == "" {
+				repair.GroupID = runID + ":repair:" + productionRuntimeContinuationRepairKey
+			}
 			if repair.Attempt < 2 {
 				repair.Attempt++
 			}
 			if forceQuiet && repair.Attempt < 2 {
 				repair.Attempt = 2
 			}
+			if errors.Is(cause, errProductionRuntimeNoProgress) {
+				cause = cloudAgentFieldError("checkpoint", "no_progress", productionRuntimeNoProgressError(&state).Error())
+			}
 			repair.ValidationMessage = cloudAgentSafeToolError(cause)
 			repair.ValidationProblemSignature = productionHash([]any{reason, repair.ValidationMessage})
+			repair.ProductionContextRevision = productionRuntimeContextRevision
 			state.ToolRepairs[productionRuntimeContinuationRepairKey] = repair
 			state.ProductionRepairs = repair.Attempt
 			quiet = quiet || repair.Attempt >= 2
 			productionBlockRuntime(current, &state)
+			if storyboard && quiet {
+				current.Status = "failed"
+				current.FailureMessage = "分镜自动纠正未完成，已保留已有镜头：" + repair.ValidationMessage
+				state.event(runID, "run_failed", map[string]any{
+					"reason": reason, "text": current.FailureMessage, "taskId": taskID,
+					"severity": "warning", "errorSource": "application", "phase": "validation", "outcome": "needs_revision",
+				})
+			}
 			return cloudAgentSave(current, &state)
 		})
 		if errors.Is(err, repository.ErrCreationConflict) {

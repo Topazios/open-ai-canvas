@@ -19,6 +19,7 @@ type cloudAgentToolRepair struct {
 	ValidationIssues           []cloudAgentValidationIssue `json:"validationIssues,omitempty"`
 	ValidationProblemSignature string                      `json:"validationProblemSignature,omitempty"`
 	ValidationMessage          string                      `json:"validationMessage,omitempty"`
+	ProductionContextRevision  int                         `json:"productionContextRevision,omitempty"`
 }
 
 func cloudAgentRetryReceipt(groupID string, attempt int, status string) map[string]any {

@@ -13,9 +13,9 @@ import { installRuntimeLimits } from "./fixtures/runtime-limits";
 
 test("storyboard episodes submit independently after one save, without waiting for first receipt or refresh", async () => {
     installRuntimeLimits({ agent: 3 });
-    // Shot splitting only needs each episode body, so every shot node points at a finished body node.
+    // Persisted body text is enough; its upstream generation status is not a storyboard prerequisite.
     const bodies = [1, 2, 3].map(episodeNumber => createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, {
-        content: "正文",
+        content: "正文", status: "loading",
         shortDrama: { pipelineId: "p", stage: "story", step: "story.body", role: "document", sourceNodeIds: [], sourceSignatures: {}, episodeNumber },
     }));
     const shots = bodies.map((body, index) => createCanvasNode(CanvasNodeType.Script, { x: 0, y: 0 }, { shortDrama: {

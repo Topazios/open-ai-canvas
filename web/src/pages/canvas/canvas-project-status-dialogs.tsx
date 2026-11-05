@@ -13,6 +13,7 @@ import { modelDisplayName, useEffectiveConfig } from "@/stores/use-config-store"
 import { resolveMediaUrl } from "@/services/file-storage";
 import { resourceStorageKeyFromURL } from "@/services/api/resources";
 import { getFrameChildren, isFrameNode } from "@/lib/canvas/canvas-frame";
+import { CanvasRunParameters } from "./canvas-run-parameters";
 
 type CanvasProjectStatusDialogsProps = {
     theme: { node: { stroke: string; panel: string; muted: string; fill: string } };
@@ -42,22 +43,19 @@ export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading,
                         <div className="grid grid-cols-2 gap-3 rounded-lg border p-3" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
                             <TaskDetailItem label="当前阶段" value={generationTaskStageLabel(task)} />
                             {generationTaskShowsProgress(task) ? <TaskDetailItem label="进度" value={`${task.progress ?? 0}%`} /> : null}
-                            <TaskDetailItem label="模型" value={task.model ? modelDisplayName(config, task.model) : "默认模型"} />
-                            <TaskDetailItem label="任务 ID" value={task.id} />
                             <TaskDetailItem label="创建时间" value={formatTaskTime(task.createdAt)} />
                             <TaskDetailItem label="开始时间" value={formatTaskTime(task.startedAt)} />
                             <TaskDetailItem label="完成时间" value={formatTaskTime(task.completedAt)} />
                             <TaskDetailItem label="耗时" value={formatTaskDuration(task)} />
                         </div>
-                        <div>
-                            <div className="mb-2 text-xs font-semibold" style={{ color: theme.node.muted }}>
-                                提示词
-                            </div>
-                            <div className="h-32 overflow-y-auto whitespace-pre-wrap rounded-lg p-3 text-xs leading-5" style={{ background: theme.node.fill }}>
-                                {task.prompt || "未记录"}
-                            </div>
-                        </div>
-                        <TaskGenerationParameters inputJson={task.inputJson} theme={theme} />
+                        <CanvasRunParameters
+                            items={[
+                                { label: "模型", value: task.model ? modelDisplayName(config, task.model) : "默认模型" },
+                                { label: "任务 ID", value: task.id },
+                                ...taskParameterRows(task.inputJson),
+                            ]}
+                            prompt={task.prompt || ""}
+                        />
                         {onCancelTask && canCancelGenerationTask(task) ? (
                             <div className="flex justify-end">
                                 <Button danger icon={<XCircle className="size-4" />} onClick={() => onCancelTask(task)}>
@@ -179,22 +177,6 @@ function ResolvedCanvasVideoPreview({ node }: { node: CanvasNodeData }) {
     if (failed) return <div className="grid min-h-72 w-full place-items-center text-sm text-white/55">视频地址获取失败，请关闭后重试</div>;
     if (!src) return <div className="grid min-h-72 w-full place-items-center text-sm text-white/55">正在加载视频…</div>;
     return <VideoPlayer src={src} mimeType={node.metadata?.mimeType} title={node.title || "视频预览"} hasAudio={typeof node.metadata?.hasAudio === "boolean" ? node.metadata.hasAudio : undefined} className="max-h-[84dvh] max-w-full bg-black" />;
-}
-
-function TaskGenerationParameters({ inputJson, theme }: { inputJson?: string; theme: CanvasProjectStatusDialogsProps["theme"] }) {
-    const fields = taskParameterRows(inputJson);
-    return (
-        <div>
-            <div className="mb-2 text-xs font-semibold" style={{ color: theme.node.muted }}>生成参数</div>
-            {fields.length ? (
-                <div className="grid grid-cols-2 gap-x-5 gap-y-1 rounded-lg border p-3 sm:grid-cols-3" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
-                    {fields.map((field) => <TaskDetailItem key={field.label} label={field.label} value={field.value} />)}
-                </div>
-            ) : (
-                <div className="rounded-lg p-3 text-xs" style={{ background: theme.node.fill, color: theme.node.muted }}>暂无参数记录</div>
-            )}
-        </div>
-    );
 }
 
 function taskParameterRows(inputJson?: string) {

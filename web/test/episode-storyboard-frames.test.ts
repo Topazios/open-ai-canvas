@@ -20,14 +20,16 @@ function fixture() {
 }
 const boundaries = (f: ReturnType<typeof fixture>) => f.rows.map(row => ({ row, frames: storyboardBoundaryFrames(row) }));
 
-test("ready tails wait when their shared start cannot yet be materialized", () => {
+test("ready tails can be generated while the shared start owner is still being planned", () => {
     const f = fixture();
     f.rows[0] = { ...f.rows[0], detailStatus: "planned", videoMotionPrompt: "", plotDescription: "", plannedGoal: "入场" };
     f.script.metadata!.storyboard!.rows = f.rows;
     expect(storyboardDisplayFrames(f.rows[0], f.nodes)).toEqual([]);
     expect(() => materializeStoryboardFrames(f.script, [{ row: f.rows[0], frames: storyboardBoundaryFrames(f.rows[0]) }], f.nodes, [], "image", settings)).toThrow();
     const result = materializeStoryboardFrames(f.script, [{ row: f.rows[1], frames: storyboardBoundaryFrames(f.rows[1]) }], f.nodes, [], "image", settings);
-    expect(result.targets).toHaveLength(0);
+    expect(result.targets).toHaveLength(1);
+    expect(result.nodes.find(node => node.id === result.targets[0].nodeId)?.metadata?.storyboardFrame?.frameId).toBe("end");
+    expect(result.blockedRows).toEqual([f.rows[1].id]);
     expect(result.nodes.find(node => node.id === f.script.id)!.metadata!.storyboard!.rows[1].frames!.some(frame => frame.kind === "start")).toBe(false);
 });
 
@@ -328,8 +330,8 @@ test("automatic exceptions and explicit continuity choices respect first shot bo
 test("requesting later shot boundaries alone also materializes its preceding end once", () => {
     const f = fixture(), row = f.rows[1];
     const result = materializeStoryboardFrames(f.script, [{ row, frames: storyboardBoundaryFrames(row) }], f.nodes, [], "image-model", settings);
-    expect(result.targets).toHaveLength(3);
-    expect(result.targets.map(target => target.rowId)).toEqual([f.rows[0].id, f.rows[0].id, row.id]);
+    expect(result.targets).toHaveLength(2);
+    expect(result.targets.map(target => target.rowId)).toEqual([f.rows[0].id, row.id]);
     const rows = result.nodes.find(node => node.id === f.script.id)!.metadata!.storyboard!.rows;
     expect(rows[1].frames![0].imageNodeId).toBe(rows[0].frames!.find(frame => frame.kind === "end")!.imageNodeId!);
 });

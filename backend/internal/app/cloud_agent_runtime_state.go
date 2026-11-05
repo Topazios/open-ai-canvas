@@ -194,6 +194,12 @@ func validateCloudAgentRuntime(run *model.CloudAgentExecution, state *cloudAgent
 		return errors.New("Agent runtime call cursor is invalid")
 	}
 	for toolName, repair := range state.ToolRepairs {
+		if toolName == productionRuntimeContinuationRepairKey {
+			if repair.Attempt < 1 || repair.Attempt > 2 || len(repair.ValidationProblemSignature) > 64 || repair.ProductionContextRevision < 0 || repair.ProductionContextRevision > productionRuntimeContextRevision {
+				return errors.New("Agent runtime continuation repair state is invalid")
+			}
+			continue
+		}
 		if toolName == "" || utf8.RuneCountInString(toolName) > 80 || repair.Attempt < 1 || repair.Attempt > cloudAgentToolAttemptLimit || repair.GroupID == "" || len(repair.Fingerprint) > 64 {
 			return errors.New("Agent runtime tool repair state is invalid")
 		}

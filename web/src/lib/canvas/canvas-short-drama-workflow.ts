@@ -25,6 +25,7 @@ import { auditContextNodes, auditSources, latestBodyAudit, selectedAuditBodies, 
 import { placeWorkflowFootprint } from "./canvas-workflow-placement";
 import { groupGridMetrics, layoutCanvasGridGroups } from "./canvas-group-grid";
 import { EPISODE_STORYBOARD_SIZE } from "./workflow-episode-storyboard";
+import { storyboardBodyMembers, storyboardGenerationSources } from "./workflow-storyboard-sources";
 import { assetAppliesToEpisode, assetProfileOutputInstruction, assetReferenceState, assetMediaSignature, assetContentSignature, assetContextProfile } from "./canvas-workflow-asset-profile";
 import { assetVariantMaterial } from "../production-continuity";
 import { isPlanPlaceholder } from "./plan-placeholder";
@@ -389,6 +390,7 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
 }
 
 export function workflowSources(stepId: ShortDramaStepId, pipelineId: string, nodes: CanvasNodeData[], sourceIds: string[], connections?: CanvasConnection[], sourceSteps?: ShortDramaStepId[]) {
+    if (stepId === ShortDramaStep.Shots) return storyboardGenerationSources(sourceIds, nodes, pipelineId);
     const step = shortDramaStep(stepId)!;
     const requires = sourceSteps || step.requires;
     const allowed = [...requires, ...(sourceSteps ? [] : step.optionalRequires || [])];
@@ -441,7 +443,7 @@ export function defaultWorkflowSources(stepId: ShortDramaStepId, pipelineId: str
             const data = nodeWorkflow(node);
             if (data?.pipelineId !== pipelineId || !workflowSourceMatches(node, required, nodes) || data.assetKey || data.mediaGroup) return false;
             try {
-                const lineage = assetSheetKind(stepId) ? workflowAssetImageSources({ step: stepId, pipelineId, sourceNodeIds: [node.id] }, nodes) : workflowAncestors([node.id], nodes, pipelineId);
+                const lineage = stepId === ShortDramaStep.Shots ? storyboardGenerationSources([node.id], nodes, pipelineId) : assetSheetKind(stepId) ? workflowAssetImageSources({ step: stepId, pipelineId, sourceNodeIds: [node.id] }, nodes) : workflowAncestors([node.id], nodes, pipelineId);
                 return lineage.every((source) => !ancestors.some((other) => nodeWorkflow(other)?.role !== "collection" && nodeWorkflow(source)?.role !== "collection" && nodeWorkflow(other)?.step === nodeWorkflow(source)?.step && nodeWorkflow(other)?.assetKey === nodeWorkflow(source)?.assetKey && nodeWorkflow(other)?.episodeNumber === nodeWorkflow(source)?.episodeNumber && other.id !== source.id));
             } catch { return false; }
         });
@@ -483,6 +485,7 @@ export type WorkflowGenerationRequest = {
 
 export function workflowGenerationSources(request: Pick<WorkflowGenerationRequest, "step" | "pipelineId" | "sourceNodeIds" | "aggregate" | "assetRevisionSourceId" | "imageSubjectIds" | "auditRepairReportId"> & { screenplayAudit?: ShortDramaWorkflowData["screenplayAudit"]; screenplayRepair?: ShortDramaWorkflowData["screenplayRepair"]; assetImageSourceIds?: string[]; mediaSubjectId?: string; assetRevision?: ShortDramaWorkflowData["assetRevision"]; sourceSteps?: ShortDramaStepId[]; referenceSignatures?: Record<string, string> }, nodes: CanvasNodeData[], connections?: CanvasConnection[]) {
     request = { ...request, sourceNodeIds: [...new Set(request.sourceNodeIds)] };
+    if (request.step === ShortDramaStep.Shots) return storyboardGenerationSources(request.sourceNodeIds, nodes, request.pipelineId);
     validateWorkflowReferences(request.referenceSignatures, new Map(nodes.map((node) => [node.id, node])));
     if (request.screenplayAudit || request.screenplayRepair) return auditSources(request, nodes);
     if (request.auditRepairReportId) {
@@ -630,10 +633,10 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
     if (!request.model) throw new Error("请选择文本模型");
     const sources = workflowGenerationSources(request, nodes, connections);
     const mentionedAssets = resolveProductionAssetReferences(request.instruction, sources);
-    const collections = request.sourceNodeIds.map((id) => nodes.find((node) => node.id === id)!).filter((node) => nodeWorkflow(node)?.role === "collection" && !nodeWorkflow(node)?.assetGroup);
+    const collections = request.sourceNodeIds.map((id) => nodes.find((node) => node.id === id)!).filter((node) => nodeWorkflow(node)?.role === "collection" && !nodeWorkflow(node)?.assetGroup && (step.id !== ShortDramaStep.Shots || nodeWorkflow(node)?.step === ShortDramaStep.Body));
     if (collections.length && !request.aggregate && step.scope !== "project") {
         const availableEpisodes = step.id === ShortDramaStep.Shots
-            ? nodeWorkflow(collections[0])!.sourceNodeIds.map((id) => nodes.find((node) => node.id === id)).filter((node): node is CanvasNodeData => Boolean(node && nodeWorkflow(node)?.step === ShortDramaStep.Body && node.metadata?.content?.trim() && node.metadata?.status !== "loading" && node.metadata?.status !== "error")).map((node) => nodeWorkflow(node)!.episodeNumber!).sort((a, b) => a - b)
+            ? storyboardBodyMembers(collections[0], nodes, request.pipelineId).map(node => nodeWorkflow(node)!.episodeNumber!).sort((a, b) => a - b)
             : nodeWorkflow(collections[0])!.sourceNodeIds.map((id) => nodeWorkflow(nodes.find((node) => node.id === id))!.episodeNumber!).sort((a, b) => a - b);
         const episodeNumbers = step.id === ShortDramaStep.Shots
             ? Array.from({ length: request.count }, (_, index) => request.start + index)
@@ -649,8 +652,12 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
         for (const episode of episodeNumbers) {
             const sourceNodeIds = request.sourceNodeIds.map((id) => {
                 const source = nodeWorkflow(nodes.find((node) => node.id === id))!;
+                if (step.id === ShortDramaStep.Shots && source.step === ShortDramaStep.Scenes) {
+                    const scene = source.role === "collection" ? nodes.find(node => source.sourceNodeIds.includes(node.id) && nodeWorkflow(node)?.episodeNumber === episode && node.metadata?.content?.trim()) : nodes.find(node => node.id === id && source.episodeNumber === episode && node.metadata?.content?.trim());
+                    return scene?.id || "";
+                }
                 return source.role === "collection" && !source.assetGroup ? source.sourceNodeIds.find((member) => nodeWorkflow(nodes.find((node) => node.id === member))?.episodeNumber === episode)! : id;
-            });
+            }).filter(Boolean);
             const generated = createWorkflowDocuments({ ...request, sourceNodeIds, anchorId: collections.at(-1)!.id }, result.nodes, result.connections, center, false);
             result = { ...generated, created: [...result.created, ...generated.created] };
         }

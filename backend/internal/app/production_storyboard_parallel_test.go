@@ -111,13 +111,13 @@ func TestStoryboardParallelRecoversRejectedSuccessfulReceipt(t *testing.T) {
 	completeStoryboardWork(t, db, work)
 	task, _ := s.repo.Task(work.TaskID)
 	work.ValidationAttempts = productionParallelTransientRetries
+	// Reproduce the historical checkpoint that retained a paid response after
+	// rejecting the storyboard tool. Current validation has a different retry contract.
+	work.Error = rejectedStoryboardToolMessage
 	productionRuntimeMutate(t, s, runID, func(state *cloudAgentRuntime) {
 		state.ProductionParallel[work.Key] = work
 		state.ProductionPaused = true
 	})
-	if err := s.recordProductionParallelFailure("user", runID, work, task, BadAuthRequest("请直接调用 production_submit，仅保存指定的一项完整内容"), true); err != nil {
-		t.Fatal(err)
-	}
 	if err := db.Model(&model.CloudAgentExecution{}).Where("id = ?", runID).Update("status", "failed").Error; err != nil {
 		t.Fatal(err)
 	}

@@ -381,7 +381,8 @@ func storyboardContext(repo *repository.Repository, userID string, m productionM
 		context["repairInstructions"] = m.Storyboard.Review
 		if storyboardRepairCanRebudget(m.Storyboard) {
 			context["canRebudget"] = true
-			context["rebudgetInstruction"] = "若返修需要调整场次时长，先production_storyboard_plan提交完整合法预算，保留已有场次ID和原文范围；未返修的已完成场次预算不变。预算保存后再提交镜头清单，不用改变镜头时长硬凑原预算。"
+			context["rebudgetInstruction"] = "若返修需要调整场次时长，先production_storyboard_plan提交整集合法预算，保留已有场次ID和原文范围。必要时可同时重分配已完成场次的预算；预算变化的场次保留旧稿并重新拆解，预算不变的合法镜头继续保留。预算保存后再提交镜头清单，不用改变镜头时长硬凑原预算。"
+			context["repairInstructions"] = m.Storyboard.Review + "\n当前执行权限：以上审查记录中的‘仅返修指定场次’不限制必要的整集预算重排。已授权通过 production_storyboard_plan 同时调整其他场次预算，无需用户审批或先调用 review。保持全局时长上限与正文不变。"
 		}
 	}
 	if !brief.Processed {
@@ -582,7 +583,7 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 			}
 		}
 		if err = validateStoryboardPlan(args.Scenes, m, doc); err != nil {
-			return nil, err
+			return nil, cloudAgentFieldError("parameters.scenes", "invalid_plan", err.Error())
 		}
 		// Re-budget an invalid resumed plan without discarding its source ranges,
 		// finished media or last complete draft. Only affected scenes reopen.
@@ -593,15 +594,12 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 			}
 			if hasShots {
 				if len(args.Scenes) != len(s.Scenes) {
-					return nil, BadAuthRequest("调整已有分镜的预算时保留场次ID和原文范围，已有内容不会删除")
+					return nil, cloudAgentFieldError("parameters.scenes", "invalid_plan", "调整已有分镜的预算时保留场次ID和原文范围，已有内容不会删除")
 				}
 				for i := range args.Scenes {
 					next, old := &args.Scenes[i], s.Scenes[i]
 					if next.ID != old.ID || next.Start != old.Start || next.End != old.End {
-						return nil, BadAuthRequest("调整已有分镜的预算时保留场次ID和原文范围，已有内容不会删除")
-					}
-					if reviewRebudget && old.Complete && math.Abs(next.Duration-old.Duration) > 0.001 {
-						return nil, BadAuthRequest("只调整已指定返修场次的预算，保留其他已完成场次")
+						return nil, cloudAgentFieldError("parameters.scenes", "invalid_plan", "调整已有分镜的预算时保留场次ID和原文范围，已有内容不会删除")
 					}
 					next.Shots, next.PreviousShots, next.Complete, next.Layout = old.Shots, old.PreviousShots, old.Complete, old.Layout
 					if math.Abs(next.Duration-old.Duration) > 0.001 || (len(old.Shots) > 0 && (validateStoryboardTiming(*next, nil, next.Complete, s.ShotDuration, s.ShotTolerance) != nil || (next.Complete && validateStoryboardShots(*next, nil, true) != nil))) {
@@ -619,7 +617,7 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 			return nil, BadAuthRequest("已有镜头详情在途，不能替换镜头清单")
 		}
 		if err := applyStoryboardLayout(s, args.Layouts); err != nil {
-			return nil, err
+			return nil, cloudAgentFieldError("parameters.layouts", "invalid_layout", err.Error())
 		}
 	case "production_storyboard_expand":
 		if err := applyStoryboardExpansion(m, doc, args.SceneID, args.Shot); err != nil {

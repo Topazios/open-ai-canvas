@@ -22,40 +22,43 @@ function fixture(independent = false) {
 const complete = (nodes: CanvasNodeData[], id: string) => nodes.map(node => node.id === id ? { ...node, metadata: { ...node.metadata, status: "success" as const, content: "blob:preview", storageKey: `resource:${id}` } } : node);
 const candidates = (nodes: CanvasNodeData[]) => generationBatchCandidates(nodes, "project", freshRuntimeLimits()!, [], { image: 0, video: 0 });
 
-test("continuous boundaries wait for actual images, then use the shared previous tail without duplicate charges", () => {
+test("continuous boundaries submit independently and use a completed start when available", () => {
     installRuntimeLimits({ image: 6, text: 3, video: 2 }, 0);
     const f = fixture();
     expect(f.targets).toHaveLength(4);
-    expect(candidates(f.nodes).map(item => item.node.id)).toEqual([f.targets[0].nodeId]);
+    expect(candidates(f.nodes).map(item => item.node.id)).toEqual(f.targets.map(target => target.nodeId));
     const end = f.nodes.find(node => node.id === f.targets[1].nodeId)!;
-    expect(() => buildNodeGenerationContext(end.id, f.nodes, f.connections, end.metadata!.composerContent!, [])).toThrow("等待首帧");
+    expect(buildNodeGenerationContext(end.id, f.nodes, f.connections, end.metadata!.composerContent!, []).referenceImages).toEqual([]);
     let nodes = complete(f.nodes, f.targets[0].nodeId);
-    expect(candidates(nodes).map(item => item.node.id)).toEqual([end.id]);
+    expect(candidates(nodes).map(item => item.node.id)).toEqual(f.targets.slice(1).map(target => target.nodeId));
     const context = buildNodeGenerationContext(end.id, nodes, f.connections, end.metadata!.composerContent!, []);
     expect(context.referenceImages.map(image => image.id)).toEqual([f.targets[0].nodeId]);
     expect(context.prompt).toContain("当前镜头连续性参考");
     expect(context.prompt).toContain("人物身份及其他未变化项继续保持");
     nodes = complete(nodes, end.id);
-    expect(candidates(nodes).map(item => item.node.id)).toEqual([f.targets[2].nodeId]);
+    expect(candidates(nodes).map(item => item.node.id)).toEqual(f.targets.slice(2).map(target => target.nodeId));
     const next = nodes.find(node => node.id === f.targets[2].nodeId)!;
     expect(buildNodeGenerationContext(next.id, nodes, f.connections, next.metadata!.composerContent!, []).referenceImages[0].id).toBe(end.id);
 });
 
-test("independent scenes use all global image slots and failures block only their own dependents", () => {
+test("independent frames respect global slots and a failed start does not block its tail", () => {
     installRuntimeLimits({ image: 6, text: 3, video: 2 }, 0);
     const f = fixture(true);
-    expect(candidates(f.nodes)).toHaveLength(3);
+    expect(candidates(f.nodes)).toHaveLength(6);
+    installRuntimeLimits({ image: 2, text: 3, video: 2 }, 0);
+    expect(candidates(f.nodes)).toHaveLength(2);
+    installRuntimeLimits({ image: 6, text: 3, video: 2 }, 0);
     let nodes = f.nodes;
     for (const target of f.targets.filter((_, index) => index % 2 === 0)) nodes = complete(nodes, target.nodeId);
     expect(candidates(nodes)).toHaveLength(3);
     const failedStart = f.targets[0].nodeId;
     nodes = nodes.map(node => node.id === failedStart ? { ...node, metadata: { ...node.metadata, content: undefined, storageKey: undefined, status: "error" as const, taskId: "failed", taskStatus: "failed" as const } } : node);
-    expect(candidates(nodes)).toHaveLength(2);
-    expect(storyboardFramePrerequisite(nodes.find(node => node.id === f.targets[1].nodeId)!, nodes).reason).toContain("先重试首帧");
-    expect(candidates(JSON.parse(JSON.stringify(nodes)))).toHaveLength(2);
+    expect(candidates(nodes)).toHaveLength(3);
+    expect(storyboardFramePrerequisite(nodes.find(node => node.id === f.targets[1].nodeId)!, nodes)).toEqual({ ready: true, reason: "" });
+    expect(candidates(JSON.parse(JSON.stringify(nodes)))).toHaveLength(3);
 });
 
-test("failed root retries in place while unsubmitted descendants recover to waiting and advance on actual images", () => {
+test("unsubmitted continuity errors recover independently while paid failures require an explicit retry", () => {
     installRuntimeLimits({ image: 6, text: 3, video: 2 }, 0);
     const f = fixture();
     const rootId = f.targets[0].nodeId;
@@ -71,7 +74,7 @@ test("failed root retries in place while unsubmitted descendants recover to wait
     expect(script.metadata!.generationBatches![0].items.map(item => item.status)).toEqual(["failed", "waiting", "waiting", "waiting"]);
     expect(recovered.find(node => node.id === rootId)).toEqual(failed.find(node => node.id === rootId));
     expect(recovered.filter(node => f.targets.slice(1).some(target => target.nodeId === node.id)).every(node => node.metadata?.status === "idle" && !node.metadata.errorDetails)).toBe(true);
-    expect(candidates(recovered)).toEqual([]);
+    expect(candidates(recovered).map(item => item.node.id)).toEqual(f.targets.slice(1).map(target => target.nodeId));
     expect(failedStoryboardBoundaryImages(script, failed).map(node => node.id)).toEqual([rootId]);
     expect(failedStoryboardBoundaryImages(script, recovered).map(node => node.id)).toEqual([rootId]);
 
@@ -83,10 +86,10 @@ test("failed root retries in place while unsubmitted descendants recover to wait
     script = retry.nodes.find(node => node.id === f.script.id)!;
     const retryBatch: CanvasGenerationBatch = { ...script.metadata!.generationBatches![0], id: "retry-root", status: "queued", items: [{ ...retry.targets[0], id: "retry-item", status: "waiting", retryCount: 1 }] };
     let nodes = retry.nodes.map(node => node.id === script.id ? { ...node, metadata: { ...node.metadata, generationBatches: [...node.metadata!.generationBatches!, retryBatch] } } : node);
-    expect(candidates(nodes).map(item => item.node.id)).toEqual([rootId]);
+    expect(new Set(candidates(nodes).map(item => item.node.id))).toEqual(new Set(f.targets.map(target => target.nodeId)));
     for (let index = 0; index < f.targets.length; index++) {
         nodes = reconcileGenerationBatches(complete(nodes, f.targets[index].nodeId), "project", new Set());
-        expect(candidates(nodes).map(item => item.node.id)).toEqual(f.targets.slice(index + 1, index + 2).map(target => target.nodeId));
+        expect(candidates(nodes).map(item => item.node.id)).toEqual(f.targets.slice(index + 1).map(target => target.nodeId));
     }
     const batches = nodes.find(node => node.id === script.id)!.metadata!.generationBatches!;
     expect(batches[0].items[0]).toMatchObject({ status: "failed", taskId: "failed-root" });
@@ -132,7 +135,7 @@ test("dependency errors recover after the anchor finished, but paused and in-fli
     expect(reconcileGenerationBatches(submitting, "project", new Set([`frames:${endId}`])).find(node => node.id === endId)).toBe(nodes.find(node => node.id === endId));
 });
 
-test("failed-only restores orphaned pending descendants without duplicating active, cancelled or independent chains", () => {
+test("failed-only never expands a retry to pending, cancelled or unrelated frames", () => {
     installRuntimeLimits({ image: 6 }, 0);
     const f = fixture();
     const rootId = f.targets[0].nodeId;
@@ -140,18 +143,18 @@ test("failed-only restores orphaned pending descendants without duplicating acti
     const script = nodes.find(node => node.id === f.script.id)!;
     const requests = script.metadata!.storyboard!.rows.map(row => ({ row, frames: storyboardBoundaryFrames(row) }));
     const retry = materializeStoryboardFrames(script, requests, nodes, f.connections, "image", { size: "9:16", quality: "standard", transparentBackground: "false" }, { failedOnly: true });
-    expect(retry.targets.map(target => target.nodeId)).toEqual(f.targets.map(target => target.nodeId));
+    expect(retry.targets.map(target => target.nodeId)).toEqual([rootId]);
     expect(retry.nodes.find(node => node.id === rootId)!.metadata!.taskId).toBeUndefined();
     expect(nodes.find(node => node.id === rootId)!.metadata!.taskId).toBe("root-failed");
     expect(retry.nodes.filter(node => node.metadata?.storyboardFrame)).toHaveLength(4);
-    expect(retry.targets.slice(1).every(target => !storyboardFramePrerequisite(retry.nodes.find(node => node.id === target.nodeId)!, retry.nodes).ready)).toBe(true);
+    expect(f.targets.slice(1).every(target => storyboardFramePrerequisite(retry.nodes.find(node => node.id === target.nodeId)!, retry.nodes).ready)).toBe(true);
 
     const independent = fixture(true);
     const independentRoot = independent.targets[0].nodeId;
     const independentNodes = independent.nodes.map(node => node.id === independentRoot ? { ...node, metadata: { ...node.metadata, status: "error" as const, taskId: "independent-failed", taskStatus: "failed" } } : node.id === independent.script.id ? { ...node, metadata: { ...node.metadata, generationBatches: [] } } : node);
     const independentScript = independentNodes.find(node => node.id === independent.script.id)!;
     const result = materializeStoryboardFrames(independentScript, independentScript.metadata!.storyboard!.rows.map(row => ({ row, frames: storyboardBoundaryFrames(row) })), independentNodes, independent.connections, "image", { size: "9:16", quality: "standard", transparentBackground: "false" }, { failedOnly: true });
-    expect(result.targets.map(target => target.nodeId)).toEqual(independent.targets.slice(0, 2).map(target => target.nodeId));
+    expect(result.targets.map(target => target.nodeId)).toEqual([independentRoot]);
 
     const cancelled = nodes.map(node => node.id === script.id ? { ...node, metadata: { ...node.metadata, generationBatches: [{ ...f.script.metadata!.generationBatches![0], items: [{ ...f.script.metadata!.generationBatches![0].items[1], status: "cancelled" as const }] }] } } : node);
     const cancelledScript = cancelled.find(node => node.id === script.id)!;
@@ -176,7 +179,7 @@ test("retry selection excludes dependency errors and superseded paid attempts wh
     expect(reconciled.find(node => node.id === endId)).toBe(superseded.find(node => node.id === endId));
 });
 
-test("failed-only clears a stale failed taskId from a dependency descendant while retaining the failed root", () => {
+test("failed-only does not silently retry a separate historical continuity error with a task id", () => {
     const f = fixture();
     const rootId = f.targets[0].nodeId, descendantId = f.targets[1].nodeId;
     const nodes = f.nodes.map(node => {
@@ -187,10 +190,10 @@ test("failed-only clears a stale failed taskId from a dependency descendant whil
     });
     const script = nodes.find(node => node.id === f.script.id)!;
     const retried = materializeStoryboardFrames(script, script.metadata!.storyboard!.rows.map(row => ({ row, frames: storyboardBoundaryFrames(row) })), nodes, f.connections, "retry-model", { size: "9:16", quality: "standard", transparentBackground: "false" }, { failedOnly: true });
-    expect(retried.targets.map(target => target.nodeId)).toEqual([rootId, descendantId]);
+    expect(retried.targets.map(target => target.nodeId)).toEqual([rootId]);
     expect(retried.nodes.find(node => node.id === rootId)!.metadata!.taskId).toBeUndefined();
-    expect(retried.nodes.find(node => node.id === descendantId)!.metadata!.taskId).toBeUndefined();
-    expect(retried.nodes.find(node => node.id === descendantId)!.metadata!.status).toBe("idle");
+    expect(retried.nodes.find(node => node.id === descendantId)!.metadata!.taskId).toBe("stale-descendant");
+    expect(retried.nodes.find(node => node.id === descendantId)!.metadata!.status).toBe("error");
 });
 
 test("continuity snapshots survive URL refresh and reject a changed or removed anchor", () => {
@@ -214,23 +217,23 @@ test("storyboard versions keep their own frame records without creating containe
     expect(next.nodes.filter(node => node.metadata?.storyboardFramesGroup)).toHaveLength(0);
     expect(next.targets.every(target => !f.targets.some(old => old.nodeId === target.nodeId))).toBe(true);
     expect(next.connections).toEqual([]);
-    expect(storyboardFramePrerequisite(next.nodes.find(node => node.id === next.targets[1].nodeId)!, complete(next.nodes, f.targets[0].nodeId)).ready).toBe(false);
+    expect(storyboardFramePrerequisite(next.nodes.find(node => node.id === next.targets[1].nodeId)!, complete(next.nodes, f.targets[0].nodeId))).toEqual({ ready: true, reason: "" });
 });
 
-test("keyframes share their own start anchor and become parallel after it succeeds", () => {
+test("keyframes are independent and use only their own finished start as an optional reference", () => {
     installRuntimeLimits({ image: 6, text: 3, video: 2 }, 0);
     const f = fixture(true), row = f.script.metadata!.storyboard!.rows[0];
     const result = materializeStoryboardFrames(f.script, [{ row, frames: [1, 2].map(i => ({ id: `key-${i}`, kind: StoryboardFrameKind.Key, timeSeconds: i, prompt: `人物在第${i}秒抬手`, sourcePromptHash: row.frames![0].sourcePromptHash })) }], f.nodes, f.connections, "image", { size: "9:16", quality: "standard", transparentBackground: "false" });
     const keyNodes = result.targets.map(target => result.nodes.find(node => node.id === target.nodeId)!);
     expect(keyNodes).toHaveLength(2);
-    expect(keyNodes.every(node => !storyboardFramePrerequisite(node, result.nodes).ready)).toBe(true);
+    expect(keyNodes.every(node => storyboardFramePrerequisite(node, result.nodes).ready)).toBe(true);
     const ready = complete(result.nodes, f.targets[0].nodeId);
     expect(keyNodes.every(node => storyboardFramePrerequisite(node, ready).reference?.id === f.targets[0].nodeId)).toBe(true);
     const paused = pauseNodeGenerationBatches(f.nodes, f.script.id);
     expect(candidates(JSON.parse(JSON.stringify(paused)))).toHaveLength(0);
 });
 
-test("changing a completed anchor preserves old outputs but makes every downstream boundary a new version", () => {
+test("changing reference pixels invalidates only images that actually used those pixels", () => {
     const f = fixture();
     let nodes = f.nodes;
     for (const target of f.targets) {
@@ -241,9 +244,10 @@ test("changing a completed anchor preserves old outputs but makes every downstre
     nodes = nodes.map(node => node.id === f.targets[0].nodeId ? { ...node, metadata: { ...node.metadata, storageKey: "resource:replacement" } } : node);
     const script = nodes.find(node => node.id === f.script.id)!;
     const rows = script.metadata!.storyboard!.rows;
-    expect(rows.slice(1).every(row => !storyboardFrameIsCurrent(row, row.frames![0], nodes))).toBe(true);
+    expect(storyboardFrameIsCurrent(rows[1], rows[1].frames![0], nodes)).toBe(false);
+    expect(storyboardFrameIsCurrent(rows[2], rows[2].frames![0], nodes)).toBe(true);
     const next = materializeStoryboardFrames(script, rows.map(row => ({ row, frames: storyboardBoundaryFrames(row) })), nodes, f.connections, "image", { size: "9:16", quality: "standard", transparentBackground: "false" });
-    expect(next.targets).toHaveLength(3);
+    expect(next.targets).toHaveLength(1);
     expect(next.targets.every(target => !f.targets.some(old => old.nodeId === target.nodeId))).toBe(true);
     expect(f.targets.every(target => next.nodes.some(node => node.id === target.nodeId && node.metadata?.content))).toBe(true);
 });

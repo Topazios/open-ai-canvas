@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback, useMemo, useState, type SyntheticEvent } from "react";
-import { App, Button, Input } from "antd";
-import { Images, Info, Link2, Pause, PencilLine, Play, RefreshCw, ScanSearch } from "lucide-react";
+import { lazy, Suspense, useCallback, useMemo, useState, type CSSProperties, type SyntheticEvent } from "react";
+import { App, Button, Checkbox, Input, Tooltip } from "antd";
+import { Image as ImageIcon, Info, Link2, ListChecks, Pause, PencilLine, Play, Sparkles } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { CanvasVideoSettingsPopover } from "@/components/canvas/canvas-video-settings-popover";
@@ -9,25 +9,37 @@ import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-project-generation";
 import { storyboardFrameGenerationConfig } from "@/lib/canvas/storyboard-frame-model";
-import { episodeStoryboardPromptPatch, episodeStoryboardTiming, resolveEpisodeShotAssets, storyboardRowIsReady } from "@/lib/canvas/workflow-episode-storyboard";
+import { episodeStoryboardPromptPatch, episodeStoryboardTiming, resolveEpisodeShotAssets, storyboardRowIsReady, storyboardSceneId } from "@/lib/canvas/workflow-episode-storyboard";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { bindingForConnectedNode } from "@/lib/canvas/canvas-storyboard-materializer";
 import { CanvasNodeType, type CanvasNodeData, type StoryboardRow } from "@/types/canvas";
 import type { GenerationTask } from "@/services/api/task-center";
 import type { AgentRun } from "@/services/api/agent";
 import { CanvasGenerationTaskDetails } from "@/pages/canvas/canvas-generation-task-details";
-import { CanvasNodeActionButton } from "./canvas-node-action-bar";
 import { CanvasVideoPreviewImage } from "./canvas-video-preview-image";
 import { useVideoPlaybackUrl } from "./canvas-node-media-content";
 import { CanvasEpisodeShotFrames } from "./canvas-episode-shot-frames";
 import { CanvasEpisodeFrameGallery } from "./canvas-episode-frame-gallery";
 import { CanvasEpisodeAssetReferences } from "./canvas-episode-asset-references";
 import { CanvasImagePreview } from "./canvas-image-preview";
-import { failedStoryboardBoundaryImageCount, failedStoryboardBoundaryImagesForRow, generatedStoryboardBoundaryImagesForRow, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
+import { storyboardFrameLabels, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
+import { storyboardFrameTrack, storyboardFrameTrackSelection, storyboardFrameTrackTargets, type StoryboardFrameTrackItem } from "@/lib/canvas/storyboard-frame-track";
 import "./canvas-episode-storyboard.css";
 
 const VideoPlayer = lazy(() => import("@/components/video-player").then((module) => ({ default: module.VideoPlayer })));
 const stop = (event: SyntheticEvent) => event.stopPropagation();
+const FOCUSABLE_TARGET = "input, textarea, select, button, a[href], label, [tabindex], [contenteditable='true']";
+// 点击时间线非交互区域时主动失焦，避免复选框一直保留焦点样式。
+const blurOnBlankPointer = (event: React.PointerEvent<HTMLElement>) => {
+    stop(event);
+    const target = event.target instanceof Element ? event.target : null;
+    const active = document.activeElement;
+    if (!target?.closest(FOCUSABLE_TARGET) && active instanceof HTMLElement && event.currentTarget.contains(active)) active.blur();
+};
+const handleWheel = (event: React.WheelEvent) => {
+    // 按住 Ctrl/Meta 时,允许事件传播以支持画布缩放
+    // 其他情况也不阻止传播,让浏览器处理容器内的正常滚动
+};
 
 export function CanvasEpisodeStoryboard({
     node,
@@ -48,14 +60,14 @@ export function CanvasEpisodeStoryboard({
     node: CanvasNodeData;
     nodes: CanvasNodeData[];
     progress?: AgentRun["production"];
-    onGenerate: (rowIds: string[]) => Promise<void> | void;
+    onGenerate: (rowIds: string[], regenerate?: boolean) => Promise<void> | void;
     onPause: () => Promise<void> | void;
     onRetry: (node: CanvasNodeData) => void;
     onDetails: () => void;
     onUpdate: (rowId: string, patch: Partial<StoryboardRow>) => void;
     onCancel: (task: GenerationTask) => void;
     onModelChange: (model: string) => void;
-    onGenerateFrames: (rowId?: string, kind?: "boundary" | "keyframes", options?: StoryboardFrameGenerationOptions) => Promise<void>;
+    onGenerateFrames: (rowId?: string, kind?: "all" | "boundary" | "keyframes", options?: StoryboardFrameGenerationOptions) => Promise<void>;
     onExtractKeyframes: (rowId: string) => Promise<void>;
     onRetryFrame: (node: CanvasNodeData) => void;
     onFrameModelChange: (kind: "text" | "image", model: string) => void;
@@ -69,6 +81,9 @@ export function CanvasEpisodeStoryboard({
     const [frameRowId, setFrameRowId] = useState<string>();
     const [preparingFrames, setPreparingFrames] = useState<{ rowId?: string; failedOnly: boolean }>();
     const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [selectedRows, setSelectedRows] = useState<string[]>([]);
+    const [selectedFrames, setSelectedFrames] = useState<string[]>([]);
+    const [density, setDensity] = useState<"normal" | "compact">("normal");
     const [playingId, setPlayingId] = useState<string | null>(null);
     const [preview, setPreview] = useState<{ items: CanvasNodeData[]; index: number }>();
     const [submitting, setSubmitting] = useState(false);
@@ -94,6 +109,14 @@ export function CanvasEpisodeStoryboard({
         [confirmRegeneration, onRetry],
     );
     const rows = node.metadata?.storyboard?.rows || [];
+    const frameTrack = useMemo(() => storyboardFrameTrack(rows, nodes), [rows, nodes]);
+    const selectedFrameIds = storyboardFrameTrackSelection(frameTrack, selectedFrames);
+    const selectableFrames = frameTrack;
+    const frameTargets = storyboardFrameTrackTargets(frameTrack, selectedFrameIds);
+    const framePreviewGroup = frameTrack.flatMap(item => {
+        const image = nodes.find(node => node.id === item.frame.imageNodeId);
+        return image && (image.metadata?.content || image.metadata?.storageKey) ? [{ ...image, title: item.usages.map(usage => `${usage.shot} ${storyboardFrameLabels[usage.kind]}`).join(" · ") }] : [];
+    });
     const detailStates = new Map(progress?.parallelItems?.map((item) => [item.key, item]));
     const detailLabel = (row: StoryboardRow) => {
         if (progress?.executionMode === "episode") {
@@ -115,7 +138,6 @@ export function CanvasEpisodeStoryboard({
             }[work.status];
         return row.detailStatus === "queued" ? "镜头详情已调度" : row.detailStatus === "retrying" ? "镜头详情重试中" : row.detailStatus === "error" ? "镜头详情生成失败" : "等待生成镜头详情";
     };
-    const failedFrameCount = useMemo(() => failedStoryboardBoundaryImageCount(node, nodes), [node, nodes]);
     const timing = episodeStoryboardTiming(node);
     const timingIssues = timing ? rows.filter((row) => storyboardRowIsReady(row) && timing.issue(row)) : [];
     const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
@@ -189,9 +211,7 @@ export function CanvasEpisodeStoryboard({
                     } catch (error) {
                         assetError = error instanceof Error ? error.message : "资产解析失败";
                     }
-                const failedFrames = failedStoryboardBoundaryImagesForRow(node, row.id, nodes);
-                const generatedFrames = generatedStoryboardBoundaryImagesForRow(node, row.id, nodes);
-                return { row, video, active, failed, ready, detailReady, assets, assetError, paused: current?.batch.paused, failedFrames, generatedFrames };
+                return { row, video, active, failed, ready, detailReady, assets, assetError, paused: current?.batch.paused };
             }),
         [rows, node, nodes, byId],
     );
@@ -212,16 +232,29 @@ export function CanvasEpisodeStoryboard({
     const playing = playingId ? byId.get(playingId) || items.find((item) => item.video?.id === playingId)?.video : undefined;
     const { url, loading } = useVideoPlaybackUrl(playing || node, Boolean(playing));
     const generating = node.metadata?.status === "loading";
-    const remaining = items.filter((item) => item.detailReady && !item.ready && !item.active && !item.failed && !item.assetError);
     const active =
         items.some((item) => item.active) ||
         nodes.some((item) => (item.metadata?.storyboardFramePlan?.scriptId === node.id || item.metadata?.storyboardFrame?.scriptId === node.id) && isCanvasNodeGenerating(item)) ||
         (node.metadata?.generationBatches || []).some((batch) => !batch.paused && batch.items.some((item) => ["waiting", "submitting", "queued", "running"].includes(item.status)));
-    const generate = async (ids: string[]) => {
+    const sceneGroups = useMemo(() => {
+        const groups: { key: string; label: string; count: number }[] = [];
+        for (const item of items) {
+            const code = storyboardSceneId(item.row) || "scene-1";
+            const existing = groups[groups.length - 1];
+            if (existing?.key === code) existing.count += 1;
+            else {
+                const match = code.match(/S?(\d+)/i);
+                groups.push({ key: code, label: `场次 ${String(Number(match?.[1] || groups.length + 1)).padStart(2, "0")}`, count: 1 });
+            }
+        }
+        return groups;
+    }, [items]);
+    const targetItems = selectedRows.length ? items.filter((item) => selectedRows.includes(item.row.id) && item.detailReady) : items.filter((item) => item.detailReady);
+    const generate = async (ids: string[], regenerate = false) => {
         if (submitting || pausing) return;
         setSubmitting(true);
         try {
-            await onGenerate(ids);
+            await onGenerate(ids, regenerate);
         } finally {
             setSubmitting(false);
         }
@@ -235,211 +268,85 @@ export function CanvasEpisodeStoryboard({
             setPausing(false);
         }
     };
-    const generateFrames = async (rowId?: string, options: StoryboardFrameGenerationOptions = {}) => {
+    const generateFrames = async (options: StoryboardFrameGenerationOptions = {}) => {
         if (preparingFrames || pausing) return;
-        setPreparingFrames({ rowId, failedOnly: Boolean(options.failedOnly) });
+        const frameTargets = options.frameTargets || storyboardFrameTrackTargets(frameTrack, selectedFrameIds);
+        if (!frameTargets.length) return;
+        setPreparingFrames({ failedOnly: Boolean(options.failedOnly) });
         try {
-            await onGenerateFrames(rowId, "boundary", options);
+            await onGenerateFrames(undefined, "all", { ...options, frameTargets });
         } finally {
             setPreparingFrames(undefined);
         }
     };
+    const generateFrame = (item: StoryboardFrameTrackItem) => void generateFrames({ regenerate: true, frameTargets: [{ rowId: item.rowId, frameId: item.frame.id }] });
+    // One action for the current selection: checked shots generate videos, checked frames generate images.
+    const selectedVideoIds = selectedRows.length ? targetItems.filter((item) => !item.active && !item.assetError).map((item) => item.row.id) : [];
+    const selectedFrameTargets = selectedFrameIds.length ? frameTargets : [];
+    const canGenerateVideos = selectedVideoIds.length > 0 && !submitting;
+    const canGenerateFrames = selectedFrameTargets.length > 0 && !preparingFrames;
+    const generateSelectionTip = !selectedRows.length && !selectedFrameIds.length
+        ? "勾选镜头生成视频，勾选画面生成画面"
+        : [selectedRows.length ? `视频 ${selectedVideoIds.length} 个` : "", selectedFrameIds.length ? `画面 ${selectedFrameTargets.length} 张` : ""].filter(Boolean).join(" · ");
+    const generateSelected = () => {
+        if (pausing) return;
+        void Promise.all([
+            canGenerateVideos ? generate(selectedVideoIds, true) : undefined,
+            canGenerateFrames ? generateFrames({ regenerate: true, frameTargets: selectedFrameTargets }) : undefined,
+        ]);
+    };
+    const toggleFrame = (id: string, checked: boolean) => setSelectedFrames(current => {
+        const selected = storyboardFrameTrackSelection(frameTrack, current);
+        return checked ? [...new Set([...selected, id])] : selected.filter(value => value !== id);
+    });
+    const toggleRow = (rowId: string, checked: boolean) => setSelectedRows((current) => checked ? [...new Set([...current, rowId])] : current.filter((id) => id !== rowId));
+    const toggleAllRows = (checked: boolean) => setSelectedRows(checked ? items.map((item) => item.row.id) : []);
+    const compact = density === "compact";
+    const shotState = ({ row, video, active, failed, ready, detailReady }: Pick<(typeof items)[number], "row" | "video" | "active" | "failed" | "ready" | "detailReady">) =>
+        detailReady ? active ? video?.metadata?.taskStage || "生成中" : failed ? "生成失败" : ready ? "已完成" : "待生成" : detailLabel(row);
+    const frameWidth = compact ? 88 : 112;
+    const frameGap = compact ? 6 : 8;
+    const gridColumns = `${compact ? 88 : 112}px ${items.map(item => `${Math.max(compact ? 112 : 192, frameTrack.filter(frame => frame.rowId === item.row.id).length * (frameWidth + frameGap) + frameGap)}px`).join(" ")}`;
     return (
-        <section
-            className="box-border flex size-full min-h-0 flex-col overflow-hidden px-3 pb-2 pt-10"
-            style={{ color: theme.node.text, background: theme.node.fill }}
-            aria-label="分集视频分镜列表"
-            data-canvas-no-zoom
-            data-canvas-wheel-scroll
-            onPointerDown={stop}
-            onMouseDown={stop}
-            onWheel={stop}
-            onKeyDown={stop}
-            onDoubleClick={stop}
-        >
-            <header className="flex shrink-0 flex-wrap items-center gap-2 border-b pb-2" style={{ borderColor: theme.node.stroke }}>
-                <strong className="mr-auto text-sm">
-                    第 {node.metadata?.shortDrama?.episodeNumber || 1} 集 · {rows.length} 个镜头{" "}
-                    <span className="text-xs font-normal" style={{ color: theme.node.muted }}>
-                        详情 {items.filter((item) => item.detailReady).length}/{rows.length} · 视频 {items.filter((item) => item.ready).length}/{rows.length}
-                    </span>
-                </strong>
-                <div className="w-48 min-w-0">
-                    <ModelPicker fullWidth config={videoConfig} value={videoConfig.model} capability="video" placeholder="选择视频模型" showSelectedPrice={false} onChange={onModelChange} />
-                </div>
+        <section className="canvas-episode-timeline box-border flex size-full min-h-0 flex-col overflow-hidden px-3 pb-2 pt-8" style={{ color: theme.node.text, background: theme.node.fill, "--timeline-surface": theme.node.fill, "--timeline-selected": theme.node.activeStroke } as CSSProperties} aria-label="分集视频分镜时间线" data-canvas-no-zoom data-canvas-wheel-scroll onPointerDown={blurOnBlankPointer} onMouseDown={stop} onWheel={handleWheel} onKeyDown={stop} onDoubleClick={stop}>
+            <header className="canvas-episode-toolbar flex shrink-0 flex-wrap items-center gap-2 border-b pb-2" style={{ borderColor: theme.node.stroke }}>
+                <strong className="mr-auto text-sm">第 {node.metadata?.shortDrama?.episodeNumber || 1} 集 · {rows.length} 个镜头 <span className="text-xs font-normal" style={{ color: theme.node.muted }}>完成 {items.filter((item) => item.detailReady).length}/{rows.length} · 视频 {items.filter((item) => item.ready).length}/{rows.length}</span></strong>
+                <div className="w-40 min-w-0"><ModelPicker fullWidth config={videoConfig} value={videoConfig.model} capability="video" placeholder="视频模型" showSelectedPrice={false} onChange={onModelChange} /></div>
                 <CanvasVideoSettingsPopover config={videoConfig} placement="bottomRight" resolutionOnly onConfigChange={(key, value) => updateConfig(key, value)} />
-                <Button size="small" type="primary" icon={<Play size={14} />} loading={submitting} disabled={pausing || !remaining.length} onClick={() => void generate(remaining.map((item) => item.row.id))}>
-                    全部生成
-                </Button>
-                <Button size="small" icon={<Pause size={14} />} loading={pausing} disabled={!active || submitting} onClick={() => void pause()}>
-                    全部暂停
-                </Button>
+                <div className="w-40 min-w-0"><ModelPicker fullWidth config={imageConfig} value={imageConfig.model} capability="image" placeholder="生图模型" showSelectedPrice={false} onChange={(model) => onFrameModelChange("image", model)} /></div>
+                <Button.Group size="small"><Button aria-pressed={density === "normal"} onClick={() => setDensity("normal")}>正常</Button><Button aria-pressed={density === "compact"} onClick={() => setDensity("compact")}>缩略</Button></Button.Group>
+                <div className="canvas-episode-toolbar-actions flex items-center gap-1">
+                    <Tooltip title={generateSelectionTip}>
+                        <Button size="small" type="primary" icon={<Sparkles size={14} />} loading={submitting || Boolean(preparingFrames && !preparingFrames.failedOnly)} disabled={pausing || (!canGenerateVideos && !canGenerateFrames)} onClick={generateSelected}>生成选中</Button>
+                    </Tooltip>
+                    <Tooltip title="暂停"><Button size="small" icon={<Pause size={14} />} aria-label="暂停" loading={pausing} disabled={!active || submitting} onClick={() => void pause()} /></Tooltip>
+                    <Tooltip title="执行详情"><Button size="small" type="text" icon={<ListChecks size={14} />} aria-label="执行详情" onClick={onDetails} /></Tooltip>
+                </div>
             </header>
-            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b py-2" style={{ borderColor: theme.node.stroke }}>
-                <span className="mr-auto text-xs" style={{ color: theme.node.muted }}>
-                    镜头画面{node.metadata?.shortDrama?.parameters?.shotDurationSeconds ? ` · 目标 ${node.metadata.shortDrama.parameters.shotDurationSeconds} 秒 ±${node.metadata.shortDrama.parameters.shotDurationToleranceSeconds || 3} 秒` : ""}
-                </span>
-                <div className="w-48 min-w-0">
-                    <ModelPicker fullWidth config={imageConfig} value={imageConfig.model} capability="image" placeholder="选择生图模型" showSelectedPrice={false} onChange={(model) => onFrameModelChange("image", model)} />
-                </div>
-                <Button
-                    size="small"
-                    icon={<Images size={14} />}
-                    loading={Boolean(preparingFrames && !preparingFrames.rowId && !preparingFrames.failedOnly)}
-                    disabled={!items.some((item) => item.detailReady) || pausing || Boolean(preparingFrames)}
-                    onClick={() => void generateFrames()}
-                >
-                    生成全部首尾帧
-                </Button>
-                {failedFrameCount ? (
-                    <Button size="small" icon={<RefreshCw size={14} />} loading={Boolean(preparingFrames?.failedOnly)} disabled={pausing || Boolean(preparingFrames)} onClick={() => void generateFrames(undefined, { failedOnly: true })}>
-                        重试失败首尾帧（影响 {failedFrameCount}）
-                    </Button>
-                ) : null}
+            {generating ? <p role="status" className="shrink-0 py-2 text-xs">{node.metadata?.taskStage || "正在拆解本集镜头"}{progress?.executionMode === "episode" ? ` · ${detailLabel(rows[0])} · 全局 Agent 并发上限 ${progress.concurrencyLimit ?? "--"}` : progress?.parallelItems?.length ? ` · 执行 ${progress.parallelItems.filter((item) => item.status === "running").length} · 排队 ${progress.parallelItems.filter((item) => item.status === "queued").length} · 全局并发上限 ${progress.concurrencyLimit ?? "--"}` : ""}</p> : null}
+            {node.metadata?.status === "error" ? <p role="alert" className="shrink-0 py-2 text-xs" style={{ color: theme.accent.danger }}>{node.metadata.errorDetails || "本集拆解中断，可在执行详情继续。已保存镜头仍可生成视频。"}</p> : null}
+            {timingIssues.length ? <p role="alert" className="shrink-0 py-2 text-xs" style={{ color: theme.accent.danger }}>{timingIssues.length} 个镜头超出 {timing!.min}–{timing!.max} 秒范围。</p> : null}
+            <div className="thin-scrollbar canvas-episode-storyboard-scroll min-h-0 flex-1 overflow-auto" aria-label="分镜时间线">
+                {rows.length ? <div className={`canvas-episode-timeline-grid ${density === "compact" ? "is-compact" : ""}`} style={{ "--shot-columns": Math.max(items.length, 1), "--timeline-columns": gridColumns } as CSSProperties}>
+                    <div className="timeline-spacer" />
+                    {sceneGroups.map((scene, index) => <div key={`${scene.key}-${index}`} className="scene-group-label" style={{ gridColumn: `span ${scene.count}` }}>{scene.label}<span>{scene.count} 镜</span></div>)}
+                    <div className="track-label"><strong>镜头主轨</strong><Checkbox checked={items.length > 0 && selectedRows.length === items.length} indeterminate={selectedRows.length > 0 && selectedRows.length < items.length} onChange={event => toggleAllRows(event.target.checked)}>全选视频</Checkbox></div>
+                    {items.map(({ row, video, active: rowActive, failed, ready, detailReady }) => <div key={`shot-${row.id}`} className={`timeline-shot ${selectedRows.includes(row.id) ? "is-selected" : ""}`} data-state={rowActive ? "running" : failed ? "failed" : ready ? "ready" : "waiting"}>
+                        <div className="timeline-shot-header"><Checkbox checked={selectedRows.includes(row.id)} onChange={event => toggleRow(row.id, event.target.checked)} aria-label={`选择镜头 ${row.shotCode || row.shotNumber}`} /><strong title={row.shotCode}>镜头 {String(row.shotNumber).padStart(2, "0")}</strong><span>{row.durationSeconds.toFixed(1)} 秒</span><Button size="small" type="text" icon={<Info size={13} />} aria-label={`镜头 ${row.shotCode || row.shotNumber} 详情`} onClick={() => setSelectedId(row.id)} /></div>
+                        <button type="button" className="timeline-shot-preview" aria-label={`${ready ? "播放" : "查看"}镜头 ${row.shotCode || row.shotNumber}`} onClick={() => ready && video ? setPlayingId(video.id) : setSelectedId(row.id)}>
+                            {ready && video ? <span className="timeline-shot-image"><CanvasVideoPreviewImage node={video} className="size-full object-cover" fallback={<ImageIcon size={20} />}/><Play size={18} className="timeline-shot-play" /></span> : <span className="timeline-shot-image timeline-placeholder"><ImageIcon size={18}/></span>}
+                            <span className="timeline-state" title={shotState({ row, video, active: rowActive, failed, ready, detailReady })}>{shotState({ row, video, active: rowActive, failed, ready, detailReady })}</span>
+                        </button>
+                    </div>)}
+                    <div className="track-label"><strong>画面帧</strong><Checkbox checked={selectedFrameIds.length > 0 && selectedFrameIds.length === selectableFrames.length} indeterminate={selectedFrameIds.length > 0 && selectedFrameIds.length < selectableFrames.length} onChange={event => setSelectedFrames(event.target.checked ? selectableFrames.map(item => item.id) : [])}>全选画面</Checkbox></div>
+                    {items.map(({ row }) => <div key={`frames-${row.id}`} className="timeline-frame-cell"><CanvasEpisodeFrameGallery row={row} nodes={nodes} trackItems={frameTrack.filter(item => item.rowId === row.id)} selectedIds={selectedFrameIds} onToggle={toggleFrame} onGenerate={generateFrame} preparing={Boolean(preparingFrames) || pausing} previewGroup={framePreviewGroup} onPreview={onPreviewFrame} onManage={setFrameRowId} /></div>)}
+                    <div className="track-label">引用资产</div>
+                    {items.map(({ row, assets, assetError, detailReady }) => <div key={`assets-${row.id}`} className="timeline-assets-cell">{detailReady ? <CanvasEpisodeAssetReferences assets={assets} onPreview={onPreviewFrame} /> : <span>{assetError || "待引用"}</span>}{detailReady && assets?.missingCodes.length ? <span title={assets.missingCodes.join("、")}>待引用 {assets.missingCodes.length}</span> : null}</div>)}
+                </div> : <p className="p-5 text-center" style={{ color: theme.node.muted }}>{node.metadata?.status === "error" ? node.metadata.errorDetails || "分镜任务失败，请在执行详情中重试" : node.metadata?.shortDrama?.submission === "planned" ? "本集尚未提交，请在分组详情中继续提交" : generating ? "正在规划本集镜头清单" : "本集尚未生成分镜"}</p>}
             </div>
-            {generating ? (
-                <p role="status" className="shrink-0 py-2 text-xs">
-                    {node.metadata?.taskStage || "正在拆解本集镜头"}
-                    {progress?.executionMode === "episode"
-                        ? ` · ${detailLabel(rows[0])} · 全局 Agent 并发上限 ${progress.concurrencyLimit ?? "--"}`
-                        : progress?.parallelItems?.length
-                          ? ` · 本集执行 ${progress.parallelItems.filter((item) => item.status === "running").length} · 排队 ${progress.parallelItems.filter((item) => item.status === "queued").length} · 待保存 ${progress.parallelItems.filter((item) => item.status === "succeeded").length} · 全局 Agent 并发上限 ${progress.concurrencyLimit ?? "--"}`
-                          : ""}
-                </p>
-            ) : null}
-            {node.metadata?.status === "error" ? (
-                <p role="alert" className="shrink-0 py-2 text-xs" style={{ color: theme.accent.danger }}>
-                    {node.metadata.errorDetails || "本集拆解中断，可在执行详情继续。已保存镜头仍可生成视频。"}
-                </p>
-            ) : null}
-            {timingIssues.length ? (
-                <p role="alert" className="shrink-0 py-2 text-xs" style={{ color: theme.accent.danger }}>
-                    {timingIssues.length} 个已保存镜头超出 {timing!.min}–{timing!.max} 秒范围，需重新拆解对应场次；原内容已保留。
-                </p>
-            ) : null}
-            <div className="thin-scrollbar canvas-episode-storyboard-scroll min-h-0 flex-1 overflow-auto" aria-label="分镜内容">
-                <div className="canvas-episode-storyboard-rows">
-                    {items.map(({ row, video, active, failed, ready, detailReady, assets, assetError, paused, failedFrames, generatedFrames }) => (
-                        <article key={row.id} className="canvas-episode-storyboard-card" data-storyboard-row={row.id} data-storyboard-detail-status={row.detailStatus} style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
-                            <div className="canvas-episode-storyboard-card-main">
-                                <div className="canvas-episode-storyboard-meta">
-                                    <strong className="break-all">{row.shotCode || row.shotNumber}</strong>
-                                    <span style={{ color: timing?.issue(row) ? theme.accent.danger : theme.node.muted }}>{row.durationSeconds} 秒</span>
-                                    {timing?.issue(row) ? (
-                                        <span className="line-clamp-2" style={{ color: theme.accent.danger }}>
-                                            {timing.issue(row)}
-                                        </span>
-                                    ) : row.timingException === "scene_tail" ? (
-                                        <span style={{ color: theme.node.muted }}>场尾余量</span>
-                                    ) : null}
-                                </div>
-                                <div className="canvas-episode-storyboard-prompt">
-                                    <span className="canvas-episode-storyboard-section-label">分镜提示词</span>
-                                    <p className={detailReady ? "line-clamp-5 whitespace-pre-wrap break-words leading-5" : "line-clamp-4 whitespace-pre-wrap break-words leading-5"} title={detailReady ? row.videoMotionPrompt : row.plannedGoal}>
-                                        {detailReady ? row.videoMotionPrompt || row.plotDescription : row.plannedGoal || "已规划镜头"}
-                                    </p>
-                                    <p role="status" className="canvas-episode-storyboard-status line-clamp-2" style={{ color: row.detailStatus === "error" ? theme.accent.danger : theme.node.muted }}>
-                                        {detailReady ? (active ? video?.metadata?.taskStage || "排队中" : failed ? (ready ? "重新生成失败，保留原视频" : "生成失败") : ready ? "已生成" : paused || video?.metadata?.taskStatus === "cancelled" ? "已暂停" : "待生成") : detailLabel(row)}
-                                    </p>
-                                    {row.detailError ? (
-                                        <p role="alert" className="line-clamp-2 break-words" style={{ color: theme.accent.danger }}>
-                                            {row.detailError}
-                                        </p>
-                                    ) : null}
-                                </div>
-                            </div>
-                            <div className="canvas-episode-storyboard-media">
-                                <span className="canvas-episode-storyboard-section-label">画面素材</span>
-                                {detailReady ? (
-                                    <CanvasEpisodeFrameGallery row={row} nodes={nodes} onPreview={onPreviewFrame} onManage={() => setFrameRowId(row.id)} />
-                                ) : (
-                                    <div className="canvas-episode-storyboard-placeholder" style={{ color: theme.node.muted }}>
-                                        详情完成后关联首尾帧与素材
-                                    </div>
-                                )}
-                                <div className="canvas-episode-storyboard-reference-block">
-                                    {detailReady ? <CanvasEpisodeAssetReferences assets={assets} onPreview={onPreviewFrame} /> : null}
-                                    {!detailReady ? <span style={{ color: theme.node.muted }}>{row.detailDependencies?.length ? `前置镜头：${row.detailDependencies.join("、")}` : "等待分镜详情"}</span> : null}
-                                    {detailReady && assets?.missingCodes.length ? (
-                                        <span className="canvas-episode-storyboard-empty-reference" style={{ color: theme.node.muted }} title={`资产生成后会按编码自动引用：${assets.missingCodes.join("、")}`}>
-                                            {assets.missingCodes.length} 项资产待引用：{assets.missingCodes.slice(0, 3).join("、")}{assets.missingCodes.length > 3 ? "等" : ""}
-                                        </span>
-                                    ) : null}
-                                    {detailReady && pendingBindings(row, assets).length ? (
-                                        <CanvasNodeActionButton theme={theme} label={`引用 ${pendingBindings(row, assets).length} 项资产`} icon={<Link2 size={14} />} onClick={() => bindAssets(row, assets)} />
-                                    ) : null}
-                                    {detailReady && !assets?.missingCodes.length && !assets?.media.some((image) => image.type === CanvasNodeType.Image) ? (
-                                        <span className="canvas-episode-storyboard-empty-reference" style={{ color: theme.node.muted }} title={assets?.codes.join("、") || row.assetKeys?.join("、")}>
-                                            {assets?.codes.length ? `${assets.codes.length} 项资产，无图片` : "无图片引用"}
-                                        </span>
-                                    ) : null}
-                                    {assetError ? (
-                                        <button type="button" role="alert" className="canvas-episode-storyboard-asset-error" style={{ color: theme.accent.danger }} onClick={() => setSelectedId(row.id)} title={assetError}>
-                                            素材引用异常 · 查看详情
-                                        </button>
-                                    ) : null}
-                                </div>
-                            </div>
-                            <div className="canvas-episode-storyboard-video">
-                                <span className="canvas-episode-storyboard-section-label">生成视频</span>
-                                {detailReady && ready && video ? (
-                                    <button type="button" className="relative block aspect-video w-full overflow-hidden rounded" aria-label={`播放镜头 ${row.shotCode || row.shotNumber}`} onClick={() => setPlayingId(video.id)}>
-                                        <CanvasVideoPreviewImage node={video} className="size-full object-cover" fallback={<span className="block size-full" style={{ background: theme.node.panel }} />} />
-                                        <Play className="absolute left-1/2 top-1/2 size-6 -translate-x-1/2 -translate-y-1/2" />
-                                    </button>
-                                ) : (
-                                    <div className="canvas-episode-storyboard-video-status" role="status" style={{ color: failed ? theme.accent.danger : theme.node.muted }}>
-                                        {detailReady ? (active ? video?.metadata?.taskStage || "排队中" : failed ? (ready ? "重新生成失败，保留原视频" : "生成失败") : ready ? "已生成" : paused || video?.metadata?.taskStatus === "cancelled" ? "已暂停" : "待生成") : "等待分镜详情"}
-                                    </div>
-                                )}
-                            </div>
-                            <div className="canvas-episode-storyboard-actions">
-                                {!detailReady ? (
-                                    <CanvasNodeActionButton theme={theme} label="执行详情" icon={<Info size={14} />} onClick={onDetails} />
-                                ) : (
-                                    <>
-                                        {!ready && !failed ? (
-                                            <CanvasNodeActionButton theme={theme} label="生成" icon={<Play size={14} />} disabled={active || submitting || pausing || Boolean(assetError)} onClick={() => void generate([row.id])} primary />
-                                        ) : null}
-                                        {ready ? (
-                                            <CanvasNodeActionButton theme={theme} label="重新生成" icon={<RefreshCw size={14} />} disabled={active || submitting || pausing || Boolean(assetError)} onClick={async () => { if (await confirmRegeneration("视频")) await generate([row.id]); }} />
-                                        ) : null}
-                                        <CanvasNodeActionButton theme={theme} label="详情" icon={<Info size={14} />} onClick={() => setSelectedId(row.id)} />
-                                        <CanvasNodeActionButton
-                                            theme={theme}
-                                            label={generatedFrames.length ? "重新生成首尾帧" : failedFrames.length ? `重试首尾帧 (${failedFrames.length})` : "首尾帧"}
-                                            icon={generatedFrames.length || failedFrames.length ? <RefreshCw size={14} /> : <Images size={14} />}
-                                            disabled={Boolean(preparingFrames) || pausing || active}
-                                            onClick={() => void generateFrames(row.id, generatedFrames.length ? { regenerate: true } : {})}
-                                        />
-                                        <CanvasNodeActionButton theme={theme} label="关键帧" icon={<ScanSearch size={14} />} onClick={() => setFrameRowId(row.id)} />
-                                        {failed && !ready ? (
-                                            <CanvasNodeActionButton
-                                                theme={theme}
-                                                label="重试"
-                                                icon={<RefreshCw size={14} />}
-                                                disabled={active || Boolean(assetError)}
-                                                onClick={() => (row.videoGeneration ? void generate([row.id]) : video ? void retryVideo(video) : void generate([row.id]))}
-                                            />
-                                        ) : null}
-                                    </>
-                                )}
-                            </div>
-                        </article>
-                    ))}
-                </div>
-                {!rows.length ? (
-                    <p className="p-5 text-center" style={{ color: theme.node.muted }}>
-                        {node.metadata?.status === "error" ? node.metadata.errorDetails || "分镜任务失败，请在执行详情中重试" : node.metadata?.shortDrama?.submission === "planned" ? "本集尚未提交，请在分组详情中继续提交" : node.metadata?.shortDrama?.submission === "submitting" ? "正在提交本集分镜任务" : generating ? "正在规划本集镜头清单" : "本集尚未生成分镜"}
-                    </p>
-                ) : null}
-            </div>
-            <footer className="flex shrink-0 border-t pt-1" style={{ borderColor: theme.node.stroke }}>
-                <CanvasNodeActionButton theme={theme} label="执行详情" icon={<Info size={14} />} onClick={onDetails} />
-            </footer>
             {selected ? (
                 <AppModal open focusable={{ trap: !previewImage }} title={`镜头 ${selected.row.shotCode || selected.row.shotNumber}`} footer={null} width="min(900px, calc(100vw - 24px))" onCancel={() => setSelectedId(null)}>
-                    <div className="thin-scrollbar max-h-[75dvh] overflow-y-auto" data-canvas-no-zoom onPointerDown={stop} onWheel={stop} onKeyDown={stop}>
+                    <div className="thin-scrollbar max-h-[75dvh] overflow-y-auto" data-canvas-no-zoom onPointerDown={stop} onWheel={handleWheel} onKeyDown={stop}>
                         <label className="mb-2 flex items-center gap-1 text-sm">
                             <PencilLine size={14} />
                             分镜提示词
@@ -453,9 +360,12 @@ export function CanvasEpisodeStoryboard({
                         />
                         <p className="my-3 text-xs">引用素材：{selected.assets?.nodes.map((item) => `${item.metadata?.shortDrama?.assetIdentity?.code} ${item.title}`).join("、") || selected.assetError || "无固定资产引用"}</p>
                         <CanvasEpisodeAssetReferences assets={selected.assets} onPreview={onPreviewFrame} large />
+                        {pendingBindings(selected.row, selected.assets).length ? <Button size="small" icon={<Link2 size={13} />} onClick={() => bindAssets(selected.row, selected.assets)}>引用已匹配资产</Button> : null}
                         <CanvasEpisodeFrameGallery
                             row={selected.row}
                             nodes={nodes}
+                            trackItems={frameTrack.filter(item => item.usages.some(usage => usage.rowId === selected.row.id))}
+                            previewGroup={framePreviewGroup}
                             onPreview={onPreviewFrame}
                             onManage={() => {
                                 setSelectedId(null);
@@ -495,7 +405,7 @@ export function CanvasEpisodeStoryboard({
             {previewImage ? <CanvasImagePreview items={previewItems} index={preview!.index} onNavigate={(index) => setPreview((current) => current && { ...current, index })} onClose={() => setPreview(undefined)} /> : null}
             {playing ? (
                 <AppModal open title={playing.title} footer={null} width="min(1000px, calc(100vw - 24px))" onCancel={() => setPlayingId(null)} destroyOnHidden>
-                    <div className="aspect-video" data-canvas-no-zoom onPointerDown={stop} onWheel={stop}>
+                    <div className="aspect-video" data-canvas-no-zoom onPointerDown={stop} onWheel={handleWheel}>
                         {url ? (
                             <Suspense fallback={<span>加载播放器</span>}>
                                 <VideoPlayer src={url} title={playing.title} autoPlay preload="metadata" className="size-full" />

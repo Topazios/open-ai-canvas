@@ -3,6 +3,7 @@ import { Button, Checkbox, Input, InputNumber, Select, Tag, Tooltip } from "antd
 import { Sparkles, X } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { workflowSourceMatches } from "@/lib/canvas/canvas-production-sources";
+import { storyboardBodyMembers } from "@/lib/canvas/workflow-storyboard-sources";
 import { workflowAssetActions, workflowAssetRevisionMembers } from "@/lib/canvas/canvas-workflow-asset-actions";
 import { productionAssetMentions } from "@/lib/canvas/production-asset-references";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
@@ -129,9 +130,7 @@ function WorkflowGeneratorForm({ target, nodes, submitting, onGenerate, onClose,
     const collections = sources.map((id) => nodes.find((node) => node.id === id)).filter((node) => nodeWorkflow(node)?.role === "collection" && !nodeWorkflow(node)?.assetGroup && !nodeWorkflow(node)?.mediaGroup);
     const storyboardBodySource = sources.map((id) => nodes.find((node) => node.id === id)).find((node) => nodeWorkflow(node)?.step === ShortDramaStep.Body);
     const storyboardScenesSource = sources.map((id) => nodes.find((node) => node.id === id)).find((node) => nodeWorkflow(node)?.step === ShortDramaStep.Scenes);
-    const storyboardEpisodeNumbers = storyboardBodySource ? (nodeWorkflow(storyboardBodySource)?.role === "collection"
-        ? nodeWorkflow(storyboardBodySource)!.sourceNodeIds.map((id) => nodes.find((node) => node.id === id)).filter((node): node is CanvasNodeData => Boolean(node && nodeWorkflow(node)?.step === ShortDramaStep.Body && node.metadata?.content?.trim() && node.metadata?.status !== "loading")).map((node) => nodeWorkflow(node)!.episodeNumber!).filter(Number.isInteger).sort((a, b) => a - b)
-        : nodeWorkflow(storyboardBodySource)?.episodeNumber ? [nodeWorkflow(storyboardBodySource)!.episodeNumber!] : []) : [];
+    const storyboardEpisodeNumbers = storyboardBodyMembers(storyboardBodySource, nodes, target.pipelineId).map(node => nodeWorkflow(node)!.episodeNumber!).sort((a, b) => a - b);
     const directIds = new Set(sources.flatMap((id) => {
         const source = nodeWorkflow(nodes.find((node) => node.id === id));
         return source?.role === "collection" ? source.sourceNodeIds : [id];

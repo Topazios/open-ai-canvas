@@ -110,6 +110,9 @@ export function getIsolatedAdminAntTheme(dark: boolean, skinID: unknown = "class
                 colorTextQuaternary: switchOff,
                 colorTextTertiary: switchOff,
             },
+            Checkbox: {
+                colorWhite: primaryFg,
+            },
             Table: {
                 headerBg: surfaceMuted,
                 headerColor: textSecondary,

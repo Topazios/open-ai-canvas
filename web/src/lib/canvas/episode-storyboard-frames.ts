@@ -12,7 +12,14 @@ import { reconcileStoryboardFramesGroups } from "./storyboard-frame-groups";
 import { resetGenerationTaskMetadata } from "./canvas-task-state";
 import { storyboardFrameWaitingReason } from "./storyboard-frame-continuity";
 
-export type StoryboardFrameGenerationOptions = { failedOnly?: boolean; regenerate?: boolean; frameIds?: string[] };
+export type StoryboardFrameTarget = { rowId: string; frameId: string };
+export type StoryboardFrameGenerationOptions = { failedOnly?: boolean; regenerate?: boolean; frameIds?: string[]; rowIds?: string[]; frameTargets?: StoryboardFrameTarget[] };
+
+export function storyboardFrameRequested(rowId: string, frameId: string, options: StoryboardFrameGenerationOptions) {
+    return (!options.rowIds || options.rowIds.includes(rowId))
+        && (!options.frameIds || options.frameIds.includes(frameId))
+        && (!options.frameTargets || options.frameTargets.some(target => target.rowId === rowId && target.frameId === frameId));
+}
 
 export const storyboardFrameLabels = { start: "首帧", end: "尾帧", key: "关键帧" };
 export function storyboardBoundaryFrames(row: StoryboardRow): StoryboardFrame[] {
@@ -179,55 +186,19 @@ export function materializeStoryboardFrames(
     const reconciled = reconcileStoryboardFramesGroups(nodes, connections);
     let next = [...reconciled.nodes];
     const targets: { rowId: string; nodeId: string }[] = [];
-    const { active, cancelled } = storyboardFrameQueue(script);
+    const { active } = storyboardFrameQueue(script);
     const rowPatches = new Map<string, StoryboardFrame[]>();
     const rows = (script.metadata?.storyboard?.rows || []).map((row) => requests.find((request) => request.row.id === row.id)?.row || row);
-    const requestedFrames = new Set(requests.flatMap(({ row, frames }) => frames.filter((frame) => !options.frameIds || options.frameIds.includes(frame.id)).map((frame) => `${row.id}:${frame.id}`)));
+    const requestedFrames = new Set(requests.flatMap(({ row, frames }) => frames.filter((frame) => storyboardFrameRequested(row.id, frame.id, options)).map((frame) => {
+        const owner = frame.kind === StoryboardFrameKind.Start ? storyboardPreviousFrameSource(row, rows) : undefined;
+        return owner ? `${owner.id}:end` : `${row.id}:${frame.id}`;
+    })));
     const processed = new Set<string>();
     const blockedRows = new Set<string>();
     const failedIds = options.failedOnly ? new Set(failedStoryboardBoundaryImages(script, nodes).map((node) => node.id)) : undefined;
-    const pendingDependents = new Set<string>();
-    if (failedIds?.size) {
-        const byId = new Map(nodes.map((node) => [node.id, node]));
-        const anchors = new Map<string, string>();
-        for (const row of rows)
-            for (const frame of row.frames || []) {
-                const startId = row.frames?.find((item) => item.kind === StoryboardFrameKind.Start)?.imageNodeId;
-                if (frame.kind !== StoryboardFrameKind.Start && frame.imageNodeId && startId) anchors.set(frame.imageNodeId, startId);
-            }
-        // Old snapshots may have placeholders but no surviving waiting batch. Resume
-        // only those descendants of the explicitly retried failures, never new shots.
-        for (const [id, anchor] of anchors) {
-            const image = byId.get(id);
-            const metadata = image?.metadata;
-            if (
-                !image ||
-                active.has(id) ||
-                cancelled.has(id) ||
-                metadata?.taskStatus === "queued" ||
-                metadata?.taskStatus === "running" ||
-                metadata?.taskStatus === "cancelled" ||
-                metadata?.taskReceiptRecorded ||
-                metadata?.content ||
-                metadata?.storageKey ||
-                metadata?.status === "loading" ||
-                !storyboardFrameWaitingReason(image, nodes)
-            )
-                continue;
-            const visited = new Set<string>([id]);
-            let previous: string | undefined = anchor;
-            while (previous && !visited.has(previous)) {
-                if (failedIds.has(previous)) {
-                    pendingDependents.add(id);
-                    break;
-                }
-                if (cancelled.has(previous) || byId.get(previous)?.metadata?.taskStatus === "cancelled") break;
-                visited.add(previous);
-                previous = anchors.get(previous);
-            }
-        }
-    }
     const materialize = (row: StoryboardRow, frames: StoryboardFrame[], dependency = false, forceRegenerate = false) => {
+        const selected = dependency ? frames : frames.filter(frame => storyboardFrameRequested(row.id, frame.id, options));
+        if (!selected.length) return;
         if (!storyboardRowIsReady(row)) throw new Error("当前或前序镜头详情尚未完成，请等待对应分镜生成后制作画面");
         const merged = rowPatches.get(row.id) || [...(script.metadata?.storyboard?.rows.find((item) => item.id === row.id)?.frames || row.frames || [])];
         rowPatches.set(row.id, merged);
@@ -236,22 +207,11 @@ export function materializeStoryboardFrames(
             if (index < 0) merged.push(value);
             else merged[index] = value;
         };
-        for (const frame of frames) {
-            if (!dependency && options.frameIds && !options.frameIds.includes(frame.id)) continue;
+        for (const frame of selected) {
             if (frame.sourcePromptHash !== storyboardFrameHash(row)) throw new Error("分镜内容已变化，请重新提取画面");
             const key = `${row.id}:${frame.id}`;
             if (processed.has(key)) continue;
             processed.add(key);
-            // Every new end/key frame has a real start-frame dependency. Independent
-            // shots may run in parallel; a continuous run advances through shared boundaries.
-            if (frame.kind !== StoryboardFrameKind.Start) {
-                materialize(
-                    row,
-                    storyboardBoundaryFrames(row).filter((item) => item.kind === StoryboardFrameKind.Start),
-                    true,
-                );
-                if (!merged.some((item) => item.kind === StoryboardFrameKind.Start && item.imageNodeId)) continue;
-            }
             const source = frame.kind === StoryboardFrameKind.Start ? storyboardPreviousFrameSource(row, rows) : undefined;
             if (source) {
                 // A shared boundary is owned by the previous shot; wait for its details.
@@ -264,7 +224,7 @@ export function materializeStoryboardFrames(
                     source,
                     storyboardBoundaryFrames(source).filter((item) => item.kind === StoryboardFrameKind.End),
                     true,
-                    options.regenerate && requestedFrames.has(key),
+                    options.regenerate && requestedFrames.has(`${source.id}:end`),
                 );
                 const end = rowPatches.get(source.id)?.find((item) => item.kind === StoryboardFrameKind.End);
                 if (!end?.imageNodeId) continue;
@@ -275,16 +235,15 @@ export function materializeStoryboardFrames(
             let existing = !previous?.sharedFrom ? next.find((node) => node.id === previous?.imageNodeId && node.type === CanvasNodeType.Image) : undefined;
             const snapshot = existing?.metadata?.storyboardFrame?.continuityReference;
             if (snapshot && (existing?.metadata?.content || existing?.metadata?.storageKey)) {
-                const start = merged.find((item) => item.kind === StoryboardFrameKind.Start);
-                const anchor = next.find((node) => node.id === start?.imageNodeId);
-                if (!anchor || anchor.id !== snapshot.nodeId || storyboardReferenceSignature(anchor) !== snapshot.signature) existing = undefined;
+                const anchor = next.find((node) => node.id === snapshot.nodeId);
+                if (!anchor || storyboardReferenceSignature(anchor) !== snapshot.signature) existing = undefined;
             }
-            if (failedIds && (!existing || (!failedIds.has(existing.id) && !pendingDependents.has(existing.id)))) continue;
+            if (failedIds && (!existing || !failedIds.has(existing.id))) continue;
             const sameFrame = previous?.sourcePromptHash === frame.sourcePromptHash && (frame.kind !== StoryboardFrameKind.Key || previous.prompt === frame.prompt);
             const metadata = existing?.metadata;
             const failed = metadata?.status === "error" || metadata?.taskStatus === "failed";
             const completed = Boolean(metadata?.content || metadata?.storageKey);
-            const regenerate = options.regenerate && (forceRegenerate || requestedFrames.has(`${row.id}:${frame.id}`));
+            const regenerate = options.regenerate && (forceRegenerate || requestedFrames.has(`${row.id}:${frame.id}`)) && !active.has(existing?.id || "") && !isCanvasNodeGenerating(existing);
             const reusable =
                 existing && (active.has(existing.id) || Boolean(metadata?.content || metadata?.storageKey) || (!failed && metadata?.taskStatus !== "cancelled" && (metadata?.status === "loading" || Boolean(metadata?.taskId && !options.failedOnly))));
             if (sameFrame && existing && reusable && !(regenerate && completed)) {
@@ -332,6 +291,21 @@ export function materializeStoryboardFrames(
         }
     };
     for (const { row, frames } of requests) materialize(row, frames);
+    // Update every consumer when a shared boundary changes, including shots outside
+    // the selection. Only the owner owns an image task; starts are versioned aliases.
+    for (const row of rows) {
+        if (!storyboardRowIsReady(row)) continue;
+        const owner = storyboardPreviousFrameSource(row, rows);
+        const end = owner && rowPatches.get(owner.id)?.find(frame => frame.kind === StoryboardFrameKind.End);
+        if (!owner || !end?.imageNodeId || end.sourcePromptHash !== storyboardFrameHash(owner)) continue;
+        const start = storyboardBoundaryFrames(row)[0];
+        const alias = { ...start, prompt: end.prompt, imageNodeId: end.imageNodeId, sharedFrom: { rowId: owner.id, sourcePromptHash: end.sourcePromptHash } };
+        const frames = rowPatches.get(row.id) || [...(row.frames || [])];
+        const index = frames.findIndex(frame => frame.kind === StoryboardFrameKind.Start);
+        if (index < 0) frames.push(alias);
+        else frames[index] = alias;
+        rowPatches.set(row.id, frames);
+    }
     next = next.map((node) =>
         node.id === script.id
             ? { ...node, metadata: { ...node.metadata, storyboard: { ...node.metadata!.storyboard!, rows: node.metadata!.storyboard!.rows.map((row) => (rowPatches.has(row.id) ? { ...row, frames: rowPatches.get(row.id) } : row)) } } }

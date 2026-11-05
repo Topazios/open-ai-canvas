@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -200,6 +201,9 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 				}
 			}
 			if productionRuntimeQuietHold(&state) {
+				if manifest.Storyboard != nil {
+					return nil, false, s.quietProductionRuntime(userID, runID, "", "production_no_progress", productionRuntimeNoProgressError(&state))
+				}
 				return map[string]any{"text": "", "toolCalls": []any{}}, false, nil
 			}
 			tools := productionRuntimeTools(manifest, productionWork)
@@ -452,7 +456,11 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		}
 	}
 	if state.Request.Production != nil && len(result.ToolCalls) == 0 {
-		cause := errors.New("模型未提交当前制作步骤结果")
+		message := "模型未提交当前制作步骤结果"
+		if detail := strings.Join(strings.Fields(result.Text), " "); detail != "" {
+			message += "：" + truncateRunes(detail, 1000)
+		}
+		cause := cloudAgentFieldError("toolCalls", "missing_output", message)
 		if instruction.Recovery != nil {
 			return nil, false, s.quietProductionRuntime(userID, runID, task.ID, "production_empty_output", cause)
 		}

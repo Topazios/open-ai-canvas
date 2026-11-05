@@ -13,6 +13,7 @@ import type { GenerationTask } from "@/services/api/task-center";
 import { canCancelGenerationTask } from "@/lib/generation-task-display";
 import type { useProductionAgentRuns } from "./use-production-agent-runs";
 import { CanvasExecutionJournal } from "./canvas-execution-journal";
+import { CanvasRunParameters } from "./canvas-run-parameters";
 import { useCanvasGroupSession } from "./use-canvas-group-session";
 
 const parallelStateLabels: Record<string, string> = {
@@ -363,11 +364,14 @@ export function CanvasGroupTaskDetails({
                                         </div>
                                     ) : null}
                                     {member.metadata?.prompt?.trim() ? (
-                                        <dl className="production-agent-task-params">
-                                            <div><dt>模型</dt><dd>{member.metadata.model || "未记录"}</dd></div>
-                                            <div><dt>推理强度</dt><dd>{member.metadata.reasoningEffort || "medium"}</dd></div>
-                                            <div className="production-agent-prompt"><dt>提示词</dt><dd>{member.metadata.prompt}</dd></div>
-                                        </dl>
+                                        <CanvasRunParameters
+                                            items={[
+                                                { label: "模型", value: member.metadata.model || "未记录" },
+                                                { label: "推理强度", value: member.metadata.reasoningEffort || "medium" },
+                                                { label: "任务 ID", value: member.metadata.taskId },
+                                            ]}
+                                            prompt={member.metadata.prompt}
+                                        />
                                     ) : null}
                                     {placeholder && parallelDetailText(parallelItemOf(member)) ? (
                                         <p className="production-agent-note" role="status">{parallelDetailText(parallelItemOf(member))}</p>

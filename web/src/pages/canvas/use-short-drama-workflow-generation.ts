@@ -39,7 +39,7 @@ type Options = {
 // settings changes never block it; missing assets stay as placeholders.
 function storyboardBodyError(data: NonNullable<CanvasNodeData["metadata"]>["shortDrama"], nodes: CanvasNodeData[]) {
     const bodies = nodes.filter((node) => data?.sourceNodeIds?.includes(node.id) && node.metadata?.shortDrama?.step === ShortDramaStep.Body);
-    return bodies.some((node) => node.metadata?.status !== "loading" && node.metadata?.content?.trim()) ? "" : "本集正文为空或尚未完成";
+    return bodies.some((node) => node.metadata?.content?.trim()) ? "" : "本集正文为空，无法拆解分镜";
 }
 
 const workflowSubmitGapMs = 220;
