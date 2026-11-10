@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { createCanvasNode, createStoryboardRow } from "@/lib/canvas/canvas-project-domain";
-import { materializeStoryboardFrames, storyboardFrameHash } from "@/lib/canvas/episode-storyboard-frames";
+import { materializeStoryboardFrames, shotKeyframes, storyboardFrameHash } from "@/lib/canvas/episode-storyboard-frames";
 import { continueStoryboardFrameGeneration, materializeStoryboardKeyframePlans, storyboardFrameRequests } from "@/lib/canvas/storyboard-frame-generation";
 import { generationBatchQueueCandidates, pauseNodeGenerationBatches, reconcileGenerationBatches } from "@/lib/canvas/canvas-generation-batch";
 import { CanvasNodeType, type CanvasGenerationBatch, type CanvasNodeData } from "@/types/canvas";
 import { encodeChannelModel } from "@/stores/config-model-options";
+import { storyboardFrameTrack, storyboardFrameTrackTargets } from "@/lib/canvas/storyboard-frame-track";
 
 const settings = { size: "16:9", quality: "standard", transparentBackground: "false" };
 const imageModel = encodeChannelModel("test-channel", "image-model");
@@ -34,7 +35,7 @@ test("mixed selection submits ready boundary images and extracts only selected k
     expect(images.targets).toHaveLength(1);
     const plans = materializeStoryboardKeyframePlans(f.script.id, resolved.planRows, images.nodes, "text", { model: "image", settings });
     expect(plans.targets.map(target => target.rowId)).toEqual([f.rows[1].id]);
-    expect(plans.nodes.find(node => node.id === plans.targets[0].nodeId)?.metadata?.prompt).toContain("1至8个有意义的关键画面");
+    expect(plans.nodes.find(node => node.id === plans.targets[0].nodeId)?.metadata?.prompt).toContain("允许0至8张");
     expect(plans.nodes.filter(node => node.type === CanvasNodeType.Image).every(node => !!node.metadata?.prompt)).toBe(true);
 });
 
@@ -105,6 +106,20 @@ test("invalid extraction becomes an explicit failure without submitting an empty
     expect(result.nodes.filter(node => node.type === CanvasNodeType.Image)).toHaveLength(0);
 });
 
+test("a valid empty intermediate-keyframe result is complete and never requeued", () => {
+    const f = queuedPlan();
+    const nodes = f.nodes.map(node => node.id !== f.target.nodeId ? node : { ...node, metadata: { ...node.metadata, content: JSON.stringify({ frames: [] }) } });
+    const row = nodes.find(node => node.id === f.script.id)!.metadata!.storyboard!.rows[0];
+    expect(shotKeyframes(row, nodes)).toMatchObject({ frames: [], complete: true, error: "" });
+    const resolved = storyboardFrameRequests([row], nodes, "all", { frameTargets: [{ rowId: row.id, frameId: "key-plan" }] });
+    expect(resolved.planRows).toEqual([]);
+    expect(resolved.requests[0].frames).toEqual([]);
+    const continued = continueStoryboardFrameGeneration(nodes, [], "project");
+    expect(continued.nodes.filter(node => node.type === CanvasNodeType.Image)).toEqual([]);
+    expect(continued.nodes.find(node => node.id === f.script.id)!.metadata!.generationBatches).toHaveLength(1);
+    expect(storyboardFrameTrack([row], nodes).map(item => item.frame.kind)).toEqual(["start", "end"]);
+});
+
 test("existing extraction can acquire auto-generation without submitting another text task", () => {
     const f = queuedPlan("waiting");
     const nodes = f.nodes.map(node => node.id !== f.script.id ? node : { ...node, metadata: { ...node.metadata, generationBatches: [{ ...f.batch, items: f.batch.items.map(item => ({ ...item, frameGeneration: undefined })) }] } });
@@ -116,4 +131,42 @@ test("existing extraction can acquire auto-generation without submitting another
     const finished = result.nodes.map(node => node.id !== f.target.nodeId ? node : { ...node, metadata: { ...node.metadata, status: "success" as const, content: JSON.stringify({ frames: [{ timeSeconds: 4, prompt: "人物抬手" }] }) } });
     const reconciled = reconcileGenerationBatches(finished, "project", new Set());
     expect(continueStoryboardFrameGeneration(reconciled, [], "project").nodes.filter(node => node.type === CanvasNodeType.Image)).toHaveLength(1);
+});
+
+test("five checked slots in the first scene never generate later scene images", () => {
+    const f = fixture();
+    f.rows.push(createStoryboardRow(3, { id: "later-scene", shotCode: "S02-001", sceneId: "S02", durationSeconds: 10, videoMotionPrompt: "另一场次人物开门" }));
+    const track = storyboardFrameTrack(f.rows, f.nodes);
+    const frameTargets = storyboardFrameTrackTargets(track, track.slice(0, 5).map(item => item.id));
+    const resolved = storyboardFrameRequests(f.rows, f.nodes, "all", { frameTargets });
+    const images = materializeStoryboardFrames(f.script, resolved.requests, f.nodes, [], imageModel, settings, resolved.options);
+    expect(images.targets.map(target => target.rowId)).toEqual([f.rows[0].id, f.rows[0].id, f.rows[1].id]);
+    const plans = materializeStoryboardKeyframePlans(f.script.id, resolved.planRows, images.nodes, "text", { model: imageModel, settings });
+    expect(plans.targets.map(target => target.rowId)).toEqual([f.rows[0].id, f.rows[1].id]);
+    const batch: CanvasGenerationBatch = { id: "selected-plans", projectId: "project", sourceNodeId: f.script.id, mode: "storyboard_keyframes", status: "completed", createdAt: "now", updatedAt: "now", items: plans.targets.map((target, index) => ({ ...target, id: `plan-${index}`, status: "succeeded", retryCount: 0 })) };
+    const nodes = plans.nodes.map(node => node.id === f.script.id ? { ...node, metadata: { ...node.metadata, generationBatches: [batch] } } : node.metadata?.storyboardFramePlan ? { ...node, metadata: { ...node.metadata, status: "success" as const, content: JSON.stringify({ frames: [{ timeSeconds: 2, prompt: "人物抬手" }, { timeSeconds: 5, prompt: "人物放下相机" }] }) } } : node);
+    const continued = continueStoryboardFrameGeneration(JSON.parse(JSON.stringify(nodes)), [], "project");
+    const bindings = continued.nodes.flatMap(node => node.metadata?.storyboardFrame ? [node.metadata.storyboardFrame] : []);
+    expect(bindings).toHaveLength(7);
+    expect([...new Set(bindings.map(binding => binding.rowId))]).toEqual([f.rows[0].id, f.rows[1].id]);
+    expect(continued.nodes.find(node => node.id === f.script.id)!.metadata!.storyboard!.rows[2].frames).toBeUndefined();
+    expect(continueStoryboardFrameGeneration(continued.nodes, [], "project").nodes).toBe(continued.nodes);
+});
+
+test("stale clicked content and missing rows are rejected before creating tasks", () => {
+    const f = fixture();
+    const options = { frameTargets: [{ rowId: f.rows[0].id, frameId: "start", sourcePromptHash: storyboardFrameHash(f.rows[0]) }] };
+    f.rows[0].videoMotionPrompt = "新版本的镜头内容";
+    expect(() => storyboardFrameRequests(f.rows, f.nodes, "all", options)).toThrow("重新勾选");
+    expect(() => storyboardFrameRequests(f.rows.slice(1), f.nodes, "all", options)).toThrow("重新勾选");
+});
+
+test("a keyframe plan belonging to another row or script cannot continue images", () => {
+    for (const patch of [{ rowId: "other-row" }, { scriptId: "other-script" }]) {
+        const f = queuedPlan();
+        const nodes = f.nodes.map(node => node.id !== f.target.nodeId ? node : { ...node, metadata: { ...node.metadata, storyboardFramePlan: { ...node.metadata!.storyboardFramePlan!, ...patch } } });
+        const result = continueStoryboardFrameGeneration(nodes, [], "project");
+        expect(result.nodes.some(node => node.type === CanvasNodeType.Image)).toBe(false);
+        expect(result.nodes.find(node => node.id === f.script.id)!.metadata!.generationBatches![0].items[0].status).toBe("failed");
+    }
 });

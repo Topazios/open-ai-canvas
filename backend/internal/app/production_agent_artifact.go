@@ -22,7 +22,14 @@ func productionContentSignature(content string) string {
 }
 func productionArtifactHash(node map[string]any) string {
 	meta, _ := node["metadata"].(map[string]any)
-	return productionStoredValueHash([]any{node["title"], node["parentId"], meta["content"], meta["shortDrama"]})
+	workflow := map[string]any{}
+	for key, value := range productionWorkflow(node) {
+		// Adoption is a selection, not a change to the authored revision.
+		if key != "assetAdopted" && key != "assetSubjectValidated" {
+			workflow[key] = value
+		}
+	}
+	return productionStoredValueHash([]any{node["title"], node["parentId"], meta["content"], workflow})
 }
 
 func productionStoredValueHash(value any) string {
@@ -133,6 +140,22 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 		if item == nil || item.Name != name {
 			return nil, BadAuthRequest("请先登记资产清单并沿用该资产 key/name")
 		}
+		facts := productionPlanSectionBody(key, item.Kind, content, "facts", productionPlanSchemaVersion(*m.Plan))
+		if err := productionValidateAssetSubject(item, facts); err != nil {
+			return nil, err
+		}
+		if document != nil && item.Identity != nil {
+			fields := make(map[string]string, len(document))
+			for field, value := range document {
+				fields[field] = value
+			}
+			fields["facts"] = productionAssetSubjectFacts(item, document["facts"])
+			if rendered, err := productionRenderPlanDocumentForSchema(key, item.Kind, fields, productionPlanSchemaVersion(*m.Plan)); err == nil {
+				document, content = fields, rendered
+			} else {
+				return nil, err
+			}
+		}
 	}
 	if m.Plan != nil && len(factIDs) != 0 {
 		return nil, BadAuthRequest("计划资产不能冒充正文证据，factIds 应为空")
@@ -140,8 +163,9 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 	// The catalog is generated locally from bounded registration batches; its
 	// aggregate size is governed by canvas/storage admission, not model output.
 	systemInventory := m.Plan != nil && m.Plan.Version >= 2 && key == "inventory"
+	systemFlowStory := m.Plan != nil && m.Plan.FlowVersion == 1 && key == "story" && len(m.Plan.FlowStoryUnits) > 0
 	contentLimit := productionArtifactContentLimit(m, doc, key)
-	if key == "" || name == "" || content == "" || utf8.RuneCountInString(key) > 120 || utf8.RuneCountInString(name) > 120 || (!systemInventory && utf8.RuneCountInString(content) > contentLimit) || len(factIDs) > 256 {
+	if key == "" || name == "" || content == "" || utf8.RuneCountInString(key) > 120 || utf8.RuneCountInString(name) > 120 || (!systemInventory && !systemFlowStory && utf8.RuneCountInString(content) > contentLimit) || len(factIDs) > 256 {
 		if content != "" && utf8.RuneCountInString(content) > contentLimit {
 			return nil, productionDocumentLengthError(utf8.RuneCountInString(content), contentLimit)
 		}
@@ -153,7 +177,7 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 	missing := productionDocumentMissing(m.Category, key, content)
 	planDocumentSchema := 0
 	if m.Plan != nil && m.Plan.Version >= 2 {
-		planDocumentSchema = productionPlanDocumentSchemaVersion(m.Plan.Version)
+		planDocumentSchema = productionPlanSchemaVersion(*m.Plan)
 		missing = productionPlanDocumentMissingForSchema(key, productionPlanKind(m, key), content, planDocumentSchema)
 		if key == "story" && m.Plan.StoryStructureVersion > 0 && m.Plan.Version < 5 {
 			if issues := productionPlanEpisodeArchitectureIssues(m, doc, content, planDocumentSchema); len(issues) > 0 {
@@ -228,7 +252,7 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 				}
 			}
 		}
-		if !(m.Plan.Version >= 5 && key != "story") {
+		if productionPlanItem(m, key) != nil || !(m.Plan.Version >= 5 && key != "story") {
 			if err := cloudAgentValidationErrors(validationFailures...); err != nil {
 				return nil, err
 			}
@@ -246,6 +270,10 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 		}
 	}
 	newPlanVersion := m.Plan != nil && slices.Contains(m.Plan.NewVersionAssetKeys, key) && receipt != nil
+	if (systemInventory && m.Plan.FlowVersion == 1 || m.Plan != nil && m.Plan.Version >= 5 && productionPlanStandard(key)) && receipt != nil {
+		previous := productionNode(doc, receipt.NodeID)
+		newPlanVersion = newPlanVersion || previous != nil && !productionArtifactMatches(previous, receipt.ContentHash)
+	}
 	replacedReceiptAt := time.Time{}
 	if newPlanVersion {
 		replacedReceiptAt = receipt.CreatedAt
@@ -253,6 +281,9 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 	}
 	assetVersionTitle := ""
 	if design != nil {
+		if m.Plan != nil && m.Plan.FlowVersion == 1 && len(design.Variants) > 0 {
+			return nil, cloudAgentFieldError("design.variants", "asset_state_registry", "重大形态沿用总表中独立资产的baseKey/stateName，不在档案重复登记；普通服化、动作和污损写入continuity，design.variants使用[]")
+		}
 		previous := productionDesignFields{Variants: []productionDesignVariant{}, Sounds: []string{}, Conflicts: []string{}}
 		if receipt != nil {
 			encoded, _ := json.Marshal(productionWorkflow(productionNode(doc, receipt.NodeID))["assetProfile"])
@@ -368,7 +399,8 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 			}
 			_, existingPlanDocument := planSection(a.Key)
 			separatePlanNamespace := m.Plan != nil && (planDocument || existingPlanDocument)
-			if !separatePlanNamespace && strings.EqualFold(strings.TrimSpace(stringValue(node["title"])), name) {
+			separateAssetKinds := m.Plan != nil && productionPlanKind(m, key) != "" && productionPlanKind(m, a.Key) != "" && productionPlanKind(m, key) != productionPlanKind(m, a.Key)
+			if !separatePlanNamespace && !separateAssetKinds && strings.EqualFold(strings.TrimSpace(stringValue(node["title"])), name) {
 				return nil, BadAuthRequest("同名资产已有节点，请复用稳定 key 修订")
 			}
 		}
@@ -390,6 +422,28 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 	if frame == nil {
 		return nil, BadAuthRequest("资产目标分组已删除，未重新创建")
 	}
+	if newPlanVersion && (systemInventory && m.Plan.FlowVersion == 1 || productionPlanStandard(key)) {
+		// Preserve the edited text while removing its active workflow identity;
+		// otherwise the browser may select the old copy as the current inventory.
+		for _, artifact := range artifacts {
+			if artifact.Key != key {
+				continue
+			}
+			if previous := productionNode(doc, artifact.NodeID); previous != nil {
+				if meta, ok := previous["metadata"].(map[string]any); ok {
+					meta["preservedPlanSection"] = key
+					delete(meta, "shortDrama")
+				}
+			}
+			ids := []string{}
+			for _, id := range productionIDs(productionWorkflow(frame)["sourceNodeIds"]) {
+				if id != artifact.NodeID {
+					ids = append(ids, id)
+				}
+			}
+			productionWorkflow(frame)["sourceNodeIds"] = ids
+		}
+	}
 	// A v2 plan asset must live in its own collection. While that collection is
 	// missing, productionPlanParent falls back to the plan frame, so refuse the
 	// write instead of dropping the asset into the wrong container.
@@ -403,6 +457,9 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 	target := productionNode(doc, state.Request.Production.TargetNodeID)
 	data := productionWorkflow(target)
 	nodeID := "pa-" + productionHash([]string{run.ID, key})[:32]
+	if newPlanVersion && planDocument {
+		nodeID = "pa-" + newID()
+	}
 	var node map[string]any
 	if m.Plan != nil && (productionPlanItem(m, key) != nil || planDocument) && receipt == nil {
 		assetPlaceholder := productionPlanItem(m, key) != nil
@@ -410,6 +467,9 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 			nodeID = "pa-" + newID()
 		}
 		for _, candidate := range nodes {
+			if newPlanVersion && planDocument {
+				break
+			}
 			workflow := productionWorkflow(candidate)
 			if workflow["assetKey"] == key && productionPlanPlaceholderOwned(candidate, run.ID) && (assetPlaceholder || workflow["planSection"] == key) {
 				nodeID, node = stringValue(candidate["id"]), candidate
@@ -477,6 +537,10 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 			workflow["planVersion"] = m.Plan.Version
 			workflow["planDependencies"] = productionPlanDependencies(m, artifacts, key)
 			workflow["planDocumentSchema"] = planDocumentSchema
+			if key == "inventory" {
+				workflow["inventoryComplete"] = m.Plan.Complete
+				workflow["inventoryReviewedSections"] = len(m.Plan.InventoryReview)
+			}
 			if _, ok := planSection(key); ok {
 				if section := map[string]string{"story": "settings", "visual": "style", "direction": "cinematography", "generation": "generation"}[key]; section != "" {
 					workflow["bibleSection"] = section
@@ -484,7 +548,9 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 			}
 		}
 		if item := productionPlanItem(m, key); item != nil {
-			workflow["planAsset"] = map[string]any{"key": item.Key, "kind": item.Kind, "name": item.Name, "episodes": item.Episodes, "indexContent": productionContentSignature(content)}
+			workflow["assetAdopted"] = true
+			workflow["assetSubjectValidated"] = productionHash(content)
+			workflow["planAsset"] = map[string]any{"key": item.Key, "kind": item.Kind, "name": item.Name, "priority": item.Priority, "episodes": item.Episodes, "indexContent": productionContentSignature(content)}
 			if item.BaseKey != "" {
 				workflow["planAsset"].(map[string]any)["baseKey"] = item.BaseKey
 				workflow["planAsset"].(map[string]any)["stateName"] = item.StateName
@@ -492,14 +558,19 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 			if m.Plan.Version >= 2 {
 				asset := workflow["planAsset"].(map[string]any)
 				asset["purpose"], asset["plannedRange"], asset["dependsOn"] = item.Purpose, item.PlannedRange, item.DependsOn
+				asset["coreFacts"], asset["aliases"], asset["variants"], asset["origin"] = item.CoreFacts, item.Aliases, item.Variants, item.Origin
+				asset["subjectKeys"], asset["parentKey"], asset["quantity"], asset["usage"] = item.SubjectKeys, item.ParentKey, item.Quantity, item.Usage
 			}
 			identity = item.Identity
-			assetVersion := 1
+			assetVersion := int(numberValue(productionWorkflow(node)["assetVersion"], 1))
 			if newPlanVersion {
 				assetVersion = 2
 			}
 			if item.Identity != nil {
 				for _, existing := range nodes {
+					if existing == nil || existing["id"] == nodeID || receipt != nil {
+						continue
+					}
 					workflow := productionWorkflow(existing)
 					existingIdentity, _ := workflow["assetIdentity"].(map[string]any)
 					if existingIdentity["id"] == item.Identity.ID {
@@ -508,6 +579,9 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 				}
 			} else {
 				for _, existing := range nodes {
+					if existing == nil || existing["id"] == nodeID || receipt != nil {
+						continue
+					}
 					workflow := productionWorkflow(existing)
 					planAsset, _ := workflow["planAsset"].(map[string]any)
 					if workflow["assetKey"] == key || planAsset["key"] == key {
@@ -589,6 +663,18 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 		}
 	}
 	node["title"], node["updatedAt"] = name, time.Now().UnixMilli()
+	if identity != nil && m.Plan != nil {
+		for _, existing := range nodes {
+			if existing["id"] == nodeID || existing["type"] != "text" {
+				continue
+			}
+			previous := productionWorkflow(existing)
+			previousIdentity, _ := previous["assetIdentity"].(map[string]any)
+			if previousIdentity["id"] == identity.ID && previous["step"] == workflow["step"] {
+				previous["assetAdopted"] = false
+			}
+		}
+	}
 	if assetVersionTitle != "" {
 		node["title"] = assetVersionTitle
 	}
@@ -624,7 +710,7 @@ func productionSubmit(repo *repository.Repository, run *model.CloudAgentExecutio
 			productionFitFrame(frame, nodes, numberValue(frame["height"], 428))
 		}
 	}
-	if m.Plan != nil && m.Plan.Version >= 2 && !productionPlanReferencesDeferred(m) && !(m.Plan.Version >= 5 && m.Plan.AssetsStarted && productionPlanItem(m, key) != nil) {
+	if m.Plan != nil && m.Plan.Version >= 2 && !productionPlanReferencesDeferred(m) {
 		// Validate against the post-write profile so deleted variants cannot keep
 		// authorizing references, and newly assigned variants are recognized.
 		referenceArtifacts := append(append([]model.ProductionAgentArtifact{}, artifacts...), model.ProductionAgentArtifact{NodeID: nodeID})
@@ -706,20 +792,38 @@ func productionFitFrame(frame map[string]any, nodes []map[string]any, height flo
 	x := numberValue(position["x"], 0)
 	y := numberValue(position["y"], 0)
 	start := y
+	// Hidden historical dossiers and recovery placeholders are not obstacles.
+	// Otherwise every result can move a container away from invisible old cards.
+	visible := productionCurrentAssetMembers(nodes)
+	byID := make(map[string]map[string]any, len(nodes))
+	for _, node := range nodes {
+		byID[stringValue(node["id"])] = node
+	}
+	obstacles := make([]map[string]any, 0, len(visible))
+	for _, node := range visible {
+		if node["id"] == frame["id"] || node["parentId"] == frame["id"] || productionWorkflow(node)["assetKey"] == "$summary" {
+			continue
+		}
+		parent := byID[stringValue(node["parentId"])]
+		meta, _ := parent["metadata"].(map[string]any)
+		geometry, _ := meta["frame"].(map[string]any)
+		if geometry["collapsed"] == true {
+			continue
+		}
+		obstacles = append(obstacles, node)
+	}
+	width := numberValue(frame["width"], 1296)
 	// Match client materialization: move the growing container below occupied
 	// space, preserving all member offsets and existing container-only links.
 	for attempt := 0; attempt <= len(nodes); attempt++ {
 		next := y
-		for _, other := range nodes {
-			if other["id"] == frame["id"] || other["parentId"] == frame["id"] {
-				continue
-			}
+		for _, other := range obstacles {
 			p, _ := other["position"].(map[string]any)
 			ox := numberValue(p["x"], 0)
 			oy := numberValue(p["y"], 0)
 			w := numberValue(other["width"], 0)
 			h := numberValue(other["height"], 0)
-			if ox < x+1296 && ox+w > x && oy < y+height && oy+h > y {
+			if ox < x+width && ox+w > x && oy < y+height && oy+h > y {
 				next = max(next, oy+h+64)
 			}
 		}
@@ -832,6 +936,7 @@ func productionComplete(repo *repository.Repository, run *model.CloudAgentExecut
 		// Completion writes our summary; keep the next stage's edit guard bound
 		// to that saved content instead of the original empty task anchor.
 		m.Plan.SummaryHash = productionTargetHash(target)
+		m.Plan.SummaryContent = stringValue(meta["content"])
 		encoded, err := json.Marshal(m)
 		if err != nil {
 			return err

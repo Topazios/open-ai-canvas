@@ -1,29 +1,19 @@
-import { modelCapabilityConfigFor, videoDurationAllowed } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { resolveModelRequestConfig } from "@/stores/use-config-store";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import type { ReferenceImage } from "@/types/image";
 
 import type { ResolvedAiConfig } from "./video-contracts";
 
+// Capability metadata must not prevent a video request reaching its provider.
 export function assertVideoCapability(
-    profile: NonNullable<ReturnType<typeof modelCapabilityConfigFor>["video"]>,
-    references: ReferenceImage[],
-    videoReferences: ReferenceVideo[],
-    audioReferences: ReferenceAudio[],
+    _profile: NonNullable<ReturnType<typeof modelCapabilityConfigFor>["video"]>,
+    _references: ReferenceImage[],
+    _videoReferences: ReferenceVideo[],
+    _audioReferences: ReferenceAudio[],
     seconds: string,
 ) {
-    if (references.length > profile.references.maxImages || videoReferences.length > profile.references.maxVideos || audioReferences.length > profile.references.maxAudios) throw new Error("参考素材数量超过当前模型限制");
-    if (references.length < profile.references.minImages) throw new Error(`当前视频模型至少需要 ${profile.references.minImages} 张参考图`);
-    if (!videoDurationAllowed(profile, Number(seconds))) throw new Error("视频时长不在当前模型支持范围内");
-    if (profile.references.maxImageBytes > 0 && references.some((image) => (image.bytes || 0) > profile.references.maxImageBytes)) throw new Error("参考图片文件超过当前模型大小限制");
-    for (const video of videoReferences) {
-        if (profile.references.maxVideoBytes > 0 && (video.bytes || 0) > profile.references.maxVideoBytes) throw new Error("参考视频文件超过当前模型大小限制");
-        if (profile.references.maxVideoDurationSeconds > 0 && (video.durationMs || 0) > profile.references.maxVideoDurationSeconds * 1000) throw new Error("参考视频时长超过当前模型限制");
-    }
-    for (const audio of audioReferences) {
-        if (profile.references.maxAudioBytes > 0 && (audio.bytes || 0) > profile.references.maxAudioBytes) throw new Error("参考音频文件超过当前模型大小限制");
-        if (profile.references.maxAudioDurationSeconds > 0 && (audio.durationMs || 0) > profile.references.maxAudioDurationSeconds * 1000) throw new Error("参考音频时长超过当前模型限制");
-    }
+    if (seconds.trim() && !Number.isInteger(Number(seconds))) throw new Error("视频时长必须是整数秒");
 }
 
 export function assertVideoConfig(config: ResolvedAiConfig, model: string) {

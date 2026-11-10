@@ -161,6 +161,27 @@ func (s *Service) enqueueCloudAgentTaskWithWork(run *model.CloudAgentExecution, 
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
 	err = s.repo.MutateCloudAgent(run.UserID, run.ID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+		if work != nil && work.FlowUnitID == "" && state.Request.Production != nil {
+			_, manifest, doc, err := productionLoad(repo, current, state)
+			if err != nil {
+				return err
+			}
+			if manifest.Plan != nil && productionPlanItem(manifest, work.Key) != nil {
+				if !productionPlanAssetSelected(manifest, work.Key) || !productionAssetTargetPresent(manifest, doc, work.Key) {
+					return repository.ErrCreationConflict
+				}
+				receipts, err := repo.CanvasNodeDeletionReceipts(run.UserID, state.Request.CanvasID)
+				if err != nil {
+					return err
+				}
+				item := productionPlanItem(manifest, work.Key)
+				for _, receipt := range receipts {
+					if receipt.NodeID == manifest.Plan.Groups[productionPlanGroupKind(*item)] || receipt.NodeID == manifest.Plan.AssetPlaceholderNodeIDs[work.Key] {
+						return repository.ErrCreationConflict
+					}
+				}
+			}
+		}
 		if media != nil {
 			canvas, err := repo.CanvasProjectForUser(run.UserID, state.Request.CanvasID)
 			if err != nil {
@@ -174,6 +195,37 @@ func (s *Service) enqueueCloudAgentTaskWithWork(run *model.CloudAgentExecution, 
 				return err
 			}
 			if err := createCloudAgentMediaNode(repo, run.UserID, state.Request.CanvasID, media, task, policy, cloudAgentCanvasEventRecorder(run.ID, state)); err != nil {
+				return err
+			}
+		}
+		if work != nil && work.FlowUnitID != "" {
+			fresh, err := cloudAgentDecode(current)
+			if err != nil {
+				return err
+			}
+			if err := productionFlowFence(fresh, *state); err != nil {
+				return err
+			}
+			if cloudAgentRunTerminal(current.Status) || current.Status == "waiting_user" || state.ProductionPaused {
+				return repository.ErrCreationConflict
+			}
+			unit, err := repo.ProductionFlowUnit(run.UserID, run.ID, work.FlowUnitID)
+			if err != nil {
+				return err
+			}
+			if unit.Status != "pending" && unit.Status != "repair" {
+				return repository.ErrCreationConflict
+			}
+			previousTask, previousGeneration := unit.TaskID, unit.Generation
+			isRetry := productionFlowIsRetry(*unit)
+			if isRetry && !state.ProductionFlowControl.retry() {
+				return productionPlanConflict("本轮共享重试预算已用完，未重复提交模型请求")
+			}
+			unit.TaskID, unit.Generation, unit.Status = task.ID, unit.Generation+1, "running"
+			unit.Attempts++
+			state.ProductionFlowControl.Submitted++
+			work.Generation = unit.Generation
+			if err := repo.SaveProductionFlowUnit(unit, previousTask, previousGeneration); err != nil {
 				return err
 			}
 		}
@@ -228,6 +280,30 @@ func (s *Service) enqueueCloudAgentTaskWithWork(run *model.CloudAgentExecution, 
 					state.ProductionParallel = map[string]productionParallelWork{}
 				}
 				work.TaskID, work.Step = task.ID, state.Step+1
+				if work.SceneID != "" {
+					if state.StoryboardAssignments == nil {
+						state.StoryboardAssignments = map[string]storyboardAssignment{}
+					}
+					_, m, _, err := productionLoad(repo, current, state)
+					if err != nil {
+						return err
+					}
+					scene := storyboardSceneByID(m, work.SceneID)
+					if scene == nil || work.Generation != state.StoryboardAssignments[work.Key].Generation+1 {
+						return repository.ErrCreationConflict
+					}
+					a := storyboardAssignment{SceneID: work.SceneID, Generation: work.Generation, TaskID: task.ID, Status: "running", InputHash: work.Dependencies, Offset: work.BatchOffset, ShotIDs: work.ShotIDs, Saved: len(scene.Shots), Total: len(scene.Layout), ClaimedAt: time.Now().UnixMilli()}
+					group, _ := storyboardWorkGroup(m, work.Key)
+					a.Saved, a.Total = 0, len(group.ShotIDs)
+					for _, id := range group.ShotIDs {
+						if storyboardShotDone(m, id) {
+							a.Saved++
+						}
+					}
+					a.Recoveries = state.StoryboardAssignments[work.Key].Recoveries
+					state.StoryboardAssignments[work.Key] = a
+					state.event(run.ID, "production_scene_claimed", map[string]any{"assignment": a, "taskId": task.ID, "itemName": work.Name})
+				}
 				state.ProductionParallel[work.Key] = *work
 				if err := persistStoryboardWork(repo, current, state, policy); err != nil {
 					return err
@@ -673,7 +749,6 @@ func (s *Service) CancelCloudAgent(ctx context.Context, userID, id string) error
 // cancelCloudAgentWithSource 取消 run 并在事件里记录来源，便于区分用户取消和节点删除联动取消。
 func (s *Service) cancelCloudAgentWithSource(ctx context.Context, userID, id, source, text string) error {
 	defer s.projectProductionAgentStatus(userID, id)
-	s.stopCloudAgentPi(id)
 	// Cancellation is a control-plane operation. It must remain available even
 	// when the user-facing runtime blob is damaged, so authenticate/authorize
 	// from the task row first instead of calling CloudAgentRun up front.
@@ -687,6 +762,7 @@ func (s *Service) cancelCloudAgentWithSource(ctx context.Context, userID, id, so
 	if task.Operation != cloudAgentOperation {
 		return kernel.NotFound("Agent 运行不存在")
 	}
+	s.stopCloudAgentPi(id)
 	run, err := s.repo.CloudAgent(userID, id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// Legacy root tasks may not have an execution row yet. The normal read
@@ -699,17 +775,30 @@ func (s *Service) cancelCloudAgentWithSource(ctx context.Context, userID, id, so
 	if err != nil {
 		return err
 	}
-	if run.Status == "completed" || (run.Status == "failed" && !run.CleanupPending) {
+	if run.Status == "completed" {
 		return nil
 	}
+	if handled, err := s.holdStoryboardCoordinator(userID, id, text, "cancelled"); err != nil {
+		log.Printf("[cloud-agent] coordinator hold unavailable for cancellation of run %s; using control-plane fence", id)
+	} else if handled {
+		return err
+	}
+	if handled, err := s.holdProductionFlow(userID, id, text); err != nil {
+		log.Printf("[cloud-agent] flow hold unavailable for cancellation of run %s; using control-plane fence", id)
+	} else if handled {
+		run, err = s.repo.CloudAgent(userID, id)
+		if err != nil {
+			return err
+		}
+	}
 	// 取消是用户操作，不能因为运行时正在并发写事件就失败：冲突时重读最新 revision 重试。
-	for attempt := 0; run.Status != "failed" && attempt < 8; attempt++ {
+	for attempt := 0; attempt < 8; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
 			if run, err = s.repo.CloudAgent(userID, id); err != nil {
 				return err
 			}
-			if run.Status == "completed" || (run.Status == "failed" && !run.CleanupPending) {
+			if run.Status == "completed" {
 				return nil
 			}
 		}

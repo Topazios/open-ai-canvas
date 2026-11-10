@@ -56,9 +56,13 @@ func TestProductionBoundSubmissionUsesCheckpointIdentityAndPreservesContent(t *t
 			t.Fatal("binding rewrote authored content or design")
 		}
 		call.Function.Arguments = `{"key":"another-item","document":{"facts":"原稿"}}`
+		if _, err = productionBindDocumentCall(work, call); err == nil {
+			t.Fatal("explicitly conflicting identity was silently renamed")
+		}
+		call.Function.Arguments = `{"document":{"facts":"原稿"}}`
 		bound, err = productionBindDocumentCall(work, call)
-		if err != nil || productionParallelCallError(work, bound, "production_submit") != nil {
-			t.Fatalf("checkpoint identity did not replace stale model metadata: %v", err)
+		if err != nil {
+			t.Fatal(err)
 		}
 		_ = json.Unmarshal([]byte(bound.Function.Arguments), &args)
 		if string(args["key"]) != `"`+key+`"` || string(args["name"]) != `"`+work.Name+`"` || string(args["expectedHash"]) != `"`+hash+`"` || string(args["factIds"]) != `[]` {

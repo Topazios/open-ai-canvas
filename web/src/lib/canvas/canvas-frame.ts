@@ -1,6 +1,7 @@
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
 import { buildCanvasSpatialIndex, canvasNodeBounds, type CanvasSpatialIndex } from "@/lib/canvas/canvas-spatial-index";
 import { isGridFrame, layoutCanvasGridGroups, snapGridDrop } from "./canvas-group-grid";
+import { ASSET_STACK_HEIGHT, ASSET_STACK_WIDTH, isCanvasAssetStack, makeRoomForAssetStack } from "./canvas-asset-stack";
 
 export const FRAME_HEADER_HEIGHT = 36;
 export const FRAME_PADDING = 24;
@@ -8,6 +9,26 @@ export const FRAME_COLLAPSED_WIDTH = 240;
 export const FRAME_COLLAPSED_HEIGHT = 144;
 export const FOLDER_COLLAPSED_WIDTH = 360;
 export const FOLDER_COLLAPSED_HEIGHT = 280;
+
+export function toggleCanvasFrameCollapsed(nodes: CanvasNodeData[], frameId: string) {
+    const frame = nodes.find(node => node.id === frameId && isFrameNode(node));
+    if (!frame) return nodes;
+    const stack = isCanvasAssetStack(frame);
+    const collapsed = stack ? frame.metadata?.frame?.assetStackExpanded !== true : Boolean(frame.metadata?.frame?.collapsed);
+    const state = frame.metadata?.frame;
+    const folder = isCanvasFolderNode(frame);
+    const next = nodes.map(node => node !== frame ? node : { ...node,
+        width: collapsed ? state?.expandedWidth || 760 : stack ? ASSET_STACK_WIDTH : folder ? FOLDER_COLLAPSED_WIDTH : FRAME_COLLAPSED_WIDTH,
+        height: collapsed ? state?.expandedHeight || 520 : stack ? ASSET_STACK_HEIGHT : folder ? FOLDER_COLLAPSED_HEIGHT : FRAME_COLLAPSED_HEIGHT,
+        metadata: { ...node.metadata, frame: { ...state, collapsed: !collapsed,
+            expandedWidth: collapsed ? state?.expandedWidth || 760 : node.width,
+            expandedHeight: collapsed ? state?.expandedHeight || 520 : node.height,
+            ...(stack ? { assetStackExpanded: collapsed } : {}),
+        } },
+    });
+    const laidOut = layoutCanvasGridGroups(next, new Set([frameId]));
+    return stack && collapsed ? makeRoomForAssetStack(laidOut, frameId) : laidOut;
+}
 
 export function isFrameNode(node?: CanvasNodeData | null): node is CanvasNodeData & { type: CanvasNodeType.Frame } {
     return node?.type === CanvasNodeType.Frame;

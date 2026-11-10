@@ -36,6 +36,11 @@ func (s *Service) finishCloudAgentCleanup(ctx context.Context, run *model.CloudA
 	}
 	seen := map[string]bool{}
 	ids := []string{run.ID, activeID, mediaID}
+	ownedIDs, err := s.repo.ActiveAgentTaskIDs(run.UserID, run.ID)
+	if err != nil {
+		return err
+	}
+	ids = append(ids, ownedIDs...)
 	if decodeErr == nil {
 		// TaskIDs is the durable history of every task admitted to this run,
 		// including work that is no longer the active step. Cancel every still
@@ -45,11 +50,25 @@ func (s *Service) finishCloudAgentCleanup(ctx context.Context, run *model.CloudA
 			ids = append(ids, work.TaskID)
 		}
 	}
+	uniqueIDs := make([]string, 0, len(ids))
 	for _, id := range ids {
 		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	// Long productions can have thousands of historical calls. Read only their
+	// small states, then load/cancel active calls rather than every old prompt.
+	states, err := s.repo.TaskStatesForUser(run.UserID, uniqueIDs)
+	if err != nil {
+		return err
+	}
+	for _, entry := range states {
+		if entry.Status != model.TaskStatusQueued && entry.Status != model.TaskStatusRunning {
+			continue
+		}
+		id := entry.ID
 		if err := ctx.Err(); err != nil {
 			return err
 		}

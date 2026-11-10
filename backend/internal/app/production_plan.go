@@ -25,9 +25,24 @@ type productionPlanAsset struct {
 	DependsOn    []string                 `json:"dependsOn,omitempty"`
 	SubjectKeys  []string                 `json:"subjectKeys,omitempty"`
 	GroupKind    string                   `json:"groupKind,omitempty"`
+	Aliases      []string                 `json:"aliases,omitempty"`
+	CoreFacts    string                   `json:"coreFacts,omitempty"`
+	Variants     string                   `json:"variants,omitempty"`
+	Origin       string                   `json:"origin,omitempty"`
+	ParentKey    string                   `json:"parentKey,omitempty"`
+	Quantity     int                      `json:"quantity,omitempty"`
+	Usage        []productionAssetUsage   `json:"usage,omitempty"`
+}
+
+type productionAssetUsage struct {
+	Range   string `json:"range"`
+	Purpose string `json:"purpose"`
 }
 
 type productionPlan struct {
+	FlowVersion             int                                `json:"flowVersion,omitempty"`
+	InventoryAuditRevision  int                                `json:"inventoryAuditRevision,omitempty"`
+	FlowStoryUnits          []string                           `json:"flowStoryUnits,omitempty"`
 	Groups                  map[string]string                  `json:"groups,omitempty"`
 	AssetPlaceholderNodeIDs map[string]string                  `json:"assetPlaceholderNodeIds,omitempty"`
 	Version                 int                                `json:"version,omitempty"`
@@ -43,18 +58,21 @@ type productionPlan struct {
 	AssetsStarted           bool                               `json:"assetsStarted,omitempty"`
 	PlansStarted            bool                               `json:"plansStarted,omitempty"`
 	SelectedPlanKeys        []string                           `json:"selectedPlanKeys,omitempty"`
-	SelectedAssetKeys       []string                           `json:"selectedAssetKeys,omitempty"`
+	SelectedAssetKeys       []string                           `json:"selectedAssetKeys"`
 	SelectedAssetKinds      []string                           `json:"selectedAssetKinds,omitempty"`
 	NewVersionAssetKeys     []string                           `json:"newVersionAssetKeys,omitempty"`
+	AssetRequests           map[string]string                  `json:"assetRequests,omitempty"`
+	AssetRequestOrder       []string                           `json:"assetRequestOrder,omitempty"`
 	SummaryHash             string                             `json:"summaryHash,omitempty"`
+	SummaryContent          string                             `json:"summaryContent,omitempty"`
 }
 
 var productionPlanKinds = []string{"character", "environment", "prop", "special"}
-var productionCurrentPlanKinds = []string{"character", "environment", "prop", "sound"}
+var productionCurrentPlanKinds = []string{"character", "environment", "prop", "special", "sound"}
 
 var unifiedPlanSections = []productionDocumentSection{{"story", "故事总纲与世界规则"}, {"visual", "视觉与美术规范"}, {"direction", "导演与视听规范"}, {"generation", "生成与一致性规范"}}
 
-const independentPlanPolicy = `只完成当前明确指定的一项文稿并提交一次工具调用，不查询、不检查、不修复、不分析问题、不创建其他产物。故事总纲阶段仅依据本次任务绑定的当前已采用选题和全局参数；严禁读取、引用或复用其他版本故事总纲、旧资产、历史任务结果、历史节点或其他并发方案。其他制作方案各自独立依据已经保存的本版故事总纲与全局参数，不能依赖或声称读取其他并发方案。地区、语言、人物身份、类型、形式和风格严格沿用来源，不预设中国背景或任何特定题材。未知信息明确说明，不虚构已完成的资产或媒体。若当前 key=story，提交前按固定创作链推演：拆解选题的观众承诺与类型机制，确立主角目标/对手力量/主线因果和必要支线，定义时代地域、关系、规则/限制/代价；先画完整季弧线和结局，再按集数分配阶段目标；最后按单集时长逐集填写时地、在场人物、目标阻力、选择行动、结果代价、关系/信息/资产状态和集尾承接。支线须有进展与回收，不以背景设定、人物名单或反复寻找代替剧情推进。时长不足以承载的事件要合并或重排，不能靠一句概述填满集数。资产清单只能在逐集规划完成后提取，并逐集映射人物、地点、实体道具、重复声音及规则效果；同一实体跨集复用身份，漏项必须在完成前补齐。使用本次工具模板完整填写全部适用字段；各类确无内容时逐类给出与故事相符的理由，由系统分配编码，不编造编码。输出是创作方案，结构保存不代表语义质量或人工验收通过。`
+const independentPlanPolicy = `只完成当前明确指定的一项文稿并提交一次工具调用，不查询、不创建其他产物。总纲仅依据当前采用的选题和项目参数，禁止引用其他版本剧情、旧资产或历史任务；其他制作规范依据本版总纲和资产索引，不声称读过尚未完成的并发规范。地区、语言、身份、类型和风格沿用来源，不预设背景。总纲只保留一份主线与结局摘要、规则边界、人物关系和跨单元线索，单元仅作阶段分配，不另写章节复述；每集只有剧情推进、结果变化、伏笔衔接三个叙事要点，不在不同栏目重复事件。主要资产登记后按单元补齐配角、必要群体、空间、操作物件和功能声音，不限核心角色，不按数量指标凑数。分集大纲、完整正文、对白、场次和镜头由后续阶段展开。相同主体跨集复用，新身份明确补录，不把每次出场或普通状态作为新身份。总表由登记与分集引用本地汇总，不反向全文提取，不复写资产档案。按当前工具模板填写，字段说明是交付边界，编号由系统分配。未知信息不虚构为已完成。结构保存不等于文学质量或人工验收通过。`
 
 func planSection(key string) (productionDocumentSection, bool) {
 	if key == "inventory" {
@@ -70,6 +88,11 @@ func planSection(key string) (productionDocumentSection, bool) {
 
 func planKinds(m productionManifest) []string {
 	if m.Plan != nil && m.Plan.Version >= 3 {
+		// Older manifests used an integrated-effects contract. Do not make a
+		// completed legacy plan fail merely because new planning has five groups.
+		if m.Plan.FlowVersion == 0 {
+			return []string{"character", "environment", "prop", "sound"}
+		}
 		return append([]string{}, productionCurrentPlanKinds...)
 	}
 	if m.Plan != nil && m.Plan.Version >= 2 {
@@ -110,6 +133,8 @@ func productionPlanTools(versions ...int) []map[string]any {
 			"complete": map[string]any{"type": "boolean"},
 			"assets": map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"key", "kind", "name", "episodes"}, "properties": map[string]any{
 				"key": str, "kind": map[string]any{"type": "string", "enum": kinds}, "name": str, "baseKey": str, "stateName": str,
+				"parentKey": str, "quantity": map[string]any{"type": "integer", "minimum": 1},
+				"subjectKeys": map[string]any{"type": "array", "items": str}, "aliases": map[string]any{"type": "array", "items": str},
 				"episodes": map[string]any{"type": "array", "items": map[string]any{"type": "integer", "minimum": 1}, "maxItems": 200},
 				"priority": map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "description": "类别内剧情重要性排名；1最重要，必须连续唯一"},
 				"purpose":  str, "plannedRange": str, "dependsOn": map[string]any{"type": "array", "items": str, "maxItems": 100},
@@ -129,16 +154,13 @@ func productionPlanItem(m productionManifest, key string) *productionPlanAsset {
 	return nil
 }
 
-func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentExecution, state *cloudAgentRuntime, m productionManifest, doc map[string]any, call cloudAgentCall, policy RuntimePolicySetting) (any, error) {
+func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentExecution, state *cloudAgentRuntime, m productionManifest, doc map[string]any, call cloudAgentCall, policy RuntimePolicySetting, deferProjection ...bool) (any, error) {
 	if m.Plan == nil {
 		return nil, BadAuthRequest("当前任务不是制作方案")
 	}
 	var input productionPlan
 	if err := decodeCloudAgentJSONObject(call.Function.Arguments, &input); err != nil {
 		return nil, cloudAgentJSONArgumentError(err)
-	}
-	if m.Plan.Version >= 5 && !input.Complete {
-		return nil, BadAuthRequest("完整资产总表需在本次调用一次提交，并明确 complete=true")
 	}
 	artifacts, err := repo.ProductionAgentArtifacts(run.UserID, run.ID)
 	if err != nil {
@@ -162,11 +184,27 @@ func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentE
 	if len(m.Plan.SelectedAssetKinds) > 0 && !productionPlanStoryPresent(m, doc, artifacts) {
 		return nil, BadAuthRequest("请先保存当前制作方案的故事总纲")
 	}
-	if len(input.Assets) > 100 {
+	if len(input.Assets) > 100 && m.Plan.FlowVersion == 0 {
 		return nil, BadAuthRequest("单批最多登记100项，请分批追加")
 	}
 	next := *m.Plan
 	next.Assets = append([]productionPlanAsset{}, next.Assets...)
+	// Flow publication is an authoritative snapshot, not a batch append. Keep
+	// surviving identities, but do not retain assets rejected by reconciliation.
+	if m.Plan.FlowVersion == 1 && input.Complete {
+		next.Assets = nil
+		next.InventoryReview = nil
+		for i := range input.Assets {
+			for _, prior := range m.Plan.Assets {
+				if input.Assets[i].Key == prior.Key && input.Assets[i].Kind == prior.Kind {
+					copy := prior
+					copy.Name = input.Assets[i].Name
+					next.Assets = append(next.Assets, copy)
+					break
+				}
+			}
+		}
+	}
 	for i := range next.Assets {
 		next.Assets[i].Episodes = append([]int{}, next.Assets[i].Episodes...)
 		next.Assets[i].DependsOn = append([]string{}, next.Assets[i].DependsOn...)
@@ -204,7 +242,7 @@ func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentE
 		if reserved || strings.HasPrefix(item.Key, "$") || strings.TrimSpace(item.Key) == "" || item.Key != strings.TrimSpace(item.Key) || len(item.Key) > 120 || strings.TrimSpace(item.Name) == "" || item.Name != strings.TrimSpace(item.Name) || utf8.RuneCountInString(item.Name) > 120 || !cloudAgentContainsString(planKinds(m), item.Kind) || (m.Plan.Version < 2 && len(item.Episodes) == 0) || seen[item.Key] {
 			validationFailures = append(validationFailures, cloudAgentFieldError(path, "invalid_identity", "资产清单需要唯一 key、名称、有效类型及预计出场集数；key 不得使用共用文稿名或保留前缀"))
 		}
-		if m.Plan.Version >= 2 && (strings.TrimSpace(item.Purpose) == "" || strings.TrimSpace(item.PlannedRange) == "" || len(item.Purpose) > 4000 || len(item.PlannedRange) > 2000 || len(item.DependsOn) > 100) {
+		if m.Plan.Version >= 2 && (strings.TrimSpace(item.Purpose) == "" || strings.TrimSpace(item.PlannedRange) == "" || (m.Plan.FlowVersion != 1 && (len(item.Purpose) > 4000 || len(item.PlannedRange) > 2000)) || len(item.DependsOn) > 100) {
 			validationFailures = append(validationFailures, cloudAgentFieldError(path, "invalid_asset_plan", "每项资产需要剧情功能 purpose、计划篇章或集段 plannedRange；精确 episodes 未定时可以留空，字段长度及前置数量须符合当前契约"))
 		}
 		if (item.BaseKey == "") != (item.StateName == "") || (item.BaseKey != "" && (item.BaseKey == item.Key || strings.TrimSpace(item.BaseKey) != item.BaseKey || strings.TrimSpace(item.StateName) != item.StateName)) {
@@ -233,7 +271,7 @@ func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentE
 					validationFailures = append(validationFailures, cloudAgentFieldError(path, "registered_asset_changed", "已登记资产不允许更换身份或出场范围，请保留原清单并在文稿中说明修订"))
 				}
 				next.Assets[i], found = item, true
-			} else if strings.EqualFold(strings.TrimSpace(prior.Name), strings.TrimSpace(item.Name)) {
+			} else if m.Plan.FlowVersion == 0 && strings.EqualFold(strings.TrimSpace(prior.Name), strings.TrimSpace(item.Name)) {
 				validationFailures = append(validationFailures, cloudAgentFieldError(path+".key", "registered_name_exists", "同名资产应复用原 key："+truncateRunes(prior.Key, 80)))
 			}
 		}
@@ -284,7 +322,7 @@ func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentE
 	for _, item := range next.Assets {
 		delete(next.Absent, item.Kind)
 	}
-	if input.Complete && m.Plan.Version >= 5 {
+	if input.Complete && m.Plan.Version >= 5 && m.Plan.FlowVersion == 0 {
 		priorities := map[string]map[int]bool{}
 		for index, item := range next.Assets {
 			if item.Priority < 1 || item.Priority > 100 {
@@ -325,12 +363,13 @@ func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentE
 		next.Complete = input.Complete
 		if next.Complete {
 			validationFailures = append(validationFailures, productionValidatePlanInventory(next), productionValidateRelationshipParticipants(next))
+			if next.FlowVersion == 1 {
+				validationFailures = append(validationFailures, productionValidatePlanningLinks(next.Assets))
+			}
 		}
 	}
-	if !(m.Plan.Version >= 5 && !input.Complete) {
-		if err := cloudAgentValidationErrors(validationFailures...); err != nil {
-			return nil, err
-		}
+	if err := cloudAgentValidationErrors(validationFailures...); err != nil {
+		return nil, err
 	}
 	for i := range next.Assets {
 		sort.Ints(next.Assets[i].Episodes)
@@ -376,7 +415,7 @@ func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentE
 		}
 		next.SelectedAssetKeys = nil
 		for _, asset := range next.Assets {
-			if selectedKinds[asset.Kind] {
+			if selectedKinds[productionPlanGroupKind(asset)] {
 				next.SelectedAssetKeys = append(next.SelectedAssetKeys, asset.Key)
 			}
 		}
@@ -387,6 +426,12 @@ func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentE
 		next.PlansStarted = false
 		next.SelectedPlanKeys = nil
 		next.SelectedAssetKinds = nil
+		selectedManifest := m
+		selectedManifest.Plan = &next
+		if err := applyProductionAssetGenerationSettings(state, selectedManifest, artifacts, next.SelectedAssetKeys, state.ProductionAssetExtractionSelection); err != nil {
+			return nil, err
+		}
+		state.ProductionAssetExtractionSelection = nil
 	}
 	m.Plan = &next
 	encoded, _ := json.Marshal(m)
@@ -396,7 +441,7 @@ func productionPlanInventory(repo *repository.Repository, run *model.CloudAgentE
 	if err = repo.ValidateProductionAgentJob(run.UserID, run.ID, false); err != nil {
 		return nil, err
 	}
-	if m.Plan.Version >= 2 && next.Complete {
+	if m.Plan.Version >= 2 && next.Complete && !(len(deferProjection) > 0 && deferProjection[0]) {
 		if err := productionSavePlanInventory(repo, run, state, m, doc, artifacts, policy); err != nil {
 			return nil, err
 		}
@@ -513,10 +558,15 @@ func productionPlanContext(repo *repository.Repository, run *model.CloudAgentExe
 	}
 	index := []map[string]any{}
 	for _, asset := range m.Plan.Assets {
-		index = append(index, map[string]any{"key": asset.Key, "name": asset.Name, "kind": asset.Kind, "identity": asset.Identity, "episodes": asset.Episodes, "purpose": asset.Purpose, "plannedRange": asset.PlannedRange, "dependsOn": asset.DependsOn, "subjectKeys": asset.SubjectKeys, "baseKey": asset.BaseKey, "stateName": asset.StateName})
+		index = append(index, map[string]any{"key": asset.Key, "name": asset.Name, "kind": asset.Kind, "identity": asset.Identity, "episodes": asset.Episodes, "purpose": asset.Purpose, "plannedRange": asset.PlannedRange, "dependsOn": asset.DependsOn, "subjectKeys": asset.SubjectKeys, "baseKey": asset.BaseKey, "stateName": asset.StateName, "parentKey": asset.ParentKey, "quantity": asset.Quantity, "aliases": asset.Aliases, "coreFacts": asset.CoreFacts, "variants": asset.Variants, "origin": asset.Origin})
 	}
 	context["registeredAssets"] = index
 	context["selectedAssetKeys"] = m.Plan.SelectedAssetKeys
+	if next, ok := context["nextAction"].(map[string]any); ok {
+		if background := productionAssetBackgroundContext(m, stringValue(next["key"])); background != nil {
+			context["assetBackgroundContext"] = background
+		}
+	}
 	if m.Plan.Version >= 2 {
 		if next, ok := context["nextAction"].(map[string]any); ok {
 			if sections, exists := next["sourceSections"]; exists {

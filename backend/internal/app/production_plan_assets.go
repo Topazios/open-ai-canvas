@@ -197,6 +197,8 @@ type ProductionAssetModelSelection struct {
 	ReasoningEffort ReasoningEffort `json:"reasoningEffort,omitempty"`
 	Instruction     string          `json:"instruction,omitempty"`
 	ContinueAppend  bool            `json:"continueAppend,omitempty"`
+	Regenerate      bool            `json:"regenerate,omitempty"`
+	RequestID       string          `json:"requestId,omitempty"`
 }
 
 func (s *Service) GenerateProductionPlanAssets(userID, runID string, keys []string, selections ...ProductionAssetModelSelection) error {
@@ -252,6 +254,10 @@ func (s *Service) prepareProductionPlanAssetGeneration(userID, runID string, key
 			if manifest.Plan == nil || manifest.Plan.Version < 2 {
 				return BadAuthRequest("当前任务不是可分阶段执行的制作方案")
 			}
+			summaryRepaired, err := productionRepairPlanSummaryCheckpoint(repo, current, &state, manifest, doc, policy)
+			if err != nil {
+				return err
+			}
 			for _, key := range keys {
 				if productionPlanItem(manifest, key) == nil {
 					return BadAuthRequest("资产不属于当前清单：" + key)
@@ -279,7 +285,7 @@ func (s *Service) prepareProductionPlanAssetGeneration(userID, runID string, key
 					return err
 				}
 			}
-			if manifestChanged || checkpointRepaired {
+			if manifestChanged || checkpointRepaired || summaryRepaired {
 				return cloudAgentSave(current, &state)
 			}
 			return nil
@@ -303,86 +309,7 @@ func (s *Service) prepareProductionPlanAssetGeneration(userID, runID string, key
 // scope. The canonical inventory and artifact state determine which members
 // still need work; the Agent then receives the complete registered inventory.
 func (s *Service) GenerateProductionPlanAssetKinds(userID, runID string, kinds []string, selection ProductionAssetModelSelection) error {
-	allowed := map[string]bool{"character": true, "environment": true, "prop": true, "sound": true, "special": true}
-	selectedKinds := map[string]bool{}
-	for _, kind := range kinds {
-		if !allowed[kind] {
-			return BadAuthRequest("未知资产类别：" + kind)
-		}
-		selectedKinds[kind] = true
-	}
-	if len(selectedKinds) == 0 {
-		return BadAuthRequest("请选择要生成的资产类别")
-	}
-	run, err := s.repo.CloudAgent(userID, runID)
-	if err != nil {
-		return err
-	}
-	state, err := cloudAgentDecode(run)
-	if err != nil {
-		return err
-	}
-	_, manifest, doc, err := productionLoad(s.repo, run, &state, productionLoadForAssetGeneration)
-	if err != nil {
-		return err
-	}
-	if manifest.Plan == nil {
-		return BadAuthRequest("当前任务不是制作方案")
-	}
-	rows, err := s.repo.ProductionAgentArtifacts(userID, runID)
-	if err != nil {
-		return err
-	}
-	taskStates := map[string]model.TaskStatus{}
-	if tasks, e := s.repo.TaskStatesForUser(userID, productionPlanTaskIDs(&state)); e == nil {
-		for _, task := range tasks {
-			taskStates[task.ID] = task.Status
-		}
-	}
-	active := run.Status == "running" || run.Status == "queued"
-	progress := productionPlanAssetProgress(manifest, doc, rows, &state, taskStates, active)
-	keys := productionPlanAssetKeysForKinds(progress, selectedKinds)
-	registeredKinds := map[string]bool{}
-	for _, asset := range manifest.Plan.Assets {
-		registeredKinds[asset.Kind] = true
-	}
-	missingKinds := []string{}
-	for kind := range selectedKinds {
-		if !registeredKinds[kind] {
-			missingKinds = append(missingKinds, kind)
-		}
-	}
-	if len(missingKinds) > 0 {
-		if manifest.Plan.Version < 5 {
-			return BadAuthRequest("当前制作方案版本过旧，无法分阶段提取资产，请更新制作方案")
-		}
-		if active {
-			return productionPlanConflict("当前制作任务仍在运行，请等待结束后再生成资产")
-		}
-		slices.Sort(missingKinds)
-		manifest.Plan.SelectedAssetKinds = missingKinds
-		encoded, marshalErr := json.Marshal(manifest)
-		if marshalErr != nil {
-			return marshalErr
-		}
-		if err := s.repo.UpdateProductionAgentManifest(userID, runID, string(encoded)); err != nil {
-			return err
-		}
-		return s.GenerateProductionPlanSections(userID, runID, []string{"inventory"})
-	}
-	if len(keys) == 0 {
-		// Everything in these categories is either done or already in flight.
-		// Done members get a new version; in-flight members are never duplicated.
-		for _, item := range progress {
-			if selectedKinds[item.Kind] && item.Status == "complete" {
-				keys = append(keys, item.Key)
-			}
-		}
-		if len(keys) == 0 {
-			return productionPlanConflict("此类资产正在生成，请等待结果")
-		}
-	}
-	return s.GenerateProductionPlanAssets(userID, runID, keys, selection)
+	return s.admitProductionAssetKinds(userID, runID, kinds, selection)
 }
 
 func productionPlanAssetKeysForKinds(progress []ProductionPlanAssetProgress, kinds map[string]bool) []string {
@@ -479,23 +406,7 @@ func productionAssetModelSelectionEmpty(selection ProductionAssetModelSelection)
 		strings.TrimSpace(selection.ChannelModelKey) == "" &&
 		strings.TrimSpace(string(selection.ReasoningEffort)) == "" &&
 		strings.TrimSpace(selection.Instruction) == "" &&
-		!selection.ContinueAppend
-}
-
-func productionPlanAssetAppendAuthorized(selection *ProductionAssetModelSelection) bool {
-	return selection != nil && selection.ContinueAppend
-}
-
-func productionPlanAssetSelectionIsIdempotent(manifest productionManifest, keys []string) bool {
-	if manifest.Plan == nil || !manifest.Plan.AssetsStarted {
-		return false
-	}
-	for _, key := range keys {
-		if !slices.Contains(manifest.Plan.SelectedAssetKeys, key) {
-			return false
-		}
-	}
-	return true
+		!selection.ContinueAppend && !selection.Regenerate && selection.RequestID == ""
 }
 
 const productionUnsubmittedPropValidationFailure = "工具执行失败，请检查输入或稍后重试"
@@ -588,9 +499,23 @@ func (s *Service) startProductionPlanAssetsWithModel(userID, runID string, selec
 			if m.Plan == nil || m.Plan.Version < 2 {
 				return BadAuthRequest("当前任务不是可分阶段执行的制作方案")
 			}
+			if _, err := productionRepairPlanSummaryCheckpoint(repo, current, &state, m, doc, policy); err != nil {
+				return productionAssetStep("restore summary checkpoint", err)
+			}
 			artifacts, err := repo.ProductionAgentArtifacts(userID, runID)
 			if err != nil {
 				return productionAssetStep("read artifacts", err)
+			}
+			// Accepted queued selections are live intent even before a process-local
+			// runner or first task receipt exists. A second click appends to them.
+			if staleExecution && m.Plan.AssetsStarted && !state.ProductionPaused {
+				for _, key := range m.Plan.SelectedAssetKeys {
+					work := state.ProductionParallel[key]
+					if work.TaskID == "" && work.Error == "" && !work.Abandoned && !work.QuietHold && !productionPlanArtifactValid(m, doc, artifacts, key) {
+						active = true
+						break
+					}
+				}
 			}
 			selected := []string{}
 			for _, key := range keys {
@@ -602,12 +527,38 @@ func (s *Service) startProductionPlanAssetsWithModel(userID, runID string, selec
 				}
 			}
 			slices.Sort(selected)
+			if selection != nil {
+				if seen, err := productionAssetRequestSeen(m.Plan, *selection, keys, false); seen || err != nil {
+					return err
+				}
+			}
+			regenerate := selection != nil && selection.Regenerate
+			pendingKeys := selected[:0]
+			for _, key := range selected {
+				if !regenerate && productionPlanArtifactValid(m, doc, artifacts, key) {
+					continue
+				}
+				pendingKeys = append(pendingKeys, key)
+			}
+			selected = pendingKeys
+			if len(selected) == 0 {
+				return nil
+			}
+			if !active && productionPlanHasLiveAssetCalls(repo, userID, &state) {
+				return productionPlanConflict("原调用仍在执行或保存，请等待收尾后重试")
+			}
 			if active {
+				if regenerate {
+					return productionPlanConflict("当前资产任务仍在执行，请结束后再主动生成新版")
+				}
 				// Other assets running never blocks this selection: it is appended
 				// to the live batch and runs as its own task.
 				artifacts, err = productionResetMissingPlanAssets(repo, current, &state, m, doc, artifacts, policy)
 				if err != nil {
 					return productionAssetStep("reset missing assets", err)
+				}
+				if selection != nil {
+					productionRecordAssetRequest(m.Plan, *selection, keys, false)
 				}
 				encoded, err := json.Marshal(m)
 				if err != nil {
@@ -623,10 +574,22 @@ func (s *Service) startProductionPlanAssetsWithModel(userID, runID string, selec
 				if err != nil {
 					return productionAssetStep("append assets", err)
 				}
-				return productionAssetStep("append settings", applyProductionAssetGenerationSettings(&state, m, artifacts, selected, selection))
+				if err := applyProductionAssetGenerationSettings(&state, m, artifacts, selected, selection); err != nil {
+					return productionAssetStep("append settings", err)
+				}
+				targetsMissing := false
+				for _, key := range selected {
+					targetsMissing = targetsMissing || !productionAssetTargetPresent(m, doc, key)
+				}
+				if appended || targetsMissing {
+					if err := productionPersistAssetTargets(repo, current, &state, m, doc, artifacts, policy); err != nil {
+						return err
+					}
+				}
+				return cloudAgentSave(current, &state)
 			}
 			if productionPlanHasLiveSelectedAssetCalls(repo, userID, &state, selected) {
-				log.Printf("start assets: resubmitting over a live call: run=%s keys=%v", runID, selected)
+				return productionPlanConflict("原资产调用仍在执行，未重复派发；请等待收尾或明确停止原任务")
 			}
 			retryableTerminalTask := false
 			if state.ActiveTaskID != "" {
@@ -694,12 +657,20 @@ func (s *Service) startProductionPlanAssetsWithModel(userID, runID string, selec
 				for _, receipt := range artifacts {
 					hasPriorReceipt = hasPriorReceipt || receipt.Key == key
 				}
+				// A stale or edited receipt must be preserved as well. Ordinary
+				// completed receipts were already excluded from this selection.
 				if hasPriorReceipt && !slices.Contains(m.Plan.NewVersionAssetKeys, key) {
 					m.Plan.NewVersionAssetKeys = append(m.Plan.NewVersionAssetKeys, key)
 				}
 			}
+			if selection != nil {
+				productionRecordAssetRequest(m.Plan, *selection, keys, false)
+			}
 			if err := applyProductionAssetGenerationSettings(&state, m, artifacts, selected, selection); err != nil {
 				return productionAssetStep("generation settings", err)
+			}
+			if err := productionPersistAssetTargets(repo, current, &state, m, doc, artifacts, policy); err != nil {
+				return err
 			}
 			encoded, err := json.Marshal(m)
 			if err != nil {
@@ -802,6 +773,9 @@ func productionPlanHasLiveSelectedAssetCalls(repo *repository.Repository, userID
 
 func applyProductionAssetGenerationSettings(state *cloudAgentRuntime, manifest productionManifest, artifacts []model.ProductionAgentArtifact, keys []string, selection *ProductionAssetModelSelection) error {
 	if selection == nil || state == nil {
+		return nil
+	}
+	if !productionAssetModelSelectionProvided(*selection) && strings.TrimSpace(selection.Instruction) == "" && selection.ReasoningEffort == "" {
 		return nil
 	}
 	instruction := strings.TrimSpace(selection.Instruction)

@@ -65,7 +65,15 @@ export type AgentApproval = {
 
 export type AgentRun = {
     production?: {
-		executionMode?: "episode";
+        flow?: {
+            root: string; stage: string; total: number; saved: number; accepted: number; running: number; repair: number; held: number; lastProgressAt: string;
+            stopReason?: string;
+            queued?: number;
+            scheduler?: { window: number; submitted: number; received: number; retrySpent: number; retryBudget: number; totalRetries: number; recoveryRounds?: number; cooldownUntil?: number };
+            stages?: Array<{ key: string; name: string; total: number; totalKnown: boolean; completed: number; percent: number; running: number; repair: number; held: number; status: string }>;
+            units: Array<{ id: string; key: string; name: string; stage: string; status: string; generation: number; attempts: number; percent?: number; retryAt?: number; retryAttempts?: number; issues: Array<{ layer: string; rule: string; target: string; message: string; action: string; severity: string; code?: string; errorSource?: string }> }>;
+        };
+		executionMode?: "episode" | "scene";
 		episodeTaskStatus?: string;
         targetNodeId: string;
         workKind?: "storyboard" | "plan";
@@ -73,8 +81,8 @@ export type AgentRun = {
         phaseLabel?: string;
         currentItem?: string;
         concurrentItems?: string[];
-        parallelItems?: Array<{ key: string; name: string; taskId?: string; severity?: "warning" | "error"; abandoned?: boolean; step?: number; attempts?: number; validationAttempts?: number; retryAt?: number; validationIssues?: string[]; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "retrying" | "error" | "warning" | "unknown" }>;
-        assetGroups?: Array<{ kind: string; total: number; completed: number; status: "waiting_standards" | "waiting_manual" | "waiting" | "running" | "error" | "complete" }>;
+        parallelItems?: Array<{ key: string; name: string; taskId?: string; sceneId?: string; generation?: number; savedShots?: number; totalShots?: number; severity?: "warning" | "error"; message?: string; code?: string; phase?: string; errorSource?: string; abandoned?: boolean; step?: number; attempts?: number; validationAttempts?: number; retryAt?: number; validationIssues?: string[]; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "retrying" | "error" | "warning" | "unknown" | "blocked" }>;
+        assetGroups?: Array<{ kind: string; total: number; completed: number; status: "waiting_standards" | "waiting_manual" | "waiting" | "extracting" | "queued" | "running" | "error" | "complete" }>;
         concurrencyLimit?: number;
         documentCount?: number;
         documentTotal?: number;
@@ -87,7 +95,10 @@ export type AgentRun = {
         plansStarted?: boolean;
         assetsStarted?: boolean;
         inventoryComplete?: boolean;
+		inventoryReviewedSections?: number;
+		inventorySourceSections?: number;
         inventoryRecoveryAvailable?: boolean;
+        inventoryReconcileAvailable?: boolean;
         paused: boolean;
         waitingForBoundary: boolean;
         waitingForSharedFacts?: boolean;
@@ -218,13 +229,17 @@ export function cancelAgentRun(runId: string) {
     return http.post<{ accepted: boolean }>(`/agent/runs/${encodeURIComponent(runId)}/cancel`, undefined, { timeout: 15_000 });
 }
 
+export function getProductionUnitDetail(runId: string, unitId: string, signal?: AbortSignal) {
+    return http.get<{ id: string; name: string; status: string; sourceVersion: string; input: unknown; adopted: unknown; issues: unknown; history: Array<{ taskId: string; generation: number; received: unknown; adopted: unknown; issues: unknown }> }>(`/agent/runs/${encodeURIComponent(runId)}/production-units/${encodeURIComponent(unitId)}`, { signal });
+}
+
 export function reconcileCanvasNodeTasks(canvasId: string, deletedNodeIds: string[] = []) {
     return http.post<{ accepted: boolean }>(`/canvas-projects/${encodeURIComponent(canvasId)}/tasks/reconcile`, { deletedNodeIds }, { timeout: 30_000 });
 }
 
-export type ProductionAgentControlAction = "pause" | "resume" | "generate_plans" | "generate_assets" | "retry_item";
+export type ProductionAgentControlAction = "pause" | "resume" | "retry_main" | "generate_plans" | "generate_assets" | "retry_item";
 export type ProductionPlanScope = "inventory" | "visual" | "direction" | "generation";
-export type ProductionAssetModelSelection = { model: string; logicalModelId?: string; channelId?: string; channelModelKey?: string; reasoningEffort?: ReasoningEffort; instruction?: string; continueAppend?: boolean };
+export type ProductionAssetModelSelection = { model: string; logicalModelId?: string; channelId?: string; channelModelKey?: string; reasoningEffort?: ReasoningEffort; instruction?: string; continueAppend?: boolean; regenerate?: boolean; requestId?: string };
 export type ProductionPlanAsset = {
     key: string; code: string; name: string; kind: string; priority?: number;
     severity?: "warning" | "error";

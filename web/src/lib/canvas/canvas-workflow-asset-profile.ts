@@ -46,7 +46,8 @@ export function assetAppliesToEpisode(node: CanvasNodeData, episode?: number) {
         !profile.occurrences.length || profile.occurrences.some((entry) => entry.episode === episode);
 }
 
-export const assetProfileOutputInstruction = `每个资产条目还必须提供以下结构化字段，与 content 中的文稿一致。重大形态/结构/身份变化若需独立参考图，必须在总清单中拆为同类独立资产，不放入 variants；已确认重大变化的独立形态节点可以 variants=[]。疲惫、情绪、普通受伤、包扎、血迹、灰尘、污渍、湿润、轻微破损、普通换装、持物、开合、运行、位置、日夜、天气、开关灯和光照变化写入 content、continuity、occurrences.state 或镜头提示词，不创建独立资产或变体。声音的音量、语速、情绪和场景适配也不创建声音变体，只有需要独立复用的全新声源或制作形态才可登记。
+export const assetProfileOutputInstruction = `人物、场景、道具的 content 必须在资产生成时完成明确的制作规格，不能把原文未写的数值留作待定或待测量。先保留原文事实，再合理设计缺项并注明制作设定（非实测），不可改写既定事实或增加剧情物件。用两列表格给出基准状态：人物写年龄、赤足身高、体重、肩宽、基准姿态及脚底原点(0,0,0)和X/Y/Z方向；场景写长宽净高、面积、原点、单位与X/Y/Z方向、门窗/固定家具的坐标尺寸朝向及通行净宽；道具写长宽高、重量、材质配色、局部原点和X/Y/Z方向、接触面与握持/操作锚点。场景坐标与道具局部坐标分开，不能把画布坐标当物理位置；服装、形态或年龄阶段各自说明尺寸变化与继承规格。不适用的单项写实体原因，不能以原文未提供免填；儿童等不强填三围。提示词、分镜及多视图沿用同一规格，不重新猜数。声音资产不要求物理尺寸。
+每个资产条目还必须提供以下结构化字段，与 content 中的文稿一致。重大形态/结构/身份变化若需独立参考图，必须在总清单中拆为同类独立资产，不放入 variants；已确认重大变化的独立形态节点可以 variants=[]。疲惫、情绪、普通受伤、包扎、血迹、灰尘、污渍、湿润、轻微破损、普通换装、持物、开合、运行、位置、日夜、天气、开关灯和光照变化写入 content、continuity、occurrences.state 或镜头提示词，不创建独立资产或变体。声音的音量、语速、情绪和场景适配也不创建声音变体，只有需要独立复用的全新声源或制作形态才可登记。
 "aliases":["别名"], "occurrences":[{"episode":1,"scene":"场次","state":"出场状态","owner":"所属人物，无则留空","location":"所在空间，无则留空","evidence":"正文依据"}],
 "variants":[{"name":"状态名称","description":"固定特征与变化","source":"script或design","basis":"故事来源或制作设计依据","trigger":"触发事件","previousState":"前置状态","scope":"生效范围","recovery":"结束/恢复条件，不可逆则明确说明"}], "sounds":["人物声线回指本CHR档案；独立复用声音才关联已登记AUD及用途"], "conflicts":["实际冲突及影响"]。
 无内容的数组用 []。episode 为正文中实际提供的正整数集号，每次出场注明场次和依据；不要编造未提供集数的出场。不得生成参考节点 ID、审批结论或已选定参考。`;

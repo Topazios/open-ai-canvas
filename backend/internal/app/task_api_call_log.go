@@ -99,6 +99,8 @@ func (s *Service) ensureFailedProviderAttemptLogged(task model.Task, taskErr err
 	// into preflight warnings. INTERNAL describes this fallback row, not where
 	// the failure happened or whether a request was submitted.
 	switch {
+	case errors.As(taskErr, &httpErr) && model.IsGatewayTimeout(httpErr.StatusCode):
+		callLog.ProjectGatewayTimeout()
 	case errors.As(taskErr, &httpErr), errors.As(taskErr, &payloadErr):
 		callLog.ErrorSource = "upstream"
 	case errors.As(taskErr, &networkErr):

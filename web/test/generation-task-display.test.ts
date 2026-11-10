@@ -3,6 +3,14 @@ import { canCancelGenerationTask, generationTaskShowsProgress, generationTaskSta
 import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-task-state";
 
 describe("作品保存阶段", () => {
+    test("网关及本地超时不等于模型失败，保存失败保留独立阶段", () => {
+        for (const code of ["gateway_response_unconfirmed", "provider_request_timeout", "provider_response_read_timeout", "upstream_timeout"]) {
+            expect(generationTaskStatusLabel({ status: "failed", diagnostic: { code, severity: "warning" } })).toBe("结果未确认");
+            expect(generationTaskStatusLabel({ status: "succeeded", diagnostic: { code } })).toBe("已完成");
+        }
+        expect(generationTaskStatusLabel({ status: "failed", diagnostic: { severity: "warning", errorSource: "application", phase: "postprocess" } })).toBe("本地处理待核对");
+        expect(generationTaskStatusLabel({ status: "failed", mediaStage: "upload", diagnostic: { severity: "warning", errorSource: "application" } })).toBe("作品保存未完成");
+    });
     test("分别表达生成、下载、上传和登记，不把保存失败当成生成失败", () => {
         expect(mediaDeliverySummary("failed", "download")).toBe("生成成功 · 下载失败");
         expect(mediaDeliverySummary("failed", "upload")).toBe("生成成功 · 下载成功 · 上传 OSS失败");

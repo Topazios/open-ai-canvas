@@ -1,12 +1,12 @@
-import { Button } from "antd";
-import { Eye, FileSearch, PencilLine, Play, RotateCcw, WandSparkles, X } from "lucide-react";
-import type { SyntheticEvent } from "react";
+import { Button, Dropdown } from "antd";
+import { CheckCircle2, Eye, FileSearch, MoreHorizontal, PencilLine, Play, RotateCcw, WandSparkles, X } from "lucide-react";
+import { useState, type SyntheticEvent } from "react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import type { CanvasNodeData } from "@/types/canvas";
 import type { ShortDramaGlobalSettings } from "@/lib/short-drama-settings";
-import { autoReviewOutdated, latestBodyAudit, screenplayAuditState, screenplayAuditChecks, type AutoReviewRound, type AutoReviewState } from "@/lib/canvas/workflow-screenplay-audit";
+import { autoReviewBlockingCount, autoReviewOutdated, autoReviewPassed, latestBodyAudit, screenplayAuditState, screenplayAuditChecks, type AutoReviewRound, type AutoReviewState } from "@/lib/canvas/workflow-screenplay-audit";
 import { nodeWorkflow } from "@/lib/canvas/canvas-short-drama-workflow";
 import { CanvasNodeActionButton } from "./canvas-node-action-bar";
 
@@ -39,15 +39,35 @@ function roundResultLabel(round: AutoReviewRound) {
     return "未通过";
 }
 
+function currentReview(reportNode: CanvasNodeData | undefined, body: CanvasNodeData | undefined, nodes: CanvasNodeData[], settings?: ShortDramaGlobalSettings) {
+    const { report, stale } = screenplayAuditState(reportNode, nodes, settings);
+    const review = autoReviewOf(body);
+    const outdated = Boolean(review && body && autoReviewOutdated(review, body));
+    const busy = review?.status === "auditing" || review?.status === "repairing" || body?.metadata?.status === "loading";
+    const passed = Boolean(report && !stale && !busy && autoReviewPassed(report));
+    const needsRecheck = !busy && Boolean(report ? stale : outdated);
+    const blocking = report ? autoReviewBlockingCount(report) : 0;
+    const badge = autoReviewBadge(review);
+    const label = busy ? (review?.status === "auditing" || review?.status === "repairing" ? badge!.text : "诊断中")
+        : needsRecheck ? "当前版本待复检" : passed ? "审核通过"
+        : review?.status === "passed" ? "诊断结论待核对"
+        : badge?.text || (report ? "诊断未通过" : body?.metadata?.status === "error" ? "诊断未完成" : "尚未诊断");
+    return { report, stale, review, outdated, busy, passed, needsRecheck, blocking, label };
+}
+
+function reviewTime(value: string) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "时间未记录" : new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+}
+
 export function CanvasScreenplayNodeContent({ node, nodes, settings, onRepair, onReport, onAudit, onEdit, onResume }: AuditProps) {
     const theme = canvasThemes[useActiveTheme()];
     const isReport = node.metadata?.shortDrama?.step === "story.audit";
     const reportNode = isReport ? node : latestBodyAudit(node, nodes);
-    const state = screenplayAuditState(reportNode, nodes, settings);
     const detailsNodeId = reportNode?.id || node.id;
     const bodyNode = isReport ? nodes.find((source) => source.id === reportNode?.metadata?.shortDrama?.screenplayAudit?.bodyNodeId) : node;
-    const badge = autoReviewBadge(autoReviewOf(bodyNode));
-    const canResume = Boolean(onResume && bodyNode && canRetryReview(autoReviewOf(bodyNode)));
+    const state = currentReview(reportNode, bodyNode, nodes, settings);
+    const canResume = Boolean(!state.busy && !state.passed && !state.needsRecheck && onResume && bodyNode && canRetryReview(state.review));
     const stopCanvasEvent = (event: SyntheticEvent) => event.stopPropagation();
     return (
         <section className="box-border flex size-full min-h-0 flex-col overflow-hidden px-4 pt-11" style={{ color: theme.node.text }}>
@@ -62,8 +82,16 @@ export function CanvasScreenplayNodeContent({ node, nodes, settings, onRepair, o
                     node.metadata?.content
                 )}
             </div>
+            <div className="mt-2 shrink-0 border-t pt-2" style={{ borderColor: theme.node.stroke }}>
+                {(state.review || state.report || state.needsRecheck) ? (
+                    <div className="mb-1 flex items-center gap-1.5 text-xs" style={{ color: state.passed ? "var(--status-success)" : state.needsRecheck ? "var(--status-warning)" : theme.node.muted }} role="status">
+                        {state.passed ? <CheckCircle2 size={13} aria-hidden /> : null}
+                        <span>{state.label}</span>
+                        {state.passed && state.review ? <span style={{ color: theme.node.muted }}>· {state.review.rounds.length}轮诊修</span> : null}
+                    </div>
+                ) : null}
             <div
-                className="thin-scrollbar mt-2 flex min-h-10 min-w-0 shrink-0 items-center justify-start gap-1 overflow-x-auto border-t pt-2"
+                className="thin-scrollbar flex min-h-9 min-w-0 items-center gap-1 overflow-x-auto"
                 style={{ borderColor: theme.node.stroke }}
                 data-canvas-no-zoom
                 onPointerDown={stopCanvasEvent}
@@ -71,21 +99,11 @@ export function CanvasScreenplayNodeContent({ node, nodes, settings, onRepair, o
                 onWheel={stopCanvasEvent}
             >
                 <CanvasNodeActionButton theme={theme} label="编辑" icon={<PencilLine size={14} />} onClick={onEdit} primary />
-                <CanvasNodeActionButton theme={theme} label={state.report ? "重新审核" : "诊断"} icon={<FileSearch size={14} />} onClick={onAudit} />
-                <CanvasNodeActionButton theme={theme} label="详情" icon={<Eye size={14} />} onClick={() => onReport(detailsNodeId)} />
+                {!state.passed && !state.busy && !canResume ? <CanvasNodeActionButton theme={theme} label={state.needsRecheck ? "复检当前版本" : state.report ? "再次诊断" : "诊断"} icon={<FileSearch size={14} />} onClick={onAudit} /> : null}
+                <CanvasNodeActionButton theme={theme} label={state.review ? "诊修记录" : "诊断详情"} icon={<Eye size={14} />} onClick={() => onReport(detailsNodeId)} />
                 {canResume && bodyNode ? <CanvasNodeActionButton theme={theme} label="重试自动修复" icon={<Play size={14} />} onClick={() => onResume?.(bodyNode.id)} /> : null}
-                {!state.stale && state.report?.findings.length && reportNode ? (
+                {!state.busy && !state.passed && !state.stale && state.report?.findings.length && reportNode ? (
                     <CanvasNodeActionButton theme={theme} label="修复正文" icon={<WandSparkles size={14} />} onClick={() => onRepair(reportNode.id)} />
-                ) : null}
-                {badge ? (
-                    <span className="min-w-0 truncate whitespace-nowrap px-1 text-xs" style={{ color: theme.node.muted }} title={badge.title}>
-                        {badge.text}
-                    </span>
-                ) : null}
-                {state.report && !badge ? (
-                    <span className="min-w-0 truncate whitespace-nowrap px-1 text-xs" style={{ color: theme.node.muted }} title={state.stale ? "诊断待复检" : `${state.report.findings.length} 项诊断问题`}>
-                        {state.stale ? "待复检" : `${state.report.findings.length} 项问题`}
-                    </span>
                 ) : null}
                 {!isReport && node.metadata?.shortDrama?.screenplayRepair && !state.report ? (
                     <span className="min-w-0 truncate whitespace-nowrap px-1 text-xs" style={{ color: theme.node.muted }}>
@@ -93,42 +111,43 @@ export function CanvasScreenplayNodeContent({ node, nodes, settings, onRepair, o
                     </span>
                 ) : null}
             </div>
+            </div>
         </section>
     );
 }
 
 function AutoReviewRecord({ review, outdated, borderColor, mutedColor, sourceName }: { review: AutoReviewState; outdated?: boolean; borderColor: string; mutedColor: string; sourceName: (id: string) => string }) {
     const statusText = review.status === "passed" ? "已通过" : review.status === "settled" ? "已完成，仍有待留意项" : review.status === "manual" ? "已中断" : review.status === "repairing" ? "修复中" : "诊断中";
-    const lastRound = review.rounds[review.rounds.length - 1]?.round;
     return (
-        <section className="mb-4 border-b pb-4" style={{ borderColor }} aria-label="自动诊断修复记录">
-            <h3 className="text-sm font-semibold">自动诊断修复记录 · {statusText}</h3>
-            <p className="text-xs" style={{ color: mutedColor }}>
-                轮数 {review.rounds.length}/{review.maxRounds} · 开始 {review.startedAt}
-                {review.finishedAt ? ` · 结束 ${review.finishedAt}` : ""}
+        <details className="mt-5 border-t pt-4" style={{ borderColor }} aria-label="自动诊断修复记录">
+            <summary className="cursor-pointer text-sm font-semibold">诊修历史 · {review.rounds.length}轮 <span className="font-normal" style={{ color: mutedColor }}>· {outdated ? "旧版本记录" : statusText}</span></summary>
+            <p className="mt-2 text-xs" style={{ color: mutedColor }}>
+                最多 {review.maxRounds} 轮 · 开始 {reviewTime(review.startedAt)}
+                {review.finishedAt ? ` · 结束 ${reviewTime(review.finishedAt)}` : ""}
             </p>
-            {outdated ? <p className="mt-1 break-words text-xs" style={{ color: mutedColor }}>正文已在该记录之后被修改，以下记录对应旧版本。</p> : null}
+            {outdated ? <p className="mt-1 break-words text-xs" style={{ color: mutedColor }}>以下是旧版本的诊修过程，不代表当前正文已通过。</p> : null}
             {review.stopReason ? <p className="mt-1 break-words text-xs">结束说明：{review.stopReason}</p> : null}
-            {review.rounds.map((round) => {
+            {[...review.rounds].reverse().map((round) => {
                 const repair = round.repair;
                 return (
-                    <details key={round.round} className="mt-2 border-t pt-2" style={{ borderColor }} open={round.round === lastRound}>
-                        <summary className="cursor-pointer text-xs font-medium">
-                            第{round.round}轮 · 质量 {round.quality} · 可用性 {round.usability} · 阻塞 {round.blocking} 项 · {roundResultLabel(round)}
+                    <details key={round.round} className="mt-3 border-t pt-3" style={{ borderColor }}>
+                        <summary className="cursor-pointer text-sm font-medium">
+                            第{round.round}轮 · {roundResultLabel(round)} <span className="font-normal" style={{ color: mutedColor }}>· {round.blocking}项阻塞{repair ? ` · 采用${repair.adopted.length}项修复` : ""}</span>
                         </summary>
                         <div className="mt-2 text-xs leading-6">
+                            <p style={{ color: mutedColor }}>内容质量：{round.quality} · 分镜可用性：{round.usability}</p>
                             <p className="whitespace-pre-wrap break-words">{round.summary}</p>
                             {round.parseRetries ? <p style={{ color: mutedColor }}>报告格式不合规，自动重审 {round.parseRetries} 次</p> : null}
                             {round.checks?.length ? (
-                                <div className="mt-2">
-                                    <strong>正文验收维度</strong>
+                                <details className="mt-3">
+                                    <summary className="cursor-pointer font-medium">正文验收维度 · {round.checks.length}项</summary>
                                     {round.checks.map((check) => (
                                         <p key={check.key} className="break-words">
                                             {screenplayAuditChecks[check.key] || check.key}：{check.verdict}
                                             <span style={{ color: mutedColor }}> · {check.note}</span>
                                         </p>
                                     ))}
-                                </div>
+                                </details>
                             ) : null}
                             {round.coverage?.length || round.limitations?.length ? (
                                 <details className="mt-2">
@@ -147,13 +166,15 @@ function AutoReviewRecord({ review, outdated, borderColor, mutedColor, sourceNam
                             ) : null}
                             {round.findings.length ? (
                                 round.findings.map((item) => (
-                                    <article key={item.id} className="mt-2 break-words">
+                                    <details key={item.id} className="mt-3 break-words border-t pt-3" style={{ borderColor }}>
+                                        <summary className="cursor-pointer">
                                         <strong>
                                             {item.severity} · {item.title}
                                         </strong>{" "}
                                         <span style={{ color: mutedColor }}>
                                             {item.certainty} · {item.blocking ? "阻塞" : "不阻塞"}
                                         </span>
+                                        </summary>
                                         <p>定位：{item.location}</p>
                                         {item.evidence.map((quote, index) => (
                                             <blockquote key={index} className="my-1 whitespace-pre-wrap border-l-2 pl-3" style={{ borderColor }}>
@@ -170,7 +191,7 @@ function AutoReviewRecord({ review, outdated, borderColor, mutedColor, sourceNam
                                                 <p className="mt-1 whitespace-pre-wrap break-words">{item.repairPrompt}</p>
                                             </details>
                                         ) : null}
-                                    </article>
+                                    </details>
                                 ))
                             ) : (
                                 <p style={{ color: mutedColor }}>本轮未发现问题</p>
@@ -218,7 +239,7 @@ function AutoReviewRecord({ review, outdated, borderColor, mutedColor, sourceNam
                     </details>
                 );
             })}
-        </section>
+        </details>
     );
 }
 
@@ -245,14 +266,18 @@ export function CanvasScreenplayAuditPanel({
     onResume,
 }: DetailsProps) {
     const theme = canvasThemes[useActiveTheme()];
-    const { report, stale } = screenplayAuditState(node, nodes, settings);
+    const [pendingAction, setPendingAction] = useState<"reaudit" | "restore" | null>(null);
     const binding = node.metadata?.shortDrama?.screenplayAudit;
     const inline = nodeWorkflow(node)?.step === "story.body" && binding?.bodyNodeId === node.id;
     const body = inline ? node : nodes.find((source) => source.id === binding?.bodyNodeId);
+    const state = currentReview(node, body, nodes, settings);
+    const { report, stale, review, busy, passed, needsRecheck, blocking } = state;
     const findings = [...(report?.findings || [])].sort((a, b) => a.severity.localeCompare(b.severity));
     const sourceName = (id: string) => nodes.find((source) => source.id === id)?.title || id;
     // 有自动诊断记录时，完整报告已按轮次收进记录里，外层只保留结论摘要。
-    const hasAuto = Boolean(autoReviewOf(body)?.rounds.length);
+    const hasAuto = Boolean(review?.rounds.length);
+    const canResume = Boolean(body && onResume && !busy && !passed && !needsRecheck && canRetryReview(review));
+    const canRestore = Boolean(body && onRestore && (body.metadata?.shortDrama?.autoReview?.originalContent !== undefined || body.metadata?.shortDrama?.screenplayRepair?.previousContent !== undefined));
     return (
         <>
             <section
@@ -272,46 +297,63 @@ export function CanvasScreenplayAuditPanel({
                             对应正文
                         </Button>
                     ) : null}
-                    <Button size="small" icon={<RotateCcw size={14} />} disabled={!body} onClick={() => body && onReaudit(body.id)}>
-                        {report ? "重新审核" : "诊断"}
-                    </Button>
-                    <Button size="small" icon={<WandSparkles size={14} />} disabled={stale || !findings.length} onClick={() => body && onRepair(inline ? body.id : node.id)}>
+                    {!passed && !busy && !canResume ? <Button size="small" icon={<FileSearch size={14} />} disabled={!body} onClick={() => body && onReaudit(body.id)}>
+                        {needsRecheck ? "复检当前版本" : report ? "再次诊断" : "诊断"}
+                    </Button> : null}
+                    {!passed && !busy && !stale && findings.length ? <Button size="small" icon={<WandSparkles size={14} />} disabled={!body} onClick={() => body && onRepair(inline ? body.id : node.id)}>
                         修复正文
-                    </Button>
-                    {body?.metadata?.shortDrama?.screenplayRepair?.previousContent !== undefined && onRestore ? (
-                        <Button size="small" type="text" onClick={() => onRestore(body.id)}>
-                            恢复修复前版本
-                        </Button>
-                    ) : null}
-                    {body && onResume && canRetryReview(autoReviewOf(body)) ? (
-                        <Button size="small" icon={<Play size={14} />} onClick={() => onResume(body.id)}>
+                    </Button> : null}
+                    {canResume && body ? (
+                        <Button size="small" icon={<Play size={14} />} onClick={() => onResume?.(body.id)}>
                             重试自动修复
                         </Button>
                     ) : null}
+                    {body && !busy && (passed || canRestore) ? <Dropdown trigger={["click"]} menu={{ items: [
+                        ...(passed ? [{ key: "reaudit", label: "再次诊断…", icon: <RotateCcw size={14} /> }] : []),
+                        ...(canRestore ? [{ key: "restore", label: "恢复修复前版本…", icon: <RotateCcw size={14} />, danger: true }] : []),
+                    ], onClick: ({ key }) => setPendingAction(key as "reaudit" | "restore") }}>
+                        <Button size="small" type="text" icon={<MoreHorizontal size={16} />} aria-label="更多诊断操作">更多操作</Button>
+                    </Dropdown> : null}
                     <Button size="small" type="text" icon={<X size={17} />} aria-label="关闭正文诊断报告" onClick={onClose} />
                 </header>
                 <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto p-5 text-sm leading-7">
-                    {stale ? (
-                        <p role="status" className="mb-4 font-semibold">
-                            {report ? "正文、依据或全局设定已变化，此报告待复检，不能用于修复。" : "报告尚未完成或格式校验未通过，未判定正文审核通过。"}
+                    <section className="mb-5 rounded-[var(--r-lg)] border p-4" style={{ borderColor: theme.node.stroke, background: theme.node.fill }} aria-label="当前正文诊断结论">
+                        <p className="mb-2 text-xs" style={{ color: theme.node.muted }}>当前版本 · 第{nodeWorkflow(body)?.episodeNumber || nodeWorkflow(node)?.episodeNumber || "—"}集</p>
+                        <h2 className="flex items-center gap-2 text-lg font-semibold" style={{ color: passed ? "var(--status-success)" : needsRecheck ? "var(--status-warning)" : theme.node.text }} role="status">
+                            {passed ? <CheckCircle2 size={20} aria-hidden /> : null}{state.label}
+                        </h2>
+                        <p className="mt-1 text-sm" style={{ color: theme.node.muted }}>
+                            {busy ? "任务正在执行，完成后会更新诊断结论和记录。" : needsRecheck ? "正文或审核依据已变化。下方记录仅供回顾，请复检当前版本后再采用诊断结论。" : passed ? "当前正文无阻塞问题，可继续后续制作，无需重复诊断。" : report ? blocking ? `当前诊断有 ${blocking} 项阻塞问题，请先查看下方处理建议。` : "诊断尚未通过，请查看结论说明及未验证项。" : node.metadata?.errorDetails || "当前正文尚无有效诊断结论。"}
                         </p>
-                    ) : null}
-                    {autoReviewOf(body) ? <AutoReviewRecord review={autoReviewOf(body) as AutoReviewState} outdated={body ? autoReviewOutdated(autoReviewOf(body) as AutoReviewState, body) : false} borderColor={theme.node.stroke} mutedColor={theme.node.muted} sourceName={sourceName} /> : null}
+                        {report && !stale && !busy ? <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs" style={{ color: theme.node.muted }}>
+                            <span>阻塞问题 <strong style={{ color: theme.node.text }}>{blocking}</strong> 项</span>
+                            <span>非阻塞事项 <strong style={{ color: theme.node.text }}>{findings.length - blocking}</strong> 项{passed ? " · 不影响通过" : ""}</span>
+                            {review ? <span>已诊断 {review.rounds.length} 轮 · 已修复 {review.rounds.filter(round => round.result === "repaired").length} 轮</span> : null}
+                        </div> : null}
+                    </section>
                     {report ? (
                         <>
                             <div className="border-b pb-4" style={{ borderColor: theme.node.stroke }}>
-                                <div>
-                                    内容质量：<strong>{report.quality}</strong>
-                                </div>
-                                <div>
-                                    进入分镜可用性：<strong>{report.usability}</strong>
-                                </div>
+                                <h3 className="font-semibold">{stale ? "上次诊断摘要 · 旧版本" : "诊断摘要"}</h3>
                                 <p className="mt-2 whitespace-pre-wrap">{report.summary}</p>
                                 <p className="text-xs" style={{ color: theme.node.muted }}>
-                                    模型诊断不代表作者确认 · 修复直接更新当前正文 · 修复后需重新审核
+                                    内容质量：{report.quality} · 分镜可用性：{report.usability} · 模型诊断不代表作者确认
                                 </p>
                             </div>
-                            {hasAuto ? null : (<>
+                            {hasAuto && findings.length ? <section className="mt-4" aria-label={stale ? "上次诊断问题" : "当前待处理与参考建议"}>
+                                <h3 className="font-semibold">{stale ? "上次诊断问题 · 旧版本" : blocking ? "待处理问题与参考建议" : passed ? "参考建议与待核实项 · 不影响审核通过" : "诊断问题与参考建议"}</h3>
+                                <p className="text-xs" style={{ color: theme.node.muted }}>点击问题查看定位、证据与建议。</p>
+                                {findings.map(item => <details key={item.id} className="border-b py-3" style={{ borderColor: theme.node.stroke }}>
+                                    <summary className="cursor-pointer text-sm"><strong>{item.title}</strong> <span className="text-xs" style={{ color: theme.node.muted }}>· {item.severity} · {item.certainty}</span></summary>
+                                    <div className="mt-2 space-y-2 text-xs leading-6">
+                                        <p>建议：{item.suggestion}</p><p>定位：{item.location}</p><p>影响：{item.impact}</p><p>复检条件：{item.recheck}</p>
+                                        {item.evidence.map((e, index) => <blockquote key={index} className="border-l-2 pl-3" style={{ borderColor: theme.node.stroke }}><span style={{ color: theme.node.muted }}>{sourceName(e.sourceId)}</span><p className="whitespace-pre-wrap">{e.quote}</p></blockquote>)}
+                                        <p>依据：{item.basis}</p>
+                                    </div>
+                                </details>)}
+                            </section> : null}
+                            {hasAuto ? null : (<details className="mt-4" aria-label="完整诊断详情">
+                            <summary className="cursor-pointer font-semibold">检查详情与问题依据 · {findings.length}项问题</summary>
                             <details className="border-b py-3" style={{ borderColor: theme.node.stroke }}>
                                 <summary className="cursor-pointer font-medium">审读范围与未验证项</summary>
                                 <div className="mt-2 text-xs">
@@ -376,7 +418,7 @@ export function CanvasScreenplayAuditPanel({
                                     <p className="mt-2 whitespace-pre-wrap break-words">{report.repairPrompt}</p>
                                 </details>
                             ) : null}
-                            </>)}
+                            </details>)}
                         </>
                     ) : (
                         <>
@@ -384,8 +426,18 @@ export function CanvasScreenplayAuditPanel({
                             {node.metadata?.shortDrama?.screenplayAudit?.rawResult ? <pre className="mt-4 whitespace-pre-wrap break-words text-xs">{node.metadata.shortDrama.screenplayAudit.rawResult}</pre> : null}
                         </>
                     )}
+                    {review ? <AutoReviewRecord review={review} outdated={state.outdated || Boolean(report && stale)} borderColor={theme.node.stroke} mutedColor={theme.node.muted} sourceName={sourceName} /> : null}
                 </div>
             </section>
+            <AppModal open={pendingAction !== null} title={pendingAction === "restore" ? "恢复修复前版本？" : "再次诊断当前正文？"} okText={pendingAction === "restore" ? "确认恢复" : "继续设置"} cancelText="取消" onCancel={() => setPendingAction(null)} onOk={() => {
+                if (!body || busy) return;
+                const action = pendingAction;
+                setPendingAction(null);
+                if (action === "restore") onRestore?.(body.id);
+                else if (action === "reaudit") onReaudit(body.id);
+            }}>
+                <p>{pendingAction === "restore" ? "恢复后将替换当前正文，并清除当前诊断结论。请确认需要撤回本次修复。" : "当前正文已审核通过，无需重复诊断。继续将打开诊断设置，提交后会重新调用模型，并可能产生费用。"}</p>
+            </AppModal>
         </>
     );
 }

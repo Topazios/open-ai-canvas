@@ -24,6 +24,8 @@ docs/content/docs/backend/*
 !docs/content/docs/backend/http-api.mdx
 !docs/content/docs/backend/text-protocol-impact.mdx
 !docs/content/docs/backend/production-rules.mdx
+!docs/content/docs/backend/production-staged-flow.mdx
+!docs/content/docs/backend/storyboard-scene-agents.mdx
 !docs/content/docs/backend/code-map.mdx
 !docs/content/docs/backend/newapi-channel-2.mdx
 !docs/content/docs/backend/video-token-billing.mdx

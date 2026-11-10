@@ -432,7 +432,8 @@ func TestOfficialRollDekWanVideoUsesVideosLifecycle(t *testing.T) {
 func TestOfficialVideosGenerationsCapabilityLifecycle(t *testing.T) {
 	adapter := officialPackageAdapter(t, "videos-generations-capability.yingce-plugin", "videos-generations-capability")
 	request := GenerationRequest{
-		Model: "omni-fast", Prompt: "保持角色一致", Duration: 8, AspectRatio: "16:9", Resolution: "720p", GenerateAudio: true,
+		Capability: CapabilityVideo,
+		Model:      "omni-fast", Prompt: "保持角色一致", Duration: 8, AspectRatio: "16:9", Resolution: "720p", GenerateAudio: true,
 		Images: []MediaReference{{URL: "https://cdn.example/character.png", Role: "reference_image"}},
 	}
 	create, err := adapter.BuildCreate(context.Background(), RequestContext{Request: request})
@@ -504,8 +505,8 @@ func TestOfficialVideosGenerationsCapabilityLifecycle(t *testing.T) {
 	for _, item := range failures {
 		bad := request
 		bad.Images = item.images
-		if _, err := adapter.BuildCreate(context.Background(), RequestContext{Request: bad}); err == nil || err.Error() != item.message {
-			t.Fatalf("%s: err = %v, want %q", item.name, err, item.message)
+		if _, err := adapter.BuildCreate(context.Background(), RequestContext{Request: bad}); err != nil {
+			t.Fatalf("%s must reach upstream: %v", item.name, err)
 		}
 	}
 }

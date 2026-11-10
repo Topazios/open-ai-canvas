@@ -865,11 +865,24 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 500 }
       responses:
         "200":
-          description: 信封 data.run（含 events 与 eventSeqBase / eventCount / latestSeq / eventsTruncated）。分镜 run.production 中 artifactCount 表示已补全镜头数、shotTotal 表示规划镜头总数、concurrencyLimit 表示全局 Agent 并发。新版 executionMode=episode 表示按集并发，episodeTaskStatus 为本集当前模型调用的真实状态（queued/running/succeeded/failed/cancelled/preparing/unknown），currentItem 为当前批次范围；集内单通道按场批量提交1至8镜。历史 concurrentItems/parallelItems 保留逐镜在途回执及状态，先结算再升级；不包含模型输入或输出。全镜详情完成仍须整集审查通过才 validated。
+          description: 信封 data.run（含 events 与 eventSeqBase / eventCount / latestSeq / eventsTruncated）。parallelItems 可包含 message/code/phase/errorSource 诊断，validationIssues 仅为字段校验问题，abandoned 表示已跳过。分镜 run.production 中 artifactCount 表示已补全镜头数、shotTotal 表示规划镜头总数、concurrencyLimit 表示全局 Agent 并发。新版 executionMode=episode 表示按集并发，episodeTaskStatus 为本集当前模型调用的真实状态（queued/running/succeeded/failed/cancelled/preparing/unknown），currentItem 为当前批次范围；集内单通道按场批量提交1至8镜。历史 concurrentItems/parallelItems 保留逐镜在途回执及状态，先结算再升级；不包含模型输入或输出。全镜详情完成仍须整集审查通过才 validated。
         "400":
           description: sinceSeq 或 eventLimit 不是整数或超出范围
         "404":
           description: 轮次不存在或不属于当前用户
+  /agent/runs/{id}/production-units/{unitId}:
+    parameters:
+      - $ref: "#/components/parameters/AgentRunID"
+      - {name: unitId, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [agent]
+      summary: 读取制作工作单元的采用内容、来源和历史回执
+      description: 只允许所属用户读取。data 含 id/key/name/stage/status/sourceVersion/generation/input/adopted/issues/history；history 含 taskId/generation/received/adopted/issues/createdAt。received 通常为 JSON 对象，原始参数截断或损坏时为字符串；不因此使详情接口失败。GET 不生成内容。运行快照 production.flow 提供 root/stage/total/saved/accepted/running/repair/held/lastProgressAt/units，单元列表不重复携带长文本；total 为当前已规划范围，会随依赖展开增加。pause/resume 控制主任务，retry_item 的 assetKeys 支持 flow/ 开头的单元 key。
+      responses:
+        "200":
+          description: 标准信封 data 为工作单元详情
+        "404":
+          description: 运行或单元不存在，或不属于当前用户
   /agent/runs/{id}/messages:
     parameters:
       - $ref: "#/components/parameters/AgentRunID"
@@ -960,7 +973,7 @@ paths:
     post:
       tags: [agent]
       summary: 暂停、继续制作 Agent 或手动启动方案资产
-      description: 暂停在模型调用边界生效。generate_assets 必须携带非空 assetKeys，仅执行明确选择的资产；前置依赖必须已完成、在当前活动授权范围内或一起选中。首次启动要求全部方案文稿校验并完成；后续可从已完成、失败或已暂停且当前调用收尾的任务选择新批次或重试。新批次替换当前执行选择范围并保留已保存产物；只有 modelSelection.continueAppend=true 才允许将新选择追加到仍在运行的批次。相同项的重复请求不重复派发；不重置正在执行或待保存的响应，按依赖及全局并发策略执行。保留有效产物、编码、历史和计费。未知上游取消状态禁止重发。
+      description: 暂停在模型调用边界生效。generate_assets 明确提供 assetKeys 或 assetKinds，二者不能混用，不默认全选。总纲完成后可创建类别容器、整理清单并生成资产；活动批次可追加未完成项。普通重试复用已完成档案，保留人工编辑内容；regenerate=true 显式创建并采用新版本，活动批次禁止重新生成。requestId 相同且载荷相同则确认原请求，不再次派发；载荷不同返回409。正在执行的调用不被重置。结果与事件持久化后页面可恢复进度。
       requestBody:
         required: true
         content:
@@ -971,17 +984,16 @@ paths:
               properties:
                 action:
                   type: string
-                  enum: [pause, resume, generate_assets]
+                  enum: [pause, resume, retry_main, generate_plans, generate_assets, retry_item]
                 assetKeys:
                   type: array
                   minItems: 1
-                  description: generate_assets 必填，使用本任务 run.production.assets 中的 key；不提供时禁止默认全部生成。
+                  description: generate_assets 按具体资产提交时使用本任务 run.production.assets 中的 key，与 assetKinds 互斥。
                   items:
                     type: string
                 modelSelection:
                   type: object
                   description: 资产生成设置；模型、推理强度与补充要求会保存在本批次资产工作项中，并用于后续重试。
-                  required: [model]
                   properties:
                     model:
                       type: string
@@ -997,11 +1009,30 @@ paths:
                     instruction:
                       type: string
                       maxLength: 2000
+                    continueAppend:
+                      type: boolean
+                    regenerate:
+                      type: boolean
+                      default: false
+                      description: 为已完成的所选资产生成并采用新版本；普通重试不创建版本。
+                    requestId:
+                      type: string
+                      maxLength: 128
+                      description: 同一提交及其网络重试复用标识；修改范围或生成设置后更换标识。
+                assetKinds:
+                  type: array
+                  minItems: 1
+                  description: generate_assets 按类别提交时使用，与 assetKeys 互斥。
+                  items:
+                    type: string
+                    enum: [character, environment, prop, special, sound]
       responses:
         "200":
           description: 信封 data.accepted
         "400":
           description: 非制作任务、已结束、预算耗尽或来源变化
+        "409":
+          description: 幂等标识与载荷冲突，或原调用仍在执行而无法开始新版本。
   /agent/runs/{id}/undo:
     parameters:
       - $ref: "#/components/parameters/AgentRunID"

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -58,8 +59,18 @@ func recordTaskDiagnostic(task *model.Task, phase, code, outcome, retryClass str
 		case errors.As(cause, &requestTimeoutErr):
 			diagnostic.Code, _ = providerRequestErrorDetails(cause)
 			diagnostic.Severity, diagnostic.ErrorSource, diagnostic.Outcome = "warning", "application", "needs_attention"
+		case errors.As(cause, &httpErr) && model.IsGatewayTimeout(httpErr.StatusCode):
+			diagnostic.Code = model.GatewayResponseUnconfirmed
+			diagnostic.SafeMessage = model.GatewayTimeoutMessage(httpErr.StatusCode)
+			diagnostic.Severity, diagnostic.ErrorSource, diagnostic.Outcome = "warning", "gateway", "needs_attention"
 		case errors.As(cause, &httpErr), errors.As(cause, &payloadErr):
 			diagnostic.Severity, diagnostic.ErrorSource = "error", "upstream"
+		case errors.Is(cause, context.DeadlineExceeded), errors.Is(cause, context.Canceled):
+			diagnostic.Code, _ = providerRequestErrorDetails(cause)
+			diagnostic.Severity, diagnostic.ErrorSource, diagnostic.Outcome = "warning", "application", "needs_attention"
+		case errors.As(cause, &decodeErr):
+			diagnostic.Severity, diagnostic.ErrorSource, diagnostic.Outcome = "warning", "application", "needs_attention"
+			diagnostic.SafeMessage = "本应用无法解析返回结果，生成状态待核对；请检查响应格式与解析代码，不要直接重新生成"
 		case errors.As(cause, &networkErr):
 			diagnostic.Severity, diagnostic.ErrorSource = "error", "network"
 		case appErr != nil && appErr.Reason == ReasonUpstreamDNSFailed:
@@ -67,6 +78,9 @@ func recordTaskDiagnostic(task *model.Task, phase, code, outcome, retryClass str
 		case appErr != nil:
 			diagnostic.Severity, diagnostic.ErrorSource, diagnostic.Outcome = "warning", "application", "needs_attention"
 		}
+	}
+	if phase == "postprocess" || phase == "result_persistence" {
+		diagnostic.Severity, diagnostic.ErrorSource, diagnostic.Outcome = "warning", "application", "needs_attention"
 	}
 	generationDiagnosticNotice(diagnostic)
 	raw, _ := json.Marshal(diagnostic)
@@ -131,11 +145,18 @@ func taskExecutionDiagnosticFromError(cause error) *model.TaskExecutionDiagnosti
 	var payloadErr providerPayloadError
 	var networkErr *net.OpError
 	var requestTimeoutErr providerRequestTimeoutError
+	var decodeErr providerResponseDecodeError
 	switch {
 	case errors.As(cause, &requestTimeoutErr):
-		return &model.TaskExecutionDiagnostic{Severity: "warning", ErrorSource: "application", Phase: "execution", Outcome: "needs_attention"}
+		code, message := providerRequestErrorDetails(cause)
+		return &model.TaskExecutionDiagnostic{Code: code, SafeMessage: message, Severity: "warning", ErrorSource: "application", Phase: "execution", Outcome: "needs_attention"}
+	case errors.As(cause, &httpErr) && model.IsGatewayTimeout(httpErr.StatusCode):
+		return &model.TaskExecutionDiagnostic{Code: model.GatewayResponseUnconfirmed, SafeMessage: model.GatewayTimeoutMessage(httpErr.StatusCode), Severity: "warning", ErrorSource: "gateway", Phase: "execution", Outcome: "needs_attention"}
 	case errors.As(cause, &httpErr), errors.As(cause, &payloadErr):
 		return &model.TaskExecutionDiagnostic{Severity: "error", ErrorSource: "upstream", Phase: "execution"}
+	case errors.Is(cause, context.DeadlineExceeded), errors.Is(cause, context.Canceled), errors.As(cause, &decodeErr):
+		code, message := providerRequestErrorDetails(cause)
+		return &model.TaskExecutionDiagnostic{Code: code, SafeMessage: message, Severity: "warning", ErrorSource: "application", Phase: "execution", Outcome: "needs_attention"}
 	case errors.As(cause, &networkErr):
 		return &model.TaskExecutionDiagnostic{Severity: "error", ErrorSource: "network", Phase: "execution"}
 	default:

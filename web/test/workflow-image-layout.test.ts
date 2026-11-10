@@ -84,7 +84,7 @@ test("already marked grids repair stale dimensions and offsets once without chan
     expect(layoutWorkflowImageGroups(repaired)).toBe(repaired);
 });
 
-test("delete compacts the remaining cells, collapsed dimensions survive, deleting a group only detaches", () => {
+test("delete compacts cells, preserves collapsed dimensions, and deletes all group children", () => {
     const f = fixture();
     const frame = f.nodes.find((node) => node.id === f.groupId)!;
     frame.metadata!.frame!.collapsed = true; frame.width = 240; frame.height = 144;
@@ -92,7 +92,7 @@ test("delete compacts the remaining cells, collapsed dimensions survive, deletin
     const shifted = removed.nodes.find((node) => node.id === f.ids[3])!;
     expect(shifted.position.y).toBe(frame.position.y + grid.top);
     expect(removed.nodes.find((node) => node.id === frame.id)).toMatchObject({ width: 240, height: 144 });
-    const detached = removeCanvasNodes(removed.nodes, new Set([frame.id]));
-    expect(detached.nodes.find((node) => node.id === shifted.id)?.parentId).toBeUndefined();
-    expect(detached.nodes.find((node) => node.id === shifted.id)?.position).toEqual(shifted.position);
+    const deleted = removeCanvasNodes(removed.nodes, new Set([frame.id]));
+    expect(deleted.nodes.some((node) => node.id === shifted.id)).toBe(false);
+    expect(deleted.nodes.some((node) => node.parentId === frame.id)).toBe(false);
 });

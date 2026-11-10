@@ -2,9 +2,8 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
-import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { restoreGroupResize } from "@/lib/canvas/canvas-group-grid";
-import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_COLLAPSED_HEIGHT, FRAME_COLLAPSED_WIDTH, getFrameChildIds, isCanvasFolderNode, isFrameNode } from "@/lib/canvas/canvas-frame";
+import { getFrameChildIds, isCanvasFolderNode, isFrameNode, toggleCanvasFrameCollapsed } from "@/lib/canvas/canvas-frame";
 import { buildCanvasMediaDownloadFileName } from "@/lib/canvas/canvas-media-download";
 import { writeCanvasNodePrompt } from "@/lib/canvas/canvas-node-prompt";
 import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@/lib/canvas/canvas-project-domain";
@@ -85,18 +84,8 @@ export function useCanvasNodeEditor({
     const toggleFrameCollapsed = useCallback((nodeId: string) => {
         const frame = nodesRef.current.find((node) => node.id === nodeId && isFrameNode(node));
         if (!frame) return;
-        const collapsed = Boolean(frame.metadata?.frame?.collapsed);
         const childIds = getFrameChildIds(nodeId, nodesRef.current);
-        setNodes((current) =>
-            current.map((node) => {
-                if (node.id !== nodeId) return node;
-                const frameState = node.metadata?.frame;
-                const folder = isCanvasFolderNode(node);
-                return collapsed
-                    ? { ...node, width: frameState?.expandedWidth || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].width, height: frameState?.expandedHeight || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].height, metadata: { ...node.metadata, frame: { ...frameState, collapsed: false, expandedWidth: frameState?.expandedWidth || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].width, expandedHeight: frameState?.expandedHeight || NODE_DEFAULT_SIZE[CanvasNodeType.Frame].height } } }
-                    : { ...node, width: folder ? FOLDER_COLLAPSED_WIDTH : FRAME_COLLAPSED_WIDTH, height: folder ? FOLDER_COLLAPSED_HEIGHT : FRAME_COLLAPSED_HEIGHT, metadata: { ...node.metadata, frame: { ...frameState, collapsed: true, expandedWidth: node.width, expandedHeight: node.height } } };
-            }),
-        );
+        setNodes(current => toggleCanvasFrameCollapsed(current, nodeId));
         setSelectedNodeIds(new Set([nodeId]));
         setSelectedConnectionId(null);
         setDialogNodeId((current) => (current && childIds.has(current) ? null : current));

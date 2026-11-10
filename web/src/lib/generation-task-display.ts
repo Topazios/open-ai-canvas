@@ -45,9 +45,14 @@ export function isGenerationTaskSubmissionUncertain(task: GenerationTaskDisplayT
     return task.stage === "submission_unknown";
 }
 
+export function generationResultUnconfirmed(code?: string) {
+    return ["gateway_response_unconfirmed", "provider_request_timeout", "provider_response_read_timeout", "upstream_timeout"].includes(code || "");
+}
+
 export function generationTaskStatusLabel(task: GenerationTaskDisplayTarget) {
-    if (executionTaskWarning(task.status, task.diagnostic)) return "内容待处理";
     if (task.mediaStage && task.status === "failed") return "作品保存未完成";
+    if (task.status === "failed" && generationResultUnconfirmed(task.diagnostic?.code)) return "结果未确认";
+    if (executionTaskWarning(task.status, task.diagnostic)) return task.diagnostic?.errorSource === "application" ? "本地处理待核对" : "内容待处理";
     if (task.mediaStage && (task.status === "queued" || task.status === "running")) return "作品已生成，正在保存";
     if (isGenerationTaskSubmissionUncertain(task)) return "提交结果待确认";
     return statusLabel[task.status];

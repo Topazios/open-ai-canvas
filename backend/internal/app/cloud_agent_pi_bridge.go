@@ -231,6 +231,9 @@ func (s *Service) executeCloudAgentRuntimeTool(ctx context.Context, userID, runI
 		if state.StepLimits, err = s.cloudAgentStepLimits(); err != nil {
 			return nil, err
 		}
+		if err := storyboardCoordinatorFence(ctx, state); err != nil {
+			return nil, err
+		}
 		state.Calls = []cloudAgentCall{call}
 		state.CallIndex = 0
 		state.Approval = nil

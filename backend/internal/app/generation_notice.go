@@ -12,6 +12,11 @@ func generationDiagnosticNotice(diagnostic *model.TaskExecutionDiagnostic) {
 	if diagnostic == nil {
 		return
 	}
+	// Keep transport and local processing evidence visible without reclassifying
+	// scheduler validation holds or changing their existing presentation.
+	if diagnostic.ErrorSource == "gateway" || (diagnostic.ErrorSource == "application" && (diagnostic.Phase == "execution" || diagnostic.Phase == "postprocess" || diagnostic.Phase == "result_persistence")) {
+		return
+	}
 	if diagnostic.ErrorSource == "upstream" || diagnostic.ErrorSource == "network" {
 		return
 	}

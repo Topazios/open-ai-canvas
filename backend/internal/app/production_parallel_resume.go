@@ -26,6 +26,11 @@ func (s *Service) resumeQuietHeldProduction(userID, runID string) bool {
 			if state.Request.Production == nil || state.ProductionPaused || !productionParallelQuietHeld(state) {
 				return nil
 			}
+			for _, work := range state.ProductionParallel {
+				if work.SceneID != "" || productionRequiresManualRetry(work) {
+					return nil
+				}
+			}
 			productionBlockRuntime(current, &state)
 			moved = true
 			return cloudAgentSave(current, &state)
@@ -42,4 +47,8 @@ func (s *Service) resumeQuietHeldProduction(userID, runID string) bool {
 		s.projectProductionAgentStatus(userID, runID)
 	}
 	return moved
+}
+
+func productionRequiresManualRetry(work productionParallelWork) bool {
+	return work.QuietHold && (work.FlowUnitID != "" || (work.Key == "story" && work.AutoRetryRounds >= productionParallelAutoRetryRounds) || (work.Key == "inventory" && work.InventoryNoProgress >= 3))
 }

@@ -32,6 +32,14 @@ func (r *Repository) TaskForUser(userID string, id string) (*model.Task, error) 
 	return &task, nil
 }
 
+// The task table is the cancellation authority even if an Agent checkpoint is
+// damaged or no longer contains a child's dispatch receipt.
+func (r *Repository) ActiveAgentTaskIDs(userID, runID string) ([]string, error) {
+	ids := []string{}
+	err := r.db.Model(&model.Task{}).Where("user_id = ? AND agent_run_id = ? AND status IN ?", userID, runID, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Pluck("id", &ids).Error
+	return ids, err
+}
+
 // Progress polling needs identities and states, never stored prompts or results.
 func (r *Repository) TaskStatesForUser(userID string, ids []string) ([]model.Task, error) {
 	rows := []model.Task{}

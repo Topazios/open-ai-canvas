@@ -24,6 +24,7 @@ test("storyboard episodes submit independently after one save, without waiting f
     } }));
     const nodesRef = { current: [...bodies, ...shots] };
     const ids = shots.map(node => node.id);
+    const submissionNodeIdsRef = { current: new Set<string>() };
     const saves: string[][] = [], posts: string[] = [];
     let releaseFirst!: () => void;
     const first = new Promise<void>(resolve => { releaseFirst = resolve; });
@@ -42,7 +43,7 @@ test("storyboard episodes submit independently after one save, without waiting f
     const sync = spyOn(canvasSync, "refreshCanvasAfterAgent").mockImplementation(() => refresh as never);
     let api!: ReturnType<typeof useShortDramaWorkflowGeneration>;
     function Harness() {
-        api = useShortDramaWorkflowGeneration({ projectId: "canvas", config: {} as AiConfig, nodesRef, connectionsRef: { current: [] },
+        api = useShortDramaWorkflowGeneration({ projectId: "canvas", config: {} as AiConfig, nodesRef, connectionsRef: { current: [] }, submissionNodeIdsRef,
             setNodes(update) { nodesRef.current = (typeof update === "function" ? update(nodesRef.current) : update) as typeof nodesRef.current; },
             setConnections() {}, save: async () => { saves.push(nodesRef.current.filter(node => ids.includes(node.id)).map(node => node.metadata!.shortDrama!.submission!)); return true; },
             center: () => ({ x:0, y:0 }), focus() {}, bindTask() {}, applyResult: async () => {},
@@ -56,9 +57,11 @@ test("storyboard episodes submit independently after one save, without waiting f
         const submitted = api.resume(group.id);
         for (let i=0; i<30 && posts.length < 3; i++) await new Promise(resolve => setTimeout(resolve, 1));
         expect(posts).toEqual(["ep-1", "ep-2", "ep-3"]);
+        expect([...submissionNodeIdsRef.current]).toEqual(ids);
         expect(nodesRef.current.find(node => node.id === ids[2])?.metadata?.shortDrama?.productionAgent?.runId).toBe("run-ep-3");
         releaseFirst();
         await submitted;
+        expect(submissionNodeIdsRef.current.size).toBe(0);
         expect(nodesRef.current.find(node => node.id === ids[0])?.metadata?.shortDrama?.productionAgent?.runId).toBe("run-ep-1");
         expect(nodesRef.current.find(node => node.id === ids[1])?.metadata?.taskStage).toBe("制作任务提交待确认");
         expect(sync).toHaveBeenCalledTimes(1);

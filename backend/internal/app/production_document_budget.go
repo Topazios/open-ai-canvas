@@ -34,7 +34,7 @@ func productionDocumentContentChars(fields map[string]string) int {
 }
 
 func productionDocumentWorkBudget(m productionManifest, doc map[string]any, work productionParallelWork) productionDocumentBudget {
-	sections := productionPlanDocumentSectionsForSchema(work.Key, productionPlanKind(m, work.Key), productionPlanDocumentSchemaVersion(m.Plan.Version))
+	sections := productionPlanDocumentSectionsForSchema(work.Key, productionPlanKind(m, work.Key), productionPlanSchemaVersion(*m.Plan))
 	budget := productionDocumentBudget{MaxChars: productionArtifactContentLimit(m, doc, work.Key), HeadingChars: productionDocumentHeadingChars(sections), SuggestedFieldChars: map[string]int{}}
 	pending := make([]string, 0, len(sections))
 	for _, section := range sections {

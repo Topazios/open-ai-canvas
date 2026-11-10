@@ -2,6 +2,27 @@ import { expect, test } from "bun:test";
 import { createWorkflowDocuments, defaultWorkflowSources, nodeWorkflow, workflowSignature } from "@/lib/canvas/canvas-short-drama-workflow";
 import { rebaseStoryboardAgentNode } from "@/pages/canvas/use-production-agent-runs";
 import { workflowImageFixture } from "./fixtures/workflow-image-project";
+import { storyboardAppendEpisodes } from "@/lib/canvas/workflow-storyboard-sources";
+
+test("append creates only missing episodes in the selected storyboard container", () => {
+    const f = workflowImageFixture();
+    const request = { ...f.request, step: "direction.shots" as const, model: "fixture::text", count: 1,
+        sourceNodeIds: defaultWorkflowSources("direction.shots", f.request.pipelineId, f.nodes).filter(Boolean) };
+    const first = createWorkflowDocuments(request, f.nodes, f.connections, { x: 0, y: 0 });
+    const collectionId = first.created[0].parentId!;
+    const sourceIds = defaultWorkflowSources("direction.shots", request.pipelineId, first.nodes, collectionId).filter(Boolean);
+    const body = first.nodes.find(node => sourceIds.includes(node.id) && nodeWorkflow(node)?.step === "story.body");
+    expect(nodeWorkflow(body)?.role).toBe("collection");
+    expect(storyboardAppendEpisodes(body, first.nodes, request.pipelineId, collectionId)).toEqual([2]);
+    const next = createWorkflowDocuments({ ...request, sourceNodeIds: sourceIds, start: 2, appendCollectionId: collectionId }, first.nodes, first.connections, { x: 0, y: 0 });
+    expect(next.created.map(node => nodeWorkflow(node)?.episodeNumber)).toEqual([2]);
+    expect(next.created[0].parentId).toBe(collectionId);
+    expect(next.nodes.filter(node => nodeWorkflow(node)?.role === "collection")).toHaveLength(first.nodes.filter(node => nodeWorkflow(node)?.role === "collection").length);
+    expect(next.nodes.find(node => node.id === first.created[0].id)?.metadata).toEqual(first.created[0].metadata);
+    expect(storyboardAppendEpisodes(body, next.nodes, request.pipelineId, collectionId)).toEqual([]);
+    expect(() => createWorkflowDocuments({ ...request, start: 2, appendCollectionId: collectionId }, next.nodes, next.connections, { x: 0, y: 0 })).toThrow("已有分镜");
+    expect(() => createWorkflowDocuments({ ...request, start: 2, appendCollectionId: "deleted" }, first.nodes, first.connections, { x: 0, y: 0 })).toThrow("追加目标");
+});
 
 test("storyboard uses durable production agent with compact prompt and existing episode container", () => {
     const f = workflowImageFixture();

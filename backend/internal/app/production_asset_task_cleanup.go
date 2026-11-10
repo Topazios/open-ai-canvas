@@ -33,6 +33,22 @@ func (s *Service) reconcileDeletedProductionPlanAssets(ctx context.Context, user
 		if manifest.Plan == nil {
 			continue
 		}
+		saved := productionSavedKeys(rows)
+		for _, item := range manifest.Plan.Assets {
+			if saved[item.Key] || !productionPlanAssetSelected(manifest, item.Key) {
+				continue
+			}
+			id := manifest.Plan.AssetPlaceholderNodeIDs[item.Key]
+			if id == "" {
+				id = "pap-" + productionHash([]string{job.RunID, item.Key})[:32]
+			}
+			if group := manifest.Plan.Groups[productionPlanGroupKind(item)]; deleted[group] && productionNode(doc, group) == nil {
+				id = group
+			}
+			if deleted[id] && productionNode(doc, id) == nil {
+				rows = append(rows, model.ProductionAgentArtifact{Key: item.Key, NodeID: id})
+			}
+		}
 		for _, row := range rows {
 			if !deleted[row.NodeID] || productionNode(doc, row.NodeID) != nil || productionPlanItem(manifest, row.Key) == nil {
 				continue
@@ -103,6 +119,12 @@ func (s *Service) reconcileDeletedProductionPlanAssets(ctx context.Context, user
 							break
 						}
 					}
+					if currentManifest.Plan.SelectedAssetKeys == nil {
+						currentManifest.Plan.SelectedAssetKeys = []string{}
+						for _, item := range currentManifest.Plan.Assets {
+							currentManifest.Plan.SelectedAssetKeys = append(currentManifest.Plan.SelectedAssetKeys, item.Key)
+						}
+					}
 					currentManifest.Plan.SelectedAssetKeys = slices.DeleteFunc(currentManifest.Plan.SelectedAssetKeys, func(key string) bool { return key == row.Key })
 					delete(currentManifest.Plan.AssetPlaceholderNodeIDs, row.Key)
 					encoded, err := json.Marshal(currentManifest)
@@ -137,79 +159,6 @@ func (s *Service) reconcileDeletedProductionPlanAssets(ctx context.Context, user
 				break
 			}
 		}
-		if err := s.dropDeletedProductionPlanPlaceholders(userID, job.RunID, doc, deleted); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// A queued placeholder has no receipt, so deleting it must still be remembered:
-// otherwise the scheduler sees a selected asset without a node and rebuilds it.
-func (s *Service) dropDeletedProductionPlanPlaceholders(userID, runID string, doc map[string]any, deleted map[string]bool) error {
-	for attempt := 0; attempt < 4; attempt++ {
-		run, err := s.repo.CloudAgent(userID, runID)
-		if err != nil {
-			return err
-		}
-		err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
-			job, err := repo.ProductionAgentJob(userID, runID)
-			if err != nil {
-				return err
-			}
-			var manifest productionManifest
-			if err := json.Unmarshal([]byte(job.ManifestJSON), &manifest); err != nil {
-				return err
-			}
-			if manifest.Plan == nil {
-				return nil
-			}
-			artifacts, err := repo.ProductionAgentArtifacts(userID, runID)
-			if err != nil {
-				return err
-			}
-			saved := productionSavedKeys(artifacts)
-			var dropped []string
-			for _, item := range manifest.Plan.Assets {
-				id := manifest.Plan.AssetPlaceholderNodeIDs[item.Key]
-				if id == "" {
-					id = "pap-" + productionHash([]string{runID, item.Key})[:32]
-				}
-				if !deleted[id] || productionNode(doc, id) != nil || saved[item.Key] || !productionPlanAssetSelected(manifest, item.Key) {
-					continue
-				}
-				dropped = append(dropped, item.Key)
-			}
-			if len(dropped) == 0 {
-				return nil
-			}
-			if manifest.Plan.SelectedAssetKeys == nil {
-				for _, item := range manifest.Plan.Assets {
-					manifest.Plan.SelectedAssetKeys = append(manifest.Plan.SelectedAssetKeys, item.Key)
-				}
-			}
-			manifest.Plan.SelectedAssetKeys = slices.DeleteFunc(manifest.Plan.SelectedAssetKeys, func(key string) bool { return slices.Contains(dropped, key) })
-			for _, key := range dropped {
-				delete(manifest.Plan.AssetPlaceholderNodeIDs, key)
-			}
-			encoded, err := json.Marshal(manifest)
-			if err != nil {
-				return err
-			}
-			if err := repo.UpdateProductionAgentManifest(userID, runID, string(encoded)); err != nil {
-				return err
-			}
-			state, err := cloudAgentDecode(current)
-			if err != nil {
-				return err
-			}
-			state.event(runID, "production_asset_deleted", map[string]any{"assetKeys": dropped, "text": "已清理删除的待生成资产占位"})
-			return cloudAgentSave(current, &state)
-		})
-		if errors.Is(err, repository.ErrCreationConflict) {
-			continue
-		}
-		return err
 	}
 	return nil
 }

@@ -1,5 +1,17 @@
 import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 
+export function canvasNodeNeedsTaskRecovery(node: CanvasNodeData, submissionActive = false): boolean {
+    const metadata = node.metadata;
+    if (submissionActive || metadata?.shortDrama?.productionAgent) return false;
+    const continuationPending = metadata?.agentGenerationContinuation?.status === "pending";
+    if (continuationPending) return true;
+    if (metadata?.taskId && metadata.shortDrama?.materializedTaskId === metadata.taskId) return false;
+    if (metadata?.isBatchRoot && metadata.batchChildIds?.length) return false;
+    // A saved placeholder is not evidence that a provider task was submitted.
+    if (!metadata?.taskId && ["planned", "rejected"].includes(metadata?.shortDrama?.submission || "")) return false;
+    return metadata?.status === "loading" || metadata?.errorDetails === "页面刷新后生成已中断，请重新生成。" || Boolean(metadata?.taskId && metadata.status !== "success");
+}
+
 /** 查询/消费异常不是任务终态。只标记恢复诊断，不覆盖成功结果或新的任务绑定。 */
 export function markCanvasTaskRecoveryUnconfirmed(node: CanvasNodeData, expectedTaskId: string | undefined, detail: string): CanvasNodeData {
     if (node.metadata?.status === "success" || node.metadata?.taskId !== expectedTaskId) return node;

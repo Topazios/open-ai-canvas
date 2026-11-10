@@ -131,9 +131,9 @@ func TestSKUSelectorIncludesVideoReferenceImageCount(t *testing.T) {
 	if selector["imageCount"] != "5" || selector["vquality"] != "720p" {
 		t.Fatalf("selector = %#v", selector)
 	}
-	modelWithTiers := model.ChannelModel{PriceTiers: []model.ChannelModelPriceTier{
-		{SelectorJSON: `{"vquality":"720p","imageCount":"5"}`, Enabled: true, PriceConfigured: true},
-		{SelectorJSON: `{"vquality":"720p","imageCount":"9"}`, Enabled: true, PriceConfigured: true},
+	modelWithTiers := model.ChannelModel{Capability: "video", PriceTiers: []model.ChannelModelPriceTier{
+		{SelectorJSON: `{"vquality":"720p","imageCount":"5"}`, BillingMode: "per_second", Enabled: true, PriceConfigured: true},
+		{SelectorJSON: `{"vquality":"720p","imageCount":"9"}`, BillingMode: "per_second", Enabled: true, PriceConfigured: true},
 	}}
 	matched := channelModelPriceTierForIntent(modelWithTiers, ModelRequestIntent{Capability: "video", Inputs: map[string]int{"image": 5}, Options: map[string]any{"vquality": "720p"}})
 	if matched == nil || matched.SelectorJSON != `{"vquality":"720p","imageCount":"5"}` {
@@ -154,9 +154,9 @@ func TestSKUSelectorTreatsAnyVideoReferenceAsVideoToVideo(t *testing.T) {
 		t.Fatalf("operation = %q, want video_to_video; selector = %#v", selector["operation"], selector)
 	}
 
-	modelWithTiers := model.ChannelModel{PriceTiers: []model.ChannelModelPriceTier{
-		{SelectorJSON: `{}`, Enabled: true, PriceConfigured: true},
-		{SelectorJSON: `{"operation":"video_to_video"}`, Enabled: true, PriceConfigured: true},
+	modelWithTiers := model.ChannelModel{Capability: "video", PriceTiers: []model.ChannelModelPriceTier{
+		{SelectorJSON: `{}`, BillingMode: "per_second", Enabled: true, PriceConfigured: true},
+		{SelectorJSON: `{"operation":"video_to_video"}`, BillingMode: "per_second", Enabled: true, PriceConfigured: true},
 	}}
 	matched := channelModelPriceTierForIntent(modelWithTiers, intent)
 	if matched == nil || matched.SelectorJSON != `{"operation":"video_to_video"}` {
@@ -178,9 +178,9 @@ func TestSKUSelectorTreatsAnyImageReferenceCountAsImageToVideo(t *testing.T) {
 		t.Fatalf("selector = %#v, want image_to_video with imageCount 3", selector)
 	}
 
-	modelWithTiers := model.ChannelModel{PriceTiers: []model.ChannelModelPriceTier{
-		{SelectorJSON: `{}`, Enabled: true, PriceConfigured: true},
-		{SelectorJSON: `{"operation":"image_to_video"}`, Enabled: true, PriceConfigured: true},
+	modelWithTiers := model.ChannelModel{Capability: "video", PriceTiers: []model.ChannelModelPriceTier{
+		{SelectorJSON: `{}`, BillingMode: "per_second", Enabled: true, PriceConfigured: true},
+		{SelectorJSON: `{"operation":"image_to_video"}`, BillingMode: "per_second", Enabled: true, PriceConfigured: true},
 	}}
 	matched := channelModelPriceTierForIntent(modelWithTiers, intent)
 	if matched == nil || matched.SelectorJSON != `{"operation":"image_to_video"}` {

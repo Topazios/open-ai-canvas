@@ -151,6 +151,20 @@ test("same-revision local cache cannot hide completed production documents from 
     expect(hasMissingCompletedProductionOutput([saved], [saved])).toBe(false);
 });
 
+test("inventory drafts refresh as source checks advance but do not count as completed documents", () => {
+    const root: CanvasNodeData = { ...node, id: "draft-root", type: CanvasNodeType.Frame, metadata: { shortDrama: { ...node.metadata!.shortDrama!, role: "collection", assetGroup: { manifestId: node.id }, sourceNodeIds: [node.id] } } };
+    const manifest: CanvasNodeData = { ...node, parentId: root.id, metadata: { shortDrama: { ...node.metadata!.shortDrama!, assetKey: "$summary" } } };
+    const story: CanvasNodeData = { ...node, id: "story", parentId: root.id, metadata: { status: "success", content: "总纲", shortDrama: { ...node.metadata!.shortDrama!, role: "document", planSection: "story" } } };
+    const draft: CanvasNodeData = { ...story, id: "inventory", metadata: { ...story.metadata, content: "待核对", shortDrama: { ...story.metadata!.shortDrama!, planSection: "inventory", inventoryComplete: false, inventoryReviewedSections: 3 } } };
+    const receipt: AgentRun = { ...run, production: { targetNodeId: manifest.id, workKind: "plan", documentCount: 1, assetTotal: 4, inventoryReviewedSections: 6, inventoryComplete: false } as AgentRun["production"] };
+    expect(productionPlanCanvasDocumentCount(root, [manifest, story, draft])).toBe(1);
+    expect(productionPlanCanvasNeedsRefresh([root, manifest, story, draft], receipt)).toBe(true);
+    const refreshed = { ...draft, metadata: { ...draft.metadata, shortDrama: { ...draft.metadata!.shortDrama!, inventoryReviewedSections: 6 } } };
+    expect(productionPlanCanvasNeedsRefresh([root, manifest, story, refreshed], receipt)).toBe(false);
+    receipt.production!.inventoryComplete = true;
+    expect(productionPlanCanvasNeedsRefresh([root, manifest, story, refreshed], receipt)).toBe(true);
+});
+
 test("plan frame counts saved standard documents rather than relying on its membership index", () => {
     const root: CanvasNodeData = {
         ...node,

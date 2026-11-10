@@ -82,6 +82,7 @@ export type VideoCapabilityConfig = {
     duration: {
         selection: "range" | "enum";
         min?: number;
+        /** Omitted or zero means no locally declared upper bound. */
         max?: number;
         step?: number;
         values?: number[];
@@ -319,7 +320,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
             maxAudioBytes: 0,
             maxAudioDurationSeconds: 0,
         },
-        duration: { selection: "range", min: 1, max: 15, step: 1, default: 6 },
+        duration: { selection: "range", min: 1, step: 1, default: 6 },
         ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
         defaultRatio: "16:9",
         resolutions: ["480p", "720p", "1080p", "1440p", "2160p"],
@@ -487,7 +488,7 @@ export function imageSizeRequest(profile: ImageCapabilityConfig, value?: string)
 }
 
 export function normalizeVideoValue(profile: VideoCapabilityConfig, value: { seconds?: string; ratio?: string; resolution?: string }) {
-    const duration = profile.duration.selection === "enum" ? ((profile.duration.values || []).includes(Number(value.seconds)) ? Number(value.seconds) : profile.duration.default) : normalizeRangeDuration(profile, Number(value.seconds));
+    const duration = value.seconds?.trim() || String(profile.duration.default);
     const ratio = resolveVideoRatioValue(profile, value.ratio);
     // 前端状态历史上保存过 `720`，而能力配置和供应商通常使用 `720p`；统一按能力中的原始值返回，避免被误判为不支持。
     const resolution = resolveVideoResolutionValue(profile, value.resolution);
@@ -495,11 +496,11 @@ export function normalizeVideoValue(profile: VideoCapabilityConfig, value: { sec
 }
 
 export function resolveVideoRatioValue(profile: VideoCapabilityConfig, value: string | undefined) {
-    return profile.ratios.includes(value || "") ? value! : profile.defaultRatio || profile.ratios[0] || "";
+    return value?.trim() || profile.defaultRatio || profile.ratios[0] || "";
 }
 
 export function resolveVideoResolutionValue(profile: VideoCapabilityConfig, value: string | undefined) {
-    return videoResolutionRequest(profile, value) || profile.defaultResolution || profile.resolutions[0] || "";
+    return videoResolutionRequest(profile, value) || value?.trim() || profile.defaultResolution || profile.resolutions[0] || "";
 }
 
 export function videoResolutionRequest(profile: VideoCapabilityConfig, value: string | undefined) {
@@ -522,18 +523,9 @@ export function videoResolutionRequest(profile: VideoCapabilityConfig, value: st
     return undefined;
 }
 
-function normalizeRangeDuration(profile: VideoCapabilityConfig, value: number) {
-    const min = profile.duration.min || 1;
-    const max = profile.duration.max || min;
-    const step = profile.duration.step || 1;
-    const candidate = Number.isFinite(value) ? Math.floor(value) : profile.duration.default;
-    const clamped = Math.min(max, Math.max(min, candidate));
-    const maxStep = Math.max(0, Math.floor((max - min) / step));
-    return min + Math.min(maxStep, Math.max(0, Math.round((clamped - min) / step))) * step;
-}
-
 export function videoDurationOptions(profile: VideoCapabilityConfig) {
     if (profile.duration.selection === "enum") return profile.duration.values || [];
+    if (!profile.duration.max) return [];
     const min = profile.duration.min || 1;
     const max = profile.duration.max || min;
     const step = profile.duration.step || 1;
@@ -541,9 +533,10 @@ export function videoDurationOptions(profile: VideoCapabilityConfig) {
 }
 
 export function videoDurationAllowed(profile: VideoCapabilityConfig, value: number) {
+    if (!Number.isSafeInteger(value) || value <= 0) return false;
     if (profile.duration.selection === "enum") return (profile.duration.values || []).includes(value);
     const min = profile.duration.min || 1;
-    const max = profile.duration.max || min;
+    const max = profile.duration.max || Number.POSITIVE_INFINITY;
     const step = profile.duration.step || 1;
     return value >= min && value <= max && (value - min) % step === 0;
 }

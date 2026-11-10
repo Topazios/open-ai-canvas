@@ -48,7 +48,7 @@ describe("asset sheet fixed template", () => {
         const prompt = build(AssetSheetKind.Prop, "长杆", content);
         expect(prompt).toContain(content);
         expect(prompt).toContain("编号：待定");
-        expect(prompt).toContain("外形尺寸：待测量");
+        expect(prompt).toContain("外形尺寸：档案未定义（不作标注）");
     });
 
     test("asset code goes into its own field", () => {
@@ -140,7 +140,7 @@ describe("asset reference sheet contract", () => {
             expect(prompt).toContain("档案明确的物理尺寸作为唯一标尺");
             expect(prompt).toContain("水彩平涂，低饱和青绿");
             expect(prompt).toContain("完整设定板版式优先于资产材料中的");
-            expect(prompt).toContain("共用身高、体重和三围");
+            expect(prompt).toContain("共用身高、体重和适用的身体比例");
             expect(prompt).toContain("生成一张完整的横向资产设定板");
             expect(prompt).toContain("不要把图像切块、拼贴、重排");
             expect(prompt).not.toContain("系统会合成最终设定板");
@@ -153,7 +153,7 @@ describe("asset reference sheet contract", () => {
     test("reference-board layouts include side information and scene measurement panels", () => {
         const character = assetSheetPrompt({ kind: AssetSheetKind.Character, size: "16:9", title: "陈朔", content: "身高：178cm；体重：68kg", style: "电影写实" });
         const scene = assetSheetPrompt({ kind: AssetSheetKind.Environment, size: "16:9", title: "出租屋", content: "长：8m；宽：5m；面积：40平方米", style: "电影写实" });
-        expect(character).toContain("左侧资料栏约占整幅宽度 18%");
+        expect(character).toContain("左侧资料栏约占整幅宽度 20%");
         expect(character).toContain("正面全身、左侧全身、右侧全身、背面全身");
         expect(character).toContain("脚底基线延伸到头顶最高点");
         expect(character).toContain("左侧半身肖像是唯一高分辨率脸部身份基准");
@@ -161,7 +161,7 @@ describe("asset reference sheet contract", () => {
         expect(scene).toContain("带尺寸线的空间拆解轴测图");
         expect(scene).toContain("动线平面图");
         expect(scene).toContain("同一个世界坐标场景的投影");
-        expect(scene).toContain("待测量");
+        expect(scene).toContain("缺少数值的项目不画测量线");
     });
 
     test("uses declared landscape sizes and keeps quality without transparent or square global defaults", () => {
@@ -192,7 +192,7 @@ describe("asset reference sheet contract", () => {
             const result = createWorkflowImages({ ...request, imageSubjectIds: subjects.map((node) => node.id) }, nodes, connections, center, profile(["1024x1024", "1536x1024"]));
             for (const [index, node] of result.created.entries()) {
                 const sheet = nodeWorkflow(node)!.assetSheet!;
-                expect(sheet).toMatchObject({ version: 5, kind: assetSheetKind(step), size: "1536x1024" });
+                expect(sheet).toMatchObject({ version: 6, kind: assetSheetKind(step), size: "1536x1024" });
                 expect(Object.keys(sheet.styleSignatures)).toHaveLength(3);
                 if (styleSignatures) expect(sheet.styleSignatures).toEqual(styleSignatures);
                 styleSignatures = sheet.styleSignatures;

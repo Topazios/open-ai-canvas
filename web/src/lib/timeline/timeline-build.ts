@@ -5,6 +5,38 @@ import type { CanvasNodeData } from "@/types/canvas";
 import type { SrtEntry, TimelineClip, TimelineProject } from "@/types/timeline";
 import { DEFAULT_AUDIO_TRACK_ID, DEFAULT_SUBTITLE_TRACK_ID, DEFAULT_VIDEO_TRACK_ID, createDefaultTracks } from "./timeline-tracks";
 import { getTimelineVisualEndMs } from "./timeline-view";
+import { ShortDramaStep } from "../short-drama-steps";
+
+/** Import only this storyboard's completed videos; preserve existing cuts and ordering. */
+export function appendStoryboardToTimeline(anchor: CanvasNodeData, nodes: CanvasNodeData[], timeline: TimelineProject): TimelineProject {
+    const data = anchor.metadata?.shortDrama;
+    if (data?.step !== ShortDramaStep.Shots) return timeline;
+    const scripts = (data.role === "collection" ? nodes.filter(node => (data.sourceNodeIds.includes(node.id) || node.parentId === anchor.id)
+        && node.metadata?.shortDrama?.pipelineId === data.pipelineId && node.metadata.shortDrama.step === ShortDramaStep.Shots) : [anchor])
+        .sort((a, b) => (a.metadata?.shortDrama?.episodeNumber || 0) - (b.metadata?.shortDrama?.episodeNumber || 0));
+    const clips = [...timeline.clips];
+    const included = new Set(clips.map(clip => clip.nodeId));
+    let cursor = getTimelineVisualEndMs(clips);
+    for (const script of scripts) {
+        for (const row of script.metadata?.storyboard?.rows || []) {
+            const inline = row.videoGeneration;
+            const video = nodes.find(node => node.id === row.videoNodeId && node.type === "video");
+            const readyInline = inline && (!inline.taskStatus || inline.taskStatus === "succeeded") && Boolean(inline.content || inline.storageKey);
+            const media = readyInline ? inline : video && !["loading", "error"].includes(video.metadata?.status || "") ? video.metadata : undefined;
+            if (!media || !(media.content || media.storageKey)) continue;
+            const nodeId = readyInline ? `storyboard-video:${script.id}:${row.id}` : video!.id;
+            if (included.has(nodeId)) continue;
+            included.add(nodeId);
+            const durationMs = Math.max(100, Math.round(media.durationMs || row.durationSeconds * 1000 || 4000));
+            const title = `第 ${script.metadata?.shortDrama?.episodeNumber || 1} 集 · ${row.shotCode || row.shotNumber}`;
+            clips.push({ id: `clip-${nodeId}`, kind: "video", nodeId, trackId: DEFAULT_VIDEO_TRACK_ID, startMs: cursor,
+                durationMs, sourceStartMs: 0, sourceDurationMs: durationMs, title,
+                ...(readyInline ? { directMedia: { id: nodeId, kind: "video" as const, title, storageKey: media.storageKey, url: media.content, durationMs } } : {}) });
+            cursor += durationMs;
+        }
+    }
+    return clips.length === timeline.clips.length ? timeline : { ...timeline, clips, durationMs: getTimelineVisualEndMs(clips), updatedAt: new Date().toISOString() };
+}
 
 function nodeDurationMs(node: CanvasNodeData, fallbackMs = 4_000): number {
     const durationMs = node.metadata?.durationMs;

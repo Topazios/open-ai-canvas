@@ -12,13 +12,13 @@ test("text multimodal capability is not guessed from a model name", () => {
     }
 });
 
-test("switching to MiniMax H3 replaces an unsupported 720p value with 768P", () => {
+test("video capability metadata does not replace an explicit resolution", () => {
     const profile = defaultModelCapabilityConfig("minimax-video", "MiniMax-H3").video!;
 
     assert.deepEqual(normalizeVideoValue(profile, { seconds: "11", ratio: "16:9", resolution: "720" }), {
         seconds: "11",
         ratio: "16:9",
-        resolution: "768P",
+        resolution: "720",
     });
 });
 

@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"strings"
 
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/repository"
@@ -17,6 +18,12 @@ func (s *Service) RetryProductionAgentItem(userID, runID, key string) error {
 	}
 	if err := s.ensureProductionRunActive(userID, task, "对应节点已删除，制作任务已移除"); err != nil {
 		return err
+	}
+	if strings.HasPrefix(key, "flow/") {
+		return s.retryProductionFlow(userID, runID, key)
+	}
+	if key == "inventory-reconcile" {
+		return s.reconcileProductionFlowInventory(userID, runID)
 	}
 	for attempt := 0; attempt < 4; attempt++ {
 		run, err := s.repo.CloudAgent(userID, runID)
@@ -35,6 +42,9 @@ func (s *Service) RetryProductionAgentItem(userID, runID, key string) error {
 			return err
 		}
 		if !productionRetryKeyAllowed(manifest, key) {
+			if manifest.Storyboard != nil && manifest.Storyboard.Version == storyboardSceneVersion {
+				return s.retryStoryboardScene(userID, runID, key, false, "")
+			}
 			return BadAuthRequest("该项不属于当前制作方案，无法重试")
 		}
 		if state.ActiveTaskID != "" {
@@ -95,6 +105,13 @@ func (s *Service) RetryProductionAgentItem(userID, runID, key string) error {
 				GenerationChannelModelKey: previous.GenerationChannelModelKey,
 				DisableThinking:           previous.DisableThinking,
 				Dependencies:              productionParallelDependencyHash(currentManifest, artifacts, key),
+			}
+			if currentState.ProductionParallel[key].Dependencies == previous.Dependencies {
+				next := currentState.ProductionParallel[key]
+				next.DocumentParts = previous.DocumentParts
+				next.EpisodeRepairDraft = previous.EpisodeRepairDraft
+				next.RepairDocument, next.RepairDocumentRaw = previous.RepairDocument, previous.RepairDocumentRaw
+				currentState.ProductionParallel[key] = next
 			}
 			currentState.ProductionPaused = false
 			currentState.LastError = ""

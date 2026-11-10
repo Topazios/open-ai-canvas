@@ -117,7 +117,7 @@ describe("逻辑模型选择", () => {
         const generation = buildGenerationConfig(config, videoNode, "video");
 
         expect(generation.model).toBe("relay::cinema-text");
-        expect(generation.videoSeconds).toBe("1");
+        expect(generation.videoSeconds).toBe("0");
         expect(generation.videoGenerateAudio).toBe("false");
         expect(generation.videoWatermark).toBe("false");
     });
@@ -170,16 +170,14 @@ describe("逻辑模型选择", () => {
 
         expect(buildGenerationConfig(config, videoNode, "video").model).toBe("relay::cinema-text");
     });
-    test("技能上下文展开后按最终视频模型字符上限拒绝提交", () => {
+    test("技能上下文展开后视频提示词长度由上游判断", () => {
         const config = policyConfig();
         const model = config.videoModels[0]!;
         config.channels[0]!.modelCosts![0]!.capabilityConfig!.video!.references.promptMaxChars = 10_000;
 
         const error = modelPromptLengthError(config, model, "video", "镜".repeat(23_142));
 
-        expect(error).toContain("最多 10000 个字符");
-        expect(error).toContain("完整提示词为 23142 个字符");
-        expect(error).toContain("不会自动截断");
+        expect(error).toBe("");
     });
 
     test("图片逻辑模型忽略全局视频时长，不应显示为不支持当前时长", () => {
@@ -374,7 +372,7 @@ describe("逻辑模型选择", () => {
         expect(groups[0]?.models).toHaveLength(3);
     });
 
-    test("根据参考图自动切换到图生视频细分模型", () => {
+    test("视频参考图不会隐式切换用户选择的模型", () => {
         const config = policyConfig();
         const resolved = resolveCompatibleModel(config, "relay::cinema-text", {
             capability: "video",
@@ -382,18 +380,18 @@ describe("逻辑模型选择", () => {
             videoOperation: "text_to_video",
             videoSeconds: "6",
         });
-        expect(resolved).toBe("relay::cinema-image");
+        expect(resolved).toBe("relay::cinema-text");
     });
 
-    test("音频输入只匹配支持音频的细分模型", () => {
+    test("视频参考音频由所选模型的上游判断是否支持", () => {
         const config = policyConfig();
         const requirements = {
             capability: "video" as const,
             input: { textCount: 1, imageCount: 0, videoCount: 0, audioCount: 1, characterCount: 0 },
             videoSeconds: "6",
         };
-        expect(resolveCompatibleModel(config, "relay::cinema-text", requirements)).toBe("relay::cinema-audio");
-        expect(modelCompatibilityError(config, "relay::cinema-image", requirements)).toContain("参考音频");
+        expect(resolveCompatibleModel(config, "relay::cinema-text", requirements)).toBe("relay::cinema-text");
+        expect(modelCompatibilityError(config, "relay::cinema-image", requirements)).toBe("");
     });
 
     test("音频仅在单独参考时归类为音频生视频", () => {
@@ -415,7 +413,7 @@ describe("逻辑模型选择", () => {
         };
 
         expect(modelCompatibilityError(config, imageModel, requirements)).toBe("");
-        expect(resolveCompatibleModel(config, "relay::cinema-text", requirements)).toBe(imageModel);
+        expect(resolveCompatibleModel(config, "relay::cinema-text", requirements)).toBe("relay::cinema-text");
     });
 
     test("逻辑视频模型将 720 与 720p 视为同一分辨率", () => {
@@ -473,18 +471,18 @@ describe("逻辑模型选择", () => {
         expect(normalizeModelOptionValue("managed::legacy-seedance-720", [channel])).toBe("managed::family-seedance-2-5");
     });
 
-    test("逻辑模型容量使用同名细分模型的最大值", () => {
+    test("视频参考素材不受本地能力表数量限制", () => {
         const config = policyConfig();
-        expect(modelGroupReferenceLimits(config, "relay::cinema-text", "video")).toEqual({ maxImages: 1, maxVideos: 0, maxAudios: 1 });
+        expect(modelGroupReferenceLimits(config, "relay::cinema-text", "video")).toEqual({ maxImages: Infinity, maxVideos: Infinity, maxAudios: Infinity });
     });
 });
 
 describe("画布连线能力", () => {
-    test("超过所有视频模型的参考图上限时拒绝连线", () => {
+    test("视频参考图数量超出能力表仍可连线提交", () => {
         const config = policyConfig();
         const nodes = [node("image-a", CanvasNodeType.Image), node("image-b", CanvasNodeType.Image), node("target", CanvasNodeType.Config, "video")];
         const connections: CanvasConnection[] = [{ id: "existing", fromNodeId: "image-a", toNodeId: "target" }];
-        expect(canvasConnectionError(config, nodes, connections, { fromNodeId: "image-b", toNodeId: "target" })).toContain("最多支持 1");
+        expect(canvasConnectionError(config, nodes, connections, { fromNodeId: "image-b", toNodeId: "target" })).toBe("");
     });
 
     test("存在音频细分模型时允许音频连接视频生成节点", () => {

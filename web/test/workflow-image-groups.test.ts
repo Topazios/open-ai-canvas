@@ -33,7 +33,7 @@ test("legacy loose images are grouped on append and deletion updates membership 
     const subjects = workflowImageSubjects(f.request, f.nodes);
     const first = createWorkflowImages({ ...f.request, imageSubjectIds: [subjects[0].id] }, f.nodes, f.connections, center);
     const frameId = first.created[0].parentId!;
-    const loose = removeCanvasNodes(first.nodes, new Set([frameId])).nodes;
+    const loose = first.nodes.filter(node => node.id !== frameId).map(node => node.parentId === frameId ? { ...node, parentId: undefined } : node);
     const edges = first.connections.filter((edge) => edge.toNodeId !== frameId);
     const second = createWorkflowImages({ ...f.request, imageSubjectIds: [subjects[1].id] }, loose, edges, center);
     const groupId = second.created[0].parentId!;

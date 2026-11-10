@@ -279,7 +279,7 @@ export function projectLogicalCapability(spec: CapabilitySpec, defaults: Record<
         projected.video.defaultOperation = spec.operations?.[0] || "";
         const duration = spec.options?.videoSeconds || spec.options?.duration;
         if (duration?.values?.length) projected.video.duration = { selection: "enum", values: duration.values.map(Number).filter(Number.isFinite), default: Number(defaults.videoSeconds ?? duration.values[0]) };
-        else if (duration?.min !== undefined && duration.max !== undefined) projected.video.duration = { selection: "range", min: duration.min, max: duration.max, step: duration.step || 1, default: Number(defaults.videoSeconds ?? duration.min) };
+        else if (duration?.min !== undefined) projected.video.duration = { selection: "range", min: duration.min, max: duration.max, step: duration.step || 1, default: Number(defaults.videoSeconds ?? duration.min) };
         projected.video.ratios = stringValues(spec.options?.size || spec.options?.aspectRatio);
         projected.video.defaultRatio = concreteDefault(defaults.size, projected.video.ratios, "");
         projected.video.resolutions = stringValues(spec.options?.vquality || spec.options?.resolution);

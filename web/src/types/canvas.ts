@@ -168,7 +168,7 @@ export type StoryboardRow = {
 };
 
 export type StoryboardData = {
-	executionMode?: "episode";
+	executionMode?: "episode" | "scene";
     frameModels?: Partial<Record<"text" | "image", string>>;
     rows: StoryboardRow[];
     visibleColumns: StoryboardColumn[];
@@ -310,7 +310,7 @@ export type StoryDevelopmentData = {
 };
 
 export type CanvasNodeMetadata = {
-    storyboardFramePlan?: { scriptId: string; rowId: string; sourcePromptHash: string };
+    storyboardFramePlan?: { scriptId: string; rowId: string; sourcePromptHash: string; intermediateOnly?: boolean };
     storyboardFrame?: { scriptId: string; rowId: string; frameId: string; sourcePromptHash: string; continuityReference?: { nodeId: string; signature: string } };
     storyboardFramesGroup?: { scriptId: string; pipelineId?: string; episodeNumber?: number };
     reasoningEffort?: ReasoningEffort;
@@ -557,6 +557,9 @@ export type CanvasNodeMetadata = {
         layout?: "grid";
         gridWidth?: number;
         gridOrder?: string[];
+        /** Asset keys in catalog importance order; independent of completion and node versions. */
+        assetOrder?: string[];
+        assetStackExpanded?: boolean;
     };
     folder?: {
         style: CanvasFolderStyle;

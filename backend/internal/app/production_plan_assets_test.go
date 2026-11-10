@@ -201,8 +201,8 @@ func TestProductionPlanAssetsRequireManualStart(t *testing.T) {
 	if after.StateJSON != execution.StateJSON || after.Revision < revision {
 		t.Fatal("duplicate action restarted work")
 	}
-	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
-		t.Fatal("manual action did not permit grouping", changed, err)
+	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || changed {
+		t.Fatal("admission should already have materialized the groups", changed, err)
 	}
 	for _, key := range []string{"character", "sound", "environment", "prop", "special"} {
 		submitOrderedPlan(t, s, runID, key, key, "测试"+key)

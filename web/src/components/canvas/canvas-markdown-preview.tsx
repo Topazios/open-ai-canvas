@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
 import { AIMessageMarkdown } from "@/components/ai/ai-message-markdown";
 import type { CanvasTheme } from "@/lib/canvas-theme";
+import { previewDocumentSource } from "@/lib/canvas/virtual-document";
 
 type CanvasMarkdownPreviewProps = {
     source: string;
@@ -34,7 +35,7 @@ export function CanvasMarkdownPreview({ source, theme, className = "", style, da
             data-canvas-no-zoom={dataCanvasNoZoom || undefined}
             onWheel={(event) => event.stopPropagation()}
         >
-            <AIMessageMarkdown>{source}</AIMessageMarkdown>
+            <AIMessageMarkdown>{previewDocumentSource(source)}</AIMessageMarkdown>
             {truncated ? (
                 <div
                     aria-hidden="true"

@@ -4,7 +4,7 @@ import { nodeWorkflow } from "@/lib/canvas/canvas-short-drama-workflow";
 import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-task-state";
 import {
     AUTO_REVIEW_MAX_ROUNDS, autoReviewExcerpt, autoReviewRoundFromReport, autoReviewStalled,
-    screenplayAuditState, screenplayBodySignature, type AutoReviewRound, type AutoReviewState,
+    screenplayAuditState, screenplayBodySignature, screenplayAutoReviewCandidates, type AutoReviewRound, type AutoReviewState,
 } from "@/lib/canvas/workflow-screenplay-audit";
 import { shortDramaSettingsChanged } from "@/lib/short-drama-settings";
 import { ShortDramaStep } from "@/lib/short-drama-steps";
@@ -282,18 +282,25 @@ export function useScreenplayAutoReview({ projectId, config, nodesRef, setNodes,
 
     const start = useCallback(async (bodyId: string, resume = false) => {
         if (active.current.has(bodyId)) { message.info("这一集正在自动诊断修复"); return; }
+        const body = nodesRef.current.find(node => node.id === bodyId);
+        const settings = useCanvasStore.getState().openProject(projectId)?.globalSettings;
+        if (!body || !screenplayAutoReviewCandidates([body], nodesRef.current, settings, active.current).length) return;
         cancelled.current.delete(bodyId);
         markRunning(bodyId, true);
         try { await runOne(bodyId, resume); } finally { markRunning(bodyId, false); cancelled.current.delete(bodyId); }
-    }, [markRunning, message, runOne]);
+    }, [markRunning, message, runOne, nodesRef, projectId]);
 
     const startBatch = useCallback(async (bodyIds: string[]) => {
-        const queue = bodyIds.filter(id => !active.current.has(id));
+        const nodes = nodesRef.current;
+        const byId = new Map(nodes.map(node => [node.id, node]));
+        const bodies = bodyIds.flatMap(id => { const node = byId.get(id); return node ? [node] : []; });
+        const settings = useCanvasStore.getState().openProject(projectId)?.globalSettings;
+        const queue = screenplayAutoReviewCandidates(bodies, nodes, settings, active.current).map(node => node.id);
         if (!queue.length) { message.info("没有需要自动诊断修复的分集"); return; }
         message.info(`已加入${queue.length}集自动诊断修复队列`);
-        const worker = async () => { for (let id = queue.shift(); id; id = queue.shift()) await start(id); };
+        const worker = async () => { for (let id = queue.shift(); id; id = queue.shift()) await start(id, true); };
         await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, queue.length) }, worker));
-    }, [message, start]);
+    }, [message, start, nodesRef, projectId]);
 
     const cancel = useCallback((bodyId: string) => { cancelled.current.add(bodyId); }, []);
 

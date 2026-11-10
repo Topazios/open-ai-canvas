@@ -1,7 +1,9 @@
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { cleanCanvasDocument } from "./canvas-document-integrity";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 import { isGridFrame, layoutCanvasGridGroups } from "./canvas-group-grid";
 import { isPlanPlaceholder } from "./plan-placeholder";
+import { isCanvasAssetStack } from "./canvas-asset-stack";
 
 type Change<T> = { before: T | null; after: T | null };
 export type AgentCanvasPatch = {
@@ -148,7 +150,9 @@ export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvas
         if (!after || !current) return change;
         const parent = current.parentId ? byId.get(current.parentId) : undefined;
         const geometry = (node: CanvasNodeData): CanvasNodeData => ({ ...node, width: current.width, height: current.height,
-            metadata: { ...node.metadata, frame: { ...node.metadata!.frame!, expandedWidth: current.metadata!.frame!.expandedWidth, expandedHeight: current.metadata!.frame!.expandedHeight } } });
+            metadata: { ...node.metadata, frame: { ...node.metadata!.frame!, expandedWidth: current.metadata!.frame!.expandedWidth, expandedHeight: current.metadata!.frame!.expandedHeight,
+                ...(isCanvasAssetStack(current) ? { collapsed: current.metadata!.frame!.collapsed, assetStackExpanded: current.metadata!.frame!.assetStackExpanded } : {}),
+            } } });
         if (!before) {
             if (parent && isGridFrame(parent) && after.parentId === current.parentId) return { before: null, after: { ...after, position: current.position, width: current.width, height: current.height } };
             if (isGridFrame(current) && after.metadata?.frame && current.metadata?.frame) return { before: null, after: geometry(after) };
@@ -162,8 +166,12 @@ export function applyAgentCanvasPatch(project: CanvasProject, patch: AgentCanvas
         if (!isGridFrame(current) || !before.metadata?.frame || !after.metadata?.frame || !current.metadata?.frame) return change;
         return { before: geometry(before), after: geometry(after) };
     });
-    const nodes = layoutCanvasGridGroups(mergeItems(project.nodes, gridChanges, options));
-    const connections = mergeItems(project.connections, patch.connections, options);
+    const mergedNodes = mergeItems(project.nodes, gridChanges, options);
+    const mergedConnections = mergeItems(project.connections, patch.connections, options);
+    const explicitDeletes = new Set(patch.nodes.filter(change => !change.after && change.before).map(change => change.before!.id));
+    const cleaned = cleanCanvasDocument(mergedNodes, mergedConnections, explicitDeletes);
+    const nodes = layoutCanvasGridGroups(cleaned.nodes);
+    const connections = cleaned.connections;
     if (nodes === project.nodes && connections === project.connections) return project;
     return { ...project, nodes, connections, updatedAt: patch.updatedAt || project.updatedAt };
 }

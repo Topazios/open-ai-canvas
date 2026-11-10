@@ -660,7 +660,7 @@ func capabilityOptionsFromConfig(capability string, config map[string]any, decla
 		if !isCapabilityOptionFor(capability, canonical) || value == nil || strings.TrimSpace(fmt.Sprint(value)) == "" {
 			continue
 		}
-		if declared != nil {
+		if declared != nil && normalizeCapability(capability) != "video" {
 			if _, ok := declared[canonical]; !ok {
 				continue
 			}

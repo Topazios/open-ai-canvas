@@ -130,6 +130,9 @@ func withProviderRequestKind(ctx context.Context, requestKind string) context.Co
 }
 
 func (e providerHTTPError) Error() string {
+	if model.IsGatewayTimeout(e.StatusCode) {
+		return model.GatewayTimeoutMessage(e.StatusCode)
+	}
 	if e.StatusCode == http.StatusBadRequest || e.StatusCode == http.StatusUnprocessableEntity {
 		return providerErrorWithDetail(e.summary(), e.Body)
 	}
@@ -138,10 +141,8 @@ func (e providerHTTPError) Error() string {
 
 func (e providerHTTPError) summary() string {
 	switch e.StatusCode {
-	case 524:
-		return "上游网关超时（524）：模型请求可能仍在服务端执行并产生费用，请勿立即重试，请先到供应商后台核对任务或账单"
-	case http.StatusGatewayTimeout:
-		return "上游网关超时（504）：模型请求可能仍在服务端执行并产生费用，请勿立即重试，请先到供应商后台核对任务或账单"
+	case 524, http.StatusGatewayTimeout:
+		return model.GatewayTimeoutMessage(e.StatusCode)
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return "模型服务拒绝了请求，请检查模型和参数"
 	case http.StatusUnauthorized, http.StatusForbidden:
@@ -167,7 +168,7 @@ func providerUserFacingErrorMessage(err error) string {
 		return "模型请求已取消"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return "模型服务响应超时，请稍后重试"
+		return "本应用等待时间已到，未确认生成结果；请先核对任务和费用，不要直接重新生成"
 	}
 	var appErr *AppError
 	if errors.As(err, &appErr) && strings.TrimSpace(appErr.Message) != "" {

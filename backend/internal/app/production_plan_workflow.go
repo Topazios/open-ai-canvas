@@ -43,6 +43,16 @@ func productionPlanDocumentSchemaVersion(planVersion int) int {
 	return 1
 }
 
+func productionPlanSchemaVersion(plan productionPlan) int {
+	if len(plan.FlowStoryUnits) > 0 {
+		if plan.StoryStructureVersion >= 3 {
+			return 4
+		}
+		return 3
+	}
+	return productionPlanDocumentSchemaVersion(plan.Version)
+}
+
 // productionPlanReferencesDeferred reports that no asset codes are registered
 // yet, so @ references stay placeholders instead of failing the document.
 func productionPlanReferencesDeferred(m productionManifest) bool {
@@ -191,7 +201,7 @@ func productionPlanAssetDependencies(m productionManifest, item productionPlanAs
 		if dependency == nil {
 			continue
 		}
-		if (item.Kind == "prop" && dependency.Kind == "environment") || (item.Kind == "environment" && dependency.Kind == "prop") {
+		if m.Plan.FlowVersion != 1 && ((item.Kind == "prop" && dependency.Kind == "environment") || (item.Kind == "environment" && dependency.Kind == "prop")) {
 			continue
 		}
 		dependencies = append(dependencies, key)
@@ -226,8 +236,11 @@ func productionPlanDependencies(m productionManifest, artifacts []model.Producti
 		} else {
 			keys = []string{"story", "inventory", "visual", "direction", "generation"}
 		}
-		if item := productionPlanItem(m, key); item != nil && !m.Plan.AssetsStarted {
+		if item := productionPlanItem(m, key); item != nil && (!m.Plan.AssetsStarted || m.Plan.FlowVersion == 1) {
 			keys = append(keys, productionPlanAssetDependencies(m, *item)...)
+			if m.Plan.FlowVersion == 1 {
+				deps["$asset"] = productionStoredValueHash(*item)
+			}
 		}
 	}
 	for _, dependency := range keys {
@@ -299,6 +312,25 @@ func productionPlanArtifactValidPath(m productionManifest, doc map[string]any, a
 			return false
 		}
 		if assetGeneration {
+			dependencies := productionPlanDependencies(m, artifacts, key)
+			if productionStoredValueHash(productionWorkflow(node)["planDependencies"]) != productionStoredValueHash(dependencies) {
+				return false
+			}
+			if m.Plan.FlowVersion == 1 {
+				for dependency, hash := range dependencies {
+					if !strings.HasPrefix(dependency, "$") && (hash == "" || !productionPlanArtifactValidPath(m, doc, artifacts, dependency, path, memo)) {
+						return false
+					}
+				}
+			}
+			if productionWorkflow(node)["assetSubjectValidated"] == productionHash(stringValue(meta["content"])) {
+				return true
+			}
+			item := productionPlanItem(m, key)
+			facts := productionPlanSectionBody(key, item.Kind, stringValue(meta["content"]), "facts", schemaVersion)
+			if productionValidateAssetSubject(item, facts) != nil || productionValidatePlanReferences(m, doc, artifacts, stringValue(meta["content"])) != nil {
+				return false
+			}
 			return true
 		}
 		deps := productionPlanDependencies(m, artifacts, key)
@@ -328,6 +360,13 @@ func productionPlanPrerequisites(m productionManifest, doc map[string]any, artif
 		}
 		if !productionPlanAssetSelected(m, key) {
 			return cloudAgentFieldError("key", "plan_asset_not_selected", "此方案项未在本次启动范围内")
+		}
+		if m.Plan.FlowVersion == 1 {
+			for _, dependency := range productionPlanAssetDependencies(m, *item) {
+				if !productionPlanArtifactValid(m, doc, artifacts, dependency) {
+					return cloudAgentFieldError("key", "plan_prerequisite", "设计前置尚未完成或版本已变化："+dependency)
+				}
+			}
 		}
 		return nil
 	}
@@ -412,6 +451,14 @@ func productionPlanGroupProgress(m productionManifest, doc map[string]any, artif
 	groups := []ProductionPlanGroupProgress{}
 	for _, kind := range productionPlanGroupKinds {
 		group := ProductionPlanGroupProgress{Kind: kind, Status: "waiting"}
+		if slices.Contains(m.Plan.SelectedAssetKinds, kind) {
+			group.Status = "extracting"
+			if work, ok := state.ProductionParallel["inventory"]; ok && (work.Error != "" || work.QuietHold || work.Abandoned) {
+				group.Status = "error"
+			}
+			groups = append(groups, group)
+			continue
+		}
 		pendingSelected := false
 		for _, item := range m.Plan.Assets {
 			if productionPlanGroupKind(item) != kind {
@@ -442,6 +489,8 @@ func productionPlanGroupProgress(m productionManifest, doc map[string]any, artif
 			group.Status = "complete"
 		} else if group.Status == "waiting" && !pendingSelected {
 			group.Status = "waiting_manual"
+		} else if group.Status == "waiting" && pendingSelected {
+			group.Status = "queued"
 		}
 		groups = append(groups, group)
 	}
@@ -478,7 +527,7 @@ func productionPlanNextAction(m productionManifest, doc map[string]any, artifact
 		args := map[string]any{"key": key, "name": name, "factIds": []string{}, "expectedHash": productionDocumentTargetHash(artifacts, key)}
 		next := action(phase, "production_submit", args)
 		next["key"], next["name"], next["kind"] = key, name, productionPlanKind(m, key)
-		schemaVersion := productionPlanDocumentSchemaVersion(m.Plan.Version)
+		schemaVersion := productionPlanSchemaVersion(*m.Plan)
 		next["documentSchemaVersion"] = schemaVersion
 		next["documentSchema"] = productionPlanDocumentSectionsForSchema(key, productionPlanKind(m, key), schemaVersion)
 		next["documentBudget"] = productionDocumentWorkBudget(m, doc, productionParallelWork{Key: key})
@@ -500,13 +549,16 @@ func productionPlanNextAction(m productionManifest, doc map[string]any, artifact
 		if m.Plan.AssetsStarted {
 			keys = m.Plan.SelectedAssetKeys
 		}
+		if index := slices.Index(keys, "inventory"); index > 0 {
+			keys = append([]string{"inventory"}, slices.Delete(slices.Clone(keys), index, index+1)...)
+		}
 		for _, key := range keys {
 			deferredInventory := key == "inventory" && len(m.Plan.SelectedAssetKinds) > 0
 			if productionPlanArtifactValid(m, doc, artifacts, key) && !deferredInventory {
 				continue
 			}
 			if key == "inventory" {
-				args := map[string]any{"assets": []any{}, "absent": m.Plan.Absent, "complete": true}
+				args := map[string]any{"assets": []any{}, "absent": m.Plan.Absent, "complete": m.Plan.InventoryReviewVersion == 0}
 				for _, a := range artifacts {
 					if a.Key == "story" {
 						args["storyHash"] = a.ContentHash
@@ -516,12 +568,19 @@ func productionPlanNextAction(m productionManifest, doc map[string]any, artifact
 				if m.Plan.InventoryReviewVersion > 0 {
 					next["inventoryReviewRequired"] = true
 					next["inventoryReview"] = m.Plan.InventoryReview
+					args["inventoryReview"] = []productionInventorySectionReview{}
+					next["instruction"] = productionInventoryReviewInstruction
 					for _, artifact := range artifacts {
 						if artifact.Key != "story" {
 							continue
 						}
-						meta, _ := productionNode(doc, artifact.NodeID)["metadata"].(map[string]any)
-						sections, sectionBodies := productionInventoryReviewSources(*m.Plan, stringValue(meta["content"]))
+						node := productionNode(doc, artifact.NodeID)
+						meta, _ := node["metadata"].(map[string]any)
+						story := stringValue(meta["content"])
+						sections, sectionBodies := productionInventoryReviewSources(*m.Plan, story)
+						complete := m.Plan.StoryHash == artifact.ContentHash && productionInventoryReviewCoversSources(*m.Plan, story)
+						args["complete"] = complete
+						next["sourceReviewComplete"] = complete
 						next["sourceSections"], next["sourceSectionText"] = sections, sectionBodies
 						break
 					}
@@ -667,6 +726,10 @@ func productionPlanRequiredContext(m productionManifest, doc map[string]any, art
 		entry := map[string]any{"key": a.Key, "name": node["title"], "expectedHash": a.ContentHash}
 		if a.Key != "inventory" {
 			entry["content"] = meta["content"]
+			if m.Plan != nil && m.Plan.Version >= 5 && productionPlanStandard(key) && a.Key == "story" {
+				entry["content"] = productionStandardStoryContext(m, stringValue(meta["content"]))
+				entry["scope"] = "共用规范依据：完整主线、结局、规则和人物关系；不携带逐集表和资产明细，不在此重写它们。具体资产细节由后续档案和分镜引用。"
+			}
 		}
 		result = append(result, entry)
 	}
@@ -683,7 +746,7 @@ func productionPlanScopedTools(tools []map[string]any, work map[string]any, plan
 		properties, _ := parameters["properties"].(map[string]any)
 		if fn["name"] == "production_plan_inventory" {
 			parameters["required"] = []string{"storyHash", "assets", "absent", "complete"}
-			properties["complete"].(map[string]any)["description"] = "必须显式填写。资产或来源核对仍有后续批次时填 false；全部章节和资产已保存后传 true，服务端统一复检。已有内容不必重传，末批可传 assets=[]、inventoryReview=[]。"
+			properties["complete"].(map[string]any)["description"] = "必须显式填写。每个未完成批次传 false，服务端持久保存；仅当所有来源章节都已有核对记录后传 true，服务端对完整清单统一复检。已有资产和核对记录不必重传，末批可传 assets=[]、inventoryReview=[]。"
 			items := properties["assets"].(map[string]any)["items"].(map[string]any)
 			items["required"] = []string{"key", "kind", "name", "episodes", "purpose", "plannedRange", "dependsOn"}
 			if priorityRequired {
@@ -723,6 +786,9 @@ func productionPlanScopedTools(tools []map[string]any, work map[string]any, plan
 				description += fmt.Sprintf("本字段建议约 %d 字符，可在本批合计 %d 字符内调配；精简重复描述，保留可执行要求。", budget.SuggestedFieldChars[section.Key], budget.BatchMaxContentChars)
 			}
 			fields[section.Key] = map[string]any{"type": "string", "description": description}
+			if batch, ok := next["documentEpisodeRange"].(*productionDocumentEpisodeRange); ok && section.Key == "episodeArchitecture" {
+				fields[section.Key] = productionEpisodeSubmissionSchema(batch)
+			}
 			required = append(required, section.Key)
 		}
 		properties["document"] = map[string]any{"type": "object", "properties": fields, "required": required, "additionalProperties": false}

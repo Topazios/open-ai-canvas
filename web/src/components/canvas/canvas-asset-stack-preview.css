@@ -1,0 +1,35 @@
+.canvas-asset-stack-preview {
+    position: absolute;
+    inset: 84px 18px 18px;
+    display: block;
+    cursor: pointer;
+    color: var(--asset-stack-text);
+    border: 0;
+    padding: 0;
+    background: transparent;
+    text-align: left;
+}
+.canvas-asset-stack-sheet {
+    position: absolute;
+    inset: 14px 16px 0 0;
+    overflow: hidden;
+    border: 1px solid var(--asset-stack-stroke);
+    border-radius: var(--r-md);
+    background: var(--asset-stack-fill);
+    transform-origin: center bottom;
+    transition: transform 150ms ease;
+}
+.canvas-asset-stack-sheet[data-stack-depth="1"] { transform: translate(7px, -5px) rotate(2deg); }
+.canvas-asset-stack-sheet[data-stack-depth="2"] { transform: translate(13px, -10px) rotate(4deg); }
+.canvas-asset-stack-preview:hover .canvas-asset-stack-sheet[data-stack-depth="1"] { transform: translate(8px, -7px) rotate(3deg); }
+.canvas-asset-stack-preview:hover .canvas-asset-stack-sheet[data-stack-depth="2"] { transform: translate(16px, -14px) rotate(5deg); }
+.canvas-asset-stack-image { display: block; width: 100%; height: 100%; object-fit: contain; }
+.canvas-asset-stack-document { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 18px; height: 100%; overflow: hidden; }
+.canvas-asset-stack-document > svg { flex-shrink: 0; color: var(--asset-stack-muted); }
+.canvas-asset-stack-document > strong { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-body); line-height: 20px; }
+.canvas-asset-stack-document > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; font-size: var(--fs-caption); line-height: 18px; color: var(--asset-stack-muted); }
+.canvas-asset-stack-badge { position: absolute; right: 26px; top: 24px; display: inline-flex; align-items: center; gap: 5px; border-radius: var(--r-sm); border: 1px solid var(--asset-stack-stroke); padding: 3px 7px; background: var(--asset-stack-fill); font-size: var(--fs-caption); line-height: 18px; }
+.canvas-asset-stack-preview:focus-visible { outline: 2px solid var(--asset-stack-focus); outline-offset: 4px; border-radius: var(--r-md); }
+@media (prefers-reduced-motion: reduce) {
+    .canvas-asset-stack-sheet { transition: none; }
+}

@@ -70,7 +70,7 @@ import { CanvasTextEditorModal } from "@/components/canvas/canvas-text-editor-mo
 import { CanvasStoryDevelopmentEditor } from "@/components/canvas/canvas-story-development-editor";
 import { CanvasWorkflowGenerator, type WorkflowGeneratorTarget } from "@/components/canvas/canvas-workflow-generator";
 import { CanvasScreenplayNodeContent, CanvasScreenplayAuditDetails } from "@/components/canvas/canvas-screenplay-audit";
-import { AUTO_REVIEW_MAX_ROUNDS, latestBodyAudit, screenplayAuditState } from "@/lib/canvas/workflow-screenplay-audit";
+import { AUTO_REVIEW_MAX_ROUNDS, latestBodyAudit, screenplayAuditState, screenplayAutoReviewCandidates } from "@/lib/canvas/workflow-screenplay-audit";
 import { workflowAssetActions, workflowAssetRevisionMembers } from "@/lib/canvas/canvas-workflow-asset-actions";
 import { CanvasWorkflowAssetReview } from "./canvas-workflow-asset-review";
 import { nodeWorkflow, restoreWorkflowSourceConnections, workflowEpisodeProgress, workflowSignature, workflowGroupingProblem } from "@/lib/canvas/canvas-short-drama-workflow";
@@ -318,7 +318,7 @@ function InfiniteCanvasPage() {
     const [textBatchSourceNodeId, setTextBatchSourceNodeId] = useState<string | null>(null);
     const [textEditorNodeId, setTextEditorNodeId] = useState<string | null>(null);
     const [workflowGenerator, setWorkflowGenerator] = useState<WorkflowGeneratorTarget | null>(null);
-    const [assetModelDialog, setAssetModelDialog] = useState<{ targetId: string; kinds: string[]; label: string; model: string; reasoningEffort: ReasoningEffort; instruction: string; continueAppend: boolean } | null>(null);
+    const [assetModelDialog, setAssetModelDialog] = useState<{ targetId: string; kinds: string[]; label: string; model: string; reasoningEffort: ReasoningEffort; instruction: string; regenerate: boolean; requestId: string } | null>(null);
     const [screenplayAuditDetailId, setScreenplayAuditDetailId] = useState<string | null>(null);
     const [assetReviewId, setAssetReviewId] = useState<string | null>(null);
     const textEditorOriginalRef = useRef<CanvasNodeData | null>(null);
@@ -589,6 +589,7 @@ function InfiniteCanvasPage() {
         await persistLocalEdits();
         await saveRemoteUserDataNow(projectId);
     }, [persistLocalEdits, projectId]);
+    const workflowSubmissionNodeIdsRef = useRef(new Set<string>());
     const { applyGenerationTaskResult, bindGenerationTask, finishGenerationRequest, runningNodeId, setRunningNodeId, setTaskDetail, startGenerationRequest, taskDetail, taskDetailLoading, taskDetailLogs } = useCanvasGeneration({
         projectId,
         domainProjectId: linkedProjectId,
@@ -597,6 +598,7 @@ function InfiniteCanvasPage() {
         nodesRef,
         setNodes,
         persistTaskBinding: persistCanvasTaskBinding,
+        submissionNodeIdsRef: workflowSubmissionNodeIdsRef,
     });
 
     const cancelCanvasTask = useCallback(
@@ -1690,7 +1692,7 @@ function InfiniteCanvasPage() {
         setWorkflowGenerator({ step, pipelineId, anchorId, stepIds });
     }, [message, nodesRef]);
 
-    const workflowGeneration = useShortDramaWorkflowGeneration({ projectId, config: effectiveConfig, nodesRef, connectionsRef, setNodes, setConnections,
+    const workflowGeneration = useShortDramaWorkflowGeneration({ projectId, config: effectiveConfig, nodesRef, connectionsRef, setNodes, setConnections, submissionNodeIdsRef: workflowSubmissionNodeIdsRef,
         save: (options) => saveCanvasProject({ requireRemote: true, quiet: options?.quiet }), center: getCanvasCenter, focus: focusCanvasNode, bindTask: bindGenerationTask, applyResult: applyGenerationTaskResult });
     const openScreenplayRepair = useCallback((nodeId: string) => {
         const report = nodesRef.current.find(node => node.id === nodeId);
@@ -2843,28 +2845,21 @@ function InfiniteCanvasPage() {
     );
     const autoReviewFrameBodies = useCallback(
         (_frame: CanvasNodeData, bodyNodes: CanvasNodeData[]) => {
-            const latest = new Map(nodesRef.current.map((item) => [item.id, item]));
             const busy = new Set(screenplayAutoReview.running);
-            const ids = bodyNodes
-                .map((item) => latest.get(item.id) ?? item)
-                .filter((item) => {
-                    const status = item.metadata?.shortDrama?.autoReview?.status;
-                    return Boolean(item.metadata?.content?.trim()) && !busy.has(item.id) && status !== "auditing" && status !== "repairing";
-                })
-                .map((item) => item.id);
+            const ids = screenplayAutoReviewCandidates(bodyNodes, nodesRef.current, currentProject?.globalSettings, busy).map(item => item.id);
             if (!ids.length) {
                 message.info("没有需要自动诊断修复的分集");
                 return;
             }
             modal.confirm({
                 title: "自动诊断修复",
-                content: `将对 ${ids.length} 集依次执行诊断、修复、复检，过程中不再询问。每一轮都会重新调用模型并产生费用，每集最多 ${AUTO_REVIEW_MAX_ROUNDS} 轮，仍有阻塞问题时带警告结束，不会停下等待处理，最多 3 集同时进行。结束原因和每轮的问题、修复方式都记录在对应分集详情的轮次里，方便抽查，需要时可在分集上重试自动修复。`,
+                content: `将仅对 ${ids.length} 集未通过、未诊断或需复检的正文执行诊断、修复、复检，跳过当前版本已通过和执行中的分集。每一轮都会重新调用模型并产生费用，每集最多 ${AUTO_REVIEW_MAX_ROUNDS} 轮，最多 3 集同时进行。已中断的分集在版本未变时接续原有诊修记录；结束原因和每轮的问题、修复方式记录在对应分集详情中。`,
                 okText: "确认并开始",
                 cancelText: "取消",
                 onOk: () => { void screenplayAutoReview.startBatch(ids); },
             });
         },
-        [message, modal, nodesRef, screenplayAutoReview],
+        [message, modal, nodesRef, screenplayAutoReview, currentProject?.globalSettings],
     );
     const infoNode = nodeDetailsTarget(rawInfoNode, nodes);
     const openCanvasNodeTaskDetails = useCallback(
@@ -3088,6 +3083,8 @@ function InfiniteCanvasPage() {
                                 >
                                     <CanvasNodeActionContext.Provider value={canvasNodeActions}>
                                             <CanvasProjectWorldLayers
+                                                globalSettings={currentProject?.globalSettings}
+                                                autoReviewRunning={screenplayAutoReview.running}
                                                 productionRuns={productionAgentRuns.runs}
                                                 productionBusy={productionAgentRuns.busy}
                                                 onGeneratePlanAssets={(id) => setInfoNodeId(id)}
@@ -3532,7 +3529,7 @@ function InfiniteCanvasPage() {
                                             const textModels = selectableModelsByCapability(effectiveConfig, "text");
                                             const preferredModel = effectiveConfig.textModel || effectiveConfig.model;
                                             const model = textModels.includes(preferredModel) ? preferredModel : textModels[0] || "";
-                                              setAssetModelDialog({ targetId: planTargetId, kinds: action.kinds, label: action.label, model, reasoningEffort: normalizeReasoningEffort(effectiveConfig.textReasoningEffort), instruction: "", continueAppend: false });
+                                              setAssetModelDialog({ targetId: planTargetId, kinds: action.kinds, label: action.label, model, reasoningEffort: normalizeReasoningEffort(effectiveConfig.textReasoningEffort), instruction: "", regenerate: false, requestId: crypto.randomUUID() });
                                         } };
                                     }),
                                     ...(!planRun || productionAgentRuns.readErrors[planTargetId] ? [{ label: "刷新资产状态", detail: productionAgentRuns.readErrors[planTargetId], run: productionAgentRuns.refresh }] : []),
@@ -3544,7 +3541,7 @@ function InfiniteCanvasPage() {
                                     return [
                                         ...planSelectionActions,
                                         { label: "重做另一版", disabled: !ready || workflowGeneration.submitting, run: () => { setContextMenu(null); setWorkflowGenerator({ step: assetActions.step, pipelineId: data.pipelineId, anchorId, assetRevisionSourceId: anchorId }); } },
-                                        ...(assetActions.imageStep ? [{ label: "生图", disabled: workflowGeneration.submitting || (data.role !== "collection" && !ready), run: () => openWorkflowGenerator(assetActions.imageStep!, anchorId) }] : []),
+                                        ...(assetActions.imageStep ? [{ label: "生图", disabled: data.role !== "collection" && !ready, run: () => openWorkflowGenerator(assetActions.imageStep!, anchorId) }] : []),
                                         ...(assetActions.audioStep ? [{ label: "生成试听", disabled: workflowGeneration.submitting || (data.role !== "collection" && !ready), run: () => openWorkflowGenerator(assetActions.audioStep!, anchorId) }] : []),
                                     ];
                                 }
@@ -3563,16 +3560,17 @@ function InfiniteCanvasPage() {
                                     ...(data.assetKey && data.assetKey !== "$summary" && !supportingDocument ? [{ label: "资产资料与参考", run: () => setAssetReviewId(anchorId) }] : []),
                                     ...(data.episodeNumber && !data.mediaKind && !contextMenuNode.parentId ? [{ label: "整理同源分集为容器", run: () => void workflowGeneration.groupEpisodes(anchorId) }] : []),
                                     ...(data.episodeNumber && !contextMenuNode.parentId ? nodes.filter((node) => node.type === CanvasNodeType.Frame && !workflowGroupingProblem([anchorId], nodes, node.id)).map((node) => ({ label: `加入容器：${node.title}`, run: () => groupSelection([anchorId], node.id) })) : []),
-                                    ...(data.role === "collection" && nodes.some((node) => data.sourceNodeIds.includes(node.id) && node.metadata?.shortDrama?.submission === "planned") ? [{ label: "继续提交未开始的任务", disabled: workflowGeneration.submitting, run: () => void workflowGeneration.resume(anchorId) }] : []),
+                                    ...(data.role === "collection" && nodes.some((node) => data.sourceNodeIds.includes(node.id) && node.metadata?.shortDrama?.submission === "planned") ? [{ label: "继续提交未开始的任务", disabled: workflowGeneration.submitting && data.mediaKind !== "image", run: () => void workflowGeneration.resume(anchorId) }] : []),
                                     ...(data.role === "collection" && data.step === ShortDramaStep.Body ? (() => {
                                         const bodyProgress = workflowEpisodeProgress(nodes, data.pipelineId, undefined, anchorId, connections);
                                         return bodyProgress.missing > 0 || bodyProgress.failed > 0 || bodyProgress.pending > 0
                                             ? [{ label: `继续生成正文（从第 ${bodyProgress.next} 集起，默认追加 10 集）`, disabled: workflowGeneration.submitting, run: () => { setContextMenu(null); setWorkflowGenerator({ step: ShortDramaStep.Body, pipelineId: data.pipelineId, anchorId, continueGeneration: true }); } }]
                                             : [];
                                     })() : []),
-                                    ...(data.mediaGroup ? [{ label: "追加生成图片", disabled: workflowGeneration.submitting, run: () => openWorkflowGenerator(data.step, data.mediaGroup!.sourceNodeId) }] : []),
+                                    ...(data.mediaGroup ? [{ label: "追加生成图片", run: () => openWorkflowGenerator(data.step, data.mediaGroup!.sourceNodeId) }] : []),
+                                    ...(data.role === "collection" && data.step === ShortDramaStep.Shots ? [{ label: "继续追加分集", disabled: workflowGeneration.submitting, run: () => { setContextMenu(null); setWorkflowGenerator({ step: ShortDramaStep.Shots, pipelineId: data.pipelineId, anchorId, appendCollectionId: anchorId }); } }] : []),
                                     ...(data.mediaGroup ? [{ label: "整理图片排列", run: () => setNodes((current) => layoutWorkflowImageGroups(current, new Set([anchorId]))) }] : []),
-                                    ...(data.role === "collection" && !data.assetGroup && !data.mediaGroup && data.step !== ShortDramaStep.Audit && data.step !== ShortDramaStep.Body && data.step !== ShortDramaStep.Extract ? [{ label: "汇总分集文稿", run: () => setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId, aggregate: true }) }] : []),
+                                    ...(data.role === "collection" && !data.assetGroup && !data.mediaGroup && data.step !== ShortDramaStep.Audit && data.step !== ShortDramaStep.Body && data.step !== ShortDramaStep.Extract && data.step !== ShortDramaStep.Shots ? [{ label: "汇总分集文稿", run: () => setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId, aggregate: true }) }] : []),
                                     ...(data.step === ShortDramaStep.Plan && data.role === "document" && data.planSection === "story" && planTargetId && planRun && ["failed", "waiting_user"].includes(planRun.status) && !planRun.production?.plansStarted ? [{ label: "重试总纲", detail: "总纲生成未完成，重新继续生成", disabled: productionAgentRuns.busy[planTargetId], run: () => {
                                         void productionAgentRuns.control(planTargetId, "resume").then(result => {
                                             if (result?.error) message.error(result.error);
@@ -3586,10 +3584,11 @@ function InfiniteCanvasPage() {
                                         });
                                     } }] : []),
                                     ...(data.assetGroup ? [{ label: `生成另一版${shortDramaStep(data.step)!.label}`, run: () => openWorkflowGenerator(data.step, anchorId) }] : []),
-                                    ...(data.submission === "planned" ? [{ label: "继续提交此节点", disabled: workflowGeneration.submitting, run: () => void workflowGeneration.resume(anchorId) }] : []),
+                                    ...(data.submission === "planned" ? [{ label: "继续提交此节点", disabled: workflowGeneration.submitting && data.mediaKind !== "image", run: () => void workflowGeneration.resume(anchorId) }] : []),
                                     ...(data.step !== ShortDramaStep.Topic && data.role !== "collection" && !supportingDocument ? [{ label: data.step === ShortDramaStep.Body ? "生成新版正文" : `生成另一版${shortDramaStep(data.step)!.label}`, run: () => data.aggregate ? setWorkflowGenerator({ step: data.step, pipelineId: data.pipelineId, anchorId: data.sourceNodeIds[0], aggregate: true }) : openWorkflowGenerator(data.step, anchorId) }] : []),
                                     ...(stepDefinition?.mediaOutput === "image" && contextMenuNode.type === CanvasNodeType.Text && data.role !== "collection" && Boolean(contextMenuNode.metadata?.content?.trim()) ? [{ label: stepDefinition.mediaActionLabel || "根据当前资产生成图片", disabled: contextMenuNode.metadata?.status === "loading", run: () => generateImageFromTextNode(contextMenuNode) }] : []),
-                                    ...(supportingDocument ? [] : nextShortDramaStepGroups(data.step)).map((group) => ({ label: `下一步：${group.label}`, disabled: data.role !== "collection" && (!contextMenuNode.metadata?.content?.trim() || contextMenuNode.metadata?.status === "loading" || contextMenuNode.metadata?.status === "error"), run: () => openWorkflowGenerator(group.entryStepId, anchorId, [...group.stepIds]) })),
+                                    ...(data.step === ShortDramaStep.Shots ? [{ label: "下一步：剪辑", run: () => { setContextMenu(null); setTimelineNodeId(anchorId); } }] : []),
+                                    ...(supportingDocument || data.step === ShortDramaStep.Shots ? [] : nextShortDramaStepGroups(data.step)).map((group) => ({ label: `下一步：${group.label}`, disabled: data.role !== "collection" && (!contextMenuNode.metadata?.content?.trim() || contextMenuNode.metadata?.status === "loading" || contextMenuNode.metadata?.status === "error"), run: () => openWorkflowGenerator(group.entryStepId, anchorId, [...group.stepIds]) })),
                                 ];
                             })()}
                             workspaceMode={workspaceMode}
@@ -3739,7 +3738,8 @@ function InfiniteCanvasPage() {
                                     model,
                                     reasoningEffort: assetModelDialog.reasoningEffort,
                                     instruction: assetModelDialog.instruction.trim(),
-                                    continueAppend: assetModelDialog.continueAppend,
+                                    regenerate: assetModelDialog.regenerate,
+                                    requestId: assetModelDialog.requestId,
                                 };
                                 if (!logicalModelId && !resolved.channelId) {
                                     message.error("请选择后端受管文本模型");
@@ -3748,7 +3748,7 @@ function InfiniteCanvasPage() {
                                 void productionAgentRuns.control(assetModelDialog.targetId, "generate_assets", undefined, undefined, undefined, modelSelection, assetModelDialog.kinds).then(result => {
                                     if (result?.error) message.error(result.error);
                                     else if (result?.success) {
-                                        message.success(`已提交${assetModelDialog.label.slice(2)}生成任务，可在对应容器详情查看进度和重试`);
+                                        message.success("资产请求已受理；已完成内容会复用，待处理内容可在容器详情查看进度");
                                         setAssetModelDialog(null);
                                     }
                                 });
@@ -3756,13 +3756,13 @@ function InfiniteCanvasPage() {
                         >
                             <div className="space-y-2 py-2">
                                 <label className="block text-sm">文本模型</label>
-                                <ModelPicker config={effectiveConfig} value={assetModelDialog?.model} capability="text" fullWidth placeholder="选择文本模型" onChange={model => setAssetModelDialog(current => current ? { ...current, model } : current)} />
-                                <ReasoningEffortSelect value={assetModelDialog?.reasoningEffort} onChange={reasoningEffort => setAssetModelDialog(current => current ? { ...current, reasoningEffort } : current)} />
-                                <Checkbox checked={assetModelDialog?.continueAppend || false} onChange={event => setAssetModelDialog(current => current ? { ...current, continueAppend: event.target.checked } : current)}>
-                                    继续追加到当前资产生成批次
+                                <ModelPicker config={effectiveConfig} value={assetModelDialog?.model} capability="text" fullWidth placeholder="选择文本模型" onChange={model => setAssetModelDialog(current => current ? { ...current, model, requestId: crypto.randomUUID() } : current)} />
+                                <ReasoningEffortSelect value={assetModelDialog?.reasoningEffort} onChange={reasoningEffort => setAssetModelDialog(current => current ? { ...current, reasoningEffort, requestId: crypto.randomUUID() } : current)} />
+                                <Checkbox checked={assetModelDialog?.regenerate || false} onChange={event => setAssetModelDialog(current => current ? { ...current, regenerate: event.target.checked, requestId: crypto.randomUUID() } : current)}>
+                                    为已完成资产生成并采用新版本
                                 </Checkbox>
                                 <label className="block text-sm" htmlFor="production-asset-instruction">补充要求</label>
-                                <Input.TextArea id="production-asset-instruction" aria-label="补充要求" value={assetModelDialog?.instruction || ""} maxLength={2000} rows={4} placeholder="填写本次资产生成需要遵守的注意事项" onChange={event => setAssetModelDialog(current => current ? { ...current, instruction: event.target.value } : current)} />
+                                <Input.TextArea id="production-asset-instruction" aria-label="补充要求" value={assetModelDialog?.instruction || ""} maxLength={2000} rows={4} placeholder="填写本次资产生成需要遵守的注意事项" onChange={event => setAssetModelDialog(current => current ? { ...current, instruction: event.target.value, requestId: crypto.randomUUID() } : current)} />
                                 <p className="text-xs text-neutral-500">模型、推理强度和补充要求会用于本次所选资产及其后续重试。</p>
                             </div>
                         </Modal>

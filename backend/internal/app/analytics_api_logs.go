@@ -158,6 +158,7 @@ func (s *Service) decorateAPICallLogs(logs []model.ApiCallLog) error {
 			logs[index].ErrorSource = "upstream"
 		}
 		logs[index].Status = logs[index].DisplayStatus()
+		logs[index].ProjectGatewayTimeout()
 	}
 	return nil
 }

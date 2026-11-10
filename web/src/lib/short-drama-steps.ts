@@ -34,7 +34,7 @@ const S = ShortDramaStep;
 export const shortDramaSteps: readonly ShortDramaStepDefinition[] = [
     { id: S.Topic, stage: "story", label: "选题抽取", requires: [], requirement: "抽取选题。" },
     { id: S.Plan, stage: "story", label: "故事总纲与世界规则", requires: [S.Topic], scope: "project", output: "asset-group", requirement: "根据已采用选题完成故事总纲与世界规则，保存独立文稿后结束。其余制作方案由用户在总纲完成后手动启动，各自生成并保存文稿。" },
-    { id: S.Episodes, stage: "story", label: "分集集纲", requires: [S.Plan], scope: "project", requirement: "全部集纲汇总为一份文稿，按集数顺序分节，不拆成逐集节点。" },
+    { id: S.Episodes, stage: "story", label: "分集集纲", requires: [S.Plan], scope: "project", requirement: "全部集纲汇总为一份文稿，按集数顺序分节，不拆成逐集节点。每集统一标题及六项固定内容：开场承接与目标、冲突与关键行动、结果与情绪变化、伏笔与回收、集尾与下集承接、资产与连续性；字段按相同顺序单独成段，不混用表格、列表和一段式正文。" },
     { id: S.Body, stage: "story", label: "分集正文", requires: [S.Episodes], requirement: "生成指定集的完整剧本。" },
     { id: S.Audit, stage: "story", label: "正文质量审核", requires: [S.Body], requirement: "按集审读正文结构、因果、可表演性、节奏与来源连续性。只生成诊断报告和修复提示词，不改正文、不补建资产、不自动开启下游。" },
     { id: S.Bible, stage: "assets", label: "统一制作规范", requires: [S.Body], scope: "project", output: "asset-group", requirement: `基于所提供全部正文，分别生成8份可独立编辑的制作规范：${productionBibleInstruction}。每项区分正文事实（附集数场次与依据）、推断和可执行的设计建议；未明确的制作细节自行形成统一建议，不要求用户先确认，不虚称已获审核。不重复分集全文，不以逐人物/逐场景资产代替制作规范。` },
@@ -46,7 +46,7 @@ export const shortDramaSteps: readonly ShortDramaStepDefinition[] = [
     { id: S.CharacterReferences, stage: "assets", label: "人物参考图生成", requires: [S.Characters], scope: "project", mediaOutput: "image", mediaActionLabel: "根据人物资产生成参考图", requirement: "生成统一横向人物设定板：左侧资料栏，右上正面、左侧、右侧、背面四个全身视图，右下服装物件拆解与局部细节。同一基准年龄、服装和妆发，统一身高比例与基线；画风以本项目制作规范为准，不混合其他版本。" },
     { id: S.Environments, stage: "assets", label: "场景资产", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "依据正文和所选制作规范归并复用空间，每个独立空间一个条目。按主线反复出现、关键行动/高潮空间、主要空间、次要空间排序，输出类别内连续唯一的 priority（从1开始），不按集数先后随机排列。包含别名、布局、地标、出入口、轴线、相邻空间、时代材质；只有空间拓扑或结构重大改变且需要独立空间参考时才列场景变体，日夜、天气、开关灯、光照和普通陈设写入连续性。环境声层次、出场集数场次及证据、完整提示词和负面约束、所需空间参考。不得随集数重复建立同名场景。区分事实、待设计和冲突。" },
     { id: S.EnvironmentReferences, stage: "assets", label: "场景参考图生成", requires: [S.Environments], scope: "project", mediaOutput: "image", mediaActionLabel: "根据场景资产生成参考图", requirement: "生成统一横向场景设定板：左侧资料栏，右上主视角、正立面、侧剖面、俯视布局，右下动线、陈设与材质细节。一个独立空间和同一基准时间天气，各视图的门窗、地标和家具布局一致；采用本项目制作规范。" },
-    { id: S.Props, stage: "assets", label: "道具资产", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "依据正文和所选制作规范提取关键、可复用道具，每件一个条目。按主线关键物件、线索/目标物、反复推动行动的道具、一般功能道具排序，输出类别内连续唯一的 priority（从1开始），禁止随机排列。包含外观材质尺寸、剧情功能、所属人物/场景、交接/损坏/修复的状态链、标志性声音、出场集数场次及证据、生成提示词和负面约束、所需参考。人物日常服装妆发归人物资产；只有独立承担剧情功能的服饰才作道具。普通背景杂物无需逐项建档。不虚构规格或关键物件，区分事实、设计建议和冲突。" },
+    { id: S.Props, stage: "assets", label: "道具资产", requires: [S.Body, S.Bible], scope: "project", output: "asset-group", requirement: "依据正文和所选制作规范提取关键、可复用道具，每件一个条目。按主线关键物件、线索/目标物、反复推动行动的道具、一般功能道具排序，输出类别内连续唯一的 priority（从1开始），禁止随机排列。包含外观材质尺寸、剧情功能、所属人物/场景、交接/损坏/修复的状态链、标志性声音、出场集数场次及证据、生成提示词和负面约束、所需参考。人物日常服装妆发归人物资产；只有独立承担剧情功能的服饰才作道具。普通背景杂物无需逐项建档。不增造剧情关键物件或改变既定规格；原文未给的尺寸、重量和交互锚点需在本次完成合理制作设定并注明来源，不能留待测量。区分原文事实、制作设定和冲突。" },
     { id: S.PropReferences, stage: "assets", label: "道具参考图生成", requires: [S.Props], scope: "project", mediaOutput: "image", mediaActionLabel: "根据道具资产生成参考图", requirement: "生成统一横向道具设定板：左侧资料栏，右上正面、侧面、背面、三分之四视角，右下外观附件及表面材质细节。各视图保持同一道具的尺度、外部结构和基准状态，仅作静态陈列，不虚构机关或功能；采用本项目制作规范。" },
     { id: S.SpecialReferences, stage: "assets", label: "特殊资产参考图生成", requires: [S.Special], scope: "project", optional: true, mediaOutput: "image", mediaActionLabel: "根据特殊资产生成参考图", requirement: "生成统一横向特殊资产设定板：左侧资料栏，右上按实体、界面符号或特效类型安排四个视图/状态，右下构成和细节。只使用已定义的形态与能力边界，沿用同一版式和本项目制作规范，不虚构未提取的新资产。" },
     { id: S.Voices, stage: "assets", label: "声音提示词分组", requires: [S.Body], scope: "project", output: "asset-group", requirement: "从正文提取、跨集归并角色声线、环境声、标志性音效及音乐母题，每个声音资产一个条目。按人物主次及声音对主线的作用排序，并输出类别内从1开始连续唯一的 priority；关联人物声线排在对应人物主次顺序中，独立环境/音乐/音效按叙事重要性排在其后。注明类别、关联角色或场景、年龄感、语速口音、音色、情绪表演边界或环境声层次、使用范围、出现集数场次、原文依据、可执行的声音提示词及禁用变化。缺少依据时标为待选设计建议，不逐句配音，不假称音频已经生成。" },
@@ -174,9 +174,14 @@ export type ShortDramaWorkflowData = {
     assetExecutionError?: string;
     planAbsent?: Partial<Record<import("./production-plan").PlannedAssetKind, string>>;
     planSection?: import("./production-plan").ProductionPlanSection;
+	inventoryComplete?: boolean;
+	inventoryReviewedSections?: number;
     // 后端预建的制作方案文档占位；文稿保存后整个 shortDrama 被重写，该字段随之消失。
     planGeneration?: { runId: string; status: string };
     assetIdentity?: import("./production-plan").ProductionAssetIdentity;
+    assetVersion?: number;
+    assetAdopted?: boolean;
+    assetSubjectValidated?: string;
     planAsset?: import("./production-plan").PlannedAsset;
     productionAgent?: { runId?: string; request?: import("@/services/api/agent").CreateAgentRunInput; maxCredits?: number; maxSteps?: number };
     stage: ShortDramaStageId; step: ShortDramaStepId; pipelineId: string;

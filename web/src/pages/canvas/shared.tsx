@@ -16,7 +16,7 @@ import { WorkspaceState } from "@/components/layout/workspace-state";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanvasAppearance, resolveCanvasAppearance, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, isCanvasFolderNode, isFrameNode, isNodeHiddenByCollapsedFrame } from "@/lib/canvas/canvas-frame";
+import { isFrameNode, isNodeHiddenByCollapsedFrame, toggleCanvasFrameCollapsed } from "@/lib/canvas/canvas-frame";
 import { resolveCanvasDisplayConnections } from "@/lib/canvas/canvas-connection-spatial-index";
 import { productionPlanDetachedMembers } from "@/lib/canvas/production-agent-state";
 import { ensureMediaNodeMinimumSize } from "@/lib/canvas/canvas-node-size";
@@ -224,17 +224,7 @@ export default function SharedCanvasPage() {
         setContextMenu(null);
         message.info("已添加临时节点，刷新页面后会消失");
     };
-    const toggleFrame = (nodeId: string) => setNodes((current) => current.map((node) => {
-        if (node.id !== nodeId || !isFrameNode(node)) return node;
-        const collapsed = !node.metadata?.frame?.collapsed;
-        const frame = node.metadata?.frame;
-        return {
-            ...node,
-            width: collapsed ? (isCanvasFolderNode(node) ? FOLDER_COLLAPSED_WIDTH : 240) : frame?.expandedWidth || node.width,
-            height: collapsed ? (isCanvasFolderNode(node) ? FOLDER_COLLAPSED_HEIGHT : 144) : frame?.expandedHeight || node.height,
-            metadata: { ...node.metadata, frame: { ...frame, collapsed, expandedWidth: collapsed ? node.width : frame?.expandedWidth || node.width, expandedHeight: collapsed ? node.height : frame?.expandedHeight || node.height } },
-        };
-    }));
+    const toggleFrame = (nodeId: string) => setNodes(current => toggleCanvasFrameCollapsed(current, nodeId));
     const renderSharedNode = useCallback((node: CanvasNodeData): ReactNode => {
         if (node.type === CanvasNodeType.Script) return <SharedScriptNode node={node} onUnauthorized={unauthorized} />;
         if (node.type === CanvasNodeType.BatchTable) return <CanvasBatchTableNodeContent node={node} nodes={nodes} connections={connections} batch={node.metadata?.generationBatches?.at(-1)} theme={theme} readOnly onPatchTable={() => {}} onAddRow={() => {}} onRemoveRow={() => {}} onUpdateRow={() => {}} onFillRows={() => {}} onGenerate={() => {}} onRetryItem={() => {}} onAddReferenceColumn={() => {}} onReorderReferenceColumns={() => {}} onMoveReferenceCell={() => {}} onUploadReference={() => {}} onConnectStart={() => {}} />;

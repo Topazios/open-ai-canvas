@@ -66,6 +66,14 @@ func productionScopedPolicy(system string, m productionManifest) string {
 		return strings.TrimSpace(system) + "\n\n" + policy + "\n" + productionAssetIdentityPolicy + worldPolicy + "\n\n" + productionrules.Block("story", "text")
 	}
 	if m.Storyboard != nil {
+		if m.Storyboard.Version == storyboardSceneVersion {
+			policy := strings.Replace(storyboardEpisodePolicy, "任务按集并发、集内连续批量完成分镜。", "任务按镜头工作组并发，工作组之间仅按明确依赖等待。", 1)
+			start, end := strings.Index(policy, "scene："), strings.Index(policy, "每镜独立可制作")
+			if start >= 0 && end > start {
+				policy = policy[:start] + storyboardScenePolicy + "\n" + policy[end:]
+			}
+			return strings.TrimSpace(system) + "\n\n" + policy + worldPolicy + "\n\n" + productionrules.Block("storyboard", "text")
+		}
 		if m.Storyboard.Version == storyboardEpisodeVersion {
 			return strings.TrimSpace(system) + "\n\n" + storyboardEpisodePolicy + worldPolicy + "\n\n" + productionrules.Block("storyboard", "text")
 		}

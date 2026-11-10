@@ -14,6 +14,19 @@ func productionPlanDocumentSectionsForSchema(key, kind string, schemaVersion int
 	var fields []productionDocumentSection
 	switch key {
 	case "story":
+		if schemaVersion >= 4 {
+			fields = []productionDocumentSection{
+				{"facts", "制作范围"},
+				{"premise", "主线与结局"},
+				{"worldRules", "背景与规则边界"},
+				{"relationships", "人物与关系"},
+				{"foreshadowing", "跨单元线索"},
+				{"arcs", "单元阶段索引"},
+				{"episodeArchitecture", "每集叙事要点"},
+				{"coreAssets", "计划资产概览"},
+			}
+			break
+		}
 		fields = []productionDocumentSection{
 			{"facts", "选题依据与制作体量"},
 			{"premise", "故事命题与核心看点"},
@@ -32,6 +45,10 @@ func productionPlanDocumentSectionsForSchema(key, kind string, schemaVersion int
 		}
 		if schemaVersion >= 2 {
 			fields = append(fields, productionDocumentSection{"episodeArchitecture", "逐集剧情与状态规划"})
+		}
+		if schemaVersion >= 3 {
+			fields[len(fields)-1].Title = "每集叙事任务与承接"
+			fields = append(fields, productionDocumentSection{"coreAssets", "核心资产与登记范围"})
 		}
 	case "visual":
 		fields = []productionDocumentSection{
@@ -270,6 +287,9 @@ func productionValidatePlanField(key, kind string, section productionDocumentSec
 	}
 	if !closed {
 		failures = append(failures, cloudAgentFieldError("document."+section.Key, "unclosed_fence", "字段正文含未闭合的代码围栏，请补齐对应结束围栏并保留正文；细分内容请使用三级或更低层级标题。"))
+	}
+	if err := productionValidateAssetSpecification(kind, section.Key, value); err != nil {
+		failures = append(failures, err)
 	}
 	return cloudAgentValidationErrors(failures...)
 }

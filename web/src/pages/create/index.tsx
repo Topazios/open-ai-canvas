@@ -11,7 +11,7 @@ import { creationResultAssetIds } from "@/lib/canvas/canvas-asset-handoff";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { continueCreationConversationOnCanvas } from "@/services/creation-canvas-conversation";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
-import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationAllowed, videoDurationOptions } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationOptions } from "@/lib/model-capabilities";
 import { inferVideoOperation, modelGroupReferenceLimits, resolveCompatibleModel, mergedImageCapabilityConfig, type ModelRequirements } from "@/lib/model-selection";
 import type { BackendGenerationResult } from "@/services/api/generation-task";
 import type { Skill } from "@/services/api/skills";
@@ -569,12 +569,6 @@ export default function CreatePage() {
         }
         if (!selectedModel) {
             toast.warning(`请先在设置中配置${modeLabels[mode]}模型`);
-            releaseRetryLock();
-            releaseSubmitGate();
-            return;
-        }
-        if (mode === "video" && !videoDurationAllowed(videoProfile, Number(seconds))) {
-            toast.error("当前模型不支持所选视频时长，请重新选择");
             releaseRetryLock();
             releaseSubmitGate();
             return;

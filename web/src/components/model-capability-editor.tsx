@@ -127,7 +127,7 @@ export function ModelCapabilityEditor({ value, onChange, protocol, capability = 
                                 updateDuration(
                                     value === "enum"
                                         ? { selection: "enum", values: profile.duration.values?.length ? profile.duration.values : [profile.duration.default] }
-                                        : { selection: "range", min: profile.duration.min || 1, max: profile.duration.max || 15, step: profile.duration.step || 1 },
+                                        : { selection: "range", min: profile.duration.min || 1, max: profile.duration.max || 0, step: profile.duration.step || 1 },
                                 )
                             }
                         />
@@ -143,7 +143,7 @@ export function ModelCapabilityEditor({ value, onChange, protocol, capability = 
                         ) : (
                             <div className="admin-capability-duration-grid">
                                 <NumberField label="最短" value={profile.duration.min} min={1} disabled={disabled} onChange={(value) => updateDuration({ min: value || 1 })} />
-                                <NumberField label="最长" value={profile.duration.max} min={1} disabled={disabled} onChange={(value) => updateDuration({ max: value || 1 })} />
+                                <NumberField label="最长（0 表示未设上限）" value={profile.duration.max || 0} min={0} disabled={disabled} onChange={(value) => updateDuration({ max: value || 0 })} />
                                 <NumberField label="步长" value={profile.duration.step} min={1} disabled={disabled} onChange={(value) => updateDuration({ step: value || 1 })} />
                                 <NumberField label="默认" value={profile.duration.default} min={1} disabled={disabled} onChange={(value) => updateDuration({ default: value || 1 })} />
                             </div>
@@ -239,7 +239,7 @@ export function ModelCapabilityEditor({ value, onChange, protocol, capability = 
                             updateDuration(
                                 value === "enum"
                                     ? { selection: "enum", values: profile.duration.values?.length ? profile.duration.values : [profile.duration.default] }
-                                    : { selection: "range", min: profile.duration.min || 1, max: profile.duration.max || 15, step: profile.duration.step || 1 },
+                                    : { selection: "range", min: profile.duration.min || 1, max: profile.duration.max || 0, step: profile.duration.step || 1 },
                             )
                         }
                     />
@@ -255,7 +255,7 @@ export function ModelCapabilityEditor({ value, onChange, protocol, capability = 
                     ) : (
                         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                             <NumberField label="最短" value={profile.duration.min} min={1} disabled={disabled} onChange={(value) => updateDuration({ min: value || 1 })} />
-                            <NumberField label="最长" value={profile.duration.max} min={1} disabled={disabled} onChange={(value) => updateDuration({ max: value || 1 })} />
+                            <NumberField label="最长（0 表示未设上限）" value={profile.duration.max || 0} min={0} disabled={disabled} onChange={(value) => updateDuration({ max: value || 0 })} />
                             <NumberField label="步长" value={profile.duration.step} min={1} disabled={disabled} onChange={(value) => updateDuration({ step: value || 1 })} />
                             <NumberField label="默认" value={profile.duration.default} min={1} disabled={disabled} onChange={(value) => updateDuration({ default: value || 1 })} />
                         </div>

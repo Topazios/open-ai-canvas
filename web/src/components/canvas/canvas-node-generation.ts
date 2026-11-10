@@ -661,7 +661,7 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
     const { getProjectCharacter } = await import("@/services/api/projects");
     const { getResource, resourceFileUrl, resourceStorageKey } = await import("@/services/api/resources");
     const details = await Promise.all(context.characterReferences.map((reference) => getProjectCharacter(domainProjectId, reference.assetId)));
-    const remainingBudget = Math.max(0, (referenceLimits?.maxImages ?? 9) - referenceImages.length);
+    const remainingBudget = mode === "video" ? Infinity : Math.max(0, (referenceLimits?.maxImages ?? 9) - referenceImages.length);
     const selected = details.flatMap((detail) => {
         const representation = preferredCharacterRepresentation(detail.character.representations);
         return representation ? [representation] : [];
@@ -715,7 +715,7 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
             voiceSamples.push(voice);
         });
     }
-    const maxAudios = referenceLimits?.maxAudios ?? 3;
+    const maxAudios = mode === "video" ? Infinity : referenceLimits?.maxAudios ?? 3;
     if (context.referenceAudios.length + voiceSamples.length > maxAudios) throw new Error(`当前模型参考音频容量不足：已连接 ${context.referenceAudios.length} 个音频，角色声音样本还需要 ${voiceSamples.length} 个名额`);
     const characterVoiceAudios = await Promise.all(voiceSamples.map(async (voice) => {
         const resource = await getResource(voice.sampleResourceId!);

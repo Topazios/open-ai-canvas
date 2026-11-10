@@ -5,6 +5,32 @@ description: 影策后端核心持久化表与状态边界
 
 # 后端数据库
 
+## 制作分阶段成果与回执
+
+结构迁移 51 新增 `production_flow_units` 与 `production_flow_receipts`。单元按用户、运行、根任务和来源版本查询，主键由来源、范围及完整输入指纹生成；保存 `stage/key/contract/input_json/result_json/issues_json/split_json/status/task_id/generation/attempts`。输入不可变，`split_json` 保存一次范围调整的子输入，成果和各次问题分别保留。所有修改受当前 task_id 与 generation 条件保护。
+
+回执保存原始工具参数、采用内容、问题、任务及代次，以单元、任务、代次形成确定主键，重复接收不增加记录。大响应仍归属现有任务结果，不写入主调度状态。成果、状态与事件同事务提交；这两表计入用户存储统计，并在所属画布永久清理时一并清理。
+
+运行 JSON 增加独立 `productionFlowCoordinator`，保存主任务代次、拥有者、租约、进展时间和检查点。制作 manifest 的 `plan.flowVersion=1` 标识新合同，`flowStoryUnits` 指向已经发布总纲采用的结构记录。具体恢复边界见[分阶段生成](/docs/backend/production-staged-flow)。
+
+不新增 SQL 表列。新总纲输入除 `executionPolicy=business-batches-v3` 外，增加 `planningTemplate=story-planning-v2`，参与不可变任务身份计算。`registry` 的 `scope=core` 登记五类主要资产，`scope=unit` 补本单元实际需求；五类为人物、场景、道具、特殊资产、声音。单元输入包含 `arc` 与主要 `registry`。`cards` 每集只有 `event/outcome/threads/assetKeys/newAssets`，不再要求八段重复叙事。`result_json` 保存已采用字段，发布后 `flowStoryUnits` 指向原记录，`storyStructureVersion=3` 选择八部分的 schema 4。总表本地归并主要与单元登记及新增身份，不再次调用提取模型。旧 `flowVersion=0` 合同保留原类别要求，不迁移历史数据。`state_json.productionFlowControl` 保留根来源 scope、窗口、成功/失败数、请求/接收数、连续无进展预算、累计重试和退避时间，与接纳或结果同事务保存。
+
+资产 JSON 除 `aliases/coreFacts/variants/origin` 外，保留 `subjectKeys`（关联主体或声源）、`parentKey`（组成归属）、`baseKey/stateName`（重大形态）、`dependsOn`（设计前置）、`quantity`（数量，0表示未声明）与 `usage[{range,purpose}]`（不同使用范围）。只对同一类别及归属、形态相容的别名复用身份，引用同步指向归并后的key，不拼接无限增长的简介。归属和前置分别检查有向循环，普通主体关联允许双向。
+
+`production_agent_jobs.manifest_json.plan.assetRequests` 保存请求标识到载荷摘要的映射，`assetRequestOrder` 保留最近32条；不存密钥。画布 `metadata.shortDrama.assetAdopted` 标记当前采用稿，`assetSubjectValidated` 保存已通过主体/引用校验的内容摘要；采用选择不进入文稿签名，内容或依赖变化仍使原回执失效。历史节点继续保留，已有媒体的来源节点与签名不随采用稿切换而改写。
+
+## 资产总表补缺检查点
+
+不新增 SQL 表或列。`cloud_agent_executions.state_json.productionParallel.inventory` 保存 `inventoryScoped`、`inventorySections`（本轮章节范围）、`inventoryNoProgress`（连续无进展批数）、`inventoryRepairReviews`（退回草稿）。成功资产及来源记录仍存于制作作业 manifest，已分配编码不随重试变化。范围和依赖版本从持久状态读取，不依赖已被精简的终态任务输入。
+
+总表草稿沿用现有 artifact 与画布节点，`shortDrama.inventoryComplete=false`、`inventoryReviewedSections` 区分已保存和已完成。只有完整来源、资产及关联校验通过后才置为完成。批次记录、草稿投影及事件同事务提交；存储失败整体回滚，内容错误仅退回对应章节。
+
+## 分镜场次任务表与恢复状态
+
+`storyboard-scene-v4` 沿用现有 JSON 和事件表，不新增 SQL 表、列或迁移。`cloud_agent_executions.state_json` 增加 `storyboardAssignments`（以场次编号为键，保存执行代次、领取任务、输入指纹、分配镜头、偏移、已保存数与恢复次数）、`storyboardCoordinator`（主任务代次、租约、检查点、活动指纹和恢复次数）、`revokedProductionTasks`（待取消任务及撤销时间）。`productionParallel` 的场次工作保存批次范围、前置结果指纹和当前尝试；完成批次可移除工作记录，但不移除场次任务表与历史事件。
+
+任务领取、镜头保存和相应的 `production_scene_*` 事件由同一运行修订事务提交，失败整体回滚。现有 `cloud_agent_event_records` 是可重放通知日志；通知传输不作为完成证据。主任务代次保护模型结果、工具写入和 `cloud_agent_pi_sessions` 快照。旧任务的费用及调用记录不删除，过期拥有者的结果不能写入新分配。恢复过程、时间参数及操作入口见[分镜场次并发](/docs/backend/storyboard-scene-agents)。
+
 ## 思考用量明细
 
 结构版本 47 为 `api_call_logs` 增加可空整数列 `reasoning_tokens`。仅持久化上游 `usage.output_tokens_details.reasoning_tokens` 或 `usage.completion_tokens_details.reasoning_tokens` 报告的合法非负整数，且不能超过对应 `output_tokens/completion_tokens`。缺失或非法明细保存为 NULL，显式 0 保留为 0；历史记录不补算、不重写。思考用量是输出总量的细分，不从计费输出总量扣除，也不重复累加费用。
@@ -34,6 +60,8 @@ description: 影策后端核心持久化表与状态边界
 ## 模型协议选择
 
 本轮不增加表、列或结构迁移。`channel_models.capability_config_json` 增加可选 `protocols: {policy: "auto" | "fixed", supported: string[]}`，列表保存 provider ID；原 `protocol` 列仍为默认适配配置。后端能力规范化与前端参数编辑均保留该字段。缺失时只使用原默认协议。
+
+同一 JSON 中 `video.duration.selection=range` 的 `max` 省略或为 0 表示未声明本地时长上限；固定值模式不变。通用初始化不再写入猜测的 15 秒，已有记录不自动迁移。管理员修改该配置沿用现有保存、能力版本更新和路由缓存失效流程，不改动价格或历史任务。此语义需要前后端同步更新。
 
 任务输入 JSON 的 `config.selectedProtocol` 为准入时由服务端写入的执行选择，同一尝试的恢复和直接重试使用同一适配配置，不因之后更改模型默认协议而改变任务端点。逻辑模型按既有允许条件重新选路（包括重新选路的用户重试）时清理旧选择，再按新渠道声明写入选择，避免跨渠道沿用旧协议。字段不含密钥；继续通过现有任务输入加密与存储边界落盘。回退到旧代码时不要继续执行使用新选择字段创建的未完成任务，旧执行器会忽略该字段并重新采用默认协议；先等待任务完成再回退。
 

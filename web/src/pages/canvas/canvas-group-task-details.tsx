@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import { Button, Segmented } from "antd";
 import { ChevronRight, Pause, Play, RefreshCw, RotateCcw, Square } from "lucide-react";
-import { productionPlanAssetAction, productionPlanMissingDocumentNote, productionPlanNeedsContinuation } from "@/lib/canvas/production-agent-state";
-import { groupExecutionRows, groupMemberState, groupSessionMembers, groupSessionTargets, groupSessionHasEarlier } from "@/lib/canvas/canvas-group-session";
+import { canCancelProductionAgent, canRetryStoryboardCoordinator, productionParallelWarningText, productionPlanAssetAction, productionPlanMissingDocumentNote, productionPlanNeedsContinuation } from "@/lib/canvas/production-agent-state";
+import { groupExecutionRows, groupMemberState, groupSessionMembers, groupSessionTargets, groupSessionHasEarlier, latestGroupAgentRun } from "@/lib/canvas/canvas-group-session";
+import { productionFlowDisplay } from "@/lib/canvas/production-flow-display";
 import { nodeWorkflow, workflowContinuationRange, workflowEpisodeProgress } from "@/lib/canvas/canvas-short-drama-workflow";
 import { ShortDramaStep } from "@/lib/short-drama-steps";
 import { productionPlanPhaseLabels } from "@/lib/production-plan";
-import { productionParallelSummary, productionRunExternalFailure } from "@/lib/canvas/production-agent-journal";
+import { productionParallelSummary, productionRunExternalFailure, productionJournalRows } from "@/lib/canvas/production-agent-journal";
 import { isPlanPlaceholder } from "@/lib/canvas/plan-placeholder";
 import type { CanvasNodeData } from "@/types/canvas";
 import type { GenerationTask } from "@/services/api/task-center";
@@ -15,6 +16,7 @@ import type { useProductionAgentRuns } from "./use-production-agent-runs";
 import { CanvasExecutionJournal } from "./canvas-execution-journal";
 import { CanvasRunParameters } from "./canvas-run-parameters";
 import { useCanvasGroupSession } from "./use-canvas-group-session";
+import { CanvasProductionFlowProgress } from "./canvas-production-flow-progress";
 
 const parallelStateLabels: Record<string, string> = {
     running: "执行中",
@@ -24,11 +26,13 @@ const parallelStateLabels: Record<string, string> = {
     failed: "执行失败",
     succeeded: "已完成",
     cancelled: "已取消",
+    paused: "已暂停",
     warning: "内容待处理",
+    blocked: "等待前置镜头",
 };
 const assetKindLabels: Record<string, string> = { character: "人物", environment: "场景", prop: "道具", special: "特殊资产", sound: "声音" };
 
-type ParallelDetail = { status?: string; attempts?: number; validationAttempts?: number; retryAt?: number; validationIssues?: string[] };
+type ParallelDetail = { status?: string; attempts?: number; validationAttempts?: number; retryAt?: number; validationIssues?: string[]; message?: string };
 
 // 把后端进度里的尝试次数、本地校验失败原因和下次重试时间拼成一行可读说明。
 function parallelDetailText(item?: ParallelDetail): string {
@@ -36,6 +40,7 @@ function parallelDetailText(item?: ParallelDetail): string {
     const parts: string[] = [];
     if (item.attempts && item.attempts > 0) parts.push("第 " + item.attempts + " 次尝试");
     if (item.validationIssues?.length) parts.push("本地校验未通过：" + item.validationIssues.join("；"));
+    else if (item.message) parts.push(item.message);
     if (item.retryAt && item.retryAt > Date.now()) parts.push(Math.max(1, Math.ceil((item.retryAt - Date.now()) / 1000)) + " 秒后重试");
     return parts.join(" · ");
 }
@@ -70,12 +75,15 @@ export function CanvasGroupTaskDetails({
     const [visibleByKey, setVisibleByKey] = useState<Record<string, number>>({});
     const target = targets.find((item) => item.coordinator) || targets.find((item) => item.kind === "agent" && item.scoped);
     const controlled = nodes.find((member) => member.id === target?.nodeId);
-    const snapshot = target ? session.snapshots[target.key] : undefined;
-    const run = snapshot?.kind === "agent" ? snapshot.run : undefined;
-    const externalFailure = Boolean(run && ["failed", "rejected"].includes(run.status) && productionRunExternalFailure(run.events, run.id));
+    const savedSnapshot = target ? session.snapshots[target.key] : undefined;
     const planRun = agentState.runs.find((entry) => entry.production?.targetNodeId === node.metadata?.shortDrama?.assetGroup?.manifestId);
+    const listedRun = agentState.runs.find(entry => target?.kind === "agent" && entry.id === target.id && entry.production?.targetNodeId === target.nodeId) || planRun;
+    const run = latestGroupAgentRun(savedSnapshot?.kind === "agent" ? savedSnapshot.run : undefined, listedRun);
+    const snapshot = run ? { kind: "agent" as const, run } : savedSnapshot;
+    const externalFailure = Boolean(run && ["failed", "rejected"].includes(run.status) && productionRunExternalFailure(run.events, run.id));
     // 快照还没读到时，用列表里同一容器的运行记录，保证并行明细先可见。
     const progress = run?.production || planRun?.production;
+    const flowDisplay = progress?.flow ? productionFlowDisplay(progress.flow, run) : undefined;
     const parallelItems = progress?.parallelItems;
     // 占位节点没有自己的任务记录，按资产或文档 key 对应容器并行明细里的状态。
     const parallelStatusOf = (member: CanvasNodeData) => {
@@ -98,6 +106,7 @@ export function CanvasGroupTaskDetails({
     const active = activeRun && ["running", "queued"].includes(activeRun.status);
     const planNeedsContinuation = productionPlanNeedsContinuation(run);
     const resumable = Boolean(run && (["failed", "rejected", "waiting_user", "cancelled"].includes(run.status) || planNeedsContinuation));
+    const retryMain = canRetryStoryboardCoordinator(run);
     const parallelWarnings = progress?.parallelItems?.filter((item) => item.severity === "warning" || item.status === "warning") || [];
     const retired = node.metadata?.shortDrama?.step === "assets.reconcile";
     const workflow = nodeWorkflow(node);
@@ -145,7 +154,13 @@ export function CanvasGroupTaskDetails({
             retryable: retryableItem(item),
         }));
     }, [items.length, parallelItems]);
-    const displayCounts = items.length
+    const displayCounts = progress?.executionMode === "scene"
+        ? (parallelItems || []).reduce<Record<string, number>>((result, item) => {
+              const label = parallelStateLabels[item.status] || "核对中";
+              result[label] = (result[label] || 0) + 1;
+              return result;
+          }, {})
+        : items.length
         ? counts
         : fallbackRows.reduce<Record<string, number>>((result, row) => {
               result[row.state] = (result[row.state] || 0) + 1;
@@ -160,16 +175,16 @@ export function CanvasGroupTaskDetails({
             <div className="production-agent-overview">
                 <div className="production-agent-heading">
                     <strong>{node.title}</strong>
-                    <span className="production-agent-status">{items.length || fallbackRows.length} 个任务</span>
+                    <span className="production-agent-status">{progress?.executionMode === "scene" ? `${parallelItems?.length || 0} 个镜头工作组` : `${items.length || fallbackRows.length} 个任务`}</span>
                 </div>
-                <div className="production-agent-note" role="status">
+                {flowDisplay ? <div className="production-agent-note" role="status">当前状态：{flowDisplay.label}。{flowDisplay.detail}</div> : <div className="production-agent-note" role="status">
                     {Object.entries(displayCounts)
                         .map(([label, count]) => `${label} ${count}`)
                         .join(" · ")}
-                </div>
+                </div>}
                 {run && snapshot ? (
                     <div className="production-agent-note" role="status">
-                        {groupMemberState(controlled || node, snapshot)} ·{" "}
+                        {!flowDisplay && <>{groupMemberState(controlled || node, snapshot)} · </>}
                         {progress?.workKind === "plan"
                             ? `${activityLabel} · 已保存 ${progress.documentCount ?? progress.processedPages ?? 0}${progress.documentTotal ? `/${progress.documentTotal}` : ""} 份文档 · ${progress.assetCount || 0} 项资产`
                             : progress?.workKind === "storyboard"
@@ -182,14 +197,14 @@ export function CanvasGroupTaskDetails({
                         正在核对后台任务状态
                     </div>
                 ) : null}
-                {active && (progress?.executionMode === "episode" || !!progress?.concurrentItems?.length) && (
+                {active && !progress?.flow && (progress?.executionMode === "episode" || !!progress?.concurrentItems?.length) && (
                     <div className="production-agent-note" role="status">
                         {productionParallelSummary(progress) || `${progress.paused ? "收尾中" : "并行制作"} ${progress.concurrentItems!.length}/${progress.concurrencyLimit ?? "--"} · ${progress.concurrentItems!.join("、")}`}
                     </div>
                 )}
                 {parallelWarnings.length ? (
                     <div className="production-agent-error" role="alert">
-                        {parallelWarnings.map((item) => item.name).join("、")} 未通过本地校验，系统已自动重试并先跳过，不影响其他文档；可在对应任务里点击“重试此项”再次生成。
+                        {parallelWarnings.map((item) => <div key={item.key}>{productionParallelWarningText(item)}</div>)}
                     </div>
                 ) : null}
                 {planNeedsContinuation ? (
@@ -220,7 +235,12 @@ export function CanvasGroupTaskDetails({
                     </Button>
                 ) : null}
                 <Button aria-label="刷新分组记录" title="刷新分组记录" loading={session.loading} icon={<RefreshCw size={14} />} onClick={session.refresh} />
-                {controlled && run && (active || externalFailure || resumable) && (!workflow?.planGroup || active || resumable) && (!retired || active || resumable) ? (
+                {controlled && retryMain ? (
+                    <Button loading={agentState.busy[controlled.id]} icon={<RotateCcw size={14} />} onClick={() => void agentState.control(controlled.id, "retry_main").then(session.refresh)}>
+                        重试主任务
+                    </Button>
+                ) : null}
+                {controlled && run && (!retryMain || (active && !progress?.paused)) && (active || externalFailure || resumable) && (!workflow?.planGroup || active || resumable) && (!retired || active || resumable) ? (
                     <Button
                         loading={agentState.busy[controlled.id]}
                         icon={active && !run.production?.paused ? <Pause size={14} /> : <Play size={14} />}
@@ -240,7 +260,7 @@ export function CanvasGroupTaskDetails({
                                 : "继续任务"}
                     </Button>
                 ) : null}
-                {controlled && active ? (
+                {controlled && canCancelProductionAgent(run) ? (
                     <Button
                         disabled={agentState.busy[controlled.id]}
                         icon={<Square size={14} />}
@@ -255,24 +275,26 @@ export function CanvasGroupTaskDetails({
             </div>
             {controlled && agentState.nodeErrors[controlled.id] ? (
                 <div role="alert" className="production-agent-error">
-                    {agentState.nodeErrors[controlled.id]}
+                    任务操作未成功：{agentState.nodeErrors[controlled.id]}。请刷新核对当前任务状态。
                 </div>
             ) : null}
             {planAssetAction?.targetNodeId && controlled?.id !== planAssetAction.targetNodeId && agentState.nodeErrors[planAssetAction.targetNodeId] ? (
                 <div role="alert" className="production-agent-error">
-                    {agentState.nodeErrors[planAssetAction.targetNodeId]}
+                    任务操作未成功：{agentState.nodeErrors[planAssetAction.targetNodeId]}。请刷新核对当前任务状态。
                 </div>
             ) : null}
-            {externalFailure && run?.failureMessage ? (
+            {!active && run?.failureMessage && !progress?.flow?.stopReason ? (
                 <div role="alert" className="production-agent-error">
                     {run.failureMessage}
                 </div>
             ) : null}
             {agentState.syncError ? (
-                <div role="alert" className="production-agent-error">
-                    {agentState.syncError}
+                <div role="status" className="production-agent-note">
+                    画布同步提醒：{agentState.syncError}。这不代表生成任务失败，执行状态以上方最近一次后台记录为准。
                 </div>
             ) : null}
+            {controlled && (agentState.readErrors[controlled.id] || (target && session.errors[target.key])) && <div role="alert" className="production-agent-note">状态刷新失败：{agentState.readErrors[controlled.id] || (target && session.errors[target.key])}。上方为最后一次成功读取的状态，暂时无法确认最新进度。</div>}
+            {progress?.flow && <CanvasProductionFlowProgress flow={progress.flow} runId={run?.id || planRun?.id} runStatus={run?.status} paused={progress.paused} onRefresh={() => { session.refresh(); agentState.refresh(); }} />}
             <div className="production-agent-journal-heading">
                 <strong>任务</strong>
                 {targets.length ? (
@@ -289,8 +311,27 @@ export function CanvasGroupTaskDetails({
                 ) : null}
             </div>
             <div className="production-agent-tasks" aria-label="任务列表">
-                {items.length === 0 && fallbackRows.length === 0 ? <p className="production-agent-note">{session.loading ? "正在读取任务" : "本组暂无任务"}</p> : null}
-                {fallbackRows.map((row) => (
+                {progress?.executionMode === "scene" && parallelItems?.map(item => (
+                    <div key={`scene:${item.key}`} className="production-agent-task">
+                        <div className="production-agent-scene-summary">
+                            <span className="production-agent-task-title">{item.name}</span>
+                            <span className="production-agent-task-state">{parallelStateLabels[item.status] || "核对中"}</span>
+                            <span className="production-agent-note production-agent-scene-progress">已保存 {item.savedShots || 0}/{item.totalShots || 0} 镜 · 执行代次 {item.generation || 0}</span>
+                            {controlled && Boolean(item.totalShots) && item.savedShots !== item.totalShots ? (
+                            <Button size="small" icon={<RotateCcw size={14} />} title="停止此镜头工作组的旧分配，保留已保存镜头并重新安排" loading={agentState.busy[controlled.id]} onClick={() => void retryItem(item.key)}>重派工作组</Button>
+                            ) : null}
+                        </div>
+                        <details className="production-agent-note">
+                            <summary>执行详情</summary>
+                            <p className="break-all">任务编码：{item.key} · 领取任务：{item.taskId || "尚未领取"}</p>
+                            {parallelDetailText(item) ? <p>{parallelDetailText(item)}</p> : null}
+                            <CanvasExecutionJournal compact order={order} onOrder={setOrder} label={`${item.name}执行记录`} rows={productionJournalRows((run?.events || []).filter(event => event.payload.itemName === item.name || (event.payload.assignment as { key?: string } | undefined)?.key === item.key), run?.id).sort((a, b) => order === "asc" ? a.id - b.id : b.id - a.id)} />
+                            {run?.events?.length && run.events[0].seq > 1 ? <Button size="small" loading={session.loading} onClick={session.loadEarlier}>读取更早记录</Button> : null}
+                        </details>
+                    </div>
+                ))}
+                {items.length === 0 && fallbackRows.length === 0 && !(progress?.executionMode === "scene" && parallelItems?.length) ? <p className="production-agent-note">{session.loading ? "正在读取任务" : "本组暂无任务"}</p> : null}
+                {progress?.executionMode !== "scene" && fallbackRows.map((row) => (
                     <div key={row.key} className="production-agent-task">
                         <div className="production-agent-task-summary">
                             <span className="production-agent-task-title">{row.title}</span>
@@ -315,6 +356,7 @@ export function CanvasGroupTaskDetails({
                     const itemTask = itemSnapshot?.kind === "task" ? itemSnapshot.detail.task : undefined;
                     const itemRun = itemSnapshot?.kind === "agent" ? itemSnapshot.run : undefined;
                     const itemActive = !!itemRun && ["running", "queued"].includes(itemRun.status);
+                    const canRetryMain = canRetryStoryboardCoordinator(itemRun);
                     const canRetryItem = !!itemTask && ["failed", "cancelled"].includes(itemTask.status);
                     const canCancelItem = !!itemTask && canCancelGenerationTask(itemTask);
                     const parallelItem = parallelItemOf(member);
@@ -322,7 +364,8 @@ export function CanvasGroupTaskDetails({
                     const state = groupMemberState(member, itemSnapshot, snapshot, parallelStatusOf(member));
                     const cancelAgentNodeId = itemActive && itemTarget?.kind === "agent" ? itemTarget.nodeId : controlled?.id;
                     const canCancelAgentRun = Boolean(cancelAgentNodeId && state !== "已完成" && state !== "已取消" && (itemActive || (parallelActive && active)));
-                    const itemError = (itemTarget && session.errors[itemTarget.key]) || (!itemSnapshot ? member.metadata?.errorDetails : undefined);
+                    const stoppedIssues = canRetryMain && !itemActive ? itemRun?.production?.parallelItems?.filter(item => ["warning", "error", "failed"].includes(item.status)).flatMap(item => (item.validationIssues || []).map(issue => `${item.name}：${issue}`)).join("；") : undefined;
+                    const itemError = (itemTarget && session.errors[itemTarget.key]) || (itemTarget && agentState.nodeErrors[itemTarget.nodeId]) || (canRetryMain && !itemActive ? itemRun?.failureMessage || stoppedIssues : undefined) || (!itemSnapshot ? member.metadata?.errorDetails : undefined);
                     const limit = visibleByKey[key] || 100;
                     const placeholder = isPlanPlaceholder(member);
                     const placeholderKey = member.metadata?.shortDrama?.assetKey;
@@ -338,6 +381,11 @@ export function CanvasGroupTaskDetails({
                                 <ChevronRight size={14} className="production-agent-chevron" aria-hidden />
                                 <span className="production-agent-task-title">{member.title}</span>
                                 <span className="production-agent-task-state">{state}</span>
+                                {canRetryMain && itemTarget ? (
+                                    <Button size="small" icon={<RotateCcw size={14} />} loading={agentState.busy[itemTarget.nodeId]} onClick={(event) => { event.preventDefault(); event.stopPropagation(); void agentState.control(itemTarget.nodeId, "retry_main").then(session.refresh); }}>
+                                        重试主任务
+                                    </Button>
+                                ) : null}
                                 {canCancelAgentRun ? (
                                     <Button size="small" title="取消此任务及本轮全部子任务" aria-label={`取消${member.title}及本轮全部子任务`} icon={<Square size={14} />} loading={agentState.busy[cancelAgentNodeId!]} disabled={agentState.busy[cancelAgentNodeId!]} onClick={(event) => { event.preventDefault(); event.stopPropagation(); void agentState.control(cancelAgentNodeId!, "cancel").then(session.refresh); }}>
                                         取消

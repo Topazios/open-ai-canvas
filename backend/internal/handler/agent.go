@@ -239,6 +239,19 @@ func RegisterAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"run": run})
 	})
+	r.GET("/agent/runs/:id/production-units/:unitId", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		result, err := svc.ProductionFlowUnitDetail(user.ID, c.Param("id"), c.Param("unitId"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, result)
+	})
 	r.POST("/agent/runs/:id/cancel", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -273,6 +286,10 @@ func RegisterAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if req.Action == "generate_plans" {
 			err = svc.GenerateProductionPlanSections(user.ID, c.Param("id"), req.PlanSections)
 		} else if req.Action == "generate_assets" {
+			if len(req.AssetKinds) > 0 && len(req.AssetKeys) > 0 {
+				fail(c, http.StatusBadRequest, errors.New("assetKinds 与 assetKeys 不能同时提交"))
+				return
+			}
 			if len(req.AssetKinds) > 0 {
 				err = svc.GenerateProductionPlanAssetKinds(user.ID, c.Param("id"), req.AssetKinds, req.Model)
 			} else {

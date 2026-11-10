@@ -13,12 +13,16 @@ import (
 func planFixture(t *testing.T, version ...int) (*Service, *gorm.DB, *CloudAgentRun) {
 	t.Helper()
 	s, db, run := productionFixture(t, "林岚用旧相机追查照相馆的秘密，最终救回家人。")
+	episodeCount := 3
+	if len(version) > 1 {
+		episodeCount = version[1]
+	}
 	productionEditCanvas(t, s, db, func(doc map[string]any) {
 		productionWorkflow(productionNode(doc, "body"))["step"] = "story.topic"
 		for _, id := range []string{"target", "group"} {
 			data := productionWorkflow(productionNode(doc, id))
 			data["step"], data["stage"] = "story.plan", "story"
-			data["parameters"] = map[string]any{"episodeCount": 3, "minutesPerEpisode": "2"}
+			data["parameters"] = map[string]any{"episodeCount": episodeCount, "minutesPerEpisode": "2"}
 			if len(version) > 0 {
 				data["planVersion"] = version[0]
 			}
@@ -39,6 +43,22 @@ func planFixture(t *testing.T, version ...int) (*Service, *gorm.DB, *CloudAgentR
 	}
 	if err := s.initializeProductionAgent("user", run.ID); err != nil {
 		t.Fatal(err)
+	}
+	// Existing suites exercise the legacy wire contracts. New-flow tests opt in
+	// explicitly; production initialization is tested separately below.
+	job, err := s.repo.ProductionAgentJob("user", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest productionManifest
+	if err := json.Unmarshal([]byte(job.ManifestJSON), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Plan.FlowVersion == 1 {
+		manifest.Plan.FlowVersion, manifest.Plan.ContinuityVersion = 0, 1
+		if err := s.repo.UpdateProductionAgentManifest("user", run.ID, productionFlowJSON(manifest)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return s, db, run
 }

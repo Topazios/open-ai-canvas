@@ -11,6 +11,8 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { canvasRichTextMarkdown, createCanvasRichTextExtensions, isSafeCanvasRichTextLink, markdownToCanvasRichTextHTML } from "@/lib/canvas/canvas-rich-text";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { largeDocumentThreshold } from "@/lib/canvas/virtual-document";
+import { CanvasLargeTextDocument } from "./canvas-large-text-document";
 
 type CanvasTextEditorModalProps = {
     node: CanvasNodeData | null;
@@ -19,7 +21,13 @@ type CanvasTextEditorModalProps = {
     onSave: (nodeId: string, title: string, content: string, richText?: Record<string, unknown>) => Promise<void> | void;
 };
 
-export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTextEditorModalProps) {
+export function CanvasTextEditorModal(props: CanvasTextEditorModalProps) {
+    if (!props.open || !props.node) return null;
+    if ((props.node.metadata?.content?.length ?? 0) > largeDocumentThreshold) return <CanvasLargeTextDocument key={props.node.id} node={props.node} onClose={props.onClose} onSave={props.onSave} />;
+    return <CanvasRichTextEditorModal {...props} />;
+}
+
+function CanvasRichTextEditorModal({ node, open, onClose, onSave }: CanvasTextEditorModalProps) {
     const { message, modal } = App.useApp();
     const theme = canvasThemes[useActiveTheme()];
     const [title, setTitle] = useState("");
@@ -32,6 +40,8 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
     const dirtyVersionRef = useRef(0);
     const hydratingRef = useRef(false);
     const markdownModeRef = useRef<"visual" | "source">("visual");
+    const contentEditedRef = useRef(false);
+    const [textRevision, setTextRevision] = useState(0);
     const isMarkdown = node?.type === CanvasNodeType.Markdown;
     const editor = useEditor({
         immediatelyRender: false,
@@ -46,6 +56,8 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
         onUpdate: () => {
             if (hydratingRef.current) return;
             dirtyVersionRef.current += 1;
+            contentEditedRef.current = true;
+            setTextRevision((value) => value + 1);
             setDirty(true);
         },
     });
@@ -61,6 +73,7 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
         setSaving(false);
         savingRef.current = false;
         dirtyVersionRef.current = 0;
+        contentEditedRef.current = false;
         if (!editor) return;
         hydratingRef.current = true;
         const source = node.metadata?.content || "";
@@ -68,6 +81,7 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
             ? markdownToCanvasRichTextHTML(source)
             : (node.metadata?.richText as JSONContent | undefined) || emptyTextDocument();
         editor.commands.setContent(document, { emitUpdate: false });
+        setTextRevision((value) => value + 1);
         editor.setEditable(false);
         dirtyVersionRef.current = 0;
         setDirty(false);
@@ -79,13 +93,13 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
         editor.setEditable(open && markdownEditing && markdownMode === "visual");
     }, [editor, markdownEditing, markdownMode, open]);
 
-    const characterCount = markdownMode === "visual" ? editor?.storage.characterCount?.characters?.() || 0 : markdownContent.length;
-    const wordCount = useMemo(() => countWords(markdownMode === "visual" ? editor?.getText() || "" : markdownContent), [characterCount, editor, markdownContent, markdownMode]);
+    const characterCount = contentEditedRef.current && markdownMode === "visual" ? canvasRichTextMarkdown(editor?.getJSON()).length : markdownContent.length;
+    const wordCount = useMemo(() => countWords(markdownMode === "visual" ? editor?.getText() || "" : markdownContent), [textRevision, editor, markdownContent, markdownMode]);
 
     const setMarkdownEditorMode = (nextMode: "visual" | "source") => {
         if (nextMode === markdownMode) return;
         if (nextMode === "source") {
-            setMarkdownContent(editor ? canvasRichTextMarkdown(editor.getJSON()) : markdownContent);
+            if (contentEditedRef.current && editor) setMarkdownContent(canvasRichTextMarkdown(editor.getJSON()));
         } else if (editor) {
             editor.commands.setContent(markdownToCanvasRichTextHTML(markdownContent), { emitUpdate: false });
         }
@@ -99,9 +113,13 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
         const savedVersion = dirtyVersionRef.current;
         setSaving(true);
         try {
-            const source = markdownMode === "visual" ? canvasRichTextMarkdown(editor.getJSON()) : markdownContent;
+            const source = contentEditedRef.current && markdownMode === "visual" ? canvasRichTextMarkdown(editor.getJSON()) : markdownContent;
             await onSave(node.id, title.trim() || (isMarkdown ? "Markdown" : "文本"), source, editor.getJSON() as Record<string, unknown>);
-            if (dirtyVersionRef.current === savedVersion) setDirty(false);
+            if (dirtyVersionRef.current === savedVersion) {
+                setMarkdownContent(source);
+                contentEditedRef.current = false;
+                setDirty(false);
+            }
             if (!silent) message.success("文本节点已保存");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "文本保存失败");
@@ -187,8 +205,8 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
                         placeholder="文本节点标题"
                         aria-label="文本节点标题"
                     />
-                    <span className="hidden shrink-0 text-[var(--fs-label)] sm:inline" style={{ color: theme.node.muted }}>
-                        {characterCount.toLocaleString("zh-CN")} 字 · {wordCount.toLocaleString("zh-CN")} 词
+                    <span className="shrink-0 text-[var(--fs-label)]" style={{ color: theme.node.muted }} aria-label="文稿字数">
+                        {characterCount.toLocaleString("zh-CN")} 字符<span className="hidden sm:inline"> · {wordCount.toLocaleString("zh-CN")} 词</span>
                     </span>
                     <span className="ml-auto hidden text-[var(--fs-label)] sm:inline" style={{ color: dirty ? theme.accent.primary : theme.node.muted }}>
                         {dirty ? "有未保存修改" : "已保存"}
@@ -230,6 +248,7 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
                                 value={markdownContent}
                                 onChange={(event) => {
                                     const source = event.target.value;
+                                    contentEditedRef.current = true;
                                     setMarkdownContent(source);
                                     editor?.commands.setContent(markdownToCanvasRichTextHTML(source), { emitUpdate: false });
                                     dirtyVersionRef.current += 1;

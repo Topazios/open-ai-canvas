@@ -41,6 +41,20 @@ func TestUnknownScopeIsNotRewritten(t *testing.T) {
 	}
 }
 
+func TestCharacterReferenceIdentityIsPreservedAcrossFramesAndVideo(t *testing.T) {
+	for _, scope := range [][2]string{{"storyboard", "image"}, {"storyboard", "video"}, {"video", "video"}} {
+		block := Block(scope[0], scope[1])
+		for _, required := range []string{"唯一正脸基准", "未标标签的旧设定板使用左侧完整肖像", "任何视角、转身或切镜均从该唯一身份推导", "不把五官切片当身份参考"} {
+			if !strings.Contains(block, required) {
+				t.Fatalf("%v missing reference rule %q", scope, required)
+			}
+		}
+	}
+	if strings.Contains(Block("story", "text"), "唯一正脸基准") {
+		t.Fatal("media reference instructions leaked into story writing")
+	}
+}
+
 func TestAssetImageRulesReplaceOldEnvelopeOnly(t *testing.T) {
 	old := "【制作执行规范 v1 · assets/image】\n旧逐集提取与配音规则\n【制作执行规范结束】\n\n"
 	body := "资产外观\n  保留用户内容和空格。\n"

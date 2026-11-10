@@ -1,10 +1,12 @@
 import { dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const appVersion = process.env.CANVAS_BUILD_VERSION?.trim() || readFileSync(resolve(webDir, "../VERSION"), "utf8").trim();
 const buildCommit = process.env.CANVAS_BUILD_COMMIT?.trim() || process.env.VITE_BUILD_COMMIT?.trim() || "unknown";
 const buildTime = process.env.CANVAS_BUILD_TIME?.trim() || process.env.VITE_BUILD_TIME?.trim() || "unknown";
@@ -49,6 +51,8 @@ export default defineConfig(({ mode }) => {
         resolve: {
             alias: {
                 "@": resolve(webDir, "src"),
+                // The browser export uses document.createElement; Markdown is also parsed in a Worker.
+                "decode-named-character-reference": require.resolve("decode-named-character-reference"),
             },
         },
         build: {

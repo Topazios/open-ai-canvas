@@ -529,7 +529,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
                                         <Form.Item name="durationSeconds" label="镜头时长（秒）">
                                             {generationCapability === "video" && videoProfile?.duration.selection === "enum"
                                                 ? <Select options={videoDurationOptions(videoProfile).map((value) => ({ value, label: `${value} 秒` }))} />
-                                                : <InputNumber className="w-full" min={generationCapability === "video" ? videoProfile?.duration.min || 1 : 0.5} max={generationCapability === "video" ? videoProfile?.duration.max || 60 : 60} step={generationCapability === "video" ? videoProfile?.duration.step || 1 : 0.5} />}
+                                                : <InputNumber className="w-full" min={generationCapability === "video" ? videoProfile?.duration.min || 1 : 0.5} max={generationCapability === "video" ? videoProfile?.duration.max || undefined : 60} step={generationCapability === "video" ? videoProfile?.duration.step || 1 : 0.5} />}
                                         </Form.Item>
                                         {generationCapability === "video" ? <Form.Item label="画幅"><Select value={aspectRatio} onChange={setAspectRatio} options={(videoProfile?.ratios || []).map((value) => ({value, label:value}))} /></Form.Item> : null}
                                         {generationCapability === "video" ? (

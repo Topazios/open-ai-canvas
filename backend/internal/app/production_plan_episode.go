@@ -49,6 +49,12 @@ func productionPlanEpisodeArchitectureIssues(m productionManifest, doc map[strin
 		return []string{"无法从当前方案参数读取有效总集数，逐集骨架无法校验"}
 	}
 	body := productionPlanSectionBody("story", "", content, "episodeArchitecture", schemaVersion)
+	columnCount := productionEpisodeArchitectureColumnCount
+	if schemaVersion == 3 {
+		columnCount = 10
+	} else if schemaVersion >= 4 {
+		columnCount = len(productionPlanningCardFields) + 2
+	}
 	seen := map[int]bool{}
 	issues := []string{}
 	invalidColumns := false
@@ -81,9 +87,9 @@ func productionPlanEpisodeArchitectureIssues(m productionManifest, doc map[strin
 			continue
 		}
 		seen[episode] = true
-		if len(cells) != productionEpisodeArchitectureColumnCount {
+		if len(cells) != columnCount {
 			invalidColumns = true
-			issues = append(issues, fmt.Sprintf("逐集规划第%d集应有%d列（集号及10项规划字段），当前为%d列", episode, productionEpisodeArchitectureColumnCount, len(cells)))
+			issues = append(issues, fmt.Sprintf("逐集规划第%d集应有%d列，当前为%d列", episode, columnCount, len(cells)))
 			continue
 		}
 		for index, value := range cells[1:] {
@@ -100,7 +106,7 @@ func productionPlanEpisodeArchitectureIssues(m productionManifest, doc map[strin
 	if len(seen) == 0 {
 		issues = append([]string{"未找到逐集规划行；请按 documentSchema 提供每集一行的结构化骨架"}, issues...)
 	}
-	if invalidColumns {
+	if invalidColumns && schemaVersion < 3 {
 		issues = append(issues, productionEpisodeArchitectureContract())
 	}
 	return uniqueProductionContinuityIssues(issues)

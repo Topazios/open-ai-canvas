@@ -504,14 +504,14 @@ func videoImageRole(input canvasGenerationInput, image providerMedia) string {
 }
 
 func videoImageRoleOrDefault(input canvasGenerationInput, image providerMedia, fallback string) string {
-	if metadataString(input.Metadata, "videoEditOperation") == "reference_to_video" {
-		return "reference_image"
-	}
 	if id := metadataString(input.Metadata, "videoStartFrameNodeId"); id != "" && image.ID == id {
 		return "first_frame"
 	}
 	if id := metadataString(input.Metadata, "videoEndFrameNodeId"); id != "" && image.ID == id {
 		return "last_frame"
+	}
+	if metadataString(input.Metadata, "videoEditOperation") == "reference_to_video" {
+		return "reference_image"
 	}
 	return fallback
 }

@@ -14,9 +14,12 @@ type ProductionPlanAssetProgress struct {
 	MissingDependencies []string `json:"missingDependencies"`
 }
 
-func productionPlanAssetProgress(m productionManifest, doc map[string]any, rows []model.ProductionAgentArtifact, state *cloudAgentRuntime, tasks map[string]model.TaskStatus, active bool) []ProductionPlanAssetProgress {
+func productionPlanAssetProgress(m productionManifest, doc map[string]any, rows []model.ProductionAgentArtifact, state *cloudAgentRuntime, tasks map[string]model.TaskStatus, active bool, kinds ...map[string]bool) []ProductionPlanAssetProgress {
 	items := []ProductionPlanAssetProgress{}
 	for _, asset := range m.Plan.Assets {
+		if len(kinds) > 0 && !kinds[0][productionPlanGroupKind(asset)] {
+			continue
+		}
 		item := ProductionPlanAssetProgress{Key: asset.Key, Code: asset.Key, Name: asset.Name, Kind: productionPlanGroupKind(asset), Priority: asset.Priority, Status: "pending", MissingDependencies: []string{}}
 		if asset.Identity != nil {
 			item.Code = asset.Identity.Code

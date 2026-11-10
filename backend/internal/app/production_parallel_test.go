@@ -540,9 +540,8 @@ func TestProductionPlanRegroupPreservesReceiptsAndFillsFirstCell(t *testing.T) {
 	submitOrderedPlan(t, s, runID, "direction", "", "导演规范")
 	submitOrderedPlan(t, s, runID, "generation", "", "生成规范")
 	startPlanAssetsForTest(t, s, runID)
-	// Receipts can only be submitted once their group exists, so the groups
-	// are created first. This first call is the one that creates them.
-	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
+	// Admission already saved the groups and their placeholders.
+	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || changed {
 		t.Fatal(changed, err)
 	}
 	submitOrderedPlan(t, s, runID, "character", "character", "测试character")
@@ -613,7 +612,7 @@ func TestProductionPlanGroupCreationLeavesUnselectedEditedAssetsUntouched(t *tes
 	if err := s.GenerateProductionPlanAssets("user", runID, []string{"prop"}); err != nil {
 		t.Fatal("starting an independent selected asset should not be blocked by an unrelated edited document", err)
 	}
-	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
+	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || changed {
 		t.Fatal("creating the selected prop group should preserve the unselected edit", changed, err)
 	}
 	m, doc, after := orderedPlanState(t, s, runID)

@@ -12,7 +12,7 @@ import { reconcileStoryboardFramesGroups } from "./storyboard-frame-groups";
 import { resetGenerationTaskMetadata } from "./canvas-task-state";
 import { storyboardFrameWaitingReason } from "./storyboard-frame-continuity";
 
-export type StoryboardFrameTarget = { rowId: string; frameId: string };
+export type StoryboardFrameTarget = { rowId: string; frameId: string; sourcePromptHash?: string };
 export type StoryboardFrameGenerationOptions = { failedOnly?: boolean; regenerate?: boolean; frameIds?: string[]; rowIds?: string[]; frameTargets?: StoryboardFrameTarget[] };
 
 export function storyboardFrameRequested(rowId: string, frameId: string, options: StoryboardFrameGenerationOptions) {
@@ -40,27 +40,30 @@ export const storyboardKeyframeOutput = {
         additionalProperties: false,
         required: ["frames"],
         properties: {
-            frames: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", additionalProperties: false, required: ["timeSeconds", "prompt"], properties: { timeSeconds: { type: "number" }, prompt: { type: "string" } } } },
+            frames: { type: "array", minItems: 0, maxItems: 8, items: { type: "object", additionalProperties: false, required: ["timeSeconds", "prompt"], properties: { timeSeconds: { type: "number" }, prompt: { type: "string" } } } },
         },
     },
 };
 export function storyboardKeyframePrompt(row: StoryboardRow) {
     return [
-        "只根据下面这个镜头的提示词提取1至8个有意义的关键画面，按动作转折选择数量，不凑数。",
+        "只根据下面这个镜头判断是否需要首尾帧以外的中间关键画面，允许0至8张，默认不额外提取。不要按时长、固定间隔或比例取样，不凑数。",
+        "只有首尾帧无法表达且会影响生成理解的中间状态才提取，例如不可省略的道具交接、遮挡后的空间关系变化、明确的新信息揭示。普通走动、推拉运镜、微小表情变化和首尾状态的近似重复不构成提取理由。30秒镜头也可能完全不需要中间关键帧。若没有必要的独立中间状态，返回{\"frames\":[]}，这是正常完成而不是失败。",
         "每项是独立可生图的单幅静态画面提示词，包含主体资产编号、姿态表情、空间、构图、光线和必要连续性。保留原有资产编号，不创造剧情、人物或新编号。",
         storyboardCompositionRule,
         "先从本镜头确定统一空间与取景基准，再按时间点写各幅静态状态；每幅保留主体画面左右、纵深、裁切和占幅，发生明确移动或运镜才变化。景别不能只写名词，需给出可见身体范围和主体约占画幅高度。取第N秒已发生的状态，不把整段动作、起幅与落幅混写；信息不足按已有关系作最少且前后一致的构图补充，不改剧情或人物体型。",
-        `timeSeconds为镜头内相对秒数，介于0和${row.durationSeconds}之间，严格递增。不要拆解其他镜头，不查全剧或资产库。`,
+        `timeSeconds为镜头内相对秒数，必须大于0且小于${row.durationSeconds}，严格递增。不得重复首帧、尾帧及近似相同的画面。不要拆解其他镜头，不查全剧或资产库。`,
+        `已覆盖的首帧状态：${storyboardFrameBoundaryPrompt(row, StoryboardFrameKind.Start)}\n已覆盖的尾帧状态：${storyboardFrameBoundaryPrompt(row, StoryboardFrameKind.End)}`,
         '只输出JSON：{"frames":[{"timeSeconds":2,"prompt":"单幅画面提示词"}]}，不输出说明。',
         `镜头 ${row.shotCode || row.shotNumber} · ${row.durationSeconds}秒\n${row.videoMotionPrompt || row.plotDescription}`,
     ].join("\n\n");
 }
-export function parseStoryboardKeyframes(text: string, row: StoryboardRow): StoryboardFrame[] {
+export function parseStoryboardKeyframes(text: string, row: StoryboardRow, intermediateOnly = true): StoryboardFrame[] {
     const raw = JSON.parse(text.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, "$1"));
-    if (!raw || !Array.isArray(raw.frames) || !raw.frames.length || raw.frames.length > 8) throw new Error("关键帧结果应包含1至8幅有效画面，请重新提取");
+    if (!raw || !Array.isArray(raw.frames) || raw.frames.length > 8) throw new Error("关键帧结果应包含0至8幅有效画面，请重新提取");
     const allowedCodes = new Set([...(row.assetKeys || []), ...episodeStoryboardCodes(row.videoMotionPrompt || row.plotDescription)]);
     let previous = -1;
-    return raw.frames.map((frame: { timeSeconds?: number; prompt?: string }, index: number) => {
+    const seen = new Set<string>();
+    const frames: StoryboardFrame[] = raw.frames.map((frame: { timeSeconds?: number; prompt?: string }, index: number) => {
         if (
             !frame ||
             typeof frame.prompt !== "string" ||
@@ -77,15 +80,22 @@ export function parseStoryboardKeyframes(text: string, row: StoryboardRow): Stor
         if (episodeStoryboardCodes(frame.prompt).some((code) => !allowedCodes.has(code))) throw new Error("关键帧包含当前镜头以外的资产编号，请重新提取");
         return { id: `key-${index + 1}`, kind: StoryboardFrameKind.Key, prompt: frame.prompt.trim(), timeSeconds: frame.timeSeconds, sourcePromptHash: storyboardFrameHash(row) };
     });
+    if (!intermediateOnly) return frames;
+    return frames.filter(frame => {
+        const prompt = frame.prompt.replace(/\s+/g, "");
+        if (frame.timeSeconds === 0 || frame.timeSeconds === row.durationSeconds || seen.has(prompt)) return false;
+        seen.add(prompt);
+        return true;
+    });
 }
-export function shotKeyframes(row: StoryboardRow, nodes: CanvasNodeData[]): { frames: StoryboardFrame[]; plan?: CanvasNodeData; error: string } {
+export function shotKeyframes(row: StoryboardRow, nodes: CanvasNodeData[]): { frames: StoryboardFrame[]; plan?: CanvasNodeData; error: string; complete: boolean } {
     const plan = nodes.find((node) => node.id === row.framePlanNodeId);
-    if (!plan || plan.metadata?.status !== "success") return { frames: [], plan, error: "" };
-    if (plan.metadata.storyboardFramePlan?.sourcePromptHash !== storyboardFrameHash(row)) return { frames: [], plan, error: "分镜提示词已修改，请重新提取关键帧" };
+    if (!plan || plan.metadata?.status !== "success") return { frames: [], plan, error: "", complete: false };
+    if (plan.metadata.storyboardFramePlan?.sourcePromptHash !== storyboardFrameHash(row)) return { frames: [], plan, error: "分镜提示词已修改，请重新提取关键帧", complete: false };
     try {
-        return { frames: parseStoryboardKeyframes(plan.metadata.content || "", row), plan, error: "" };
+        return { frames: parseStoryboardKeyframes(plan.metadata.content || "", row, plan.metadata.storyboardFramePlan?.intermediateOnly !== false), plan, error: "", complete: true };
     } catch (error) {
-        return { frames: [], plan, error: error instanceof Error ? error.message : "关键帧解析失败" };
+        return { frames: [], plan, error: error instanceof Error ? error.message : "关键帧解析失败", complete: false };
     }
 }
 export function storyboardDisplayFrames(row: StoryboardRow, nodes: CanvasNodeData[]): StoryboardFrame[] {

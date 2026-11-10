@@ -68,6 +68,7 @@ func (s *Service) EnrichAPICallLog(log *model.ApiCallLog, responseBody []byte) {
 		log.Error = firstNonEmpty(explicitProviderMessage, log.Error)
 	}
 	s.enrichAPICallLogFailureSummary(log, responseBody)
+	log.ProjectGatewayTimeout()
 	log.Status = log.DisplayStatus()
 	if log.Status == model.ApiCallStatusWarning && log.ErrorSource == "" {
 		log.ErrorSource = "content"

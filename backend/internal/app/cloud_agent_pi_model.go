@@ -34,6 +34,13 @@ func (s *Service) cloudAgentPiModel(ctx context.Context, userID, runID string, p
 	if err := s.prepareStoryboardEpisode(ctx, userID, runID); err != nil {
 		return nil, err
 	}
+	if ctx.Value(storyboardSessionKey{}) == true {
+		if changed, err := s.promoteStoryboardScenes(userID, runID); err != nil {
+			return nil, err
+		} else if changed {
+			return nil, errStoryboardModeChanged
+		}
+	}
 
 	// 上游临时故障（5xx、429、超时、连接错误、空回复）自动重试，首次失败后最多再试 3 次，
 	// 指数退避。参数/鉴权类 4xx 重试也不会变好，直接失败。
@@ -106,6 +113,9 @@ func (s *Service) productionPlanSingleAttempt(userID, runID string) bool {
 
 // runCloudAgentModelStep 调度并等待一次模型步骤；第二个返回值表示失败是否值得重试。
 func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID string, messages []map[string]any, thinkingLevel string, correction ...map[string]any) (any, bool, error) {
+	if err := s.checkStoryboardCoordinator(ctx, userID, runID); err != nil {
+		return nil, false, err
+	}
 	if err := s.waitProductionAgentBoundary(ctx, userID, runID); err != nil {
 		return nil, false, err
 	}
@@ -142,6 +152,9 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		}
 		nextTool := "production_status"
 		if manifest.Storyboard != nil {
+			if run.Status == "waiting_user" || productionParallelQuietHeld(state) || productionRuntimeQuietHold(&state) {
+				return map[string]any{"text": "", "toolCalls": []any{}}, false, nil
+			}
 			nextTool = "production_storyboard_context"
 		}
 		return map[string]any{"text": "本批独立内容已保存，继续检查下一阶段。", "toolCalls": []map[string]any{{"id": generateID(), "name": nextTool, "arguments": map[string]any{}}}}, false, nil
@@ -158,6 +171,9 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		}
 		state, err = cloudAgentDecode(run)
 		if err != nil {
+			return nil, false, err
+		}
+		if err := storyboardCoordinatorFence(ctx, state); err != nil {
 			return nil, false, err
 		}
 		if state.Request.Production != nil && run.Status == "waiting_user" {
@@ -382,6 +398,9 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 	s.wakeTaskDispatcher()
 	taskID := state.ActiveTaskID
 	task, err := s.waitCloudAgentTask(ctx, taskID)
+	if fenceErr := s.checkStoryboardCoordinator(ctx, userID, runID); fenceErr != nil {
+		return nil, false, fenceErr
+	}
 	if err != nil {
 		truncated := false
 		if failed, lookupErr := s.repo.Task(taskID); lookupErr == nil && failed != nil && failed.Status != model.TaskStatusSucceeded {
@@ -407,7 +426,7 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 				}
 			}
 			// 释放失败的步骤，下一次重试才能重新入队。
-			if releaseErr := s.finishCloudAgentPiModelStep(userID, runID, taskID, "", ""); releaseErr != nil {
+			if releaseErr := s.finishCloudAgentPiModelStep(userID, runID, taskID, "", "", ctx); releaseErr != nil {
 				return nil, false, releaseErr
 			}
 		}
@@ -424,7 +443,7 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 	if err := json.Unmarshal([]byte(task.ResultJSON), &result); err != nil {
 		return nil, false, fmt.Errorf("decode model result: %w", err)
 	}
-	if err := s.finishCloudAgentPiModelStep(userID, runID, task.ID, result.Text, result.Reasoning); err != nil {
+	if err := s.finishCloudAgentPiModelStep(userID, runID, task.ID, result.Text, result.Reasoning, ctx); err != nil {
 		return nil, false, err
 	}
 	var instruction productionRuntimeStepInput
@@ -483,7 +502,7 @@ func (s *Service) cloudAgentModelTaskRetryable(taskID string) bool {
 
 // finishCloudAgentPiModelStep 释放已完成的模型步骤，并把最终正文写入 Agent 事件流。
 // 不释放 ActiveTaskID 的话，completeCloudAgentPiRun 会一直认为还有任务在跑。
-func (s *Service) finishCloudAgentPiModelStep(userID, runID, taskID, text, reasoning string) error {
+func (s *Service) finishCloudAgentPiModelStep(userID, runID, taskID, text, reasoning string, contexts ...context.Context) error {
 	for attempt := 0; attempt < 8; attempt++ {
 		run, err := s.repo.CloudAgent(userID, runID)
 		if err != nil {
@@ -496,6 +515,11 @@ func (s *Service) finishCloudAgentPiModelStep(userID, runID, taskID, text, reaso
 			}
 			if fresh.ActiveTaskID != taskID {
 				return nil
+			}
+			if len(contexts) > 0 {
+				if err := storyboardCoordinatorFence(contexts[0], fresh); err != nil {
+					return err
+				}
 			}
 			fresh.ActiveTaskID = ""
 			fresh.ActiveTextDraft = ""

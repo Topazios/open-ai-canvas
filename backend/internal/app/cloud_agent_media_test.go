@@ -448,7 +448,7 @@ func TestCloudAgentMediaFailedTaskUpdatesNode(t *testing.T) {
 	}
 }
 
-func TestCloudAgentModelListFiltersActualReferences(t *testing.T) {
+func TestCloudAgentModelListDefersVideoReferenceSupportToUpstream(t *testing.T) {
 	s, db, _ := agentMediaFixture(t)
 	config := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceVolcengineArkVideo), "text-only")
 	config.Video.Operations = []string{"text_to_video"}
@@ -465,7 +465,7 @@ func TestCloudAgentModelListFiltersActualReferences(t *testing.T) {
 	}{
 		{`{}`, true},
 		{`{"mode":"video","referenceNodeIds":[]}`, true},
-		{`{"mode":"video","referenceNodeIds":["hero","cat"]}`, false},
+		{`{"mode":"video","referenceNodeIds":["hero","cat"]}`, true},
 	} {
 		intent, err := s.cloudAgentModelIntent("user", "agent-canvas", tc.args)
 		if err != nil {
@@ -479,7 +479,7 @@ func TestCloudAgentModelListFiltersActualReferences(t *testing.T) {
 		if strings.Contains(string(encoded), `"channelModelKey":"text-only"`) != tc.wantText || !strings.Contains(string(encoded), `"channelModelKey":"seedance-test"`) {
 			t.Fatalf("unexpected filtered catalog for %s: %s", tc.args, encoded)
 		}
-		if intent != nil && !tc.wantText && (intent.Inputs["image"] != 2 || intent.Operation != "image_to_video") {
+		if intent != nil && strings.Contains(tc.args, "hero") && (intent.Inputs["image"] != 2 || intent.Operation != "image_to_video") {
 			t.Fatalf("intent = %+v", intent)
 		}
 	}
@@ -502,8 +502,8 @@ func TestCloudAgentModelListFiltersActualReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.(map[string]any)["models"].([]map[string]any)) != 0 {
-		t.Fatal("no-match query fell back to incompatible models")
+	if len(catalog.(map[string]any)["models"].([]map[string]any)) == 0 {
+		t.Fatal("video capability metadata hid all available models")
 	}
 }
 

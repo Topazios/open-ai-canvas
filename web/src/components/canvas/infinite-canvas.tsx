@@ -30,6 +30,8 @@ type InfiniteCanvasProps = {
 
 const CANVAS_WHEEL_IGNORE_SELECTOR = "[data-canvas-no-zoom],[data-canvas-wheel-scroll],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown";
 const CANVAS_POINTER_IGNORE_SELECTOR = "[data-canvas-no-zoom],[data-connection-create-menu],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown";
+// Portaled overlays keep their own pointer handling even while Space is held.
+const CANVAS_OVERLAY_SELECTOR = "[data-connection-create-menu],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown";
 const CANVAS_INTERNAL_DRAG_SELECTOR = "[data-canvas-batch-table]";
 const WHEEL_ZOOM_DELTA = 72;
 const TRACKPAD_PINCH_ZOOM_DELTA = 16;
@@ -69,6 +71,7 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
     const touchPointsRef = useRef(new Map<number, TouchPoint>());
     const pinchStateRef = useRef<PinchState>({ active: false, pointerIds: [-1, -1], initialDistance: 1, worldX: 0, worldY: 0, initialScale: viewport.k });
     const spacePressedRef = useRef(false);
+    const suppressSpacePanClickRef = useRef(false);
     const [isSpacePressed, setIsSpacePressed] = useState(false);
     const [isPanning, setIsPanning] = useState(false);
 
@@ -340,6 +343,49 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
 
     };
 
+    // Space + drag must pan even over nodes, whose own handlers stop propagation.
+    const handlePointerDownCapture = (event: React.PointerEvent<HTMLDivElement>) => {
+        suppressSpacePanClickRef.current = false;
+        if (!interactive || !spacePressedRef.current || event.pointerType === "touch" || event.button !== 0) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest(CANVAS_OVERLAY_SELECTOR)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        (document.activeElement as HTMLElement | null)?.blur?.();
+        suppressSpacePanClickRef.current = true;
+        const current = viewportRef.current;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        interactingRef.current = true;
+        panState.current = {
+            isPanning: true,
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            initialX: current.x,
+            initialY: current.y,
+            hasMoved: false,
+        };
+        setIsPanning(true);
+        document.body.style.cursor = "grabbing";
+    };
+
+    // Node drag and selection listen to mousedown; swallow it while Space pans.
+    const handleMouseDownCapture = (event: React.MouseEvent<HTMLDivElement>) => {
+        if (!interactive || !spacePressedRef.current || event.button !== 0) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest(CANVAS_OVERLAY_SELECTOR)) return;
+        event.preventDefault();
+        event.stopPropagation();
+    };
+
+    // The click that ends a Space pan must not activate the node control under the pointer.
+    const handleClickCapture = (event: React.MouseEvent<HTMLDivElement>) => {
+        if (!suppressSpacePanClickRef.current) return;
+        suppressSpacePanClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+    };
+
     useEffect(() => {
         if (!interactive) return;
         const handlePointerMove = (event: PointerEvent) => {
@@ -452,6 +498,9 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
                 "--canvas-live-inverse-scale": 1 / Math.max(viewport.k, 0.05),
                 "--canvas-committed-scale": viewport.k,
             } as React.CSSProperties}
+            onPointerDownCapture={handlePointerDownCapture}
+            onMouseDownCapture={handleMouseDownCapture}
+            onClickCapture={handleClickCapture}
             onPointerDown={handlePointerDown}
             onDoubleClick={(event) => {
                 const target = event.target instanceof Element ? event.target : null;

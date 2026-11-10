@@ -31,6 +31,54 @@ func productionPlanGroupKind(item productionPlanAsset) string {
 	return item.Kind
 }
 
+func productionPlanAssetGroupNode(m productionManifest, kind, id, targetID string, data map[string]any, x, y float64) map[string]any {
+	return map[string]any{
+		"id": id, "type": "frame", "title": productionPlanGroupLabels[kind], "width": 1296, "height": 428,
+		"position": map[string]any{"x": x, "y": y}, "createdAt": time.Now().UnixMilli(),
+		"metadata": map[string]any{"frame": map[string]any{"collapsed": false, "expandedWidth": 1296, "expandedHeight": 428},
+			"shortDrama": map[string]any{
+				"stage": "story", "step": "story.plan", "role": "collection", "planVersion": m.Plan.Version,
+				"planGroup":  map[string]any{"rootFrameId": m.FrameID, "kind": kind},
+				"pipelineId": data["pipelineId"], "version": data["version"], "parameters": data["parameters"],
+				"sourceNodeIds": []string{}, "sourceSignatures": map[string]string{}, "collectionSourceIds": []string{m.FrameID},
+				"assetGroup": map[string]any{"manifestId": targetID},
+			}},
+	}
+}
+
+// Unlike materialization this needs neither an asset count nor model output.
+// A selected empty category is visible while its inventory is being extracted.
+func productionAdmitAssetGroupFrames(m productionManifest, doc map[string]any, targetID string, kinds map[string]bool) {
+	root := productionNode(doc, m.FrameID)
+	data := productionWorkflow(root)
+	if m.Plan.Groups == nil {
+		m.Plan.Groups = map[string]string{}
+	}
+	nodes, edges := creationMaps(doc["nodes"]), creationMaps(doc["connections"])
+	p, _ := root["position"].(map[string]any)
+	x, y := numberValue(p["x"], 0), numberValue(p["y"], 0)
+	bottom := [2]float64{y, y}
+	for i, kind := range productionPlanGroupKinds {
+		if existing := productionNode(doc, m.Plan.Groups[kind]); existing != nil {
+			position, _ := existing["position"].(map[string]any)
+			bottom[i%2] = max(bottom[i%2], numberValue(position["y"], y)+numberValue(existing["height"], 428)+96)
+			continue
+		}
+		if !kinds[kind] {
+			continue
+		}
+		id := "pg-" + newID()
+		group := productionPlanAssetGroupNode(m, kind, id, targetID, data, x+float64(i%2+1)*1380, bottom[i%2])
+		nodes = append(nodes, group)
+		productionFitFrame(group, nodes, 428)
+		bottom[i%2] = numberValue(group["position"].(map[string]any)["y"], bottom[i%2]) + numberValue(group["height"], 428) + 96
+		m.Plan.Groups[kind] = id
+		edges = append(edges, map[string]any{"id": "pe-" + productionHash(id)[:28], "fromNodeId": m.FrameID, "toNodeId": id})
+	}
+	doc["nodes"], doc["connections"] = nodes, edges
+	data["planGroups"] = m.Plan.Groups
+}
+
 func productionPlanParent(m productionManifest, key string) string {
 	if m.Plan != nil {
 		if item := productionPlanItem(m, key); item != nil {
@@ -40,6 +88,20 @@ func productionPlanParent(m productionManifest, key string) string {
 		}
 	}
 	return m.FrameID
+}
+
+func productionAssetTargetPresent(m productionManifest, doc map[string]any, key string) bool {
+	item := productionPlanItem(m, key)
+	if item == nil {
+		return true
+	}
+	groupID := m.Plan.Groups[productionPlanGroupKind(*item)]
+	group := productionNode(doc, groupID)
+	if groupID == "" || group == nil || group["type"] != "frame" {
+		return false
+	}
+	node := productionNode(doc, m.Plan.AssetPlaceholderNodeIDs[key])
+	return node != nil && node["parentId"] == groupID && productionWorkflow(node)["assetKey"] == key
 }
 
 // productionPlanParentMatches compares a node's parentId with the expected
@@ -55,9 +117,12 @@ func productionPlanParentMatches(m productionManifest, key string, node map[stri
 }
 func productionLayoutPlanGroup(m productionManifest, frame map[string]any, nodes []map[string]any) {
 	order := map[string]int{"story": 0, "inventory": 1, "visual": 2, "direction": 3, "generation": 4}
+	var orderedAssets []productionPlanAsset
 	if frame["id"] != m.FrameID {
 		order = map[string]int{}
-		for i, item := range m.Plan.Assets {
+		orderedAssets = append([]productionPlanAsset{}, m.Plan.Assets...)
+		sortProductionPlanAssets(orderedAssets)
+		for i, item := range orderedAssets {
 			order[item.Key] = i
 		}
 	}
@@ -67,8 +132,20 @@ func productionLayoutPlanGroup(m productionManifest, frame map[string]any, nodes
 			members = append(members, node)
 		}
 	}
+	if frame["id"] != m.FrameID {
+		members = productionCurrentAssetMembers(members)
+	}
 	sort.SliceStable(members, func(i, j int) bool {
-		return order[stringValue(productionWorkflow(members[i])["assetKey"])] < order[stringValue(productionWorkflow(members[j])["assetKey"])]
+		left, right := productionWorkflow(members[i]), productionWorkflow(members[j])
+		li, lok := order[stringValue(left["assetKey"])]
+		ri, rok := order[stringValue(right["assetKey"])]
+		if lok != rok {
+			return lok
+		}
+		if li != ri {
+			return li < ri
+		}
+		return numberValue(left["assetVersion"], 1) < numberValue(right["assetVersion"], 1)
 	})
 	p, _ := frame["position"].(map[string]any)
 	x, y := numberValue(p["x"], 0), numberValue(p["y"], 0)
@@ -79,7 +156,12 @@ func productionLayoutPlanGroup(m productionManifest, frame map[string]any, nodes
 		lead, members = members[0], members[1:]
 	}
 	gridTop := y + 100
-	height := float64(124 + max(1, (len(members)+2)/3)*productionPlanRowPitch)
+	// Match the client: no row gap after the final row, just bottom padding.
+	rows := max(1, (len(members)+2)/3)
+	height := float64(124 + rows*productionPlanRowPitch - (productionPlanRowPitch - 280))
+	if len(members) == 0 {
+		height = 240
+	}
 	if lead != nil {
 		lead["position"] = map[string]any{"x": x + 24, "y": y + 100}
 		lead["width"], lead["height"] = productionPlanLeadWidth, productionPlanLeadHeight
@@ -104,14 +186,166 @@ func productionLayoutPlanGroup(m productionManifest, frame map[string]any, nodes
 		geometry = map[string]any{}
 		meta["frame"] = geometry
 	}
+	if frame["id"] != m.FrameID {
+		keys := []string{}
+		for _, item := range orderedAssets {
+			if m.Plan.Groups[productionPlanGroupKind(item)] == stringValue(frame["id"]) {
+				keys = append(keys, item.Key)
+			}
+		}
+		geometry["assetOrder"] = keys
+	}
 	geometry["expandedWidth"], geometry["expandedHeight"] = 1296, height
 	if geometry["collapsed"] != true {
 		frame["width"], frame["height"] = 1296, height
 	}
 }
 
-// Move only verified generated artifacts. Updating their receipts in dependency
-// order keeps regrouping distinct from a user edit and preserves asset codes.
+func productionAdmitAssetTargets(m productionManifest, doc map[string]any, rows []model.ProductionAgentArtifact, runID, targetID string, selectedKinds map[string]bool) {
+	productionAdmitAssetGroupFrames(m, doc, targetID, selectedKinds)
+	if m.Plan.AssetsStarted {
+		if m.Plan.AssetPlaceholderNodeIDs == nil {
+			m.Plan.AssetPlaceholderNodeIDs = map[string]string{}
+		}
+		members := map[string][]string{}
+		for _, id := range m.Plan.Groups {
+			members[id] = []string{}
+		}
+		for _, node := range creationMaps(doc["nodes"]) {
+			if parent := stringValue(node["parentId"]); members[parent] != nil {
+				members[parent] = append(members[parent], stringValue(node["id"]))
+			}
+		}
+		productionMaterializeAssetPlaceholders(m, doc, rows, runID, productionWorkflow(productionNode(doc, m.FrameID)), members)
+		for id, ids := range members {
+			if frame := productionNode(doc, id); frame != nil {
+				productionWorkflow(frame)["sourceNodeIds"] = ids
+				productionLayoutPlanGroup(m, frame, creationMaps(doc["nodes"]))
+			}
+		}
+	}
+}
+
+// Both category admission and explicit asset-key retries publish targets before
+// waking the scheduler. The caller owns the run/canvas transaction.
+func productionPersistAssetTargets(repo *repository.Repository, run *model.CloudAgentExecution, state *cloudAgentRuntime, m productionManifest, doc map[string]any, rows []model.ProductionAgentArtifact, policy RuntimePolicySetting) error {
+	kinds := map[string]bool{}
+	for _, item := range m.Plan.Assets {
+		if productionPlanAssetSelected(m, item.Key) {
+			kinds[productionPlanGroupKind(item)] = true
+		}
+	}
+	canvas, err := repo.CanvasProjectForUser(run.UserID, state.Request.CanvasID)
+	if err != nil {
+		return err
+	}
+	before := canvas.PayloadJSON
+	productionAdmitAssetTargets(m, doc, rows, run.ID, state.Request.Production.TargetNodeID, kinds)
+	encoded, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	if err := repo.UpdateProductionAgentManifest(run.UserID, run.ID, string(encoded)); err != nil {
+		return err
+	}
+	if err := saveCloudAgentDocument(repo, canvas, doc, policy); err != nil {
+		return err
+	}
+	return emitCloudAgentCanvasChange(repo, run.ID, state, cloudAgentMutationInput{UserID: run.UserID, CanvasID: canvas.ID, Operation: "production_asset_targets", BeforeJSON: before})
+}
+
+// Materialize selected assets before scheduling any model work. Admission and
+// recovery share this path, so a task cannot get ahead of its visible target.
+func productionMaterializeAssetPlaceholders(m productionManifest, doc map[string]any, rows []model.ProductionAgentArtifact, runID string, data map[string]any, ids map[string][]string, fences ...map[string]bool) {
+	nodes := creationMaps(doc["nodes"])
+	byID := make(map[string]map[string]any, len(nodes))
+	placeholders := map[string]map[string]any{}
+	counts := map[string]int{}
+	for _, node := range nodes {
+		byID[stringValue(node["id"])] = node
+		if workflow := productionWorkflow(node); workflow != nil {
+			if productionPlanPlaceholderOwned(node, runID) {
+				placeholders[stringValue(workflow["assetKey"])] = node
+			}
+			if workflow["assetKey"] == "$summary" {
+				continue
+			}
+		}
+		counts[stringValue(node["parentId"])]++
+	}
+	for _, item := range m.Plan.Assets {
+		if len(fences) > 0 && (fences[0][m.Plan.AssetPlaceholderNodeIDs[item.Key]] || fences[0][m.Plan.Groups[productionPlanGroupKind(item)]]) {
+			continue
+		}
+		if !productionPlanAssetSelected(m, item.Key) || productionPlanArtifactValid(m, doc, rows, item.Key) {
+			continue
+		}
+		placeholderExists := false
+		if candidate := placeholders[item.Key]; candidate != nil {
+			workflow := productionWorkflow(candidate)
+			if workflow["assetKey"] == item.Key && productionPlanPlaceholderOwned(candidate, runID) {
+				m.Plan.AssetPlaceholderNodeIDs[item.Key] = stringValue(candidate["id"])
+				workflow["sourceNodeIds"] = []string{m.FrameID}
+				workflow["sourceSignatures"] = map[string]string{}
+				workflow["sourceSteps"] = []string{"story.plan"}
+				workflow["pipelineId"] = data["pipelineId"]
+				workflow["parameters"] = data["parameters"]
+				workflow["version"] = data["version"]
+				// A kept placeholder may still point at a group the user deleted.
+				// Move it into the current group so a later write cannot leave it
+				// under the stale parent.
+				if target := m.Plan.Groups[productionPlanGroupKind(item)]; byID[target] != nil && candidate["parentId"] != target {
+					candidate["parentId"] = target
+					if _, ok := ids[target]; ok {
+						if id := stringValue(candidate["id"]); !slices.Contains(ids[target], id) {
+							ids[target] = append(ids[target], id)
+						}
+					}
+				}
+				placeholderExists = true
+			}
+		}
+		if placeholderExists {
+			continue
+		}
+		parent := m.Plan.Groups[productionPlanGroupKind(item)]
+		frame := byID[parent]
+		if frame == nil {
+			// The target container was deleted. Skip this item so other
+			// groups keep progressing; it is queued again with a new group.
+			continue
+		}
+		framePosition, _ := frame["position"].(map[string]any)
+		index := counts[parent]
+		counts[parent]++
+		id := "pap-" + newID()
+		for byID[id] != nil {
+			id = "pap-" + newID()
+		}
+		m.Plan.AssetPlaceholderNodeIDs[item.Key] = id
+		workflow := map[string]any{
+			"stage": "story", "step": "story.plan", "pipelineId": data["pipelineId"],
+			"role": "document", "assetKey": item.Key, "sourceNodeIds": []string{m.FrameID},
+			"sourceSignatures": map[string]string{}, "sourceSteps": []string{"story.plan"},
+			"parameters": data["parameters"], "version": data["version"],
+			"planVersion":    m.Plan.Version,
+			"planAsset":      map[string]any{"key": item.Key, "kind": item.Kind, "name": item.Name, "priority": item.Priority, "episodes": item.Episodes, "purpose": item.Purpose, "plannedRange": item.PlannedRange, "coreFacts": item.CoreFacts, "aliases": item.Aliases, "variants": item.Variants, "origin": item.Origin},
+			"planGeneration": map[string]any{"runId": runID, "status": "queued"},
+		}
+		node := map[string]any{
+			"id": id, "type": "text", "title": item.Name, "parentId": parent,
+			"width": 400, "height": 280,
+			"position":  map[string]any{"x": numberValue(framePosition["x"], 0) + 24 + float64(index%3)*424, "y": numberValue(framePosition["y"], 0) + 100 + float64(index/3)*productionPlanRowPitch},
+			"createdAt": time.Now().UnixMilli(),
+			"metadata":  map[string]any{"content": "等待生成", "status": "processing", "generationMode": "text", "shortDrama": workflow},
+		}
+		nodes = append(nodes, node)
+		byID[id] = node
+		ids[parent] = append(ids[parent], id)
+	}
+	doc["nodes"] = nodes
+}
+
 func (s *Service) ensureProductionPlanGroups(userID, runID string, relayout ...bool) (bool, error) {
 	var changed bool
 	var err error
@@ -159,12 +393,24 @@ func (s *Service) ensureProductionPlanGroupsOnce(userID, runID string, relayout 
 		return false, nil
 	}
 	forceLayout := len(relayout) > 0 && relayout[0]
+	receipts, err := s.repo.CanvasNodeDeletionReceipts(userID, state.Request.CanvasID)
+	if err != nil {
+		return false, err
+	}
+	deleted := map[string]bool{}
+	for _, receipt := range receipts {
+		deleted[receipt.NodeID] = true
+	}
 	needed := forceLayout
 	for _, item := range m.Plan.Assets {
 		if !productionPlanAssetSelected(m, item.Key) {
 			continue
 		}
-		if m.Plan.Groups[productionPlanGroupKind(item)] == "" {
+		groupID := m.Plan.Groups[productionPlanGroupKind(item)]
+		if deleted[groupID] || deleted[m.Plan.AssetPlaceholderNodeIDs[item.Key]] {
+			continue
+		}
+		if groupID == "" || productionNode(doc, groupID) == nil {
 			needed = true
 			continue
 		}
@@ -207,6 +453,14 @@ func (s *Service) ensureProductionPlanGroupsOnce(userID, runID string, relayout 
 		rows, err := repo.ProductionAgentArtifacts(userID, runID)
 		if err != nil {
 			return err
+		}
+		receipts, err := repo.CanvasNodeDeletionReceipts(userID, fresh.Request.CanvasID)
+		if err != nil {
+			return err
+		}
+		deleted := map[string]bool{}
+		for _, receipt := range receipts {
+			deleted[receipt.NodeID] = true
 		}
 		selectedGroupKinds := map[string]bool{}
 		for _, item := range m.Plan.Assets {
@@ -316,7 +570,7 @@ func (s *Service) ensureProductionPlanGroupsOnce(userID, runID string, relayout 
 			if count == 0 {
 				continue
 			}
-			if id := m.Plan.Groups[kind]; id != "" {
+			if id := m.Plan.Groups[kind]; id != "" && (productionNode(doc, id) != nil || deleted[id]) {
 				if forceLayout && productionNode(doc, id) != nil {
 					productionNode(doc, id)["position"] = map[string]any{"x": x + float64(i%2+1)*1380, "y": columnBottom[i%2]}
 				}
@@ -326,14 +580,16 @@ func (s *Service) ensureProductionPlanGroupsOnce(userID, runID string, relayout 
 			if !selected {
 				continue
 			}
-			id := "pg-" + newID()
+			id := m.Plan.Groups[kind]
+			if id == "" {
+				id = "pg-" + newID()
+			}
 			if productionNode(doc, id) != nil {
 				return BadAuthRequest("分组标识已占用，未覆盖")
 			}
 			m.Plan.Groups[kind] = id
-			group := map[string]any{"id": id, "type": "frame", "title": productionPlanGroupLabels[kind], "width": 1296, "height": 428, "position": map[string]any{"x": x + float64(i%2+1)*1380, "y": columnBottom[i%2]}, "createdAt": time.Now().UnixMilli(), "metadata": map[string]any{"frame": map[string]any{"collapsed": false, "expandedWidth": 1296, "expandedHeight": 428}, "shortDrama": map[string]any{"stage": "story", "step": "story.plan", "role": "collection", "planVersion": 2, "planGroup": map[string]any{"rootFrameId": m.FrameID, "kind": kind}, "pipelineId": data["pipelineId"], "version": data["version"], "parameters": data["parameters"], "sourceNodeIds": []string{}, "sourceSignatures": map[string]string{}, "collectionSourceIds": []string{m.FrameID}, "assetGroup": map[string]any{"manifestId": fresh.Request.Production.TargetNodeID}}}}
+			group := productionPlanAssetGroupNode(m, kind, id, fresh.Request.Production.TargetNodeID, data, x+float64(i%2+1)*1380, columnBottom[i%2])
 			columnBottom[i%2] += float64(124 + ((count+2)/3)*productionPlanRowPitch + 96)
-			productionWorkflow(group)["planVersion"] = m.Plan.Version
 			nodes = append(nodes, group)
 			edges = append(edges, map[string]any{"id": "pe-" + productionHash(id)[:28], "fromNodeId": m.FrameID, "toNodeId": id})
 		}
@@ -369,78 +625,8 @@ func (s *Service) ensureProductionPlanGroupsOnce(userID, runID string, relayout 
 				wd["sourceNodeIds"], wd["sourceSignatures"], wd["sourceSteps"] = []string{m.FrameID}, map[string]string{}, []string{"story.plan"}
 			}
 		}
-		for _, item := range m.Plan.Assets {
-			if !productionPlanAssetSelected(m, item.Key) || productionPlanArtifactValid(m, doc, rows, item.Key) {
-				continue
-			}
-			placeholderExists := false
-			for _, candidate := range nodes {
-				workflow := productionWorkflow(candidate)
-				if workflow["assetKey"] == item.Key && productionPlanPlaceholderOwned(candidate, runID) {
-					m.Plan.AssetPlaceholderNodeIDs[item.Key] = stringValue(candidate["id"])
-					workflow["sourceNodeIds"] = []string{m.FrameID}
-					workflow["sourceSignatures"] = map[string]string{}
-					workflow["sourceSteps"] = []string{"story.plan"}
-					workflow["pipelineId"] = data["pipelineId"]
-					workflow["parameters"] = data["parameters"]
-					workflow["version"] = data["version"]
-					// A kept placeholder may still point at a group the user deleted.
-					// Move it into the current group so a later write cannot leave it
-					// under the stale parent.
-					if target := productionPlanParent(m, item.Key); productionNode(doc, target) != nil && candidate["parentId"] != target {
-						candidate["parentId"] = target
-						if _, ok := ids[target]; ok {
-							if id := stringValue(candidate["id"]); !slices.Contains(ids[target], id) {
-								ids[target] = append(ids[target], id)
-							}
-						}
-					}
-					placeholderExists = true
-					break
-				}
-			}
-			if placeholderExists {
-				continue
-			}
-			parent := productionPlanParent(m, item.Key)
-			frame := productionNode(doc, parent)
-			if frame == nil {
-				// The target container was deleted. Skip this item so other
-				// groups keep progressing; it is queued again with a new group.
-				continue
-			}
-			framePosition, _ := frame["position"].(map[string]any)
-			index := 0
-			for _, existing := range nodes {
-				if existing["parentId"] == parent && productionWorkflow(existing)["assetKey"] != "$summary" {
-					index++
-				}
-			}
-			id := "pap-" + newID()
-			for productionNode(doc, id) != nil {
-				id = "pap-" + newID()
-			}
-			m.Plan.AssetPlaceholderNodeIDs[item.Key] = id
-			workflow := map[string]any{
-				"stage": "story", "step": "story.plan", "pipelineId": data["pipelineId"],
-				"role": "document", "assetKey": item.Key, "sourceNodeIds": []string{m.FrameID},
-				"sourceSignatures": map[string]string{}, "sourceSteps": []string{"story.plan"},
-				"parameters": data["parameters"], "version": data["version"],
-				"planVersion":    m.Plan.Version,
-				"planAsset":      map[string]any{"key": item.Key, "kind": item.Kind, "name": item.Name, "episodes": item.Episodes, "purpose": item.Purpose, "plannedRange": item.PlannedRange},
-				"planGeneration": map[string]any{"runId": runID, "status": "queued"},
-			}
-			node := map[string]any{
-				"id": id, "type": "text", "title": item.Name, "parentId": parent,
-				"width": 400, "height": 280,
-				"position":  map[string]any{"x": numberValue(framePosition["x"], 0) + 24 + float64(index%3)*424, "y": numberValue(framePosition["y"], 0) + 100 + float64(index/3)*productionPlanRowPitch},
-				"createdAt": time.Now().UnixMilli(),
-				"metadata":  map[string]any{"content": "等待生成", "status": "processing", "generationMode": "text", "shortDrama": workflow},
-			}
-			nodes = append(nodes, node)
-			ids[parent] = append(ids[parent], id)
-		}
-		doc["nodes"] = nodes
+		productionMaterializeAssetPlaceholders(m, doc, rows, runID, data, ids, deleted)
+		nodes = creationMaps(doc["nodes"])
 		// Plan-document placeholders live in the root container and have no
 		// receipt yet, so keep them in its member list.
 		for _, node := range nodes {

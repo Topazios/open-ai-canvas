@@ -31,6 +31,9 @@ func productionParallelCallError(work productionParallelWork, call cloudAgentCal
 	if err := decodeCloudAgentJSONObject(call.Function.Arguments, &args); err != nil {
 		return cloudAgentJSONArgumentError(err)
 	}
+	if toolName == "production_storyboard_submit" {
+		return storyboardSceneCallError(work, args)
+	}
 	if toolName == "production_storyboard_expand" {
 		shot, _ := args["shot"].(map[string]any)
 		if stringValue(shot["id"]) != work.Key {
@@ -92,6 +95,9 @@ func productionValidationFailureSignature(work productionParallelWork, failure e
 // Rejected prose stays private. Only structurally valid, declared chapters can
 // become checkpoints; every merged result still passes the full business checks.
 func productionPrepareDocumentRepair(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact, work *productionParallelWork, task *model.Task, failure error) {
+	if productionPrepareEpisodeRepair(m, doc, artifacts, work, task, failure) {
+		return
+	}
 	var fieldError *cloudAgentFieldArgumentError
 	if !errors.As(failure, &fieldError) {
 		return
@@ -104,6 +110,10 @@ func productionPrepareDocumentRepair(m productionManifest, doc map[string]any, a
 		return
 	}
 	call, bindErr := productionBindDocumentCall(*work, result.ToolCalls[0])
+	if bindErr != nil {
+		return
+	}
+	call, bindErr = productionNormalizeDocumentFields(m, *work, call)
 	if bindErr != nil {
 		return
 	}
@@ -197,7 +207,7 @@ func productionPrepareDocumentRepair(m productionManifest, doc map[string]any, a
 	}
 	work.RepairDocumentRaw = nil
 	work.RepairDocument = args.Document
-	schema := productionPlanDocumentSchemaVersion(m.Plan.Version)
+	schema := productionPlanSchemaVersion(*m.Plan)
 	sections := productionPlanDocumentSectionsForSchema(work.Key, productionPlanKind(m, work.Key), schema)
 	byKey := map[string]productionDocumentSection{}
 	expected := make([]string, 0, len(sections))

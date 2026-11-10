@@ -17,6 +17,7 @@ import (
 // internal work units, not additional canvas nodes or independently billed jobs.
 type productionStoryboard struct {
 	Version       string            `json:"version"`
+	AdaptiveWork  bool              `json:"adaptiveWork,omitempty"`
 	Duration      float64           `json:"duration,omitempty"`
 	MinDuration   float64           `json:"minDuration,omitempty"`
 	MaxDuration   float64           `json:"maxDuration,omitempty"`
@@ -56,6 +57,7 @@ type productionShotOutline struct {
 	Exit      string   `json:"exit"`
 	Camera    string   `json:"camera"`
 	DependsOn []string `json:"dependsOn"`
+	TaskGroup string   `json:"taskGroup,omitempty"`
 	// 轻量清单阶段即确定的拍摄语法，展开镜头时沿用，避免展开阶段丢失转场设计。
 	ShotSize      string `json:"shotSize,omitempty"`
 	CameraAngle   string `json:"cameraAngle,omitempty"`
@@ -204,7 +206,7 @@ func restoreStoryboardTiming(s *productionStoryboard, parameters map[string]any)
 		(next.ShotDuration > 0 && (next.ShotDuration < 5 || next.ShotDuration > 60 || next.ShotTolerance < 3 || next.ShotTolerance > 5 || math.IsNaN(next.ShotTolerance) || math.IsInf(next.ShotTolerance, 0))) {
 		return BadAuthRequest("检查点的镜头时长参数无效，已有结果保留")
 	}
-	if next.Version == storyboardEpisodeVersion && next.ShotDuration > 0 {
+	if storyboardBatchMode(&next) && next.ShotDuration > 0 {
 		minimum, maximum := storyboardEpisodeBounds(&next)
 		shotMin, shotMax := math.Max(1, next.ShotDuration-next.ShotTolerance), math.Min(60, next.ShotDuration+next.ShotTolerance)
 		count := math.Max(1, math.Ceil((minimum-0.001)/shotMax))
@@ -303,12 +305,13 @@ func storyboardTools() []map[string]any {
 	add("production_storyboard_brief", "保存同版本的分镜制作约束简报，保留全部硬约束及来源。", map[string]any{"brief": str, "sourceIds": ids}, "brief", "sourceIds")
 	add("production_storyboard_plan", "保存整集场次/动作段规划，连续覆盖全部原文段号，预算遵守shotTiming与episodeTiming；恢复的旧计划预算违规时可修订，有镜头的场次保留ID和原文范围。", map[string]any{"scenes": map[string]any{"type": "array", "items": scene, "minItems": 1, "maxItems": 200}}, "scenes")
 	outline := object(map[string]any{"id": str, "start": integer, "end": integer, "duration": number, "goal": str, "entry": str, "exit": str, "camera": str, "dependsOn": ids,
-		"shotSize": str, "cameraAngle": str, "lens": str, "movement": str, "equipment": str, "blocking": str, "transitionIn": str, "transitionOut": str, "cutPoint": str}, []string{"id", "start", "end", "duration", "goal", "entry", "exit", "camera", "dependsOn"})
+		"taskGroup": map[string]any{"type": "string", "description": "可选工作组编码；同场连续镜头可同组，复杂镜头单独成组，最多4镜一批。不同组可并发，真实依赖用dependsOn。省略时按工作量自动分组。"},
+		"shotSize":  str, "cameraAngle": str, "lens": str, "movement": str, "equipment": str, "blocking": str, "transitionIn": str, "transitionOut": str, "cutPoint": str}, []string{"id", "start", "end", "duration", "goal", "entry", "exit", "camera", "dependsOn"})
 	add("production_storyboard_layout", "一次保存所有未完成场次的轻量镜头清单，先确定总数、稳定编号、原文范围、时长、剧情目标、入出状态和构图基准。此时不写完整提示词。已有镜头原样保留。", map[string]any{"layouts": map[string]any{"type": "array", "minItems": 1, "maxItems": 200, "items": object(map[string]any{"sceneId": str, "shots": map[string]any{"type": "array", "minItems": 1, "maxItems": 200, "items": outline}}, []string{"sceneId", "shots"})}}, "layouts")
 	add("production_storyboard_expand", "只补全指定占位镜头的完整画面、机位、对白、声音、连续性及正文资产编码，沿用已规划ID、范围和时长。", map[string]any{"sceneId": str, "shot": shot}, "sceneId", "shot")
-	add("production_storyboard_submit", "增量保存当前场下一批1至8镜；expectedHash和offset直接沿用检查点。提供plannedShots时按其顺序补全，不覆盖已存槽位。当前场全部补全才complete=true。", map[string]any{"sceneId": str, "offset": map[string]any{"type": "integer", "minimum": 0}, "expectedHash": str, "shots": map[string]any{"type": "array", "items": shot, "minItems": 0, "maxItems": 8}, "complete": map[string]any{"type": "boolean"}}, "sceneId", "offset", "expectedHash", "shots", "complete")
+	add("production_storyboard_submit", "提交当前领取的镜头工作组，最多8镜；expectedHash和offset沿用检查点。工作组之间可乱序完成，服务端按实际已保存镜头推导完成状态，complete仅为兼容字段，不控制保存。", map[string]any{"sceneId": str, "offset": map[string]any{"type": "integer", "minimum": 0}, "expectedHash": str, "shots": map[string]any{"type": "array", "items": shot, "minItems": 1, "maxItems": 8}, "complete": map[string]any{"type": "boolean"}}, "sceneId", "offset", "expectedHash", "shots", "complete")
 	add("production_storyboard_reset", "仅重做当前未完成且已有错误镜头的场次；保留旧稿和其他场次。", map[string]any{"sceneId": str, "expectedHash": str, "review": str}, "sceneId", "expectedHash", "review")
-	add("production_storyboard_review", "完成整集校验或只返修指定已完成场次；时长违规的已完成场次可先定向返修，无须等其他场完成。必须使用当前hash，已有完整稿保留。", map[string]any{"hash": str, "review": str, "repairSceneIds": ids}, "hash", "review", "repairSceneIds")
+	add("production_storyboard_review", "一次完成整集校验。局部内容问题优先repairShotIds，保留规划和合格镜头；只有需要重排范围、数量或时长时才用repairSceneIds。两者不可同时使用。review逐项说明问题与修复要求，必须使用当前hash。", map[string]any{"hash": str, "review": str, "repairSceneIds": ids, "repairShotIds": ids}, "hash", "review", "repairSceneIds", "repairShotIds")
 	add("production_storyboard_read", "按需读取来源原文段或某场完整镜头，sourceId 必须属于当前版本。", map[string]any{"sourceId": str, "sceneId": str, "start": integer, "end": integer})
 	return tools
 }
@@ -362,14 +365,17 @@ func storyboardContext(repo *repository.Repository, userID string, m productionM
 	}
 	if m.Storyboard.ShotDuration > 0 {
 		context["shotTiming"] = map[string]any{"targetSeconds": m.Storyboard.ShotDuration, "toleranceSeconds": m.Storyboard.ShotTolerance,
-			"minSeconds": math.Max(1, m.Storyboard.ShotDuration-m.Storyboard.ShotTolerance), "maxSeconds": math.Min(60, m.Storyboard.ShotDuration+m.Storyboard.ShotTolerance), "tailRemainderAllowed": m.Storyboard.Version != storyboardEpisodeVersion,
+			"minSeconds": math.Max(1, m.Storyboard.ShotDuration-m.Storyboard.ShotTolerance), "maxSeconds": math.Min(60, m.Storyboard.ShotDuration+m.Storyboard.ShotTolerance), "tailRemainderAllowed": !storyboardBatchMode(m.Storyboard),
 			"tailRemainderRule": "仅整场无法全部拆为合法时长、前面已有合法镜头且末镜精确等于场尾余量时允许"}
-		if m.Storyboard.Version == storyboardEpisodeVersion {
+		if storyboardBatchMode(m.Storyboard) {
 			context["shotTiming"].(map[string]any)["tailRemainderRule"] = "每场预算必须能全部拆为合法镜头，不允许按场次生成短尾"
 		}
 	}
 	if m.Storyboard.Version == storyboardEpisodeVersion {
 		context["executionMode"] = "episode"
+	}
+	if m.Storyboard.Version == storyboardSceneVersion {
+		context["executionMode"] = "scene"
 	}
 	sources := []map[string]any{}
 	for _, source := range m.Sources {
@@ -414,7 +420,7 @@ func storyboardContext(repo *repository.Repository, userID string, m productionM
 			context["repairInstructions"] = "按timingIssues指定已完成场次返修，保留已有完整稿，不修改秒数代替重新拆解。"
 			return context, nil
 		}
-		if (m.Storyboard.Version == storyboardLayoutVersion || m.Storyboard.Version == storyboardEpisodeVersion) && issue["scope"] == "scene" {
+		if (m.Storyboard.Version == storyboardLayoutVersion || storyboardBatchMode(m.Storyboard)) && issue["scope"] == "scene" {
 			for _, scene := range m.Storyboard.Scenes {
 				if scene.ID == issue["sceneId"] && !scene.Complete && len(scene.Layout) == 0 {
 					context["phase"], context["nextTool"] = "repair", "production_storyboard_reset"
@@ -425,7 +431,7 @@ func storyboardContext(repo *repository.Repository, userID string, m productionM
 			}
 		}
 	}
-	if m.Storyboard.Version == storyboardLayoutVersion || m.Storyboard.Version == storyboardEpisodeVersion {
+	if m.Storyboard.Version == storyboardLayoutVersion || storyboardBatchMode(m.Storyboard) {
 		for _, scene := range m.Storyboard.Scenes {
 			if !scene.Complete && len(scene.Layout) == 0 {
 				context["phase"], context["nextTool"] = "layout", "production_storyboard_layout"
@@ -443,6 +449,11 @@ func storyboardContext(repo *repository.Repository, userID string, m productionM
 	for i, scene := range m.Storyboard.Scenes {
 		if scene.Complete {
 			continue
+		}
+		if m.Storyboard.Version == storyboardSceneVersion {
+			context["phase"], context["nextTool"] = "parallel", "production_storyboard_context"
+			context["instruction"] = "服务端按任务表补全未完成场次，主Agent不提交镜头详情；全部完成后审查整集。"
+			return context, nil
 		}
 		context["phase"], context["nextTool"] = "scene", "production_storyboard_submit"
 		context["scene"], context["expectedHash"], context["offset"], context["nextShot"] = scene, storyboardSceneHash(scene), len(scene.Shots), fmt.Sprintf("%s-%03d", scene.ID, len(scene.Shots)+1)
@@ -499,6 +510,7 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 		SourceIDs      []string                `json:"sourceIds"`
 		Scenes         []productionScene       `json:"scenes"`
 		SceneID        string                  `json:"sceneId"`
+		WorkKey        string                  `json:"-"`
 		Offset         int                     `json:"offset"`
 		ExpectedHash   string                  `json:"expectedHash"`
 		Shots          []productionShot        `json:"shots"`
@@ -506,6 +518,7 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 		Hash           string                  `json:"hash"`
 		Review         string                  `json:"review"`
 		RepairSceneIDs []string                `json:"repairSceneIds"`
+		RepairShotIDs  []string                `json:"repairShotIds"`
 		SourceID       string                  `json:"sourceId"`
 		Start          int                     `json:"start"`
 		End            int                     `json:"end"`
@@ -515,7 +528,36 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 	if err := decodeCloudAgentJSONObject(call.Function.Arguments, &args); err != nil {
 		return nil, cloudAgentJSONArgumentError(err)
 	}
+	for i := range args.Shots {
+		storyboardComposeCamera(&args.Shots[i])
+	}
+	storyboardComposeCamera(&args.Shot)
 	s := m.Storyboard
+	if s.Version == storyboardSceneVersion {
+		switch call.Function.Name {
+		case "production_storyboard_submit":
+			var work productionParallelWork
+			for _, candidate := range state.ProductionParallel {
+				if candidate.TaskID != "" && candidate.TaskID == state.StoryboardSubmittingTask {
+					work = candidate
+					break
+				}
+			}
+			if work.TaskID == "" || work.SceneID != args.SceneID || call.ID != "parallel-"+work.TaskID || work.Generation != state.StoryboardAssignments[work.Key].Generation {
+				return nil, BadAuthRequest("仅当前场次已领取任务的子Agent可以提交详情")
+			}
+			args.WorkKey = work.Key
+			if err := productionParallelCallError(work, call, call.Function.Name); err != nil {
+				return nil, err
+			}
+		case "production_storyboard_expand":
+			return nil, BadAuthRequest("场次并发模式只接收分配范围内的批量提交")
+		case "production_storyboard_plan", "production_storyboard_layout", "production_storyboard_reset", "production_storyboard_review":
+			if len(state.ProductionParallel) > 0 {
+				return nil, BadAuthRequest("先完成或停止场次任务，再修改规划和审查")
+			}
+		}
+	}
 	parameters, _ := productionWorkflow(productionNode(doc, state.Request.Production.TargetNodeID))["parameters"].(map[string]any)
 	if err := restoreStoryboardTiming(s, parameters); err != nil {
 		return nil, err
@@ -624,11 +666,11 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 			return nil, err
 		}
 	case "production_storyboard_submit":
-		if s.Version == storyboardEpisodeVersion && storyboardHasLayout(s) {
+		if storyboardBatchMode(s) && storyboardHasLayout(s) {
 			if err := validateStoryboardPlanTiming(s.Scenes, s); err != nil {
 				return nil, err
 			}
-			if err := applyStoryboardEpisodeBatch(m, doc, args.SceneID, args.Offset, args.ExpectedHash, args.Shots, args.Complete); err != nil {
+			if err := applyStoryboardEpisodeBatch(m, doc, args.SceneID, args.Offset, args.ExpectedHash, args.Shots, args.Complete, args.WorkKey); err != nil {
 				return nil, err
 			}
 			break
@@ -701,11 +743,11 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 			return nil, BadAuthRequest("校验版本已变化或缺少具体结论")
 		}
 		for _, scene := range s.Scenes {
-			if !scene.Complete && len(args.RepairSceneIDs) == 0 {
+			if !scene.Complete && len(args.RepairSceneIDs) == 0 && len(args.RepairShotIDs) == 0 {
 				return nil, BadAuthRequest("仍有未完成场次，不能进行完成校验")
 			}
 		}
-		if len(args.RepairSceneIDs) == 0 {
+		if len(args.RepairSceneIDs) == 0 && len(args.RepairShotIDs) == 0 {
 			if issues := storyboardTimingIssues(m); len(issues) > 0 {
 				return nil, BadAuthRequest(fmt.Sprintf("分镜时长检查未通过，已有内容保留；按timingIssues返修：%v", issues))
 			}
@@ -724,6 +766,9 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 				return nil, BadAuthRequest("返修场次不存在")
 			}
 		}
+		if err := storyboardRepairShots(m, args.RepairShotIDs, args.RepairSceneIDs); err != nil {
+			return nil, err
+		}
 		for i := range s.Scenes {
 			if cloudAgentContainsString(args.RepairSceneIDs, s.Scenes[i].ID) {
 				s.Scenes[i].PreviousShots = s.Scenes[i].Shots
@@ -734,7 +779,7 @@ func productionStoryboardTool(repo *repository.Repository, run *model.CloudAgent
 		}
 		s.Review = args.Review
 		s.ReviewHash = ""
-		if len(args.RepairSceneIDs) == 0 && len(s.Scenes) > 0 {
+		if len(args.RepairSceneIDs) == 0 && len(args.RepairShotIDs) == 0 && len(s.Scenes) > 0 {
 			s.ReviewHash = args.Hash
 		}
 	default:
@@ -800,9 +845,46 @@ func validateStoryboardShots(scene productionScene, shots []productionShot, comp
 	return nil
 }
 
+// Some providers return the detailed camera fields but omit their summary.
+// Preserve those exact descriptions; never invent missing photography details.
+func storyboardComposeCamera(shot *productionShot) {
+	if strings.TrimSpace(shot.Camera) != "" {
+		return
+	}
+	parts := []string{shot.ShotSize, shot.CameraAngle, shot.Movement, shot.Blocking}
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			return
+		}
+	}
+	if strings.TrimSpace(shot.Lens) != "" {
+		parts = append(parts, shot.Lens)
+	}
+	if strings.TrimSpace(shot.Equipment) != "" {
+		parts = append(parts, shot.Equipment)
+	}
+	shot.Camera = strings.Join(parts, "；")
+}
+
 func validateStoryboardShot(scene productionScene, shot productionShot, number int) error {
-	if shot.ID != fmt.Sprintf("%s-%03d", scene.ID, number) || shot.Start < scene.Start || shot.End > scene.End || shot.Start > shot.End || shot.Duration <= 0 || shot.Duration > 60 || math.IsNaN(shot.Duration) || strings.TrimSpace(shot.Visual) == "" || strings.TrimSpace(shot.Camera) == "" || strings.TrimSpace(shot.Continuity) == "" {
-		return BadAuthRequest("镜头编号、原文范围、时长或画面/机位/连续性不完整")
+	expected := fmt.Sprintf("%s-%03d", scene.ID, number)
+	if shot.ID != expected {
+		return cloudAgentFieldError("shot.id", "invalid_shot_id", "当前镜头编号必须为 "+expected)
+	}
+	if shot.Start < scene.Start || shot.End > scene.End || shot.Start > shot.End {
+		return cloudAgentFieldError("shot.start/end", "invalid_source_range", fmt.Sprintf("镜头 %s 的原文范围必须在 %d–%d 段内，且 start 不得大于 end", expected, scene.Start, scene.End))
+	}
+	if shot.Duration <= 0 || shot.Duration > 60 || math.IsNaN(shot.Duration) || math.IsInf(shot.Duration, 0) {
+		return cloudAgentFieldError("shot.duration", "invalid_duration", "镜头 "+expected+" 的 duration 必须为大于 0 且不超过 60 的有限秒数")
+	}
+	for _, field := range []struct{ name, value, description string }{
+		{"visual", shot.Visual, "画面起幅、动作过程和落幅"},
+		{"camera", shot.Camera, "摄影机观察方向、构图、轴线和运镜；不能仅提供部分摄影细分字段"},
+		{"continuity", shot.Continuity, "人物、道具及动作的前后连续性"},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return cloudAgentFieldError("shot."+field.name, "missing_shot_field", "镜头 "+expected+" 缺少 "+field.name+"：请补齐"+field.description+"，保留其他内容并重新提交完整镜头")
+		}
 	}
 	for _, id := range shot.AssetIDs {
 		if !storyboardAssetCode.MatchString(id) {
@@ -866,7 +948,7 @@ func validateStoryboardPlanTiming(scenes []productionScene, s *productionStorybo
 		if s.ShotDuration > 0 && scene.Duration < math.Max(1, s.ShotDuration-s.ShotTolerance)-0.001 {
 			return BadAuthRequest(fmt.Sprintf("场次%s仅%.1f秒，低于目标镜头下限；请按连续剧情重新分配场次预算，不得将整场短镜当作场尾余量", scene.ID, scene.Duration))
 		}
-		if s.Version == storyboardEpisodeVersion && s.ShotDuration > 0 && !storyboardLegalTiming(scene.Duration, math.Max(1, s.ShotDuration-s.ShotTolerance), math.Min(60, s.ShotDuration+s.ShotTolerance)) {
+		if storyboardBatchMode(s) && s.ShotDuration > 0 && !storyboardLegalTiming(scene.Duration, math.Max(1, s.ShotDuration-s.ShotTolerance), math.Min(60, s.ShotDuration+s.ShotTolerance)) {
 			return BadAuthRequest(fmt.Sprintf("场次%s预算%.1f秒无法全部拆成%.1f至%.1f秒镜头；请按真实剧情重新分配场次预算，不以短尾凑时长", scene.ID, scene.Duration, math.Max(1, s.ShotDuration-s.ShotTolerance), math.Min(60, s.ShotDuration+s.ShotTolerance)))
 		}
 		total += scene.Duration
@@ -916,6 +998,27 @@ func saveStoryboardCheckpoint(repo *repository.Repository, run *model.CloudAgent
 	meta, _ := target["metadata"].(map[string]any)
 	meta["content"] = renderStoryboard(*m)
 	materializeStoryboardRows(target, *m, doc)
+	if m.Storyboard.Version == storyboardSceneVersion {
+		if state.StoryboardAssignments == nil {
+			state.StoryboardAssignments = map[string]storyboardAssignment{}
+		}
+		for _, group := range storyboardWorkGroups(*m) {
+			a := state.StoryboardAssignments[group.Key]
+			a.SceneID, a.Saved, a.Total = group.SceneID, 0, len(group.ShotIDs)
+			for _, id := range group.ShotIDs {
+				if storyboardShotDone(*m, id) {
+					a.Saved++
+				}
+			}
+			if a.Status == "" || (a.Status == "completed" && a.Saved < a.Total) {
+				a.Status = "queued"
+			}
+			if a.Saved == a.Total {
+				a.Status = "completed"
+			}
+			state.StoryboardAssignments[group.Key] = a
+		}
+	}
 	projectStoryboardWorkRows(target, state)
 	progress := storyboardCoverage(*m)
 	meta["status"], meta["taskStage"] = "loading", fmt.Sprintf("分镜已完成 %v/%v 场 · 详情 %v/%v 镜头", progress["processedPages"], progress["totalPages"], progress["artifactCount"], progress["shotTotal"])

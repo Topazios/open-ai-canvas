@@ -1,4 +1,4 @@
-import type { CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { ShortDramaStep } from "../short-drama-steps";
 import { ProductionBibleSection } from "../production-bible";
 import { assetSheetRatio, AssetSheetKind } from "../asset-reference-sheet";
@@ -6,6 +6,25 @@ import { assetSheetStyleMaterial, assetSheetSubjectMaterial } from "../asset-she
 import { nodeWorkflow, workflowSignature } from "./canvas-short-drama-workflow";
 
 const styleSections = [ProductionBibleSection.Style, ProductionBibleSection.ArtDirection, ProductionBibleSection.Generation];
+
+/** A batch may contain several versions, but each image resolves codes against its own subject. */
+export function assetSheetReferenceSources(sources: CanvasNodeData[], subjectId?: string) {
+    const byCode = new Map<string, CanvasNodeData>();
+    const version = (node: CanvasNodeData) => nodeWorkflow(node)?.assetVersion ?? nodeWorkflow(node)?.version ?? 1;
+    for (const node of sources) {
+        const data = nodeWorkflow(node), identity = data?.assetIdentity;
+        if (node.type !== CanvasNodeType.Text || !identity || data?.assetKey === "$summary") continue;
+        const previous = byCode.get(identity.code);
+        if (previous && nodeWorkflow(previous)?.assetIdentity?.id !== identity.id) throw new Error(`资产编码冲突：${identity.code}`);
+        const adopted = data?.assetAdopted === true;
+        const priorAdopted = previous?.metadata?.shortDrama?.assetAdopted === true;
+        if (!previous || node.id === subjectId || (previous.id !== subjectId && (adopted && !priorAdopted || adopted === priorAdopted && version(node) > version(previous)))) byCode.set(identity.code, node);
+    }
+    return sources.filter(node => {
+        const code = nodeWorkflow(node)?.assetIdentity?.code;
+        return !code || node.type !== CanvasNodeType.Text || !byCode.has(code) || byCode.get(code) === node;
+    });
+}
 
 export function assetSheetReferenceContent(node: CanvasNodeData, subjectId: string) {
     if (node.id === subjectId) return "";

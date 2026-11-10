@@ -419,6 +419,7 @@ function publicScalarLabel(value: unknown) {
 function formatDurationSummary(profile: NonNullable<ReturnType<typeof modelCapabilityConfigFor>["video"]>) {
     const values = videoDurationOptions(profile);
     if (profile.duration.selection === "enum") return values.map((item) => `${item}s`).join("/");
+    if (!profile.duration.max) return `${profile.duration.min || 1}s 起 · 未设上限`;
     return `${profile.duration.min || values[0]}-${profile.duration.max || values[values.length - 1]}s`;
 }
 

@@ -133,7 +133,7 @@ export function CanvasActiveAgentCard({ run, nodes, onOpenNode, theme }: { run: 
     const status = progress.paused ? progress.waitingForBoundary ? "暂停中，等待当前调用结束" : "已暂停" : run.status === "waiting_user" ? "等待用户处理" : run.status === "completed" ? "已完成" : run.status === "queued" ? "排队中" : run.status === "waiting_approval" ? "等待授权" : "执行中";
     const current = progress.concurrentItems?.length ? progress.concurrentItems.join("、") : progress.currentItem || progress.phaseLabel || "准备制作内容";
     const items = progress.parallelItems || [];
-    const itemStatus = { queued: "排队中", running: "生成中", succeeded: "已返回", failed: "调用失败", cancelled: "已取消", retrying: "自动重试中", error: "保存失败", warning: "待检查", unknown: "核对状态中" };
+    const itemStatus = { queued: "排队中", running: "生成中", succeeded: "已返回", failed: "调用失败", cancelled: "已取消", retrying: "自动重试中", error: "保存失败", warning: "待检查", unknown: "核对状态中", blocked: "等待前置" };
     return <article className="rounded-[var(--r-md)] border p-3 text-xs" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }} aria-label={`${title}任务`}>
         <div className="flex items-start justify-between gap-2"><span className="min-w-0 break-words font-semibold">{title}</span><span className="shrink-0" style={{ color: theme.accent.primary }}>{status}</span></div>
         <div className="mt-2 break-words" style={{ color: theme.node.muted }}>{current}</div>

@@ -701,8 +701,12 @@ func providerRequestFailureOutcome(statusCode int, err error) (model.ApiCallStat
 	switch {
 	case errors.As(err, &requestTimeoutErr):
 		return model.ApiCallStatusWarning, "application"
+	case model.IsGatewayTimeout(statusCode), errors.As(err, &httpErr) && model.IsGatewayTimeout(httpErr.StatusCode):
+		return model.ApiCallStatusWarning, "gateway"
 	case (statusCode > 0 && (statusCode < 200 || statusCode >= 300)), errors.As(err, &httpErr), errors.As(err, &payloadErr):
 		return model.ApiCallStatusFailed, "upstream"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return model.ApiCallStatusWarning, "application"
 	case errors.As(err, &networkErr):
 		return model.ApiCallStatusFailed, "network"
 	case errors.Is(err, errProviderOutputLimit), errors.As(err, &decodeErr):
@@ -732,6 +736,10 @@ func providerRequestIsBillable(method, requestKind string) bool {
 func providerRequestErrorDetails(err error) (string, string) {
 	if err == nil {
 		return "", ""
+	}
+	var httpErr providerHTTPError
+	if errors.As(err, &httpErr) && model.IsGatewayTimeout(httpErr.StatusCode) {
+		return model.GatewayResponseUnconfirmed, model.GatewayTimeoutMessage(httpErr.StatusCode)
 	}
 	var requestTimeoutErr providerRequestTimeoutError
 	if errors.As(err, &requestTimeoutErr) {

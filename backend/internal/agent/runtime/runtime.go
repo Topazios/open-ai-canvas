@@ -110,6 +110,8 @@ func Run(ctx context.Context, request ProcessRequest, bridge Bridge) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start Agent runtime: %w", err)
 	}
+	stopRead := context.AfterFunc(ctx, func() { _ = stdout.Close() })
+	defer stopRead()
 	// StdoutPipe 的读取必须在 Wait 之前结束。Wait 会关闭管道，提前调用会把
 	// 正常退出误报为 "file already closed"。
 	lineErr := ReadOutput(stdout)
@@ -157,7 +159,13 @@ func StartBridge(listenAddr, advertiseHost string, bridge Bridge) (*BridgeServer
 	return &BridgeServer{
 		URL:   fmt.Sprintf("http://%s:%d", advertiseHost, tcpAddr.Port),
 		Token: token,
-		Close: func() { _ = server.Shutdown(context.Background()) },
+		Close: func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if server.Shutdown(ctx) != nil {
+				_ = server.Close()
+			}
+		},
 	}, nil
 }
 

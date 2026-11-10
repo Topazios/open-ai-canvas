@@ -3,6 +3,13 @@ import { mergeProductionEvents, productionJournalRows, productionParallelSummary
 import type { AgentEvent } from "../src/services/api/agent";
 const event = (seq: number, type: string, payload: Record<string, unknown> = {}): AgentEvent => ({ seq, type, payload, runId: "run", eventId: `event-${seq}`, createdAt: new Date(Date.UTC(2026, 9, 14, 0, 0, seq)).toISOString() });
 describe("production execution journal", () => {
+    test("stopped storyboard coordinator retains the reason and manual decision boundary", () => {
+        const rows = productionJournalRows([event(1, "production_coordinator_stopped", { reason: "主任务租约过期", text: "主任务和全部子任务已停止，等待手动重试" })]);
+        expect(rows).toHaveLength(1);
+        expect(rows[0].title).toBe("整集任务已停止");
+        expect(rows[0].detail).toContain("主任务租约过期");
+        expect(rows[0].detail).toContain("等待手动重试");
+    });
     const repair = (status: "retrying" | "recovered" | "exhausted", groupId = "plan-repair") => ({ groupId, attempt: 1, maxAttempts: 3, status });
     test("legacy storyboard validation receipts stay internal to the current item", () => {
         const failed = event(1, "tool_failed", { toolName: "production_storyboard_plan", text: "参数结构异常", result: { reason: "invalid_tool_arguments", field: "parameters.scenes[0]", errorClass: "schema_error", guidance: "请按 parameters 修正", parameters: { private: "SCHEMA" }, retry: repair("retrying") } });

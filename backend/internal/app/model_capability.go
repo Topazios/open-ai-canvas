@@ -116,7 +116,7 @@ const DefaultVideoPromptMaxChars = 8000
 type VideoDurationConfig struct {
 	Selection string `json:"selection"`
 	Min       int    `json:"min,omitempty"`
-	Max       int    `json:"max,omitempty"`
+	Max       int    `json:"max,omitempty"` // Zero means no locally declared upper bound.
 	Step      int    `json:"step,omitempty"`
 	Values    []int  `json:"values,omitempty"`
 	Default   int    `json:"default"`
@@ -204,7 +204,7 @@ func NormalizeModelCapabilityConfigForModel(capability string, protocol string, 
 	if input == nil || input.Video == nil {
 		return nil, BadAuthRequest("请配置视频模型能力参数")
 	}
-	value := &ModelCapabilityConfig{Version: 1, Video: applyModelSpecificVideoCapability(input.Video, protocol, modelName), Protocols: input.Protocols}
+	value := &ModelCapabilityConfig{Version: 1, Video: input.Video, Protocols: input.Protocols}
 	if err := validateVideoCapabilityConfig(value.Video); err != nil {
 		return nil, err
 	}
@@ -305,9 +305,11 @@ func CapabilitySpecFromModelCapabilityConfig(config *ModelCapabilityConfig, capa
 		}
 		video := config.Video
 		spec.Operations = append([]string(nil), video.Operations...)
-		addInputConstraint(spec.Inputs, "image", video.References.MinImages, video.References.MaxImages)
-		addInputConstraint(spec.Inputs, "video", 0, video.References.MaxVideos)
-		addInputConstraint(spec.Inputs, "audio", 0, video.References.MaxAudios)
+		if normalizeCapability(capability) != "video" {
+			addInputConstraint(spec.Inputs, "image", video.References.MinImages, video.References.MaxImages)
+			addInputConstraint(spec.Inputs, "video", 0, video.References.MaxVideos)
+			addInputConstraint(spec.Inputs, "audio", 0, video.References.MaxAudios)
+		}
 		if video.Duration.Selection == "enum" {
 			values := make([]any, 0, len(video.Duration.Values))
 			for _, value := range video.Duration.Values {
@@ -315,7 +317,11 @@ func CapabilitySpecFromModelCapabilityConfig(config *ModelCapabilityConfig, capa
 			}
 			spec.Options["videoSeconds"] = OptionConstraint{Values: values}
 		} else {
-			spec.Options["videoSeconds"] = numericRange(float64(video.Duration.Min), float64(video.Duration.Max), float64(video.Duration.Step))
+			duration := numericRange(float64(video.Duration.Min), float64(video.Duration.Max), float64(video.Duration.Step))
+			if video.Duration.Max == 0 {
+				duration.Max = nil
+			}
+			spec.Options["videoSeconds"] = duration
 		}
 		spec.Options["size"] = anyValues(video.Ratios)
 		if len(video.Resolutions) > 0 {

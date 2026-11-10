@@ -98,8 +98,8 @@ func testCanvasHistory(t *testing.T, db *gorm.DB) {
 			ParentID string
 		}
 	}
-	if err := json.Unmarshal([]byte(ordinary.PayloadJSON), &ordinaryDocument); err != nil || len(ordinaryDocument.Nodes) != 1 || ordinaryDocument.Nodes[0].ID != "child-node" || ordinaryDocument.Nodes[0].ParentID != "" {
-		t.Fatalf("ordinary node deletion should preserve and detach its child: %#v err=%v", ordinaryDocument, err)
+	if err := json.Unmarshal([]byte(ordinary.PayloadJSON), &ordinaryDocument); err != nil || len(ordinaryDocument.Nodes) != 0 {
+		t.Fatalf("ordinary container deletion must remove its children: %#v err=%v", ordinaryDocument, err)
 	}
 	resource := model.Resource{ID: "history-video", UserID: "owner", Status: model.ResourceStatusReady}
 	if err := db.Create(&resource).Error; err != nil {

@@ -46,10 +46,16 @@ func TestCanvasAssociationPreservesDocumentAndRetryIdentity(t *testing.T) {
 	if err := json.Unmarshal([]byte(saved.PayloadJSON), &after); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"nodes", "connections", "timeline", "unknown", "viewport"} {
+	for _, key := range []string{"timeline", "unknown", "viewport"} {
 		if !reflect.DeepEqual(before[key], after[key]) {
 			t.Fatalf("rewrote %s", key)
 		}
+	}
+	var beforeNodes, afterNodes any
+	json.Unmarshal(before["nodes"], &beforeNodes)
+	json.Unmarshal(after["nodes"], &afterNodes)
+	if !reflect.DeepEqual(beforeNodes, afterNodes) || string(after["connections"]) != "[]" {
+		t.Fatal("association lost node content or retained a dangling edge")
 	}
 	if string(after["projectId"]) != `"`+project.ID+`"` {
 		t.Fatal("document ownership was not updated")

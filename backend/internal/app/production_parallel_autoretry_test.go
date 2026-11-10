@@ -125,19 +125,15 @@ func TestProductionPlanSiblingsOnlyWaitForStory(t *testing.T) {
 	if first := productionParallelReady(manifest, doc, artifacts); len(first) != 1 || first[0].Key != "inventory" {
 		t.Fatalf("a healthy first batch starts with inventory alone: %+v", first)
 	}
-	// Once inventory has failed, visual and direction are released, but generation
-	// still waits for both of them to settle.
+	// Shared standards only depend on the story; a slow sibling cannot block them.
 	held := map[string]productionParallelWork{"inventory": {Key: "inventory", QuietHold: true}}
 	for _, work := range productionParallelReadyWithState(manifest, doc, artifacts, held) {
 		keys[work.Key] = true
 	}
-	for _, key := range []string{"visual", "direction"} {
+	for _, key := range []string{"visual", "direction", "generation"} {
 		if !keys[key] {
 			t.Fatalf("%s must be schedulable once inventory has settled: %v", key, keys)
 		}
-	}
-	if keys["generation"] {
-		t.Fatalf("generation must wait for visual and direction to settle: %v", keys)
 	}
 	// When all three have failed or been held, generation is released too.
 	held["visual"] = productionParallelWork{Key: "visual", QuietHold: true}

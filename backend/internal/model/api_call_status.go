@@ -3,12 +3,34 @@ package model
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
+
+const GatewayResponseUnconfirmed = "gateway_response_unconfirmed"
+
+func IsGatewayTimeout(status int) bool { return status == 504 || status == 524 }
+
+func GatewayTimeoutMessage(status int) string {
+	return fmt.Sprintf("请求链路返回 HTTP %d，未收到生成结果，不能据此认定模型生成失败；模型可能已完成，也可能仍在服务端执行并产生费用。请勿立即重试，请先核对任务或账单", status)
+}
+
+// A gateway timeout is transport evidence, not a model completion receipt.
+// Project historical rows without rewriting HTTP, response or billing facts.
+func (log *ApiCallLog) ProjectGatewayTimeout() {
+	if !IsGatewayTimeout(log.StatusCode) || log.Status == ApiCallStatusRunning {
+		return
+	}
+	log.Status, log.ErrorSource, log.ErrorCode = ApiCallStatusWarning, "gateway", GatewayResponseUnconfirmed
+	log.Error = GatewayTimeoutMessage(log.StatusCode)
+}
 
 // DisplayStatus projects older incomplete-response receipts without changing
 // their stored transport, usage, billing, or task outcome facts.
 func (log ApiCallLog) DisplayStatus() ApiCallStatus {
+	if IsGatewayTimeout(log.StatusCode) && log.Status != ApiCallStatusRunning {
+		return ApiCallStatusWarning
+	}
 	if log.ErrorSource != "" && log.ErrorSource != "content" {
 		return log.Status
 	}

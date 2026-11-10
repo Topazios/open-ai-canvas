@@ -285,9 +285,10 @@ function DurationInput({ value, min, max, theme, onChange }: { value: number; mi
 function VideoDurationControl({ profile, value, theme, disabled, onChange }: { profile: VideoCapabilityConfig; value: number; theme: CanvasTheme; disabled?: (value: number) => boolean; onChange: (value: number) => void }) {
     if (profile.duration.selection === "range") {
         const min = profile.duration.min || VIDEO_DURATION_MIN;
-        const max = Math.max(min, profile.duration.max || min);
+        const max = profile.duration.max || undefined;
         const step = Math.max(1, profile.duration.step || 1);
-        const normalized = normalizeDurationValue(value, profile.duration.default, min, max, step);
+        const normalized = normalizeDurationValue(value, profile.duration.default, min, max ?? Number.POSITIVE_INFINITY, step);
+        if (!max) return <DurationInput value={normalized} min={min} theme={theme} onChange={(next) => { const aligned = normalizeDurationValue(next, profile.duration.default, min, Number.POSITIVE_INFINITY, step); if (!disabled?.(aligned)) onChange(aligned); }} />;
 		return <DurationRangeControl value={normalized} min={min} max={max} step={step} theme={theme} onChange={(next) => { if (!disabled?.(next)) onChange(next); }} />;
     }
 

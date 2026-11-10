@@ -51,6 +51,7 @@ func materializeStoryboardRows(target map[string]any, m productionManifest, doc 
 		sceneRowStart := len(rows)
 		for _, shot := range shots {
 			id := fmt.Sprintf("%v:%s", target["id"], shot.ID)
+			accepted := storyboardShotDone(m, shot.ID)
 			if shot.Visual == "" && len(scene.Layout) > 0 {
 				var plan productionShotOutline
 				for _, item := range scene.Layout {
@@ -63,12 +64,17 @@ func materializeStoryboardRows(target map[string]any, m productionManifest, doc 
 				for _, field := range []string{"narrativeIntent", "viewerPOV", "performanceBlocking", "shotSize", "emotion", "lightingAndAtmosphere", "motion", "timeBeats", "negativePrompt"} {
 					row[field] = ""
 				}
+				if old := byID[id]; old != nil && stringValue(old["sourceShotHash"]) != "" {
+					old["detailStatus"], old["plannedGoal"] = "retrying", plan.Goal
+					old["shotNumber"], old["durationSeconds"] = len(rows)+1, plan.Duration
+					row = old
+				}
 				rows = append(rows, row)
 				continue
 			}
 			hash := productionStoredValueHash(shot)
 			timingException := ""
-			if m.Storyboard.Version != storyboardEpisodeVersion && m.Storyboard.ShotDuration > 0 && len(shots) > 1 && shot.ID == shots[len(shots)-1].ID && shot.Duration < m.Storyboard.ShotDuration-m.Storyboard.ShotTolerance {
+			if !storyboardBatchMode(m.Storyboard) && m.Storyboard.ShotDuration > 0 && len(shots) > 1 && shot.ID == shots[len(shots)-1].ID && shot.Duration < m.Storyboard.ShotDuration-m.Storyboard.ShotTolerance {
 				check := scene
 				check.Shots = shots
 				if validateStoryboardTiming(check, nil, true, m.Storyboard.ShotDuration, m.Storyboard.ShotTolerance) == nil {
@@ -77,6 +83,9 @@ func materializeStoryboardRows(target map[string]any, m productionManifest, doc 
 			}
 			if old := byID[id]; old != nil && old["sourceShotHash"] == hash {
 				old["detailStatus"] = "ready"
+				if !accepted {
+					old["detailStatus"] = "retrying"
+				}
 				delete(old, "detailError")
 				old["shotNumber"] = len(rows) + 1
 				old["sceneId"], old["sceneDurationSeconds"] = scene.ID, scene.Duration
@@ -127,6 +136,9 @@ func materializeStoryboardRows(target map[string]any, m productionManifest, doc 
 				row[field] = ""
 			}
 			applyStoryboardCraftFields(row, shot)
+			if !accepted {
+				row["detailStatus"] = "retrying"
+			}
 			rows = append(rows, row)
 		}
 		applyStoryboardCraftWarnings(rows[sceneRowStart:], filled)
@@ -144,6 +156,9 @@ func materializeStoryboardRows(target map[string]any, m productionManifest, doc 
 	previous["rows"], previous["visibleColumns"] = rows, []string{"shotNumber", "videoMotionPrompt", "assets"}
 	if m.Storyboard.Version == storyboardEpisodeVersion {
 		previous["executionMode"] = "episode"
+	}
+	if m.Storyboard.Version == storyboardSceneVersion {
+		previous["executionMode"] = "scene"
 	}
 	if previous["referenceNodeIds"] == nil {
 		previous["referenceNodeIds"] = []any{}

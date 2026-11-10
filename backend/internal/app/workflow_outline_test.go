@@ -39,6 +39,28 @@ func outlineRangeFixture(start, end int) string {
 	return strings.Join(parts, "\n\n")
 }
 
+func outlineStructuredFixture(start, end int) string {
+	episodes := []outlineEpisodeDocument{}
+	for i := start; i <= end; i++ {
+		episodes = append(episodes, outlineEpisodeDocument{
+			Episode: i, Title: "选择", Opening: "主角承接前集证据，调查相机并追问来源。",
+			Conflict: "知情人因利益拒绝说明，主角出示收据核验时间。", Change: "知情人承认证据，主角从怀疑转为谨慎信任。",
+			Clues: "收据上的日期与既定时间线呼应。", Ending: "双方约定次日查证，留下来源疑问。",
+			Continuity: "人物 CHR_001；场景 SCN_001；道具 PRP_001 收据由主角保管。",
+		})
+	}
+	encoded, _ := json.Marshal(map[string]any{"episodes": episodes})
+	return string(encoded)
+}
+
+func outlineRenderedFixture(start, end int) string {
+	var parts []string
+	for i := start; i <= end; i++ {
+		parts = append(parts, fmt.Sprintf("## 第 %d 集｜选择\n\n**开场承接与目标：** 主角承接前集证据，调查相机并追问来源。\n\n**冲突与关键行动：** 知情人因利益拒绝说明，主角出示收据核验时间。\n\n**结果与情绪变化：** 知情人承认证据，主角从怀疑转为谨慎信任。\n\n**伏笔与回收：** 收据上的日期与既定时间线呼应。\n\n**集尾与下集承接：** 双方约定次日查证，留下来源疑问。\n\n**资产与连续性：** 人物 CHR_001；场景 SCN_001；道具 PRP_001 收据由主角保管。", i))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func TestWorkflowOutlineSpineBarrierParallelRangesAndOneResult(t *testing.T) {
 	f := outlineFixture(t, 12)
 	f.visit()
@@ -54,10 +76,10 @@ func TestWorkflowOutlineSpineBarrierParallelRangesAndOneResult(t *testing.T) {
 		if !strings.Contains(child.Prompt, "已锁定本集段主线") || strings.Contains(child.Prompt, "原文依据和冲突") {
 			t.Fatal("wrong range context")
 		}
-		f.finish(child, outlineRangeFixture(part.start, part.end))
+		f.finish(child, outlineStructuredFixture(part.start, part.end))
 	}
 	f.visit()
-	f.succeeded("# 全剧集纲\n\n" + outlineRangeFixture(1, 5) + "\n\n" + outlineRangeFixture(6, 10) + "\n\n" + outlineRangeFixture(11, 12))
+	f.succeeded("# 全剧集纲\n\n" + outlineRenderedFixture(1, 12))
 	f.children("outline-spine", "outline-range-1-5", "outline-range-6-10", "outline-range-11-12")
 }
 
@@ -66,7 +88,7 @@ func TestWorkflowOutlineSmallSeriesAndCoverageValidation(t *testing.T) {
 	f.visit()
 	children := f.children("outline-range-1-3")
 	f.startQueued(children)
-	f.finish(children["outline-range-1-3"], outlineRangeFixture(1, 2))
+	f.finish(children["outline-range-1-3"], outlineStructuredFixture(1, 2))
 	f.visit()
 	if f.parent.Status != model.TaskStatusFailed || !strings.Contains(f.parent.Error, "结果不完整") {
 		t.Fatalf("incomplete outline accepted: %+v", f.parent)
@@ -91,7 +113,7 @@ func TestWorkflowOutlineUsesGlobalWindowAndRejectsBrokenSpine(t *testing.T) {
 		t.Fatal("outline ignored global text concurrency")
 	}
 	for _, text := range []string{outlineSpineFixture(2), `{"episodes":[{"episode":1}]}`, `{"episodes":`} {
-		if _, err := outlineBeats(text, 3); err == nil {
+		if _, err := outlineBeats(text, 1, 3); err == nil {
 			t.Fatal("broken spine accepted")
 		}
 	}
@@ -100,6 +122,152 @@ func TestWorkflowOutlineUsesGlobalWindowAndRejectsBrokenSpine(t *testing.T) {
 	if _, err := validateWorkflowTextBatch(request.Type, request.Prompt, request.Input); err == nil {
 		t.Fatal("invalid outline contract accepted")
 	}
+}
+
+func outlineSourceFixture(count int) []workflowTextUnit {
+	parts := []string{"## 主线与结局\n主角查清真相，最终按已定结局收束。\n## 背景与规则边界\n规则不可更改，物品交接须有依据。\n## 跨单元线索\n第1集埋设的线索在最后一集揭晓。\n## 每集叙事要点\n| 集号 | 剧情推进 | 结果变化 | 伏笔衔接 | 关联资产 |\n| --- | --- | --- | --- | --- |"}
+	for episode := 1; episode <= count; episode++ {
+		parts = append(parts, fmt.Sprintf("| EP-%03d | 第%d集调查，与前集结果承接，主角核验依据后采取行动%s | 第%d集结束状态 | 与第%d集衔接；伏笔遵循全剧约定 | 角色甲（plan-character-a）；本集专用道具（plan-prop-ep-%d） |", episode, episode, strings.Repeat("保留本集因果；", 24), episode, episode+1, episode))
+	}
+	parts = append(parts, "## 计划资产概览", strings.Repeat("完整资产美术档案不应重复携带\n", 5000), "## 叙事视角与信息揭示规则\n观众知情范围遵循主角视角。")
+	// Same transport shape as workflowSourceUnits: complete lines split across
+	// multiple immutable units, without assuming a whole table fits one unit.
+	var units []workflowTextUnit
+	remaining := []rune(strings.Join(parts, "\n"))
+	for len(remaining) > 0 {
+		end := min(20000, len(remaining))
+		if end < len(remaining) {
+			for i := end - 1; i >= end/2; i-- {
+				if remaining[i] == '\n' {
+					end = i + 1
+					break
+				}
+			}
+		}
+		units = append(units, workflowTextUnit{Label: "故事来源", Text: string(remaining[:end])})
+		remaining = remaining[end:]
+	}
+	return units
+}
+
+func TestWorkflowOutlineReuses120SourceCardsWithoutReplanning(t *testing.T) {
+	f := outlineFixture(t, 120, outlineSourceFixture(120)...)
+	f.policy(100, 30)
+	f.visit()
+	var keys []string
+	for start := 1; start <= 120; start += outlineEpisodesPerCall {
+		keys = append(keys, fmt.Sprintf("outline-range-%d-%d", start, start+4))
+	}
+	children := f.children(keys...)
+	f.startQueued(children)
+	for start := 1; start <= 120; start += outlineEpisodesPerCall {
+		child := children[fmt.Sprintf("outline-range-%d-%d", start, start+4)]
+		if strings.Contains(child.Prompt, "完整资产美术档案") || !strings.Contains(child.Prompt, fmt.Sprintf("plan-prop-ep-%d）", start)) || !strings.Contains(child.Prompt, "观众知情范围遵循主角视角") || !strings.Contains(child.Prompt, "第1集埋设的线索在最后一集揭晓") {
+			t.Fatal("source context lost narrative/identity or repeated the full inventory")
+		}
+		if len([]rune(child.Prompt)) > 10000 || (start > 10 && strings.Contains(child.Prompt, "plan-prop-ep-1）")) {
+			t.Fatal("range received unrelated episode rows or unbounded story input")
+		}
+		f.finish(child, outlineStructuredFixture(start, start+4))
+	}
+	// Reconstruct exclusively from persisted tasks after a service restart.
+	f.s = &Service{repo: f.s.repo, dataDir: f.s.dataDir}
+	f.visit()
+	f.succeeded("# 全剧集纲\n\n" + outlineRenderedFixture(1, 120))
+	f.children(keys...)
+}
+
+func TestWorkflowOutlineSourceCardsRejectMissingDuplicateAndBrokenRows(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing":      "| EP-001 | 行动 | 结果 | 线索 | 编码 |",
+		"duplicate":    "| EP-001 | 行动 | 结果 | 线索 | 编码 |\n| EP-001 | 行动 | 结果 | 线索 | 编码 |",
+		"out-of-range": "| EP-004 | 行动 | 结果 | 线索 | 编码 |",
+		"columns":      "| EP-001 | 行动 | 结果 |",
+		"empty":        "| EP-001 | | 结果 | 线索 | 编码 |",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := outlineFixture(t, 3, workflowTextUnit{Label: "总纲", Text: "## 每集叙事要点\n| 集号 | 剧情推进 | 结果变化 | 伏笔衔接 | 关联资产 |\n" + body})
+			f.visit()
+			f.children()
+			if f.parent.Status != model.TaskStatusFailed || !strings.Contains(f.parent.Error, "总纲逐集骨架") {
+				t.Fatal("malformed adopted source was silently regenerated or accepted")
+			}
+		})
+	}
+	_, rows, err := outlineSourceContext([]workflowTextUnit{{Text: "```md\n## 每集叙事要点\n| EP-001 | 示例 |\n```\n## 主线与结局\n真实故事"}}, 3)
+	if err != nil || rows != nil {
+		t.Fatal("a fenced example became an adopted spine")
+	}
+}
+
+func TestWorkflowOutlineUnsourcedLongSpineUsesBoundedSequentialSegments(t *testing.T) {
+	f := outlineFixture(t, 41)
+	var keys []string
+	for start := 1; start <= 41; start += outlineSpineEpisodesPerCall {
+		end := min(start+outlineSpineEpisodesPerCall-1, 41)
+		key := fmt.Sprintf("outline-spine-%d-%d", start, end)
+		keys = append(keys, key)
+		f.visit()
+		children := f.children(keys...)
+		child := children[key]
+		if start > 1 && !strings.Contains(child.Prompt, fmt.Sprintf(`"episode":%d`, start-1)) {
+			t.Fatal("later spine segment lost its accepted predecessor boundary")
+		}
+		if start == 1 && strings.Contains(child.Prompt, "覆盖第1至41集") {
+			t.Fatal("long outline still uses a one-shot full-season spine")
+		}
+		f.startQueued(children)
+		var fixture struct {
+			Episodes []outlineBeat `json:"episodes"`
+		}
+		_ = json.Unmarshal([]byte(outlineSpineFixture(41)), &fixture)
+		encoded, _ := json.Marshal(map[string]any{"episodes": fixture.Episodes[start-1 : end]})
+		if _, err := outlineBeats(string(encoded), start, end); err != nil {
+			t.Fatal(err)
+		}
+		if start > 1 {
+			if _, err := outlineBeats(outlineSpineFixture(end-start+1), start, end); err == nil {
+				t.Fatal("local renumbering of a later segment was accepted")
+			}
+		}
+		f.finish(children[key], string(encoded))
+	}
+	f.visit()
+	keys = append(keys, "outline-range-1-5", "outline-range-6-10", "outline-range-11-15")
+	f.children(keys...)
+}
+
+func TestWorkflowOutlineSourceRetryOnlyRepeatsFailedRange(t *testing.T) {
+	f := outlineFixture(t, 7, outlineSourceFixture(7)...)
+	f.visit()
+	children := f.children("outline-range-1-5", "outline-range-6-7")
+	f.startQueued(children)
+	f.finish(children["outline-range-1-5"], outlineStructuredFixture(1, 5))
+	failed := children["outline-range-6-7"]
+	if _, err := f.s.repo.UpdateTaskTerminalState(failed.ID, failed.LeaseOwner, model.TaskStatusRunning, model.TaskStatusFailed, "模拟失败", "模拟格式失败", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f.visit()
+	resumed, err := f.s.RetryTask(f.parent.UserID, f.parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.parent = resumed
+	f.s = &Service{repo: f.s.repo, dataDir: f.s.dataDir}
+	f.visit()
+	all, err := f.s.repo.WorkflowBatchExecutionChildren(f.parent.UserID, f.parent.ID, 100)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("source retry repeated accepted ranges or replanned the spine: calls=%d err=%v", len(all), err)
+	}
+	for i := range all {
+		if all[i].Status == model.TaskStatusQueued {
+			pending := map[string]*model.Task{"retry": &all[i]}
+			f.startQueued(pending)
+			f.finish(pending["retry"], outlineStructuredFixture(6, 7))
+		}
+	}
+	f.visit()
+	f.succeeded("# 全剧集纲\n\n" + outlineRenderedFixture(1, 7))
 }
 
 func TestWorkflowOutlineResumeKeepsCompletedRangesAndFirstStart(t *testing.T) {
@@ -111,7 +279,7 @@ func TestWorkflowOutlineResumeKeepsCompletedRangesAndFirstStart(t *testing.T) {
 	f.visit()
 	children = f.children("outline-spine", "outline-range-1-5", "outline-range-6-7")
 	f.startQueued(children)
-	f.finish(children["outline-range-1-5"], outlineRangeFixture(1, 5))
+	f.finish(children["outline-range-1-5"], outlineStructuredFixture(1, 5))
 	failed := children["outline-range-6-7"]
 	_, err := f.s.repo.UpdateTaskTerminalState(failed.ID, failed.LeaseOwner, model.TaskStatusRunning, model.TaskStatusFailed, "模拟失败", "格式失败", time.Now())
 	if err != nil {
@@ -139,11 +307,11 @@ func TestWorkflowOutlineResumeKeepsCompletedRangesAndFirstStart(t *testing.T) {
 		if all[i].Status == model.TaskStatusQueued {
 			pending := map[string]*model.Task{"retry": &all[i]}
 			f.startQueued(pending)
-			f.finish(pending["retry"], outlineRangeFixture(6, 7))
+			f.finish(pending["retry"], outlineStructuredFixture(6, 7))
 		}
 	}
 	f.visit()
-	f.succeeded("# 全剧集纲\n\n" + outlineRangeFixture(1, 5) + "\n\n" + outlineRangeFixture(6, 7))
+	f.succeeded("# 全剧集纲\n\n" + outlineRenderedFixture(1, 7))
 }
 
 func TestWorkflowOutlineCondensesLongCoreBeforeGeneration(t *testing.T) {

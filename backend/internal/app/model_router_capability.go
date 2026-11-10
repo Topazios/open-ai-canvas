@@ -242,7 +242,8 @@ func NormalizeCapabilitySpec(spec CapabilitySpec) (CapabilitySpec, error) {
 		if hasValues && hasRange {
 			return spec, BadAuthRequest("能力参数不能同时声明 values 和数值范围")
 		}
-		if hasRange && (constraint.Min == nil || constraint.Max == nil) {
+		unboundedVideoDuration := spec.Capability == "video" && name == "videoSeconds" && constraint.Min != nil && constraint.Max == nil
+		if hasRange && !unboundedVideoDuration && (constraint.Min == nil || constraint.Max == nil) {
 			return spec, BadAuthRequest("数值范围必须同时声明 min 和 max")
 		}
 		if constraint.Min != nil && constraint.Max != nil && *constraint.Max < *constraint.Min {
@@ -267,6 +268,16 @@ func decodeLogicalDefaults(raw string, spec CapabilitySpec) (map[string]any, err
 
 func MatchCapability(spec CapabilitySpec, intent ModelRequestIntent) CapabilityMatch {
 	reasons := make([]string, 0)
+	// Video metadata describes suggested inputs; the selected upstream validates support.
+	// Keep modality and malformed input checks, plus the separate pricing/route gates.
+	if normalizeCapability(spec.Capability) == "video" && normalizeCapability(intent.Capability) == "video" {
+		for _, count := range intent.Inputs {
+			if count < 0 {
+				reasons = append(reasons, "输入数量不能小于 0")
+			}
+		}
+		return CapabilityMatch{Matched: len(reasons) == 0, Reasons: reasons}
+	}
 	if normalizeCapability(intent.Capability) != normalizeCapability(spec.Capability) {
 		reasons = append(reasons, "能力类型不匹配")
 	}

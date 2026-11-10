@@ -20,6 +20,7 @@ func Models() []any {
 		&model.ProductionAgentJob{},
 		&model.ProductionAgentPage{},
 		&model.ProductionAgentArtifact{},
+		&model.ProductionFlowUnit{}, &model.ProductionFlowReceipt{},
 		&model.CloudAgentPiSession{},
 		&model.CloudAgentEventRecord{},
 		&model.CloudAgentMessageRecord{},

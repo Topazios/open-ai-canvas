@@ -12,12 +12,14 @@ import (
 // Parts are private checkpoints, never incomplete canvas artifacts. A capped
 // response is discarded; only complete, validated tool arguments enter Fields.
 type productionDocumentParts struct {
-	SchemaVersion int                     `json:"schemaVersion"`
-	ExpectedHash  string                  `json:"expectedHash,omitempty"`
-	Fields        map[string]string       `json:"fields"`
-	Pending       [][]string              `json:"pending"`
-	RepairFields  map[string]string       `json:"repairFields,omitempty"`
-	RepairDesign  *productionDesignFields `json:"repairDesign,omitempty"`
+	SchemaVersion    int                     `json:"schemaVersion"`
+	ExpectedHash     string                  `json:"expectedHash,omitempty"`
+	Fields           map[string]string       `json:"fields"`
+	Pending          [][]string              `json:"pending"`
+	RepairFields     map[string]string       `json:"repairFields,omitempty"`
+	RepairDesign     *productionDesignFields `json:"repairDesign,omitempty"`
+	EpisodeRows      map[int]string          `json:"episodeRows,omitempty"`
+	EpisodeBatchSize int                     `json:"episodeBatchSize,omitempty"`
 }
 
 func productionDocumentTargetHash(artifacts []model.ProductionAgentArtifact, key string) string {
@@ -31,7 +33,7 @@ func productionDocumentTargetHash(artifacts []model.ProductionAgentArtifact, key
 
 func productionSplitDocumentParts(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact, work *productionParallelWork) error {
 	if work.DocumentParts == nil {
-		schema := productionPlanDocumentSchemaVersion(m.Plan.Version)
+		schema := productionPlanSchemaVersion(*m.Plan)
 		sections := productionPlanDocumentSectionsForSchema(work.Key, productionPlanKind(m, work.Key), schema)
 		if len(sections) == 0 || work.Key == "inventory" {
 			return BadAuthRequest("当前操作没有可分批的文稿模板")
@@ -50,8 +52,56 @@ func productionSplitDocumentParts(m productionManifest, doc map[string]any, arti
 		return BadAuthRequest("文稿章节检查点缺少待生成字段")
 	}
 	fields := parts.Pending[0]
+	if m.Plan.Version >= 5 && productionPlanStandard(work.Key) && len(fields) > 5 {
+		groups := make([][]string, 0, (len(fields)+4)/5)
+		for start := 0; start < len(fields); start += 5 {
+			groups = append(groups, append([]string(nil), fields[start:min(start+5, len(fields))]...))
+		}
+		parts.Pending = append(groups, parts.Pending[1:]...)
+		return nil
+	}
 	if len(fields) < 2 {
+		if productionDocumentEpisodeBatch(m, doc, *work) != nil {
+			if parts.EpisodeBatchSize == 0 {
+				parts.EpisodeBatchSize = productionDocumentEpisodeBatchSize
+			}
+			if parts.EpisodeBatchSize > 1 {
+				parts.EpisodeBatchSize = max(1, parts.EpisodeBatchSize/2)
+				work.DisableThinking = true
+				return nil
+			}
+		}
 		return BadAuthRequest(fmt.Sprintf("%s 的章节 %s 单独生成仍达到输出上限，已停止自动重试；已完成章节保留，请调整本章制作要求或系统输出策略后继续", work.Name, strings.Join(fields, ", ")))
+	}
+	if productionLargeStoryPlan(m, doc, work.Key) {
+		// The configured channel may cap a single response at 4096 tokens. Keep
+		// the first repair batch small enough to leave room for complete JSON and
+		// tool arguments instead of repeatedly asking for seven long chapters.
+		const largeStoryBatchFields = 3
+		if len(fields) > largeStoryBatchFields {
+			groups := make([][]string, 0, (len(fields)+largeStoryBatchFields-1)/largeStoryBatchFields+1)
+			for start := 0; start < len(fields); start += largeStoryBatchFields {
+				end := min(len(fields), start+largeStoryBatchFields)
+				group := append([]string(nil), fields[start:end]...)
+				if cloudAgentContainsString(group, "episodeArchitecture") && len(group) > 1 {
+					withoutEpisode := make([]string, 0, len(group)-1)
+					for _, field := range group {
+						if field != "episodeArchitecture" {
+							withoutEpisode = append(withoutEpisode, field)
+						}
+					}
+					if len(withoutEpisode) > 0 {
+						groups = append(groups, withoutEpisode)
+					}
+					groups = append(groups, []string{"episodeArchitecture"})
+					continue
+				}
+				groups = append(groups, group)
+			}
+			parts.Pending = append(groups, parts.Pending[1:]...)
+			work.DisableThinking = true
+			return nil
+		}
 	}
 	mid := len(fields) / 2
 	parts.Pending = append([][]string{fields[:mid:mid], fields[mid:]}, parts.Pending[1:]...)
@@ -60,14 +110,14 @@ func productionSplitDocumentParts(m productionManifest, doc map[string]any, arti
 }
 
 func productionDocumentPartsVersion(m productionManifest, doc map[string]any, artifacts []model.ProductionAgentArtifact, work productionParallelWork) error {
-	if work.DocumentParts.SchemaVersion != productionPlanDocumentSchemaVersion(m.Plan.Version) || work.Dependencies != productionParallelDependencyHash(m, artifacts, work.Key) {
+	if work.DocumentParts.SchemaVersion != productionPlanSchemaVersion(*m.Plan) || work.Dependencies != productionParallelDependencyHash(m, artifacts, work.Key) {
 		return BadAuthRequest("文稿模板或前置版本已变化，未继续旧章节")
 	}
 	if work.DocumentParts.ExpectedHash != productionDocumentTargetHash(artifacts, work.Key) {
 		return BadAuthRequest("目标文稿已更新，未覆盖已有章节或新版本")
 	}
 	for _, artifact := range artifacts {
-		if artifact.Key == work.Key && !productionArtifactMatches(productionNode(doc, artifact.NodeID), artifact.ContentHash) {
+		if artifact.Key == work.Key && !productionArtifactMatches(productionNode(doc, artifact.NodeID), artifact.ContentHash) && (productionNode(doc, artifact.NodeID) == nil || m.Plan.Version < 5 || !productionPlanStandard(work.Key)) {
 			return BadAuthRequest("目标文稿已删除或人工修改，未覆盖")
 		}
 	}
@@ -99,7 +149,8 @@ func productionDocumentPartsContext(m productionManifest, doc map[string]any, ar
 	context["repairDocumentFields"] = parts.RepairFields
 	context["documentMaxChars"] = productionArtifactContentLimit(m, doc, work.Key)
 	next["documentBudget"] = productionDocumentWorkBudget(m, doc, work)
-	context["instruction"] = "当前文稿按章节制作或定向修复。只生成 nextAction.documentFields 指定字段，不重复 acceptedDocumentFields；字段列表为空时提交 document={} 确认修正后的版本参数即可。key、name、expectedHash 原样沿用 nextAction.arguments；新建时 expectedHash=\"\"，不得使用前置文稿的版本号。已保存章节保持不变；repairDocumentFields 是被拒绝原稿，按 correction 修正。总文稿遵守 documentMaxChars，不省略制作要求。全部完成后统一校验保存原文稿，最后一批可提交资产 design，不创建额外节点。"
+	productionDocumentEpisodeContext(m, doc, work, context)
+	context["instruction"] = "当前文稿按章节制作或定向修复。只生成 nextAction.documentFields 指定字段，不重复 acceptedDocumentFields；字段列表为空时提交 document={} 确认修正后的版本参数即可。key、name、expectedHash 原样沿用 nextAction.arguments；新建时 expectedHash=\"\"，不得使用前置文稿的版本号。已保存章节保持不变；repairDocumentFields 是被拒绝原稿，按 correction 修正。总文稿遵守 documentMaxChars，不省略制作要求。全部完成后统一校验保存原文稿，不创建额外节点。"
 	context["instruction"] = stringValue(context["instruction"]) + "按 nextAction.documentBudget 控制本批正文合计字数，标题已预留，后续批次有独立预算；suggestedFieldChars 是可调配的章节建议，不能把整份上限当作每一批上限。压缩重复说明，保留规则、依据、变化条件和清单行；公共规范写共用标准，逐资产细节由后续独立档案承载。"
 	if len(work.RepairDocument) > 0 {
 		repair := map[string]string{}
@@ -120,6 +171,9 @@ func productionDocumentPartsProgress(work productionParallelWork) string {
 		remaining += len(fields)
 	}
 	done := len(work.DocumentParts.Fields)
+	if len(work.DocumentParts.EpisodeRows) > 0 {
+		return fmt.Sprintf("%s：章节已暂存 %d/%d，逐集表已暂存 %d 集，完整校验后写入画布", work.Name, done, done+remaining, len(work.DocumentParts.EpisodeRows))
+	}
 	return fmt.Sprintf("%s：章节已暂存 %d/%d，完整校验后写入画布", work.Name, done, done+remaining)
 }
 
@@ -157,6 +211,20 @@ func productionStageDocumentParts(m productionManifest, doc map[string]any, arti
 		return false, call, cloudAgentFieldError("document", "field_type", "本批必须提交 document JSON 对象，每个正文章节的值必须是字符串")
 	}
 	fields := map[string]string{}
+	// Workers submit named episode fields; storage and full-document validation
+	// retain the rendered table contract. Do not mutate checkpoints here on error.
+	if batch := productionDocumentEpisodeBatch(m, doc, *work); batch != nil {
+		if raw, exists := rawFields["episodeArchitecture"]; exists {
+			rows, err := productionReadEpisodeRows(raw, *batch)
+			if err != nil {
+				return false, call, err
+			}
+			rawFields["episodeArchitecture"], _ = json.Marshal(productionEpisodeRowsText(rows))
+			args["document"], _ = json.Marshal(rawFields)
+			encoded, _ := json.Marshal(args)
+			call.Function.Arguments = string(encoded)
+		}
+	}
 	for field, value := range rawFields {
 		var text string
 		if len(value) > 0 && value[0] == '"' && json.Unmarshal(value, &text) == nil {
@@ -165,6 +233,9 @@ func productionStageDocumentParts(m productionManifest, doc map[string]any, arti
 	}
 	expected := parts.Pending[0]
 	failures := []error{productionDocumentRawValidationError(call.Function.Arguments, work.Key, productionPlanKind(m, work.Key), parts.SchemaVersion, expected)}
+	if facts, exists := fields["facts"]; exists {
+		failures = append(failures, productionValidateAssetSubject(productionPlanItem(m, work.Key), facts))
+	}
 	sections := productionPlanDocumentSectionsForSchema(work.Key, productionPlanKind(m, work.Key), parts.SchemaVersion)
 	// Check the envelope now, rather than silently dropping unsupported fields
 	// while persisting a successful partial response.
@@ -190,6 +261,16 @@ func productionStageDocumentParts(m productionManifest, doc map[string]any, arti
 	}
 	if err := cloudAgentValidationErrors(failures...); err != nil {
 		return false, call, err
+	}
+	if batch := productionDocumentEpisodeBatch(m, doc, *work); batch != nil {
+		text, staged, err := productionStageDocumentEpisodes(m, doc, work, fields["episodeArchitecture"], *batch)
+		if err != nil {
+			return false, call, err
+		}
+		if staged {
+			return true, call, nil
+		}
+		fields["episodeArchitecture"] = text
 	}
 	merged := make(map[string]string, len(parts.Fields)+len(fields))
 	for key, value := range parts.Fields {

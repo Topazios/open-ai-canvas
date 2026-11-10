@@ -41,8 +41,8 @@ type Service struct {
 	agentSchedulerMu         sync.Mutex
 	agentSchedulerWake       chan struct{}
 	taskDispatcherWake       chan struct{}
-	canvasTaskEvents          *canvasTaskEventHub
-	canvasTaskEventsMu        sync.Mutex
+	canvasTaskEvents         *canvasTaskEventHub
+	canvasTaskEventsMu       sync.Mutex
 	geminiCacheLockMu        sync.Mutex
 	agentSchedulerCursor     string
 	agentConflictStreak      map[string]int
@@ -75,6 +75,7 @@ type Service struct {
 	readCachesOnce           sync.Once
 	concurrencyReadCache     *platform.BoundedReadCache[string, platform.RuntimeTaskPolicy]
 	textReplayReadCache      *platform.BoundedReadCache[textReplayCacheKey, *TextReplayResult]
+	flowSourceCache          *productionFlowSourceCache
 	routeVersionReadCache    *platform.BoundedReadCache[string, int64]
 	geminiCacheLocks         map[string]*geminiCacheKeyLock
 	routeCatalogRetryAt      time.Time
@@ -173,6 +174,7 @@ func (s *Service) StartWorker() {
 	s.startAPICallLogMaintenanceWorker(ctx)
 	s.startSkillSyncWorker(ctx)
 	s.startPaymentWorker(ctx)
+	s.startStoryboardReaper()
 	s.runWorkerLoop(func(ctx context.Context) {
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()

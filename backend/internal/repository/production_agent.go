@@ -63,7 +63,18 @@ func (r *Repository) ProductionAgentStorageBytes(userID string) (int64, error) {
 	if err := r.db.Raw(`SELECT COALESCE(SUM(length(fact_ids_json)+length(key)+length(content_hash)),0) FROM production_agent_artifacts WHERE user_id = ?`, userID).Scan(&receipts).Error; err != nil {
 		return 0, err
 	}
-	return (bytes + pages + receipts) * 4, nil
+	var flow int64
+	if r.db.Migrator().HasTable(&model.ProductionFlowUnit{}) {
+		if err := r.db.Raw(`SELECT COALESCE(SUM(length(input_json)+length(result_json)+length(issues_json)+COALESCE(length(split_json),0)),0) FROM production_flow_units WHERE user_id = ?`, userID).Scan(&flow).Error; err != nil {
+			return 0, err
+		}
+		var history int64
+		if err := r.db.Raw(`SELECT COALESCE(SUM(length(arguments_json)+length(adopted_json)+length(issues_json)),0) FROM production_flow_receipts WHERE user_id = ?`, userID).Scan(&history).Error; err != nil {
+			return 0, err
+		}
+		flow += history
+	}
+	return (bytes + pages + receipts + flow) * 4, nil
 }
 
 func (r *Repository) DeleteProductionAgentCanvas(userID, canvasID string) error {
@@ -71,6 +82,14 @@ func (r *Repository) DeleteProductionAgentCanvas(userID, canvasID string) error 
 		return nil
 	}
 	jobs := r.db.Model(&model.ProductionAgentJob{}).Select("run_id").Where("user_id = ? AND canvas_id = ?", userID, canvasID)
+	if r.db.Migrator().HasTable(&model.ProductionFlowUnit{}) {
+		if err := r.db.Where("user_id = ? AND run_id IN (?)", userID, jobs).Delete(&model.ProductionFlowReceipt{}).Error; err != nil {
+			return err
+		}
+		if err := r.db.Where("user_id = ? AND run_id IN (?)", userID, jobs).Delete(&model.ProductionFlowUnit{}).Error; err != nil {
+			return err
+		}
+	}
 	if err := r.db.Where("user_id = ? AND run_id IN (?)", userID, jobs).Delete(&model.ProductionAgentArtifact{}).Error; err != nil {
 		return err
 	}

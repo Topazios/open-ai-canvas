@@ -62,7 +62,7 @@ func TestProductionPlanAssetsMissingCanvasIsReadableConflict(t *testing.T) {
 	}
 }
 
-func TestProductionPlanFinishedKindCreatesNewVersionTask(t *testing.T) {
+func TestProductionPlanFinishedKindRequiresExplicitRegeneration(t *testing.T) {
 	s, runID := readyForAssetTasks(t)
 	if err := s.GenerateProductionPlanAssets("user", runID, []string{"character"}); err != nil {
 		t.Fatal(err)
@@ -76,19 +76,38 @@ func TestProductionPlanFinishedKindCreatesNewVersionTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.GenerateProductionPlanAssetKinds("user", runID, []string{"character"}, ProductionAssetModelSelection{}); err != nil {
-		t.Fatalf("finished category blocked a new asset task: %v", err)
+		t.Fatal(err)
+	}
+	m, _, _ := orderedPlanState(t, s, runID)
+	run, _ := productionRuntimeState(t, s, runID)
+	if len(m.Plan.NewVersionAssetKeys) != 0 || run.Status != "completed" {
+		t.Fatal("default repeat reopened a completed asset", run.Status)
+	}
+	if err := s.GenerateProductionPlanAssetKinds("user", runID, []string{"character"}, ProductionAssetModelSelection{Regenerate: true, RequestID: "regenerate-1"}); err != nil {
+		t.Fatal(err)
+	}
+	m, _, _ = orderedPlanState(t, s, runID)
+	if len(m.Plan.NewVersionAssetKeys) != 1 || m.Plan.NewVersionAssetKeys[0] != "character" {
+		t.Fatal("explicit regeneration did not mark only the chosen identity")
+	}
+	before := productionHash(m)
+	if err := s.GenerateProductionPlanAssetKinds("user", runID, []string{"character"}, ProductionAssetModelSelection{Regenerate: true, RequestID: "regenerate-1"}); err != nil {
+		t.Fatal(err)
+	}
+	m, _, _ = orderedPlanState(t, s, runID)
+	if before != productionHash(m) {
+		t.Fatal("duplicate request changed the manifest")
 	}
 }
 
-func TestProductionPlanInFlightKindIsReadableConflict(t *testing.T) {
+func TestProductionPlanInFlightKindAcknowledgesDuplicate(t *testing.T) {
 	s, runID := readyForAssetTasks(t)
 	if err := s.GenerateProductionPlanAssets("user", runID, []string{"character"}); err != nil {
 		t.Fatal(err)
 	}
 	err := s.GenerateProductionPlanAssetKinds("user", runID, []string{"character"}, ProductionAssetModelSelection{})
-	var appErr *AppError
-	if !errors.As(err, &appErr) || appErr.Status != http.StatusConflict {
-		t.Fatalf("in-flight category must be a readable 409, got %T %v", err, err)
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

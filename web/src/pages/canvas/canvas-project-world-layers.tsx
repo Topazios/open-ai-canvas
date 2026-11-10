@@ -13,6 +13,8 @@ import { sortCanvasNodesByStackOrder, type CanvasNodeStackOrder } from "@/lib/ca
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { isFrameNode } from "@/lib/canvas/canvas-frame";
 import { productionPlanDetachedMembers } from "@/lib/canvas/production-agent-state";
+import { screenplayAutoReviewCandidates } from "@/lib/canvas/workflow-screenplay-audit";
+import type { ShortDramaGlobalSettings } from "@/lib/short-drama-settings";
 import type { RuntimeLimits } from "@/stores/use-user-store";
 import type { AgentRun } from "@/services/api/agent";
 import type { CanvasNodeRenderLOD } from "@/lib/canvas/canvas-node-lod";
@@ -23,6 +25,8 @@ type NodeBounds = { left: number; top: number; width: number; height: number; co
 
 type CanvasProjectWorldLayersProps = {
     projectId: string;
+    globalSettings?: ShortDramaGlobalSettings;
+    autoReviewRunning?: string[];
     productionRuns?: AgentRun[];
     onGeneratePlanAssets?: (targetNodeId: string) => void;
     productionBusy?: Record<string, boolean>;
@@ -141,6 +145,22 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
         }
         return result;
     }, [props.visibleNodes, props.nodeById]));
+    const autoReviewCandidates = useCanvasDerivedArrayMap(useMemo(() => {
+        const result = new Map<string, CanvasNodeData[]>();
+        if (!props.onAutoReview) return result;
+        const nodes = [...props.nodeById.values()];
+        const running = new Set(props.autoReviewRunning);
+        for (const frame of props.visibleNodes) {
+            const collection = frame.metadata?.shortDrama;
+            if (!isFrameNode(frame) || collection?.role !== "collection" || collection.step !== "story.body" || collection.assetGroup || collection.mediaGroup || collection.assetRevisionGroup) continue;
+            const members = collection.sourceNodeIds.flatMap(id => {
+                const node = props.nodeById.get(id);
+                return node ? [node] : [];
+            });
+            result.set(frame.id, screenplayAutoReviewCandidates(members, nodes, props.globalSettings, running));
+        }
+        return result;
+    }, [props.visibleNodes, props.nodeById, props.globalSettings, props.autoReviewRunning, props.onAutoReview]));
     const framePreviewNodes = (node: CanvasNodeData) => {
         const assetFolderId = node.metadata?.folder?.assetFolderId;
         if (assetFolderId) return props.linkedFolderPreviewNodesById.get(assetFolderId) || EMPTY_CANVAS_NODES;
@@ -200,6 +220,7 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         onOpenTaskDetails={props.onOpenTaskDetails}
                         onRetryFailed={props.onRetryFailed}
                         onAutoReview={props.onAutoReview}
+                        autoReviewNodes={autoReviewCandidates.get(node.id)}
                     />
                 ) : (
                     <CanvasNodeGraphScope key={node.id} nodeId={node.id} upstreamNodes={props.upstreamNodesById.get(node.id)}>

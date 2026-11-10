@@ -226,6 +226,11 @@ func (a manifestAdapter) parse(payload map[string]any, c PollContext) CreateResu
 }
 
 func validateManifestRequest(rules []ManifestValidation, request GenerationRequest) error {
+	// Video parameter and reference combinations are checked by the upstream.
+	// Host transport safety, credentials and resource authorization remain enforced.
+	if request.Capability == CapabilityVideo {
+		return nil
+	}
 	if len(rules) == 0 {
 		return nil
 	}

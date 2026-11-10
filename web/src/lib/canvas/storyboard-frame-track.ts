@@ -1,5 +1,5 @@
 import { StoryboardFrameKind, type CanvasNodeData, type StoryboardFrame, type StoryboardRow } from "@/types/canvas";
-import { storyboardBoundaryFrames, storyboardDisplayFrames, storyboardFrameHash, storyboardFrameLabels, type StoryboardFrameTarget } from "./episode-storyboard-frames";
+import { shotKeyframes, storyboardBoundaryFrames, storyboardDisplayFrames, storyboardFrameHash, storyboardFrameLabels, type StoryboardFrameTarget } from "./episode-storyboard-frames";
 import { storyboardPreviousFrameSource, storyboardRowIsReady } from "./workflow-episode-storyboard";
 
 export type StoryboardFrameTrackItem = {
@@ -20,7 +20,7 @@ export function storyboardFrameTrack(rows: StoryboardRow[], nodes: CanvasNodeDat
         const ready = storyboardRowIsReady(row);
         const frames = ready ? storyboardDisplayFrames(row, nodes) : storyboardBoundaryFrames(row);
         const keys = frames.filter(frame => frame.kind === StoryboardFrameKind.Key).sort((a, b) => a.timeSeconds - b.timeSeconds);
-        const needsPlan = !keys.length;
+        const needsPlan = !shotKeyframes(row, nodes).complete;
         if (needsPlan) keys.push({ id: "key-plan", kind: StoryboardFrameKind.Key, timeSeconds: 0, prompt: "", sourcePromptHash: storyboardFrameHash(row) });
         const ordered = [...frames.filter(frame => frame.kind === StoryboardFrameKind.Start), ...keys, ...frames.filter(frame => frame.kind === StoryboardFrameKind.End)];
         for (const frame of ordered) {
@@ -40,6 +40,11 @@ export function storyboardFrameTrackLabel(item: StoryboardFrameTrackItem) {
     return roles.has(StoryboardFrameKind.Start) && roles.has(StoryboardFrameKind.End) ? "首尾帧" : storyboardFrameLabels[item.frame.kind];
 }
 
+export function storyboardFrameTrackSlotCount(items: StoryboardFrameTrackItem[]) {
+    return items.filter(item => item.frame.kind !== StoryboardFrameKind.Key).length
+        + new Set(items.filter(item => item.frame.kind === StoryboardFrameKind.Key).map(item => item.rowId)).size;
+}
+
 export function storyboardFrameTrackSelection(items: StoryboardFrameTrackItem[], selectedIds: string[]) {
     const selected = new Set(selectedIds);
     return items.filter(item => selected.has(item.id) || item.frame.kind === StoryboardFrameKind.Key && selected.has(storyboardFrameTrackKey(item.rowId, "key-plan"))).map(item => item.id);
@@ -47,6 +52,6 @@ export function storyboardFrameTrackSelection(items: StoryboardFrameTrackItem[],
 
 export function storyboardFrameTrackTargets(items: StoryboardFrameTrackItem[], selectedIds: string[], kind: "all" | "boundary" | "keyframes" = "all"): StoryboardFrameTarget[] {
     const selected = new Set(selectedIds);
-    return items.filter(item => (!selected.size || selected.has(item.id)) && (kind === "all" || (kind === "keyframes" ? item.frame.kind === StoryboardFrameKind.Key : item.frame.kind !== StoryboardFrameKind.Key)))
-        .map(item => ({ rowId: item.rowId, frameId: item.frame.id }));
+    return items.filter(item => selected.has(item.id) && (kind === "all" || (kind === "keyframes" ? item.frame.kind === StoryboardFrameKind.Key : item.frame.kind !== StoryboardFrameKind.Key)))
+        .map(item => ({ rowId: item.rowId, frameId: item.frame.id, sourcePromptHash: item.frame.sourcePromptHash }));
 }

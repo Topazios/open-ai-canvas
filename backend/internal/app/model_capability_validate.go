@@ -1,6 +1,5 @@
-// 按模型能力配置校验生成任务：尺寸、质量、时长、比例、参考数量与提示词长度。
-//
-// 校验在任务创建前完成，不合规的请求直接拒绝，不会产生计费订单。
+// 图片按模型能力配置预检；视频只检查可序列化格式，参数支持范围由上游判断。
+// 渠道配置、权限、资源安全和计费校验仍由各自入口执行。
 
 package app
 
@@ -163,7 +162,7 @@ func validateVideoCapabilityConfig(value *VideoCapabilityConfig) error {
 func validateVideoDuration(value VideoDurationConfig) error {
 	switch value.Selection {
 	case "range":
-		if value.Min < 1 || value.Max < value.Min || value.Max > 3600 || value.Step < 1 || value.Default < value.Min || value.Default > value.Max || (value.Default-value.Min)%value.Step != 0 {
+		if value.Min < 1 || value.Max < 0 || (value.Max > 0 && value.Max < value.Min) || value.Step < 1 || !videoDurationAllowed(value, value.Default) {
 			return BadAuthRequest("视频时长范围或默认值无效")
 		}
 	case "enum":
@@ -173,7 +172,7 @@ func validateVideoDuration(value VideoDurationConfig) error {
 		values := append([]int(nil), value.Values...)
 		sort.Ints(values)
 		for index, item := range values {
-			if item < 1 || item > 3600 || (index > 0 && values[index-1] == item) {
+			if item < 1 || (index > 0 && values[index-1] == item) {
 				return BadAuthRequest("视频固定时长选项无效或重复")
 			}
 		}
@@ -267,9 +266,12 @@ func applyModelSpecificImageCapability(profile *ImageCapabilityConfig, _ string,
 	return profile
 }
 
-// applyFixedVideoResolution 让单档位 SKU 的预扣、恢复和上游请求保持同一分辨率。
+// A single-resolution profile only supplies a missing default, never overrides a choice.
 func applyFixedVideoResolution(input *canvasGenerationInput, profile *VideoCapabilityConfig) {
 	if input == nil || profile == nil || len(profile.Resolutions) != 1 {
+		return
+	}
+	if !isAutomaticVideoResolution(input.Config.VQuality) {
 		return
 	}
 	if resolution := videoResolutionNameRequest(profile, profile.Resolutions[0]); resolution != "" {
@@ -277,63 +279,13 @@ func applyFixedVideoResolution(input *canvasGenerationInput, profile *VideoCapab
 	}
 }
 
-func validateVideoTask(profile *VideoCapabilityConfig, input canvasGenerationInput) error {
-	if profile == nil {
-		return BadAuthRequest("当前视频模型能力参数无效")
-	}
-	if err := validateModelPromptLength("视频", input.Prompt, profile.References.PromptMaxChars); err != nil {
-		return err
-	}
-	if len(input.ReferenceImages) > profile.References.MaxImages || len(input.ReferenceVideos) > profile.References.MaxVideos || len(input.ReferenceAudios) > profile.References.MaxAudios {
-		return BadAuthRequest("参考素材数量超过当前模型限制")
-	}
-	if model.IsVolcengineArkVideoProtocol(model.ChannelInterfaceType(input.Config.InterfaceType)) && len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 && len(input.ReferenceVideos) == 0 {
-		return BadAuthRequest("火山方舟全模态参考不支持纯音频或文本+音频，请同时添加参考图片或参考视频")
-	}
-	if len(input.ReferenceImages) < profile.References.MinImages {
-		return BadAuthRequest(fmt.Sprintf("当前视频模型至少需要 %d 张参考图", profile.References.MinImages))
-	}
-	for _, media := range input.ReferenceImages {
-		if profile.References.MaxImageBytes > 0 && media.Bytes > profile.References.MaxImageBytes {
-			return BadAuthRequest("参考图片文件超过当前模型大小限制")
+// Model-specific limits are advisory for video requests. Upstream owns acceptance;
+// resource access, billing and protocol serialization are validated separately.
+func validateVideoTask(_ *VideoCapabilityConfig, input canvasGenerationInput) error {
+	if value := strings.TrimSpace(input.Config.VideoSeconds); value != "" {
+		if _, err := strconv.Atoi(value); err != nil {
+			return BadAuthRequest("视频时长必须是整数秒")
 		}
-	}
-	for _, media := range input.ReferenceVideos {
-		if profile.References.MaxVideoBytes > 0 && media.Bytes > profile.References.MaxVideoBytes {
-			return BadAuthRequest("参考视频文件超过当前模型大小限制")
-		}
-		if profile.References.MaxVideoDuration > 0 && media.DurationMs > int64(profile.References.MaxVideoDuration)*1000 {
-			return BadAuthRequest("参考视频时长超过当前模型限制")
-		}
-	}
-	for _, media := range input.ReferenceAudios {
-		if profile.References.MaxAudioBytes > 0 && media.Bytes > profile.References.MaxAudioBytes {
-			return BadAuthRequest("参考音频文件超过当前模型大小限制")
-		}
-		if profile.References.MaxAudioDuration > 0 && media.DurationMs > int64(profile.References.MaxAudioDuration)*1000 {
-			return BadAuthRequest("参考音频时长超过当前模型限制")
-		}
-	}
-	seconds, err := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds))
-	if err != nil || !videoDurationAllowed(profile.Duration, seconds) {
-		return BadAuthRequest("视频时长不在当前模型支持范围内")
-	}
-	if input.Config.Size != "" && !videoRatioAllowed(profile.Ratios, input.Config.Size) {
-		return BadAuthRequest("画面比例不在当前模型支持范围内")
-	}
-	if len(profile.Resolutions) > 0 && !isAutomaticVideoResolution(input.Config.VQuality) && videoResolutionNameRequest(profile, input.Config.VQuality) == "" {
-		return BadAuthRequest("输出分辨率不在当前模型支持范围内")
-	}
-	operation := metadataString(input.Metadata, "videoEditOperation")
-	if operation == "" {
-		if len(input.ReferenceImages) > 0 {
-			operation = "image_to_video"
-		} else {
-			operation = profile.DefaultOperation
-		}
-	}
-	if !containsCapabilityString(profile.Operations, operation) {
-		return BadAuthRequest("当前视频模型不支持该生成模式")
 	}
 	return nil
 }
@@ -427,10 +379,7 @@ func validateWorkflowProviderPromptLength(input canvasGenerationInput) error {
 	if input.Mode == "image" && profile != nil && profile.Image != nil {
 		return validateModelPromptLength("图片", input.Prompt, profile.Image.References.PromptMaxChars)
 	}
-	if input.Mode != "video" || profile == nil || profile.Video == nil {
-		return nil
-	}
-	return validateModelPromptLength("视频", input.Prompt, profile.Video.References.PromptMaxChars)
+	return nil
 }
 
 func validateModelPromptLength(label string, prompt string, maxChars int) error {
@@ -475,10 +424,13 @@ func validateGPTImage2CustomSize(value string) error {
 }
 
 func videoDurationAllowed(value VideoDurationConfig, seconds int) bool {
+	if seconds <= 0 {
+		return false
+	}
 	if value.Selection == "enum" {
 		return containsInt(value.Values, seconds)
 	}
-	return seconds >= value.Min && seconds <= value.Max && value.Step > 0 && (seconds-value.Min)%value.Step == 0
+	return seconds >= value.Min && (value.Max == 0 || seconds <= value.Max) && value.Step > 0 && (seconds-value.Min)%value.Step == 0
 }
 
 func videoRatioAllowed(options []string, value string) bool {

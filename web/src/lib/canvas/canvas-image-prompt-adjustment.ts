@@ -6,7 +6,7 @@ import { ProductionBibleSection } from "../production-bible";
 import { globalSettingsPrompt } from "../short-drama-settings";
 import { nodeWorkflow, workflowGenerationSources, workflowSignature } from "./canvas-short-drama-workflow";
 import { resolveProductionAssetReferences } from "./production-asset-references";
-import { assetSheetReferenceContent } from "./canvas-asset-sheet-context";
+import { assetSheetReferenceContent, assetSheetReferenceSources } from "./canvas-asset-sheet-context";
 
 export function rebuildWorkflowImagePrompt(node: CanvasNodeData, nodes: CanvasNodeData[], visualOnly = false) {
     const data = nodeWorkflow(node);
@@ -33,7 +33,7 @@ export function rebuildWorkflowImagePrompt(node: CanvasNodeData, nodes: CanvasNo
     const variant = data.mediaVariantCode ? nodeWorkflow(subject)?.assetProfile?.variants.find(item => item.code === data.mediaVariantCode) : undefined;
     if (data.mediaVariantCode && !variant) throw new Error("指定资产状态已变化，请重新选择来源");
     const instruction = [variant ? `指定状态 @${variant.code}（${variant.name}）：${variant.description}。沿用实体身份和身体比例，当前服化/外观以本状态为准；参考中的旧服装不覆盖此状态。` : "", data.parameters?.instruction].filter(Boolean).join("\n");
-    const references = resolveProductionAssetReferences(instruction || "", ancestors, [], (entry) => assetSheetReferenceContent(entry, subject.id));
+    const references = resolveProductionAssetReferences(instruction || "", assetSheetReferenceSources(ancestors, subject.id), [], (entry) => assetSheetReferenceContent(entry, subject.id));
     return assetSheetPrompt({ kind, size: node.metadata?.size || data.assetSheet.size, title: subject.title, code: nodeWorkflow(subject)?.assetIdentity?.code, content, style: [style, art].filter(Boolean).join("\n\n"), projectSettings: globalSettingsPrompt(data.parameters?.globalSettings, data.stage, "image"), references: references.content, instruction, visualOnly });
 }
 

@@ -207,6 +207,7 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 			}
 			if version >= 5 {
 				m.Plan.Version = 5
+				m.Plan.FlowVersion = 1
 				// A new v5 run only produces the story outline. The remaining plan
 				// documents start later through generate_plans, which sets
 				// PlansStarted and the selected keys.
@@ -217,7 +218,7 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 	}
 	if data["step"] == "direction.shots" {
 		m.Category = "storyboard"
-		m.Storyboard = &productionStoryboard{Version: storyboardEpisodeVersion, Scenes: []productionScene{}}
+		m.Storyboard = &productionStoryboard{Version: storyboardSceneVersion, AdaptiveWork: true, Scenes: []productionScene{}}
 	}
 	if m.Category == "bible" {
 		for _, section := range productionBibleSections {
@@ -444,6 +445,7 @@ func productionSourceManifest(canvas *model.CanvasProject, req CloudAgentRequest
 type productionLoadMode int
 
 const productionLoadForAssetGeneration productionLoadMode = 1
+const productionLoadForStoryboardRetry productionLoadMode = 2
 
 func productionLoad(repo *repository.Repository, run *model.CloudAgentExecution, state *cloudAgentRuntime, modes ...productionLoadMode) (*model.ProductionAgentJob, productionManifest, map[string]any, error) {
 	var m productionManifest
@@ -532,6 +534,12 @@ func productionLoad(repo *repository.Repository, run *model.CloudAgentExecution,
 			rootData := productionWorkflow(productionNode(doc, m.FrameID))
 			marker, _ := groupData["planGroup"].(map[string]any)
 			groups, _ := rootData["planGroups"].(map[string]any)
+			// A missing projection is not permission to run a model. Let the
+			// scheduler inspect it: materialization consults deletion receipts and
+			// admission/commit separately require a live container and target.
+			if group == nil && (groups[kind] == nil || groups[kind] == id || groups[kind] == "") {
+				continue
+			}
 			// Only an explicit asset-generation command may clean up a missing
 			// collection. A deleted group may also have lost its root index; the
 			// recovery path will retire both stale references without reviving it.
@@ -552,7 +560,14 @@ func productionLoad(repo *repository.Repository, run *model.CloudAgentExecution,
 	}
 	if productionTargetHash(productionNode(doc, state.Request.Production.TargetNodeID)) != expectedTarget {
 		target := productionNode(doc, state.Request.Production.TargetNodeID)
-		if m.Storyboard == nil || !productionStoryboardCheckpointCanRecover(target, productionNode(doc, m.FrameID), run.ID, m) {
+		canRecover := m.Storyboard != nil && productionStoryboardCheckpointCanRecover(target, productionNode(doc, m.FrameID), run.ID, m)
+		if !canRecover && len(modes) > 0 && modes[0] == productionLoadForAssetGeneration {
+			_, canRecover = productionPlanSummaryCheckpoint(target, run.ID, m)
+		}
+		if !canRecover && len(modes) > 0 && modes[0] == productionLoadForStoryboardRetry {
+			canRecover = productionStoryboardPartialCheckpointCanRecover(target, run.ID, m)
+		}
+		if !canRecover {
 			return nil, m, nil, BadAuthRequest("目标提取记录或来源关联已人工修改，未覆盖")
 		}
 	}
@@ -640,10 +655,7 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 			if err := decodeCloudAgentJSONObject(call.Function.Arguments, &registration); err != nil {
 				return nil, cloudAgentJSONArgumentError(err)
 			}
-			if !registration.Complete {
-				return nil, BadAuthRequest("完整资产总表需在本次调用一次提交，并明确 complete=true")
-			}
-			if m.Plan.InventoryReviewVersion > 0 && len(registration.InventoryReview) == 0 {
+			if registration.Complete && m.Plan.InventoryReviewVersion > 0 && len(registration.InventoryReview) == 0 && len(m.Plan.InventoryReview) == 0 {
 				return nil, productionMissingInventoryReviewError(repo, run, m, doc)
 			}
 			if m.Plan.InventoryReviewVersion == 0 && len(registration.InventoryReview) != 0 {
@@ -692,7 +704,7 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 				if expected := productionDocumentTargetHash(artifacts, key); expectedHash != expected {
 					return nil, productionDocumentVersionArgumentError(expected)
 				}
-				argumentErr = productionDocumentRawValidationError(call.Function.Arguments, key, productionPlanKind(m, key), productionPlanDocumentSchemaVersion(m.Plan.Version), nil)
+				argumentErr = productionDocumentRawValidationError(call.Function.Arguments, key, productionPlanKind(m, key), productionPlanSchemaVersion(*m.Plan), nil)
 			}
 		}
 		if argumentErr != nil {
@@ -803,7 +815,7 @@ func productionAgentTool(repo *repository.Repository, run *model.CloudAgentExecu
 		}
 		if args.Document != nil {
 			if m.Plan != nil && m.Plan.Version >= 2 {
-				args.Content, err = productionRenderPlanDocumentForSchema(args.Key, productionPlanKind(m, args.Key), args.Document, productionPlanDocumentSchemaVersion(m.Plan.Version))
+				args.Content, err = productionRenderPlanDocumentForSchema(args.Key, productionPlanKind(m, args.Key), args.Document, productionPlanSchemaVersion(*m.Plan))
 			} else {
 				args.Content, err = productionRenderDocument(m.Category, args.Key, args.Document)
 			}

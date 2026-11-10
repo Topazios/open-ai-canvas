@@ -119,9 +119,17 @@
 .timeline-assets-cell { display: flex; align-items: center; gap: 4px; overflow: hidden; }
 .timeline-assets-cell .canvas-episode-asset-references { display: flex; min-width: 0; overflow: hidden; }
 /* Landscape card stack sized to the frame track, layers fanned up and to the right. */
-.timeline-assets-cell .canvas-storyboard-image-stack { width: var(--timeline-frame-width, 112px); flex: 0 0 var(--timeline-frame-width, 112px); }
-.timeline-assets-cell .canvas-storyboard-image-stack-trigger { width: 100%; height: auto; aspect-ratio: 112 / 82; }
-.timeline-assets-cell .canvas-storyboard-image-stack-layer { height: calc(100% - 16px); }
+.timeline-assets-cell .canvas-storyboard-image-stack, .canvas-episode-keyframe-stack .canvas-storyboard-image-stack { width: var(--timeline-frame-width, 112px); flex: 0 0 var(--timeline-frame-width, 112px); }
+.timeline-assets-cell .canvas-storyboard-image-stack-trigger, .canvas-episode-keyframe-stack .canvas-storyboard-image-stack-trigger { width: 100%; height: auto; aspect-ratio: 112 / 82; }
+.timeline-assets-cell .canvas-storyboard-image-stack-layer, .canvas-episode-keyframe-stack .canvas-storyboard-image-stack-layer { height: calc(100% - 16px); }
+.canvas-episode-keyframe-stack .canvas-storyboard-image-stack-trigger { cursor: pointer; }
+.canvas-episode-keyframe-stack.is-selected .canvas-storyboard-image-stack-layer[data-stack-depth="0"] { border-color: var(--timeline-selected, currentColor); }
+.canvas-episode-keyframe-selection { margin-left: auto; font-variant-numeric: tabular-nums; }
+.canvas-episode-keyframe-panel { width: min(496px, calc(100vw - 64px)); }
+.canvas-episode-keyframe-panel > header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; }
+.canvas-episode-keyframe-panel > header > span { margin-right: auto; opacity: .65; }
+.canvas-episode-keyframe-panel .canvas-episode-frame-gallery.is-expanded { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 12px; max-height: min(420px, 60dvh); overflow: auto; padding: 2px; }
+.canvas-episode-keyframe-panel .canvas-episode-frame-item { width: 100%; min-width: 0; }
 .timeline-assets-cell > span { flex: 0 0 auto; color: color-mix(in srgb, currentColor 54%, transparent); font-size: 9px; }
 
 /* Compact density: tighter cells and stacked labels, not just smaller media. */

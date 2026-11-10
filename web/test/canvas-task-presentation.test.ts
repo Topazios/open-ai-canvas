@@ -29,6 +29,8 @@ describe("canvas task identity", () => {
         const task = child("map-3"); task.clientContext!.sourceLabel = "第 4 集 · 雨夜";
         expect(canvasTaskPresentation(task, [root], [node])).toMatchObject({ work: "材料提取 · 第 4 批", source: "第 4 集 · 雨夜" });
         expect(canvasTaskPresentation(child("shared-facts-v1"), [], []).work).toBe("共享正文解析");
+        expect(canvasTaskPresentation(child("outline-spine-21-40"), [root], [node]).work).toBe("锁定第 21–40 集主线");
+        expect(canvasTaskPresentation(child("outline-range-21-25"), [root], [node]).work).toBe("生成第 21–25 集集纲");
     });
     test("ordinary media and malformed legacy data have readable fallbacks", () => {
         const image = { ...root, id: "image", operation: "image", type: "canvas_image", prompt: "人物正面肖像", inputJson: "broken", clientContext: undefined };

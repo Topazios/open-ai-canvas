@@ -27,6 +27,16 @@ func productionPlanDocumentFixture(fields string) map[string]string {
 	for _, field := range strings.Fields(fields) {
 		document[field] = "明确制作设计：" + field + "\n补充执行细节。"
 	}
+	if _, ok := document["appearance"]; ok {
+		kind := "prop"
+		if _, character := document["personality"]; character {
+			kind = "character"
+		}
+		document["appearance"] = productionAssetSpecificationFixture(kind)
+	}
+	if _, ok := document["layout"]; ok {
+		document["layout"] = productionAssetSpecificationFixture("environment")
+	}
 	return document
 }
 

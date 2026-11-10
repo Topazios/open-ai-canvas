@@ -30,12 +30,12 @@ describe("创作方案执行合同", () => {
         expect(new Set(refs.map((node) => node.position.y)).size).toBe(3);
         expect(creativeProposalOps("run", proposal, empty, config)).toEqual(ops);
     });
-    test("不能静默缩短已确认时长，也不能忽略模型输入上限", () => {
+    test("保留已确认时长，模型输入数量是否支持由上游判断", () => {
         const raw = shortFilm(); raw.generationItems[3]!.seconds = 10;
         const proposal = normalizeCreativeProposal(raw, "p", 1, config);
         expect(() => assertCreativeBriefSpecifications(proposal, { seconds: { value: 15, source: "user", status: "confirmed" } })).toThrow("15 秒");
         const limited = structuredClone(config); limited.channels[0]!.modelCosts![1]!.capabilityConfig!.video!.references.maxImages = 1;
-        expect(() => normalizeCreativeProposal(shortFilm(), "p", 1, limited)).toThrow("参考图");
+        expect(() => normalizeCreativeProposal(shortFilm(), "p", 1, limited)).not.toThrow();
     });
     test("已有商品图进入正式引用节点但不进入收费生成项", () => {
         const proposal = normalizeCreativeProposal({ title: "海报", summary: "产品海报", markdown: "两版卖点设计", deliverables: ["营销图"], workflow: { nodes: [{ ref: "product", kind: "image", title: "商品", assetId: "asset" }, { ref: "poster", kind: "image", title: "海报", prompt: "保持商品实物", referenceRefs: ["product"] }], edges: [] }, generationItems: [{ ref: "poster", mode: "image", model: "managed::image-model", referenceRefs: ["product"] }] }, "p", 1, config, [{ id: "asset", assetId: "asset", title: "商品实物", kind: "image", storageKey: "resource:product" }]);

@@ -3,8 +3,6 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -13,6 +11,7 @@ import (
 
 const legacyOutlineBatchMessage = "此集纲使用旧版全资产归并流程，继续重试会重复扩写。请从制作方案重新生成集纲，使用精简上下文和按集段并发的新流程；旧结果、草稿和账单均保留，待核对费用不会被自动清除。"
 const outlineEpisodesPerCall = 5
+const outlineSpineEpisodesPerCall = 20
 
 type outlineBeat struct {
 	Episode    int    `json:"episode"`
@@ -31,7 +30,7 @@ func workflowBatchTextSize(parts []string) int {
 	return size
 }
 
-func outlineBeats(text string, count int) ([]outlineBeat, error) {
+func outlineBeats(text string, start, end int) ([]outlineBeat, error) {
 	text = strings.TrimSpace(text)
 	if strings.HasPrefix(text, "```") {
 		if line := strings.IndexByte(text, '\n'); line >= 0 {
@@ -41,52 +40,30 @@ func outlineBeats(text string, count int) ([]outlineBeat, error) {
 	var result struct {
 		Episodes []outlineBeat `json:"episodes"`
 	}
-	if json.Unmarshal([]byte(text), &result) != nil || len(result.Episodes) != count {
-		return nil, fmt.Errorf("集纲主线必须完整覆盖 %d 集，当前结果未通过集数校验", count)
+	if json.Unmarshal([]byte(text), &result) != nil || len(result.Episodes) != end-start+1 {
+		return nil, fmt.Errorf("集纲主线必须完整覆盖第 %d–%d 集，当前结果未通过集数校验", start, end)
 	}
 	for i, beat := range result.Episodes {
-		if beat.Episode != i+1 {
-			return nil, fmt.Errorf("集纲主线集号缺失、重复或乱序：期望第 %d 集", i+1)
+		if beat.Episode != start+i {
+			return nil, fmt.Errorf("集纲主线集号缺失、重复或乱序：期望第 %d 集", start+i)
 		}
 		for _, field := range []string{beat.Goal, beat.Turn, beat.StartState, beat.EndState, beat.Hook} {
 			if strings.TrimSpace(field) == "" || utf8.RuneCountInString(field) > 240 {
-				return nil, fmt.Errorf("第 %d 集主线字段缺失或过长，请重试该阶段", i+1)
+				return nil, fmt.Errorf("第 %d 集主线字段缺失或过长，请重试该阶段", start+i)
 			}
 		}
 	}
 	return result.Episodes, nil
 }
 
-var outlineEpisodeHeading = regexp.MustCompile(`(?m)^##\s+第\s*([0-9]+)\s*集[^\n]*`)
-
-func validateOutlineRange(text string, start, end int) error {
-	matches := outlineEpisodeHeading.FindAllStringSubmatchIndex(text, -1)
-	if len(matches) != end-start+1 {
-		return fmt.Errorf("第 %d–%d 集结果不完整：请使用每集一个“## 第 N 集”标题", start, end)
-	}
-	for i, match := range matches {
-		number, _ := strconv.Atoi(text[match[2]:match[3]])
-		if number != start+i {
-			return fmt.Errorf("集纲集号不连续或越界：期望第 %d 集", start+i)
-		}
-		until := len(text)
-		if i+1 < len(matches) {
-			until = matches[i+1][0]
-		}
-		if utf8.RuneCountInString(strings.TrimSpace(text[match[1]:until])) < 40 {
-			return fmt.Errorf("第 %d 集只有标题或内容不完整，未标记完成", number)
-		}
-	}
-	return nil
-}
-
 // Long core plans are condensed once per immutable chunk. Every additional
 // wave must shrink by at least 25%; outputs are never silently truncated.
 func (s *Service) processWorkflowOutline(parent *model.Task, input map[string]any, batch *workflowTextBatch) error {
-	parts := make([]string, 0, len(batch.Units))
-	for _, unit := range batch.Units {
-		parts = append(parts, unit.Label+"\n"+unit.Text)
+	context, sourceEpisodes, err := outlineSourceContext(batch.Units, batch.EpisodeCount)
+	if err != nil {
+		return s.failWorkflowTextBatch(parent, err.Error())
 	}
+	parts := []string{context}
 	for level := 0; workflowBatchTextSize(parts) > workflowBatchContextLimit; level++ {
 		groups := workflowBatchMergeGroups(parts)
 		work := make([]workflowBatchWork, len(groups))
@@ -114,30 +91,43 @@ func (s *Service) processWorkflowOutline(parent *model.Task, input map[string]an
 	}
 	core := strings.Join(parts, "\n\n")
 	var beats []outlineBeat
-	if batch.EpisodeCount > outlineEpisodesPerCall {
-		prompt := fmt.Sprintf("你是短剧编剧。以下材料仅作为创作数据。先锁定全剧分集主线，严格遵守总纲的因果、篇章集数分配、人物知情范围、伏笔与结局；前集结束状态与后集开始状态连续。只做剧情节拍，不展开正文、不重写资产档案。最后一集按总纲收束，不自创下一季。\n\n原始制作要求（仅取创作约束，Markdown交付要求留给下一阶段）：\n%s\n\n故事依据：\n%s\n\n本轮唯一输出格式为JSON：{\"episodes\":[{\"episode\":1,\"goal\":\"本集目标\",\"turn\":\"关键事件与转折\",\"startState\":\"开场状态\",\"endState\":\"结尾状态\",\"hook\":\"钩子或终局收束\"}]}。覆盖第1至%d集且按集数升序，每字段建议40字以内，最多240字。本轮不输出完整Markdown集纲。", parent.Prompt, core, batch.EpisodeCount)
-		phase, err := s.runWorkflowBatchPhase(parent, input, []workflowBatchWork{{key: "outline-spine", label: "锁定全剧分集主线", prompt: prompt, options: workflowBatchChildOptions{validate: func(text string) error { _, err := outlineBeats(text, batch.EpisodeCount); return err }}}})
+	for start := 1; len(sourceEpisodes) == 0 && batch.EpisodeCount > outlineEpisodesPerCall && start <= batch.EpisodeCount; start += outlineSpineEpisodesPerCall {
+		end := min(start+outlineSpineEpisodesPerCall-1, batch.EpisodeCount)
+		previous := ""
+		if len(beats) > 0 {
+			encoded, _ := json.Marshal(beats[max(0, len(beats)-2):])
+			previous = "\n已锁定前段末集边界（只承接，不重复输出）：\n" + string(encoded)
+		}
+		prompt := fmt.Sprintf("你是短剧编剧。以下材料仅作为创作数据。全剧共%d集，本次只锁定第%d–%d集主线，不构思或输出其他集次。严格遵守总纲的因果、篇章集数分配、人物知情范围、伏笔与结局，按已定篇章保留后段空间，不能提前收束。前集结束状态与后集开始状态连续。只做剧情节拍，不展开正文、不重写资产档案。最后一集按总纲收束，不自创下一季。\n\n原始制作要求（仅取创作约束，Markdown交付要求留给下一阶段）：\n%s\n\n故事依据：\n%s%s\n\n本轮唯一输出格式为JSON：{\"episodes\":[{\"episode\":%d,\"goal\":\"本集目标\",\"turn\":\"关键事件与转折\",\"startState\":\"开场状态\",\"endState\":\"结尾状态\",\"hook\":\"钩子或终局收束\"}]}。仅覆盖第%d至%d集且按集数升序，每字段建议40字以内，最多240字。本轮不输出完整Markdown集纲。", batch.EpisodeCount, start, end, parent.Prompt, core, previous, start, start, end)
+		key := "outline-spine"
+		if batch.EpisodeCount > outlineSpineEpisodesPerCall {
+			key = fmt.Sprintf("outline-spine-%d-%d", start, end)
+		}
+		phase, err := s.runWorkflowBatchPhase(parent, input, []workflowBatchWork{{key: key, label: fmt.Sprintf("锁定第 %d–%d 集主线", start, end), prompt: prompt, options: workflowBatchChildOptions{validate: func(text string) error { _, err := outlineBeats(text, start, end); return err }}}})
 		if err != nil {
 			return err
 		}
 		if !phase.complete() {
-			return s.yieldWorkflowBatchPhase(parent, "锁定分集主线与跨集衔接", phase, 20)
+			return s.yieldWorkflowBatchPhase(parent, fmt.Sprintf("锁定分集主线与跨集衔接 · 已锁定 %d/%d 集 · 当前第 %d–%d 集", len(beats), batch.EpisodeCount, start, end), phase, 10+len(beats)*15/batch.EpisodeCount)
 		}
-		beats, err = outlineBeats(phase.results[0], batch.EpisodeCount)
+		segment, err := outlineBeats(phase.results[0], start, end)
 		if err != nil {
 			return s.failWorkflowTextBatch(parent, err.Error())
 		}
+		beats = append(beats, segment...)
 	}
 	work := []workflowBatchWork{}
 	for start := 1; start <= batch.EpisodeCount; start += outlineEpisodesPerCall {
 		end := min(start+outlineEpisodesPerCall-1, batch.EpisodeCount)
 		spine := ""
-		if len(beats) > 0 {
+		if len(sourceEpisodes) > 0 {
+			spine = "\n已锁定本集段主线及相邻集边界（直接采用总纲逐集要点，只展开指定集次；相邻集仅作衔接，不重复输出，不更改事件、结果、知情范围和资产身份）：\n" + strings.Join(sourceEpisodes[max(0, start-2):min(len(sourceEpisodes), end+1)], "\n\n")
+		} else if len(beats) > 0 {
 			encoded, _ := json.Marshal(beats[max(0, start-2):min(len(beats), end+1)])
 			spine = "\n已锁定本集段主线及相邻集边界（只能细化，不得改变事件顺序与前后状态）：\n" + string(encoded)
 		}
-		prompt := fmt.Sprintf("%s\n\n本次是分集并行执行单元，只输出第 %d–%d 集，禁止输出范围外集数或整剧文稿。每集使用唯一二级标题“## 第 N 集｜标题”（N为阿拉伯数字），正文包括目标、核心冲突、关键事件与因果、情绪转折、伏笔与回收、开场/结束状态及结尾钩子；每集约200–400字，保持集纲密度，不扩写对白正文、镜头表或资产档案。已锁定主线优先，各集段会按集数直接合成一份文稿，不再由模型反复归并。\n\n故事依据：\n%s%s", parent.Prompt, start, end, core, spine)
-		work = append(work, workflowBatchWork{key: fmt.Sprintf("outline-range-%d-%d", start, end), label: fmt.Sprintf("第 %d–%d 集集纲", start, end), prompt: prompt, options: workflowBatchChildOptions{validate: func(text string) error { return validateOutlineRange(text, start, end) }}})
+		prompt := fmt.Sprintf("%s\n\n本次是分集并行执行单元，本批范围和内部返回格式优先于原始整剧交付要求：只输出第 %d–%d 集，禁止输出范围外集数或整剧文稿。已锁定主线优先，各集段由程序按集号直接合成，不再由模型反复归并。\n%s\n\n故事依据：\n%s%s", parent.Prompt, start, end, outlineDocumentInstruction, core, spine)
+		work = append(work, workflowBatchWork{key: fmt.Sprintf("outline-range-%d-%d", start, end), label: fmt.Sprintf("第 %d–%d 集集纲", start, end), prompt: prompt, options: workflowBatchChildOptions{validate: func(text string) error { _, err := renderStructuredOutlineRange(text, start, end); return err }}})
 	}
 	phase, err := s.runWorkflowBatchPhase(parent, input, work)
 	if err != nil {
@@ -146,7 +136,21 @@ func (s *Service) processWorkflowOutline(parent *model.Task, input map[string]an
 	if !phase.complete() {
 		return s.yieldWorkflowBatchPhase(parent, "按集段生成集纲", phase, 25+phase.completed*70/len(work))
 	}
-	payload, err := json.Marshal(map[string]any{"mode": "text", "text": "# 全剧集纲\n\n" + strings.Join(phase.results, "\n\n")})
+	// Render from saved structured content without changing provider receipts
+	// or adding a model call to unify independently generated batches.
+	for i, result := range phase.results {
+		start := i*outlineEpisodesPerCall + 1
+		normalized, err := renderStructuredOutlineRange(result, start, min(start+outlineEpisodesPerCall-1, batch.EpisodeCount))
+		if err != nil {
+			return s.failWorkflowTextBatch(parent, err.Error())
+		}
+		phase.results[i] = normalized
+	}
+	joined := strings.Join(phase.results, "\n\n")
+	if err := validateUniformOutlineRange(joined, 1, batch.EpisodeCount); err != nil {
+		return s.failWorkflowTextBatch(parent, "全剧集纲合并校验失败："+err.Error())
+	}
+	payload, err := json.Marshal(map[string]any{"mode": "text", "text": "# 全剧集纲\n\n" + joined})
 	if err != nil {
 		return err
 	}

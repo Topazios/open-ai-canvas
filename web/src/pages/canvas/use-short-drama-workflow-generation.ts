@@ -33,6 +33,7 @@ type Options = {
     save: (options?: { quiet?: boolean }) => Promise<boolean>; center: () => Position; focus: (id: string) => void;
     bindTask: (id: string, task: GenerationTask) => void;
     applyResult: (id: string, task: GenerationTask) => Promise<void>;
+    submissionNodeIdsRef?: { current: Set<string> };
 };
 
 // Shot splitting only needs the episode body. Rules, assets, upstream edits and
@@ -104,14 +105,29 @@ export function useShortDramaWorkflowGeneration(options: Options) {
     const [submitting, setSubmitting] = useState(false);
     const lock = useRef(false);
     const lifetime = useRef(new AbortController());
-    const activeRunController = useRef<AbortController | null>(null);
+    const activeRunControllers = useRef(new Set<AbortController>());
+    const localSubmissionNodeIdsRef = useRef(new Set<string>());
+    const submissionNodeIdsRef = options.submissionNodeIdsRef ?? localSubmissionNodeIdsRef;
     // Resolves once a submitted task has been applied to its node (or its monitor gave up).
     const pendingResults = useRef(new Map<string, Promise<void>>());
     const scope = getActiveUserScope();
     useEffect(() => {
         const controller = new AbortController(); lifetime.current = controller;
-        return () => { controller.abort(); activeRunController.current?.abort(); };
+        return () => { controller.abort(); for (const active of activeRunControllers.current) active.abort(); };
     }, [options.projectId, scope]);
+
+    const beginSubmission = () => {
+        const controller = new AbortController();
+        activeRunControllers.current.add(controller);
+        lock.current = true;
+        setSubmitting(true);
+        return controller;
+    };
+    const finishSubmission = (controller: AbortController) => {
+        activeRunControllers.current.delete(controller);
+        lock.current = activeRunControllers.current.size > 0;
+        setSubmitting(lock.current);
+    };
 
     const submit = async (ids: string[], signal: AbortSignal, monitorSignal: AbortSignal) => {
         const context = ref.current;
@@ -366,17 +382,15 @@ export function useShortDramaWorkflowGeneration(options: Options) {
     };
 
     const run = (request: WorkflowGenerationRequest): Promise<void> => {
-        if (lock.current) throw new Error("上一批生成请求正在提交，请稍后再试");
         const context = ref.current;
         const output = shortDramaStep(request.step)?.mediaOutput;
         const mode = output === "image" ? "image" : output === "audio" ? "audio" : "text";
+        if (lock.current && mode !== "image") throw new Error("上一批生成请求正在提交，请稍后再试");
         if (!selectableModelsByCapability(context.config, mode).includes(request.model)) throw new Error(mode === "image" ? "请选择可用的生图模型" : mode === "audio" ? "请选择可用的音频模型" : "请选择可用的文本模型");
-        const runController = new AbortController();
+        const runController = beginSubmission();
         const monitorSignal = lifetime.current.signal;
-        activeRunController.current = runController;
         const signal = AbortSignal.any([monitorSignal, runController.signal]);
         const valid = () => !signal.aborted && context.projectId === ref.current.projectId && getActiveUserScope() === scope;
-        lock.current = true; setSubmitting(true);
         const execute = async () => {
             let createdIds: string[] = [];
             try {
@@ -394,8 +408,9 @@ export function useShortDramaWorkflowGeneration(options: Options) {
                     ? createWorkflowImages(currentRequest, context.nodesRef.current, currentConnections, context.center(), mergedImageCapabilityConfig(context.config, request.model))
                     : mode === "audio" ? createWorkflowSounds(currentRequest, context.nodesRef.current, currentConnections, context.center())
                     : createWorkflowDocuments(currentRequest, context.nodesRef.current, currentConnections, context.center());
-                context.setNodes(prepared.nodes); context.setConnections(prepared.connections);
                 createdIds = prepared.created.map((node) => node.id);
+                for (const id of createdIds) submissionNodeIdsRef.current.add(id);
+                context.setNodes(prepared.nodes); context.setConnections(prepared.connections);
                 await saveWorkflowCanvasUntilSynced(context.save, signal, () => context.setNodes((nodes) => nodes.map((node) => createdIds.includes(node.id)
                     ? { ...node, metadata: { ...node.metadata, status: "loading", taskStage: "等待云端保存", errorDetails: undefined } }
                     : node)));
@@ -411,27 +426,26 @@ export function useShortDramaWorkflowGeneration(options: Options) {
                     message.error(reason);
                 }
             } finally {
-                if (activeRunController.current === runController) activeRunController.current = null;
-                lock.current = false;
-                setSubmitting(false);
+                for (const id of createdIds) submissionNodeIdsRef.current.delete(id);
+                finishSubmission(runController);
             }
         };
         return execute();
     };
     const resume = async (id: string) => {
-        if (lock.current) return;
-        lock.current = true; setSubmitting(true);
-        let ids: string[] = [];
         const context = ref.current;
-        const runController = new AbortController();
+        const node = context.nodesRef.current.find((entry) => entry.id === id);
+        const data = node?.metadata?.shortDrama;
+        if (lock.current && data?.mediaKind !== "image") return;
+        const candidates = data?.role === "collection" ? data.sourceNodeIds : node?.type === "frame"
+            ? context.nodesRef.current.filter(member => member.parentId === id).map(member => member.id) : [id];
+        const ids = [...new Set(candidates)].filter(nodeId => !submissionNodeIdsRef.current.has(nodeId) && context.nodesRef.current.find(entry => entry.id === nodeId)?.metadata?.shortDrama?.submission === "planned");
+        if (!ids.length) return;
+        for (const nodeId of ids) submissionNodeIdsRef.current.add(nodeId);
+        const runController = beginSubmission();
         const monitorSignal = lifetime.current.signal;
-        activeRunController.current = runController;
         const signal = AbortSignal.any([monitorSignal, runController.signal]);
         try {
-            const node = ref.current.nodesRef.current.find((node) => node.id === id);
-            const data = node?.metadata?.shortDrama;
-            ids = data?.role === "collection" ? data.sourceNodeIds : node?.type === "frame"
-                ? ref.current.nodesRef.current.filter(member => member.parentId === id && member.metadata?.shortDrama?.submission === "planned").map(member => member.id) : [id];
             await submit(ids, signal, monitorSignal);
         }
         catch (error) {
@@ -446,9 +460,8 @@ export function useShortDramaWorkflowGeneration(options: Options) {
             }
         }
         finally {
-            if (activeRunController.current === runController) activeRunController.current = null;
-            lock.current = false;
-            setSubmitting(false);
+            for (const nodeId of ids) submissionNodeIdsRef.current.delete(nodeId);
+            finishSubmission(runController);
         }
     };
     const groupEpisodes = async (id: string | string[], targetId?: string) => {
@@ -461,5 +474,5 @@ export function useShortDramaWorkflowGeneration(options: Options) {
         } catch (error) { message.error(error instanceof Error ? error.message : "分组失败"); }
     };
     const waitForNode = (id: string) => pendingResults.current.get(id) ?? Promise.resolve();
-    return { run, resume, cancel: () => activeRunController.current?.abort(), groupEpisodes, submitting, submissionLock: lock, waitForNode };
+    return { run, resume, cancel: () => { for (const controller of activeRunControllers.current) controller.abort(); }, groupEpisodes, submitting, submissionLock: lock, waitForNode };
 }

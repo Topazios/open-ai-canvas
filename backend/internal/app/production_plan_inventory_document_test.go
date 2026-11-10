@@ -32,8 +32,8 @@ func TestProductionPlanInventoryDocumentSortsCategoriesAndStoryPriority(t *testi
 	plan := productionPlan{Assets: []productionPlanAsset{
 		{Key: "prop-2", Kind: "prop", Name: "线索证物", Priority: 2},
 		{Key: "env-1", Kind: "environment", Name: "核心场景", Priority: 1},
-		{Key: "char-2", Kind: "character", Name: "重要配角", Priority: 2},
-		{Key: "char-1", Kind: "character", Name: "主角", Priority: 1},
+		{Key: "char-2", Kind: "character", Name: "重要配角", Priority: 2, Identity: &productionAssetIdentity{Code: "CHR-D001-001"}},
+		{Key: "char-1", Kind: "character", Name: "主角", Priority: 1, Identity: &productionAssetIdentity{Code: "CHR-D001-099"}},
 		{Key: "prop-1", Kind: "prop", Name: "主线钥匙", Priority: 1},
 	}}
 	content, err := productionRenderPlanInventory(plan)

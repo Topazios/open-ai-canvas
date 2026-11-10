@@ -1,4 +1,4 @@
-import { defaultImageCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, STANDARD_IMAGE_SIZE_VALUES, videoDurationAllowed, type ImageCapabilityConfig } from "@/lib/model-capabilities";
+import { defaultImageCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, STANDARD_IMAGE_SIZE_VALUES, type ImageCapabilityConfig } from "@/lib/model-capabilities";
 import { videoResolutionComparisonKey } from "@/lib/video-generation-options";
 import { imageSizePresets } from "@/lib/image-size-presets";
 import { modelOptionName, PUBLIC_MODEL_CATALOG_ID, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
@@ -62,6 +62,8 @@ export function configuredModelDisplayName(config: AiConfig, value: string) {
 export function modelCompatibilityError(config: AiConfig, model: string, requirements?: ModelRequirements) {
     const capability = requirements?.capability;
     if (!capability) return "";
+    // Video capability metadata supplies defaults, not an upstream admission policy.
+    if (capability === "video") return "";
     const input = requirements?.input;
     const visualInputCount = input ? input.imageCount + input.characterCount : 0;
     const channel = resolveModelChannel(config, model);
@@ -88,18 +90,6 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
         return "";
     }
 
-    if (capability === "video") {
-        const profile = modelCapabilityConfigFor(config, model).video!;
-        if (requirements.videoSeconds && !videoDurationAllowed(profile, Number(requirements.videoSeconds))) return "不支持当前视频时长";
-        if (!input) return "";
-        if (visualInputCount > profile.references.maxImages) return `最多支持 ${profile.references.maxImages} 张参考图`;
-        if (input.videoCount > profile.references.maxVideos) return `最多支持 ${profile.references.maxVideos} 个参考视频`;
-        if (input.audioCount > profile.references.maxAudios) return `最多支持 ${profile.references.maxAudios} 个参考音频`;
-        const operation = resolveVideoOperation(input, requirements.videoOperation);
-        if (operation !== "concat" && !profile.operations.includes(operation)) return `不支持${videoOperationLabel(operation)}`;
-        return "";
-    }
-
     if (!input) return "";
 
     if (capability === "text") {
@@ -115,11 +105,12 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
 }
 
 export function modelPromptLengthError(config: AiConfig, model: string, capability: ModelCapability, prompt: string) {
+    if (capability === "video") return "";
     const channel = resolveModelChannel(config, model);
     const configuredProfile = channel.modelCosts?.find((item) => item.model === modelOptionName(model))?.capabilityConfig;
     if (!configuredProfile) return "";
     const profile = modelCapabilityConfigFor(config, model);
-    const maxChars = capability === "text" ? profile.text?.references.promptMaxChars : capability === "image" ? profile.image?.references.promptMaxChars : capability === "video" ? profile.video?.references.promptMaxChars : undefined;
+    const maxChars = capability === "text" ? profile.text?.references.promptMaxChars : capability === "image" ? profile.image?.references.promptMaxChars : undefined;
     if (!maxChars || maxChars <= 0) return "";
     const actualChars = Array.from(prompt).length;
     if (actualChars <= maxChars) return "";
@@ -221,6 +212,7 @@ export function compatibleModelInGroup(config: AiConfig, models: string[], requi
 
 export function resolveCompatibleModel(config: AiConfig, selected: string, requirements?: ModelRequirements) {
     if (!requirements?.capability) return selected;
+    if (requirements.capability === "video") return selected;
     const options = selectableModelsByCapability(config, requirements.capability);
     if (!options.length) return selected;
     const selectedGroup = groupModelsByDisplayName(config, options).find((group) => group.models.includes(selected));
@@ -293,15 +285,10 @@ export function resolveModelGenerationDefaults(
     }
 
     if (capability === "video" && profile.video) {
-        const normalized = normalizeVideoValue(profile.video, {
-            seconds: source("videoSeconds"),
-            ratio: source("size"),
-            resolution: source("vquality"),
-        });
         return {
-            videoSeconds: normalized.seconds,
-            size: normalized.ratio,
-            vquality: normalized.resolution.replace(/p$/i, ""),
+            videoSeconds: source("videoSeconds") ?? String(profile.video.duration.default),
+            size: source("size") ?? profile.video.defaultRatio,
+            vquality: source("vquality") ?? profile.video.defaultResolution.replace(/p$/i, ""),
             videoGenerateAudio: source("videoGenerateAudio") ?? String(profile.video.generateAudio.default),
             videoWatermark: source("videoWatermark") ?? String(profile.video.watermark.default),
         };
@@ -319,24 +306,25 @@ export function resolveModelVideoBooleanOptions(
     const profile = modelCapabilityConfigFor(config, model).video!;
     const defaults = resolveModelGenerationDefaults(config, model, "video", explicit, fallback);
     return {
-        videoGenerateAudio: profile.generateAudio.supported ? defaults.videoGenerateAudio ?? String(profile.generateAudio.default) : "false",
-        videoWatermark: profile.watermark.supported ? defaults.videoWatermark ?? String(profile.watermark.default) : "false",
+        videoGenerateAudio: defaults.videoGenerateAudio ?? String(profile.generateAudio.default),
+        videoWatermark: defaults.videoWatermark ?? String(profile.watermark.default),
     };
 }
 
 export function maxModelInputCapacity(config: AiConfig, capability: "image" | "video", kind: "image" | "video" | "audio") {
+    if (capability === "video") return Infinity;
     const options = selectableModelsByCapability(config, capability);
     if (!options.length) return null;
     return options.reduce((maximum, model) => {
         const profile = modelCapabilityConfigFor(config, model);
-        const value =
-            capability === "image" ? (kind === "image" ? profile.image!.references.maxImages : 0) : kind === "image" ? profile.video!.references.maxImages : kind === "video" ? profile.video!.references.maxVideos : profile.video!.references.maxAudios;
+        const value = kind === "image" ? profile.image!.references.maxImages : 0;
         return Math.max(maximum, value);
     }, 0);
 }
 
 export function modelGroupReferenceLimits(config: AiConfig, selected: string, capability: ModelCapability, requirements?: ModelRequirements): ModelReferenceLimits | undefined {
-    if (capability !== "image" && capability !== "video") return undefined;
+    if (capability === "video") return { maxImages: Infinity, maxVideos: Infinity, maxAudios: Infinity };
+    if (capability !== "image") return undefined;
     const options = selectableModelsByCapability(config, capability);
     const selectedGroup = groupModelsByDisplayName(config, options).find((group) => group.models.includes(selected));
     const groupModels = selectedGroup?.models || (selected ? [selected] : []);
@@ -373,13 +361,4 @@ export function inferVideoOperation(input: ModelInputSummary) {
 export function resolveVideoOperation(input: ModelInputSummary, storedOperation?: string) {
     if (storedOperation && !["text_to_video", "image_to_video", "audio_to_video", "extend", "reference_to_video"].includes(storedOperation)) return storedOperation;
     return inferVideoOperation(input);
-}
-
-function videoOperationLabel(operation: string) {
-    if (operation === "text_to_video") return "文生视频";
-    if (operation === "image_to_video") return "图生视频";
-    if (operation === "audio_to_video") return "音频生视频";
-    if (operation === "reference_to_video") return "全模态参考";
-    if (operation === "extend") return "视频续写";
-    return "当前生成模式";
 }

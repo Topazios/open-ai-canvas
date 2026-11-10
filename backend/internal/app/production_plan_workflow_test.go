@@ -16,6 +16,13 @@ func orderedPlanDocument(key, kind string) map[string]string {
 	for _, section := range productionPlanDocumentSections(key, kind) {
 		document[section.Key] = section.Title + "：明确的制作设计；与选题和本版规范一致。"
 	}
+	if specification := productionAssetSpecificationFixture(kind); specification != "" {
+		field := "appearance"
+		if kind == "environment" {
+			field = "layout"
+		}
+		document[field] = specification
+	}
 	return document
 }
 

@@ -4,6 +4,8 @@
 
 ## 设计沉淀
 
+- [总纲与资产总表分阶段生成](content/docs/backend/production-staged-flow.mdx)：命名字段、小任务依赖、来源证据、持久回执、局部修复、主任务租约与手动恢复。
+
 - [画布任务运行时现状与重构分析](design/task-runtime-reconstruction-analysis.md)：梳理参数构造、任务受理、队列、调度、执行与结果回填的现状和优化方向（分析提案）。
 
 - [公共任务运行时完整实施规格](plans/task-runtime-implementation-plan.md) · [分批执行与验收手册](plans/task-runtime-implementation-runbook.md)：公共构造器、幂等受理、队列/调度/执行边界、监控页面、数据迁移、R0–R9 接线与回退条件（待实施）。

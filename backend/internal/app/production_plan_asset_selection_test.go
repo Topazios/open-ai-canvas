@@ -170,24 +170,17 @@ func TestProductionPlanAssetGenerationCreatesReusableCanvasPlaceholders(t *testi
 	}
 }
 
-func TestProductionPlanAssetAppendMustBeExplicitForModelSelection(t *testing.T) {
+func TestProductionPlanAssetRequestSettingsAreNotDiscarded(t *testing.T) {
 	if productionAssetModelSelectionEmpty(ProductionAssetModelSelection{ContinueAppend: true}) {
 		t.Fatal("append-only selection was ignored")
 	}
 	if !productionAssetModelSelectionEmpty(ProductionAssetModelSelection{}) {
 		t.Fatal("empty model selection should remain empty")
 	}
-	fresh := ProductionAssetModelSelection{}
-	if productionPlanAssetAppendAuthorized(&fresh) {
-		t.Fatal("plan-level generation must not implicitly append")
-	}
-	append := ProductionAssetModelSelection{ContinueAppend: true}
-	if !productionPlanAssetAppendAuthorized(&append) || productionPlanAssetAppendAuthorized(nil) {
-		t.Fatal("only the explicit append control may authorize adding work")
-	}
-	manifest := productionManifest{Plan: &productionPlan{AssetsStarted: true, SelectedAssetKeys: []string{"character"}}}
-	if !productionPlanAssetSelectionIsIdempotent(manifest, []string{"character"}) || productionPlanAssetSelectionIsIdempotent(manifest, []string{"environment"}) {
-		t.Fatal("active duplicate submission and new work were not distinguished")
+	for _, selection := range []ProductionAssetModelSelection{{Regenerate: true}, {RequestID: "retry-id"}} {
+		if productionAssetModelSelectionEmpty(selection) {
+			t.Fatal("version or idempotency request was discarded")
+		}
 	}
 }
 
@@ -539,8 +532,8 @@ func TestProductionPlanAssetRetrySettlesSucceededUncommittedTask(t *testing.T) {
 			recovered = &rows[i]
 		}
 	}
-	if recovered == nil || !productionArtifactMatches(productionNode(doc, recovered.NodeID), recovered.ContentHash) || !slices.Contains(manifest.Plan.NewVersionAssetKeys, "character") {
-		t.Fatal("recovered response was not preserved before the explicitly requested new version")
+	if recovered == nil || !productionArtifactMatches(productionNode(doc, recovered.NodeID), recovered.ContentHash) || slices.Contains(manifest.Plan.NewVersionAssetKeys, "character") {
+		t.Fatal("ordinary retry must recover the response without creating a new version")
 	}
 	_, state = productionRuntimeState(t, s, runID)
 	if state.ProductionParallel["character"].TaskID != "" {
@@ -621,7 +614,7 @@ func TestProductionPlanAssetSelectionRecoversStaleRunningCheckpointAsNewBatch(t 
 		t.Fatal(err)
 	}
 	s.disablePiRuntime = true
-	if err := s.GenerateProductionPlanAssets("user", runID, []string{"character"}); err != nil {
+	if err := s.GenerateProductionPlanAssets("user", runID, []string{"character"}, ProductionAssetModelSelection{Regenerate: true}); err != nil {
 		t.Fatalf("stale running checkpoint should start a fresh asset version: %v", err)
 	}
 	updated, next := productionRuntimeState(t, s, runID)

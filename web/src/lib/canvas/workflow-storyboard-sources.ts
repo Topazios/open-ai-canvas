@@ -1,6 +1,14 @@
 import type { CanvasNodeData } from "@/types/canvas";
 import { ShortDramaStep } from "../short-drama-steps";
 
+export function storyboardAppendEpisodes(source: CanvasNodeData | undefined, nodes: CanvasNodeData[], pipelineId: string, collectionId?: string) {
+    const collection = nodes.find(node => node.id === collectionId)?.metadata?.shortDrama;
+    const occupied = new Set(nodes.filter(node => collectionId && (node.parentId === collectionId || collection?.sourceNodeIds.includes(node.id)))
+        .map(node => node.metadata?.shortDrama?.episodeNumber));
+    return storyboardBodyMembers(source, nodes, pipelineId).map(node => node.metadata!.shortDrama!.episodeNumber!)
+        .filter(episode => !occupied.has(episode)).sort((a, b) => a - b);
+}
+
 /** Storyboard splitting consumes the selected body snapshot, not its workflow status. */
 export function storyboardBodyMembers(source: CanvasNodeData | undefined, nodes: CanvasNodeData[], pipelineId: string) {
     const data = source?.metadata?.shortDrama;

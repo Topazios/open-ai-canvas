@@ -96,7 +96,7 @@ export function CanvasNodeActionBar({ node, theme, readOnly = false, onOpenInfo,
 
     return (
         <div
-            className="pointer-events-auto absolute inset-x-0 bottom-0 z-[var(--node-z-overlay)] flex min-h-10 min-w-0 justify-start border-t px-2 py-1.5 backdrop-blur-xl"
+            className="pointer-events-auto absolute inset-x-0 bottom-0 z-[var(--node-z-overlay)] flex min-h-10 min-w-0 items-center justify-start gap-2 border-t px-2 py-1.5 backdrop-blur-xl"
             style={{ borderColor: theme.node.stroke, background: `${theme.toolbar.panel}e8` }}
             data-canvas-no-zoom
             onPointerDown={(event) => event.stopPropagation()}
@@ -121,6 +121,9 @@ export function CanvasNodeActionBar({ node, theme, readOnly = false, onOpenInfo,
                     />
                 ))}
             </div>
+            {isText ? <span className="ml-auto shrink-0 whitespace-nowrap text-[var(--fs-label)]" style={{ color: theme.node.muted }} aria-label="文稿字数">
+                {(node.metadata?.content?.length ?? 0).toLocaleString("zh-CN")} 字符
+            </span> : null}
         </div>
     );
 }

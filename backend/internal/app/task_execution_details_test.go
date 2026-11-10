@@ -118,6 +118,21 @@ func TestTaskExecutionDetailsFirstDispatchSurvivesRetryAndTruncatedHistory(t *te
 	}
 }
 
+func TestTaskExecutionDetailsOutlineSpineRangeLabel(t *testing.T) {
+	s, db, _, _ := creationTestService(t)
+	parent := model.Task{ID: "spine-parent", UserID: "owner", Type: "canvas_text", Operation: workflowBatchOperation, InputJSON: `{}`}
+	child := model.Task{ID: "wb-spine-range-1", UserID: "owner", Type: "canvas_text", InputJSON: `{"metadata":{"parentTaskId":"spine-parent","batchKey":"outline-spine-21-40"}}`}
+	for _, task := range []*model.Task{&parent, &child} {
+		if err := db.Create(task).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.TaskExecutionDetails("owner", parent.ID)
+	if err != nil || len(got.Steps) != 1 || got.Steps[0].Label != "锁定第 21–40 集主线" {
+		t.Fatalf("spine range detail lost its scope: %+v err=%v", got, err)
+	}
+}
+
 func TestTaskExecutionDetailsSharedVersionIsolation(t *testing.T) {
 	s, db, _, _ := creationTestService(t)
 	input := map[string]any{"mode": "text", "config": map[string]any{}, "workflowBatch": workflowTextBatch{Version: 2, Scope: "pipeline", Category: "characters", Units: []workflowTextUnit{{Label: "第1集", Text: "当前正文"}}}}

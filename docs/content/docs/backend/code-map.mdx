@@ -5,6 +5,64 @@ description: 从产品功能快速定位主要代码入口
 
 # 代码功能地图
 
+- `production_flow_coordinator.go` 挂起残留流程单元时不补造空任务；`cloud_agent_runtime_media.go` 的取消入口在协调器收尾失败后仍保存终态和持久清理标记。`cloud_agent_recovery.go` 结合 `ActiveAgentTaskIDs` 查询任务归属，批量读取轻量状态后只取消活动子任务，损坏检查点也可清理。
+- `production-agent-state.ts` 的 `canCancelProductionAgent` 统一节点及容器的取消入口，暂停/等待及待清理终态保持可操作，已完成或清理完成的取消任务隐藏按钮。
+- `production_document_scope.go` 的 `productionAssetWorkContext` 为单项资产构建当前主体与公共规则输入，`production_parallel.go` 绕过完整总表上下文。`production_bound_submission.go` 仅归位已声明、无冲突的外层章节，最终完整性检查保持不变；`production_agent_artifact.go` 按类别检查显示名称。`production_flow_progress.go` 在资产阶段隐藏旧方案发布进度；`production_asset_execution_test.go` 覆盖输入范围、结果保存、同名跨类别和损坏/残留状态取消。
+
+- `internal/canvas/integrity/document.go` 对完整画布执行线性归属检查，级联清理被删容器后代、批次和画面绑定、缺失父节点、归属循环及悬空引用。`repository/canvas_history.go` 在画布 CAS 事务内保存清理结果与全部删除记录，保留未知 JSON 字段和资源历史保护。`canvas_node_tasks.go` 与 `production_asset_task_cleanup.go` 按持久删除记录取消完成稿及占位的对应任务；空的 `selectedAssetKeys` 明确序列化为数组。
+
+- `canvas-document-integrity.ts` 为前端删除、增量/快照合并、同步上传提供同一归属规则；`canvas-project-domain.ts` 删除所有层级后继续处理分镜引用及批次主图。`user-data-sync.ts` 在计算同步哈希与资源上传前清理文档，待确认删除记录也按整棵子树过滤；有效独立根节点保留。
+
+- `production_asset_background.go` 从本版资产登记的 `subjectKeys`、`parentKey`、`baseKey` 及反向直接关联构建生活背景摘要，不递归加载档案或增加调度依赖。`production_plan.go`、`production_parallel.go` 注入当前任务，`production_bound_submission.go` 在最终绑定及修复指令中保留背景使用范围。`production_continuity.go` 提供人物身份/服化/言行、场景使用与陈设、道具取得与材质的字段要求；`production_flow_planning.go` 在总纲与登记简介中保留对应已定事实。`productionrules/rules.json` 的资产文本和图像规则同步前后端；`production_asset_background_test.go` 检查实际排队请求及直接关联范围，`asset-background-prompt.test.ts` 检查可见设计经过生图字段投影后保留。
+
+- `canvas-asset-versions.ts` 的 `currentAssetMemberIds` 按容器、流程和资产身份统一选择展示节点，利用资产键关联未分配身份的恢复占位；布局、预览和 `use-canvas-render-model.ts` 使用同一选择。`production_asset_versions.go` 对齐后台规则；`production_plan_groups.go` 按实际末行计算高度，`productionFitFrame` 排除不可见节点并使用容器实际宽度。`canvas-asset-layout-sync.test.ts` 与 `production_asset_layout_sync_test.go` 覆盖历史/占位混排、重复同步及隐藏障碍物。
+
+- `canvas-asset-sheet-context.ts` 的 `assetSheetReferenceSources` 为批量设定板构建按编码唯一的引用视图，当前主体固定所选档案，其他引用沿用所选集合中的较新版本；不合并或修改原档案。`canvas-workflow-generator.tsx` 用于引用菜单，`canvas-workflow-images.ts` 逐图解析并保存来源签名，`canvas-image-prompt-adjustment.ts` 重建时沿用固定主体。`production-asset-references.ts` 仅对实际引用编码检查文稿版本，通用文稿的真实多版本冲突仍报错。
+
+- `production_plan_inventory_document.go`：清单先比较类别与 priority，再比较稳定编码；`production_plan_groups.go` 投影类别主次顺序，`production_asset_versions.go` 只为当前采用的文稿分配网格位置。`canvas-asset-versions.ts` 同步前端版本选择与统计，`canvas-asset-history.tsx` 提供搜索及虚拟文稿预览；`canvas-asset-stack.ts` 为堆叠预览和展开网格提供同一轻量排序。
+
+- `production_asset_subject.go`：核对档案主体声明，系统补入唯一身份栏；`production_planning_asset_index.go`：类别内名称与别名索引、归属/形态隔离、关联及有向循环检查；`production_asset_requests.go`：最多32条请求摘要回执，同事务防止重复提交。`production_flow_planning.go` 本地归并使用范围并重定向引用，不新增逐资产语义请求。`production_asset_specification.go` 校验必需字段、单位、正尺寸和坐标格式，不推断自由文本中的完整几何碰撞。
+
+- `production_plan_asset_admission.go`：类别资产的事务式受理入口，模型路由在画布事务外校验，容器、已知资产占位、范围、运行检查点及画布事件一并提交，不在请求内调用模型。`production_plan_groups.go` 的 `productionAdmitAssetTargets`、`productionMaterializeAssetPlaceholders` 由类别入口、编码重试和调度恢复共用；未被明确删除的缺失容器可恢复，已删除目标等待用户主动重建。`production_parallel.go` 与 `cloud_agent_runtime_media.go` 分别在候选筛选、提交前和事务内核对真实目标，防止只有任务没有节点。`cloud_agent_runtime.go` 在运行 JSON 中暂存清单拆分后的生成参数；前端将受理与画布同步分开并显示准备阶段。
+
+- `asset-sheet-template.ts`：各类设定板的分区容量、列数、等比容纳规则及人物身份标签；人物下方从十六格缩减到最多七格，取消重复脸部区。`asset-reference-sheet.ts`：完整肖像与同一人四视图、自然外观边界，图像合同为 v6；`canvas-workflow-images.ts` 保存新合同和提示词签名。`production_continuity.go`、`production_plan_requirements.go` 将相同约束写入新资产和制作规范；`productionrules/rules.json` 为前后端首尾帧、分镜图与视频提供同一身份解释，前端生成目录由脚本同步。
+
+- `production_asset_specification.go`：在人物/道具 appearance、场景 layout 的既有字段中校验制作规格及坐标，缺项返回明确字段与补写要求；共用 `productionValidatePlanField` 覆盖分批回执、修复和最终保存。`production_continuity.go` 定义按原文事实补全制作设定的规格表要求；声音不参与。`asset-sheet-dimensions.ts` 读取基准章节的表格/标签、单位和组合尺寸，`asset-sheet-template.ts` 按同一来源填资料栏并区分肩宽与胸腰臀。`productionrules/rules.json` 是生图共用规则源，前端由脚本同步生成。
+
+- `use-short-drama-workflow-generation.ts`：图片批次独立登记提交控制器，最后一批退出前保留全局忙碌状态；继续提交按待提交节点领取并排除已被其他批次领取的节点，取消入口通知全部本页提交控制器。`project.tsx` 的图片入口与 `canvas-workflow-generator.tsx` 的图片表单不再使用整张画布提交锁禁用，表单保留单次点击保护。`workflow-image-submission.test.tsx` 使用真实图片创建/分组和模拟任务回执覆盖跨类别追加、原容器及原结果保留、重复领取和全部取消。
+
+- `canvas-task-state.ts`、`use-canvas-generation.ts`：恢复候选按提交归属及最新节点状态筛选，发现请求失败不当作查无任务。`project.tsx` 给工作流提交和恢复共用一组临时节点标记；`use-short-drama-workflow-generation.ts` 在节点发布前登记，提交结束或失败时清理，不写入持久数据。`canvas-editor-consistency.test.ts`、`storyboard-batch-submission.test.tsx` 覆盖待提交占位、在途提交、刷新后回执核对及标记释放。
+
+- `canvas-short-drama-workflow.ts`：分集集纲的来源校验、默认来源和正文追溯，按 v5 独立总纲阶段检查真实文稿，只携带同版本已完成的可用资产与叙事规范；不依赖可复用任务摘要的运行状态，也不把可变容器和摘要写入新集纲的来源签名。`workflow-outline-readiness.test.ts` 覆盖未完后续任务、资产编码、正文衔接及无效来源保护。
+
+- `canvas-asset-stack.ts`、`canvas-asset-stack-preview.tsx/.css`：资产分类识别、有界三项预览、堆叠卡片及展开避让；`canvas-group-grid.ts` 负责默认收起与展开网格，`canvas-frame.ts` 共用切换入口，`agent-canvas-patch.ts` 保留用户展开状态。`canvas-frame-node.tsx` 复用原有详情/重试入口并使用成员集合索引统计，避免大量资产时反复线性查找；节点挂载沿用现有画布虚拟化。
+
+- `production_plan_summary.go`：识别已知系统摘要回退，以完整目标哈希证明来源/参数等未变，在显式资产启动事务内恢复摘要并发布画布事件。`production_plan_summary_test.go` 覆盖场景、道具、声音续建、只读探测、已完成资产保留及真实编辑拒绝。`productionPlan.summaryContent` 与现有 `summaryHash` 同步写入既有清单 JSON，不新增数据库表或模型调用。
+
+- `workflow_outline_source.go`：从当前输入的总纲模板提取完整逐集叙事卡与公共依据，排除全资产巨表并校验集号/列覆盖。`workflow_outline.go`：有骨架直接按五集展开，无骨架按二十集以内补规划并传递前段边界；沿用 `workflow_text_batch.go` 的确定性批次身份和手动重试检查点。任务详情及画布任务列表显示实际主线集段。
+- `workflow_outline_document.go`：分批集纲的结构化合同、六项必填内容验证与确定性 Markdown 排版；处理完整 JSON 围栏、普通前言、字段顺序和换行。`decodeOutlineJSON` 按标准解析器的语法错误位置有限次删除明确多余的闭合括号或尾逗号，感知字符串与转义，不插入内容、不改提示词和调用身份。字段文本不能注入标题或页面代码，资产编码保留。`workflow_outline_format.go` 提供基础集号覆盖检查，最终合并另查固定字段顺序及段落格式。`workflow_outline_document_test.go`、`workflow_outline_format_test.go` 覆盖格式容错、混排拒绝、缺项、集号异常和120集24批已保存结构化调用恢复；不改原模型回执。
+
+- `production_document_scope.go`、`production_plan_workflow.go`：共用规范的完整公共依据投影，排除逐集及资产巨表；`production_document_parts.go`、`production_parallel.go`：五章以内批次、超时缩批和三规范并行；`production_agent_artifact.go`：保留人工编辑规范并另存候选。
+- `canvas-node-action-bar.tsx`、`canvas-text-editor-modal.tsx`：完整源文本字符数、编辑事务后的计数刷新和无正文修改时的原文保存；节点计数位于底部操作栏，避免被操作按钮覆盖。
+
+## 总纲与资产总表分阶段生成
+
+- `production_plan_inventory_document.go` 的 `productionPlanningAssetTables`：总纲与总表共用的完整分类资产表，保留每项名称、简介、别名、用途、必要变体和使用范围；总表额外显示正式编码及精确集数。`production_flow_publish.go` 不再把资产压缩成名称串。
+
+- `production_flow_planning.go`：四字段全局规划、三字段分集要点、四类主要及按单元补充资产登记、精确别名复用、含资产覆盖的局部与远集审读、本地总表汇总；`production_flow_graph.go` 将规划模板版本纳入不可变工作身份。`production_flow_batch.go`：导入文本的资产合批、稳定前缀归并及完整 JSON 成员恢复。
+- `production_flow_admission.go`：自适应调度窗口与共享重试预算；`production_flow_wait.go`：所属任务终态通知及扫描兜底；`production_flow_sources.go`：批量读取采用记录、有界内容指纹缓存，不跳过当前版本检查。
+- `backend/internal/app/production_flow_{graph,contract,runtime,publish,sources}.go`：依赖图、步骤合同、结果接纳、局部修复、总纲和总表汇总。
+- `production_flow_coverage.go`、`production_flow_source_review.go`：导入文本分类覆盖及从已验证候选推导的来源归属；`production_flow_identity.go`：导入文本身份检索、按内容分批及有证据的复核。
+- `production_flow_{split,coordinator,retry,progress}.go`：一次范围调整、主调度租约与停止、手动恢复、持久快照及按需详情。
+- `production_flow_request.go`：字段修复的最小请求合同与停止原因说明；`production_flow_runtime.go` 持久保存临时调用退避，复用既有故障分类和队列准入，网络重试与内容修复分开计数。
+- `production_flow_failure.go`：结算时保留脱敏调用原因、错误码、来源及恢复建议；`production_flow_progress.go`：分阶段分母、采用比例与独立发布状态。`cloud_agent_model_retry.go` 将成功 HTTP 响应内的临时 `upstream_error` 纳入既有有界退避，不重试鉴权、余额、审核等永久问题。
+- `production_flow_inventory_reconcile.go`：复用初次提取重新补漏/归并，隔离核对代次，保留旧表直到整体采用；`production_plan_inventory_document.go` 排版分类序号和稳定编码。完成清单显示稿冲突在 `production_flow_runtime.go` 本地重建，不调用模型。
+- `web/src/components/canvas/canvas-{large-text,virtual}-document.tsx`、`web/src/lib/canvas/virtual-document{,.worker}.ts`：大文稿窗口、行级虚拟预览、后台 Markdown 解析及可终止加载；编辑采用 CodeMirror，不做全文富文本往返转换。
+- `web/src/components/canvas/canvas-large-text-document.css`：大文稿标题区及右侧工具栏布局，窄屏独立换行；`web/vite.config.ts` 固定命名实体解码依赖为无 DOM 实现，避免 Worker 误用 browser 导出。`web/scripts/check-document-worker.mjs` 在构建后直接检查真实 Worker 产物。
+- `backend/internal/model/production_flow.go`、`repository/production_flow.go`：工作单元、各次回执、代次条件更新与用户隔离；迁移 51。
+- `web/src/pages/canvas/canvas-production-agent-details.tsx`：单元进度、采用内容、输入来源和回执；API 沿用 `web/src/services/api/agent.ts`。
+- `web/src/pages/canvas/canvas-production-flow-progress.tsx`：节点及容器详情共享的阶段百分比、完成数、停止原因与单步重试；阶段展开后分批挂载工作单元，原始回执区域同样延迟展开，避免大作业初次打开挂载全部记录。
+
 ## 生成警告与来源
 
 - `backend/internal/app/generation_notice.go`、`task_diagnostic.go`：结构化严重度、内容／本地处理／未知来源说明、按用户与运行隔离的历史事件只读展示；调度终止与依赖约束保留。

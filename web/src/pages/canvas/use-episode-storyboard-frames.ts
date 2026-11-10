@@ -3,7 +3,7 @@ import { App } from "antd";
 import { CanvasNodeType, type CanvasConnection, type CanvasGenerationBatchMode, type CanvasNodeData } from "@/types/canvas";
 import { createCanvasNode } from "@/lib/canvas/canvas-project-domain";
 import { createGenerationRetryContext, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
-import { failedStoryboardBoundaryImagesForRow, materializeStoryboardFrames, storyboardFrameHash, storyboardKeyframePrompt, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
+import { failedStoryboardBoundaryImagesForRow, materializeStoryboardFrames, storyboardFrameHash, storyboardFrameLabels, storyboardKeyframePrompt, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
 import { materializeStoryboardKeyframePlans, storyboardFrameRequests, type StoryboardFrameBatchTarget } from "@/lib/canvas/storyboard-frame-generation";
 import { reconcileStoryboardFramesGroups } from "@/lib/canvas/storyboard-frame-groups";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
@@ -45,12 +45,12 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
         return () => controller.abort();
     }, [projectId]);
     const confirm = useCallback(
-        (count: number, label: string, retry = false, regenerate = false, planCount = 0) =>
+        (count: number, label: string, retry = false, regenerate = false, planCount = 0, selection = "") =>
             new Promise<boolean>((resolve) => {
                 const signal = lifetime.current.signal;
                 const dialog = modal.confirm({
                     title: `确认${label}`,
-                    content: `本次提交 ${count} 个${label}任务，沿用系统并发与正常计费。${planCount ? `其中 ${planCount} 个镜头自动提取关键帧，每镜提取完成后继续生成 1 至 8 张图片。` : ""}${regenerate ? "新结果会替换当前分镜引用，旧图片节点仍保留。" : retry ? "仅重试失败图片，保留已生成和在途图片。上游超时不代表未生成或未扣费，请核对原任务后确认；重试可能再次产生费用。" : ""}${regenerate || retry ? "操作可能再次产生费用。" : ""}`,
+                    content: `${selection ? `本次范围：${selection}。未选中的画面不会加入本批次。` : ""}本次提交 ${count} 个${label}任务，沿用系统并发与正常计费。${planCount ? `其中 ${planCount} 个镜头自动提取关键帧，每镜提取完成后继续生成 1 至 8 张图片。` : ""}${regenerate ? "新结果会替换当前分镜引用，旧图片节点仍保留。" : retry ? "仅重试失败图片，保留已生成和在途图片。上游超时不代表未生成或未扣费，请核对原任务后确认；重试可能再次产生费用。" : ""}${regenerate || retry ? "操作可能再次产生费用。" : ""}`,
                     okText: "确认生成",
                     cancelText: "取消",
                     onOk: () => resolve(true),
@@ -115,7 +115,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                         textCount: 1,
                         status: "idle" as const,
                         ...(retry ? { retryOf: retry.retryOf, attemptGroupId: retry.attemptGroupId, taskClientOperationId: retry.clientOperationId } : {}),
-                        storyboardFramePlan: { scriptId, rowId, sourcePromptHash: storyboardFrameHash(row) },
+                        storyboardFramePlan: { scriptId, rowId, sourcePromptHash: storyboardFrameHash(row), intermediateOnly: true },
                         shortDrama: {
                             stage: "storyboard" as const,
                             step: ShortDramaStep.Keyframes,
@@ -158,6 +158,12 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
             if (locks.current.has(key)) return;
             locks.current.add(key);
             try {
+                // Freeze the caller's explicit selection before confirmation or asynchronous saves.
+                options = { ...options, frameTargets: options.frameTargets?.map(target => ({ ...target })), rowIds: options.rowIds && [...options.rowIds], frameIds: options.frameIds && [...options.frameIds] };
+                if (options.frameTargets && !options.frameTargets.length) {
+                    message.info("请先勾选需要生成的画面");
+                    return;
+                }
                 const prepare = () => {
                     const script = nodesRef.current.find((node) => node.id === scriptId);
                     if (!script) throw new Error("分镜列表已删除");
@@ -179,7 +185,12 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                     const selectedNodes = selectStoryboardFrameModel(nodesRef.current, scriptId, "image", imageConfig.model);
                     const images = materializeStoryboardFrames(script, resolved.requests, selectedNodes, connectionsRef.current, imageConfig.model, settings, resolved.options);
                     const plans = materializeStoryboardKeyframePlans(scriptId, resolved.planRows, images.nodes, textConfig.model, { model: imageConfig.model, settings, regenerate: options.regenerate });
-                    return { ...images, nodes: plans.nodes, planTargets: plans.targets, planCount: resolved.planRows.length };
+                    const selection = options.frameTargets?.map(target => {
+                        const row = rows.find(row => row.id === target.rowId)!;
+                        const label = target.frameId === "key-plan" ? "关键帧（自动提取）" : target.frameId.startsWith("key-") ? `关键帧 ${target.frameId.slice(4)}` : storyboardFrameLabels[target.frameId as "start" | "end"];
+                        return `${row.shotCode || `镜头 ${row.shotNumber}`} · ${label || target.frameId}`;
+                    }).join("；") || "";
+                    return { ...images, nodes: plans.nodes, planTargets: plans.targets, planCount: resolved.planRows.length, selection };
                 };
                 const preview = prepare();
                 const requestedRow = rowId ? nodesRef.current.find((node) => node.id === scriptId)?.metadata?.storyboard?.rows.find((row) => row.id === rowId) : undefined;
@@ -218,7 +229,7 @@ export function useEpisodeStoryboardFrames({ projectId, nodesRef, connectionsRef
                     message.info("已关联现有画面；生成失败的画面可在详情重试");
                     return;
                 }
-                if (!(await confirm(preview.targets.length + preview.planCount, options.failedOnly ? "失败画面重试" : options.regenerate ? "画面生成/重生成" : "画面生成", options.failedOnly, options.regenerate, preview.planCount))) return;
+                if (!(await confirm(preview.targets.length + preview.planCount, options.failedOnly ? "失败画面重试" : options.regenerate ? "画面生成/重生成" : "画面生成", options.failedOnly, options.regenerate, preview.planCount, preview.selection))) return;
                 if (signal.aborted || scope !== getActiveUserScope()) return;
                 if (snapshot !== currentSnapshot()) throw new Error("分镜或关键帧方案已变化，请重新确认生成");
                 let prepared = prepare();

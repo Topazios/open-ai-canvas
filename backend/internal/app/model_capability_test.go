@@ -55,7 +55,7 @@ func TestValidateImagePromptUsesConfiguredUnicodeLimitAndSystemPrompt(t *testing
 	}
 }
 
-func TestValidateVideoTaskRejectsPromptAboveCapabilityLimit(t *testing.T) {
+func TestValidateVideoTaskDefersPromptLimitToUpstream(t *testing.T) {
 	profile := DefaultModelCapabilityConfigForModel("autodl-comfyui", "MiniMax H3").Video
 	profile.References.PromptMaxChars = 10_000
 	input := canvasGenerationInput{
@@ -65,7 +65,7 @@ func TestValidateVideoTaskRejectsPromptAboveCapabilityLimit(t *testing.T) {
 	}
 
 	err := validateVideoTask(profile, input)
-	if err == nil || !strings.Contains(err.Error(), "最多 10000 个字符") || !strings.Contains(err.Error(), "23142 个字符") || !strings.Contains(err.Error(), "不会自动截断") {
+	if err != nil {
 		t.Fatalf("validateVideoTask() error = %v", err)
 	}
 }
@@ -89,16 +89,16 @@ func TestDefaultVideoPromptMaxCharsAllowsComposedCanvasPrompt(t *testing.T) {
 	if err := validateVideoTask(profile, atLimit); err != nil {
 		t.Fatalf("提示词 8000 字符被拒绝: %v", err)
 	}
-	// 超出上限必须明确失败，并保持“不自动截断”的语义。
+	// 超出能力表建议长度仍提交完整提示词，由上游判断。
 	overLimit := composed
 	overLimit.Prompt = strings.Repeat("镜", 8001)
 	err := validateVideoTask(profile, overLimit)
-	if err == nil || !strings.Contains(err.Error(), "最多 8000 个字符") || !strings.Contains(err.Error(), "8001 个字符") {
+	if err != nil {
 		t.Fatalf("validateVideoTask() error = %v", err)
 	}
 }
 
-func TestValidateTaskCapabilityRejectsWorkflowPromptAboveConfiguredLimit(t *testing.T) {
+func TestValidateTaskCapabilityRetainsWorkflowCredentialValidation(t *testing.T) {
 	profile := DefaultModelCapabilityConfigForModel("runninghub-workflow-video", "workflow-video")
 	profile.Video.References.PromptMaxChars = 10_000
 	input := map[string]any{
@@ -111,7 +111,7 @@ func TestValidateTaskCapabilityRejectsWorkflowPromptAboveConfiguredLimit(t *test
 	}
 
 	err := (&Service{}).ValidateTaskCapability(input)
-	if err == nil || !strings.Contains(err.Error(), "完整提示词为 10001 个字符") {
+	if err == nil || !strings.Contains(err.Error(), "API Key") {
 		t.Fatalf("ValidateTaskCapability() error = %v", err)
 	}
 }
@@ -186,21 +186,22 @@ func TestAgnesVideo25CapabilityUsesOfficialLimits(t *testing.T) {
 	}
 }
 
-func TestNormalizeAgnesVideo25CapabilityRepairsLegacyStoredLimits(t *testing.T) {
+func TestNormalizeAgnesVideo25CapabilityPreservesStoredLimits(t *testing.T) {
 	legacy := DefaultModelCapabilityConfigForModel("newapi", "legacy-video")
+	legacy.Video.Duration = VideoDurationConfig{Selection: "range", Min: 1, Max: 40, Step: 1, Default: 24}
 	normalized, err := NormalizeModelCapabilityConfigForModel("video", "agnes-video", "agnes-video-2.5", legacy)
 	if err != nil {
 		t.Fatalf("NormalizeModelCapabilityConfigForModel() error = %v", err)
 	}
-	if normalized.Video.Duration.Min != 4 || normalized.Video.Duration.Max != 12 || normalized.Video.Duration.Default != 5 {
+	if productionStoredValueHash(normalized.Video.Duration) != productionStoredValueHash(legacy.Video.Duration) {
 		t.Fatalf("normalized duration = %#v", normalized.Video.Duration)
 	}
-	if fmt.Sprint(normalized.Video.Resolutions) != fmt.Sprint([]string{"720P", "960P", "2K"}) {
+	if fmt.Sprint(normalized.Video.Resolutions) != fmt.Sprint(legacy.Video.Resolutions) {
 		t.Fatalf("normalized resolutions = %v", normalized.Video.Resolutions)
 	}
-	input := canvasGenerationInput{Config: providerConfig{InterfaceType: "agnes-video", Model: "agnes-video-2.5", VideoSeconds: "15", Size: "16:9", VQuality: "720P"}}
-	if err := validateVideoTask(normalized.Video, input); err == nil {
-		t.Fatalf("validateVideoTask(15 seconds) error = %v", err)
+	input := canvasGenerationInput{Config: providerConfig{InterfaceType: "agnes-video", Model: "agnes-video-2.5", VideoSeconds: "24", Size: "16:9", VQuality: "720p"}}
+	if err := validateVideoTask(normalized.Video, input); err != nil {
+		t.Fatalf("configured 24 seconds rejected: %v", err)
 	}
 }
 
@@ -219,7 +220,7 @@ func TestDefaultVolcengineArkVideoCapabilitySupportsFullModalReference(t *testin
 	}
 }
 
-func TestValidateVolcengineArkFullModalReferenceRejectsTextAndAudioOnly(t *testing.T) {
+func TestValidateVolcengineArkFullModalReferenceDefersAudioSupportToUpstream(t *testing.T) {
 	profile := DefaultModelCapabilityConfigForModel("volcengine-ark-video", "doubao-seedance-2-0-260128").Video
 	input := canvasGenerationInput{
 		Prompt:          "follow the soundtrack",
@@ -228,7 +229,7 @@ func TestValidateVolcengineArkFullModalReferenceRejectsTextAndAudioOnly(t *testi
 		Metadata:        map[string]interface{}{"videoEditOperation": "audio_to_video"},
 	}
 	err := validateVideoTask(profile, input)
-	if err == nil || !strings.Contains(err.Error(), "文本+音频") {
+	if err != nil {
 		t.Fatalf("validateVideoTask() error = %v", err)
 	}
 
@@ -417,7 +418,7 @@ func TestCapabilitySpecFromModelCapabilityConfigAllowsAudioWithoutConfig(t *test
 	}
 }
 
-func TestValidateVideoTaskRequiresDeclaredMinimumImages(t *testing.T) {
+func TestValidateVideoTaskDefersMinimumImagesToUpstream(t *testing.T) {
 	profile := DefaultModelCapabilityConfigForModel("newapi-channel-2", "image-required-video").Video
 	profile.References.MinImages = 1
 	profile.References.MaxImages = 2
@@ -427,7 +428,7 @@ func TestValidateVideoTaskRequiresDeclaredMinimumImages(t *testing.T) {
 	err := validateVideoTask(profile, canvasGenerationInput{
 		Config: providerConfig{Model: "image-required-video", VideoSeconds: "6", Size: "16:9", VQuality: "720"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "至少需要 1 张参考图") {
+	if err != nil {
 		t.Fatalf("validateVideoTask() error = %v", err)
 	}
 }

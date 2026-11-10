@@ -9,13 +9,19 @@ export type StoryboardFrameBatchTarget = Pick<CanvasGenerationBatchItem, "rowId"
 
 /** Resolve placeholder selections before filtering, without widening other selected rows. */
 export function storyboardFrameRequests(rows: StoryboardRow[], nodes: CanvasNodeData[], kind: "all" | "boundary" | "keyframes", options: StoryboardFrameGenerationOptions) {
+    for (const target of options.frameTargets || []) {
+        const row = rows.find(row => row.id === target.rowId);
+        if (!row || target.sourcePromptHash && target.sourcePromptHash !== storyboardFrameHash(row)) {
+            throw new Error("所选画面的分镜已更新或删除，请重新勾选后生成");
+        }
+    }
     const planRows: StoryboardRow[] = [];
     const resolved = { ...options, frameTargets: options.frameTargets ? [...options.frameTargets] : undefined, frameIds: options.frameIds ? [...options.frameIds] : undefined };
     const requests = rows.map(row => {
         if (!storyboardRowIsReady(row)) throw new Error(`镜头 ${row.shotCode || row.shotNumber} 详情尚未完成`);
         const keys = shotKeyframes(row, nodes);
         const needsKeys = kind !== "boundary" && (storyboardFrameRequested(row.id, "key-plan", options) || keys.frames.some(frame => storyboardFrameRequested(row.id, frame.id, options)));
-        if (needsKeys && (!keys.frames.length || keys.error)) planRows.push(row);
+        if (needsKeys && !keys.complete) planRows.push(row);
         if (needsKeys && keys.frames.length && !keys.error && storyboardFrameRequested(row.id, "key-plan", options)) {
             resolved.frameTargets?.push(...keys.frames.map(frame => ({ rowId: row.id, frameId: frame.id })));
             resolved.frameIds?.push(...keys.frames.map(frame => frame.id));
@@ -44,7 +50,7 @@ export function materializeStoryboardKeyframePlans(scriptId: string, rows: Story
         const prompt = storyboardKeyframePrompt(row);
         const plan = createCanvasNode(CanvasNodeType.Text, script.position, {
             prompt, composerContent: prompt, model: textModel, textCount: 1, status: "idle",
-            storyboardFramePlan: { scriptId, rowId: row.id, sourcePromptHash },
+            storyboardFramePlan: { scriptId, rowId: row.id, sourcePromptHash, intermediateOnly: true },
             shortDrama: { stage: "storyboard", step: ShortDramaStep.Keyframes, pipelineId: script.metadata!.shortDrama!.pipelineId, role: "document", sourceNodeIds: [scriptId], sourceSignatures: {}, episodeNumber: script.metadata?.shortDrama?.episodeNumber },
         });
         plan.title = `${row.shotCode || row.shotNumber} · 关键帧提取`;
@@ -69,13 +75,15 @@ export function continueStoryboardFrameGeneration(nodes: CanvasNodeData[], conne
             const latestBatch = script.metadata?.generationBatches?.findLast(entry => entry.items.some(target => target.nodeId === item.nodeId));
             let error: string | undefined;
             let images: CanvasGenerationBatch | undefined;
-            if (latestBatch?.id !== batch.id || !row || row.framePlanNodeId !== item.nodeId || !plan || plan.metadata?.taskStatus === "cancelled" || storyboardFrameHash(row) !== intent.sourcePromptHash) {
+            const binding = plan?.metadata?.storyboardFramePlan;
+            if (latestBatch?.id !== batch.id || !row || row.framePlanNodeId !== item.nodeId || !binding || binding.scriptId !== script.id || binding.rowId !== row.id || binding.sourcePromptHash !== intent.sourcePromptHash || plan?.metadata?.taskStatus === "cancelled" || storyboardFrameHash(row) !== intent.sourcePromptHash) {
                 error = "关键帧提取已取消、删除或分镜已变化，请重新生成画面";
             } else {
                 const keys = shotKeyframes(row, next);
                 try {
-                    if (keys.error || !keys.frames.length) throw new Error(keys.error || "关键帧提取未返回有效画面，请重新生成");
-                    const result = materializeStoryboardFrames(script, [{ row, frames: keys.frames }], next, nextConnections, intent.model, intent.settings, { regenerate: intent.regenerate });
+                    if (!keys.complete) throw new Error(keys.error || "关键帧提取尚未完成，请稍后重试");
+                    const frameTargets = keys.frames.map(frame => ({ rowId: row.id, frameId: frame.id, sourcePromptHash: intent.sourcePromptHash }));
+                    const result = materializeStoryboardFrames(script, [{ row, frames: keys.frames }], next, nextConnections, intent.model, intent.settings, { regenerate: intent.regenerate, frameTargets });
                     next = result.nodes;
                     nextConnections = result.connections;
                     if (result.targets.length) {

@@ -4,6 +4,7 @@ import { getAuthSession, invalidateAuthSessionCache } from "@/services/api/auth"
 import { useUserStore } from "@/stores/use-user-store";
 import { canvasContentHash, sameCanvasContent } from "@/lib/canvas/canvas-content";
 import { compactWorkflowNodes } from "@/lib/canvas/canvas-workflow-persistence";
+import { cleanCanvasDocument } from "@/lib/canvas/canvas-document-integrity";
 import { restoreCanvasTextResources } from "@/lib/canvas/canvas-text-resource";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { validateShortDramaSettings, type ShortDramaGlobalSettings } from "@/lib/short-drama-settings";
@@ -183,26 +184,10 @@ function mergeCompletedProductionAdditions(local: CanvasProject, remote: CanvasP
 
 function filterPendingCanvasNodeDeletions(project: CanvasProject, canvasId: string) {
     const deleted = canvasNodeDeletionSet(canvasId);
-    if (!deleted?.size) return project;
-    let changed = false;
-    const nodes = project.nodes.filter((node) => {
-        const keep = !deleted.has(node.id);
-        changed ||= !keep;
-        return keep;
-    }).map((node) => {
-        if (node.parentId && deleted.has(node.parentId)) {
-            changed = true;
-            return { ...node, parentId: undefined };
-        }
-        return node;
-    });
-    const nodeIds = new Set(nodes.map((node) => node.id));
-    const connections = project.connections.filter((edge) => {
-        const keep = !deleted.has(edge.id) && nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId);
-        changed ||= !keep;
-        return keep;
-    });
-    return changed ? { ...project, nodes, connections } : project;
+    const cleaned = cleanCanvasDocument(project.nodes, project.connections, deleted);
+    const connections = cleaned.connections.filter(edge => !deleted.has(edge.id));
+    const nextConnections = connections.length === cleaned.connections.length ? cleaned.connections : connections;
+    return cleaned.nodes === project.nodes && nextConnections === project.connections ? project : { ...project, nodes: cleaned.nodes, connections: nextConnections };
 }
 
 function canvasNodeDeletionStorageKey(canvasId: string) {
@@ -1218,8 +1203,10 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: R
     }
     const errors: unknown[] = [];
     for (const dirtySource of dirtyProjects) {
-        const compactedNodes = compactWorkflowNodes(dirtySource.nodes);
-        const source = compactedNodes.some((node, index) => node !== dirtySource.nodes[index]) ? { ...dirtySource, nodes: compactedNodes } : dirtySource;
+        const cleaned = cleanCanvasDocument(dirtySource.nodes, dirtySource.connections);
+        const compactedNodes = compactWorkflowNodes(cleaned.nodes);
+        const source = cleaned.nodes !== dirtySource.nodes || cleaned.connections !== dirtySource.connections || compactedNodes.some((node, index) => node !== dirtySource.nodes[index])
+            ? { ...dirtySource, nodes: compactedNodes, connections: cleaned.connections } : dirtySource;
         // Acknowledgement hashes must describe the same compact document we upload.
         // Replace only the captured project; concurrent edits stay pending.
         if (source !== dirtySource) useCanvasStore.setState(state => ({ projects: state.projects.map(project => project === dirtySource ? source : project) }));

@@ -6,7 +6,7 @@ import { applyAgentCanvasPatches, refreshCanvasAfterAgent } from "@/services/use
 import { createAgentCanvasSync } from "@/services/agent-canvas-sync";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { workflowSignature, workflowSourceSignaturesMatch } from "@/lib/canvas/canvas-short-drama-workflow";
-import { bindProductionAgentRun, productionAgentNodePresent, productionPlanCanvasNeedsRefresh } from "@/lib/canvas/production-agent-state";
+import { bindProductionAgentRun, productionAgentNodePresent, productionPlanCanvasNeedsRefresh, projectProductionAssetOrder } from "@/lib/canvas/production-agent-state";
 import { productionRunExternalFailure } from "@/lib/canvas/production-agent-journal";
 import type { AiConfig } from "@/stores/use-config-store";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -141,6 +141,7 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
     const [nodeErrors, setNodeErrors] = useState<Record<string, string>>({});
     const [readErrors, setReadErrors] = useState<Record<string, string>>({});
     const [syncError, setSyncError] = useState("");
+    const [cleanupError, setCleanupError] = useState("");
     const [busy, setBusy] = useState<Record<string, boolean>>({});
     const locks = useRef(new Set<string>());
     const scope = getActiveUserScope();
@@ -154,9 +155,10 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
         const controller = new AbortController();
         let reconciling = false;
         let reconciledAt = 0;
+        let reconcileFailures = 0;
         const terminalized = new Map<string, string>();
         const planCanvasRefreshes = new Set<string>();
-        setRuns([]); setNodeErrors({}); setReadErrors({}); setSyncError(""); setBusy({});
+        setRuns([]); setNodeErrors({}); setReadErrors({}); setSyncError(""); setCleanupError(""); setBusy({});
         const sync = createAgentCanvasSync({ canvasId, applyPatches: (patches) => applyAgentCanvasPatches(canvasId, patches), refresh: () => refreshCanvasAfterAgent(canvasId), onError: (cause) => { if (!closed) setSyncError(cause instanceof Error ? cause.message : "制作结果同步失败"); }, onSynced: () => { if (!closed) setSyncError(""); } });
         const present = (id?: string) => productionAgentNodePresent(nodesRef.current, id);
         const checkNode = async (node: CanvasNodeData, runId: string) => {
@@ -166,6 +168,7 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
                 const { run } = await getAgentRun(runId, controller.signal, { sinceSeq: seen.get(runId), eventLimit: 500 });
                 if (closed || !present(node.id) || nodesRef.current.find((entry) => entry.id === node.id)?.metadata?.shortDrama?.productionAgent?.runId !== runId) return;
                 if (run.id !== runId || run.production?.targetNodeId !== node.id) throw new Error("任务回执与当前节点不匹配");
+                options.setNodes(current => projectProductionAssetOrder(current, run));
                 const first = !seen.has(runId);
                 const events = first ? await loadRunEventsForPlanRecovery(run, controller.signal) : run.events || [];
                 for (const event of events) if (event.seq > (seen.get(runId) || 0)) sync.receive(event);
@@ -213,10 +216,17 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
         };
         const check = () => {
             if (closed) return;
-            if (!reconciling && Date.now() - reconciledAt > 10_000) {
+            if (!reconciling && Date.now() - reconciledAt > Math.min(120_000, 10_000 * 2 ** reconcileFailures)) {
                 reconciling = true;
-                void reconcileCanvasNodeTasks(canvasId).then(() => { reconciledAt = Date.now(); })
-                    .catch((cause) => { if (!closed) setSyncError(cause instanceof Error ? cause.message : "节点任务清理待重试"); })
+                reconciledAt = Date.now();
+                void reconcileCanvasNodeTasks(canvasId).then(() => {
+                    reconcileFailures = 0;
+                    if (!closed) setCleanupError("");
+                })
+                    .catch((cause) => {
+                        reconcileFailures = Math.min(4, reconcileFailures + 1);
+                        if (!closed) setCleanupError(cause instanceof Error ? cause.message : "节点任务清理待重试");
+                    })
                     .finally(() => { reconciling = false; });
             }
             setRuns((current) => {
@@ -290,6 +300,15 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
                 }
             }
             if (epoch !== generation.current) return;
+            if (action === "generate_assets") {
+                // The server has committed containers and execution intent.
+                // Canvas hydration can wait for sync, not the model dialog.
+                refresh.current();
+                void refreshCanvasAfterAgent(canvasId).catch((cause) => {
+                    if (epoch === generation.current) setSyncError(cause instanceof Error ? cause.message : "资产容器同步待恢复");
+                });
+                return { success: true };
+            }
             await refreshCanvasAfterAgent(canvasId);
             refresh.current();
             return { success: true };
@@ -304,5 +323,5 @@ export function useProductionAgentRuns(canvasId: string, nodesRef: { current: Ca
             if (epoch === generation.current) setBusy((current) => ({ ...current, [nodeId]: false }));
         }
     };
-    return { runs, nodeErrors, readErrors, syncError, busy, control, refresh: () => refresh.current() };
+    return { runs, nodeErrors, readErrors, syncError: [syncError ? `制作结果同步未完成：${syncError}` : "", cleanupError ? `旧任务状态整理未完成：${cleanupError}` : ""].filter(Boolean).join("；"), busy, control, refresh: () => refresh.current() };
 }

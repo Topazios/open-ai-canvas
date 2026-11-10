@@ -14,6 +14,21 @@ export function productionAgentNodePresent(nodes: CanvasNodeData[], nodeId?: str
 
 type ProductionTaskState = { active: boolean; failed: boolean; complete: boolean; warning?: boolean };
 
+export function productionParallelWarningText(item: NonNullable<NonNullable<AgentRun["production"]>["parallelItems"]>[number]) {
+    const reason = item.message?.trim() || item.validationIssues?.join("；") || "任务未完成，请查看执行记录";
+    const action = item.status === "retrying" ? "正在自动重试。" : item.abandoned ? "已跳过此项，可重试。" : ["warning", "error", "failed"].includes(item.status) ? "可在对应任务中重试。" : "";
+    return `${item.name}：${reason}${action ? ` ${action}` : ""}`;
+}
+
+export function canRetryStoryboardCoordinator(run?: AgentRun) {
+    return run?.production?.workKind === "storyboard" && run.production.executionMode === "scene" &&
+        ["running", "queued", "failed", "rejected", "waiting_user", "cancelled"].includes(run.status);
+}
+
+export function canCancelProductionAgent(run?: AgentRun) {
+    return Boolean(run && run.status !== "completed" && (run.status !== "cancelled" || run.cleanupPending));
+}
+
 export function productionTaskState(node?: CanvasNodeData, run?: AgentRun): ProductionTaskState {
     const metadata = node?.metadata;
     const data = metadata?.shortDrama;
@@ -62,6 +77,33 @@ export function productionPlanAssetSelectorVisible(run?: AgentRun) {
     return progress?.workKind === "plan" && (progress.assetGenerationReady === true || (progress.assetGenerationReady === undefined && progress.planReady === true && (progress.assetTotal || 0) > 0));
 }
 
+/** Presentation checkpoint only: do not alter signed asset documents when hydrating older nodes. */
+export function projectProductionAssetOrder(nodes: CanvasNodeData[], run: AgentRun) {
+    const progress = run.production;
+    if (progress?.workKind !== "plan" || !progress.targetNodeId || !progress.assets?.length) return nodes;
+    const byKind = new Map<string, string[]>();
+    const assets = [...progress.assets].sort((a, b) =>
+        (a.priority && a.priority > 0 ? a.priority : Infinity) - (b.priority && b.priority > 0 ? b.priority : Infinity));
+    for (const asset of assets) {
+        const keys = byKind.get(asset.kind) || [];
+        keys.push(asset.key);
+        byKind.set(asset.kind, keys);
+    }
+    let changed = false;
+    const result = nodes.map(node => {
+        const data = node.metadata?.shortDrama;
+        const keys = data?.planGroup && data.assetGroup?.manifestId === progress.targetNodeId ? byKind.get(data.planGroup.kind) : undefined;
+        const previous = node.metadata?.frame?.assetOrder;
+        if (!keys || (previous?.length === keys.length && keys.every((key, index) => previous[index] === key))) return node;
+        changed = true;
+        return { ...node, metadata: { ...node.metadata, frame: {
+            collapsed: false, expandedWidth: node.width, expandedHeight: node.height,
+            ...node.metadata?.frame, assetOrder: keys,
+        } } };
+    });
+    return changed ? result : nodes;
+}
+
 export function productionPlanCanvasNeedsRefresh(nodes: CanvasNodeData[], run: AgentRun) {
     const progress = run.production;
     if (progress?.workKind !== "plan" || !progress.targetNodeId || !Number.isSafeInteger(progress.documentCount) || progress.documentCount! < 1) return false;
@@ -71,11 +113,16 @@ export function productionPlanCanvasNeedsRefresh(nodes: CanvasNodeData[], run: A
     const frameData = frame.metadata?.shortDrama;
     if (frameData?.role !== "collection" || frameData.step !== "story.plan") return false;
     const sourceIds = new Set(frameData.sourceNodeIds || []);
+	if ((progress.inventoryReviewedSections || 0) > 0 || (progress.assetTotal || 0) > 0) {
+		const inventory = nodes.find(node => (node.parentId === frame.id || sourceIds.has(node.id)) && node.metadata?.shortDrama?.planSection === "inventory");
+		if (!inventory || (inventory.metadata?.shortDrama?.inventoryReviewedSections || 0) < (progress.inventoryReviewedSections || 0) || (progress.inventoryComplete === true && inventory.metadata?.shortDrama?.inventoryComplete === false)) return true;
+	}
     const projectedDocuments = nodes.filter(node => {
         const data = node.metadata?.shortDrama;
         const belongsToFrame = node.parentId === frame.id || (!node.parentId && sourceIds.has(node.id));
         return belongsToFrame && node.id !== target.id && node.type !== CanvasNodeType.Frame &&
             !isPlanPlaceholder(node) &&
+            data?.inventoryComplete !== false &&
             data?.step === "story.plan" && data.role === "document" && data.assetKey !== "$summary" &&
             (typeof data.planSection === "string" || data.planVersion === undefined);
     }).length;
@@ -109,6 +156,7 @@ export function productionPlanCanvasDocumentCount(frame: CanvasNodeData, childre
         const workflow = node.metadata?.shortDrama;
         return (node.parentId === frame.id || (!node.parentId && sourceIds.has(node.id))) && node.id !== manifestId && node.type !== CanvasNodeType.Frame && workflow?.step === "story.plan" &&
             !isPlanPlaceholder(node) &&
+            workflow.inventoryComplete !== false &&
             workflow.role === "document" && workflow.assetKey !== "$summary" &&
             (typeof workflow.planSection === "string" || workflow.planVersion === undefined);
     }).length;
@@ -121,9 +169,9 @@ export function productionAssetGroupState(group: CanvasNodeData, anchor?: Canvas
     const bound = run?.id === anchor?.metadata?.shortDrama?.productionAgent?.runId && run?.production?.targetNodeId === anchor?.id;
     const progress = bound ? run?.production?.assetGroups?.find((entry) => entry.kind === kind) : undefined;
     if (!progress) return { active: false, failed: false, complete: false, label: "等待任务状态" };
-    const count = `已完成 ${progress.completed}/${progress.total}`;
+    const count = progress.status === "extracting" || progress.total === 0 ? "数量待清单确定" : `已完成 ${progress.completed}/${progress.total}`;
     const task = productionTaskState(anchor, run);
-    const active = progress.status === "running" && task.active;
+    const active = ["running", "extracting", "queued"].includes(progress.status) && task.active;
     const failed = progress.status === "error" && task.failed;
     const label = progress.status === "waiting_standards" ? "等待前置规范完成"
         : progress.status === "waiting_manual" ? "等待资产生成"
@@ -133,6 +181,8 @@ export function productionAssetGroupState(group: CanvasNodeData, anchor?: Canvas
         : progress.status === "error" ? "当前项未完成"
         : task.failed ? "任务已停止，尚未完成"
         : run?.production?.paused ? "已暂停"
+        : progress.status === "extracting" ? task.active ? "正在整理资产清单" : "清单整理已停止，可在详情继续"
+        : progress.status === "queued" ? task.active ? "正在准备内容节点" : "内容准备已停止，可在详情继续"
         : active ? "资产制作中" : "等待依赖或调度";
     return { active, failed, complete: progress.status === "complete", label: `${label} · ${count}` };
 }

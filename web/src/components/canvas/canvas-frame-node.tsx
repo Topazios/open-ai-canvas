@@ -1,9 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { Boxes, Check, ChevronDown, ChevronRight, CircleAlert, Info, LoaderCircle, RefreshCw, ShieldCheck, TriangleAlert, Video } from "lucide-react";
+import { Boxes, Check, ChevronDown, ChevronRight, CircleAlert, History, Info, LoaderCircle, Pencil, RefreshCw, ShieldCheck, TriangleAlert, Video } from "lucide-react";
 
 import { CometCard } from "@/components/ui/aceternity/comet-card";
 import { CanvasFolderPreview } from "@/components/canvas/canvas-folder-preview";
+import { CanvasAssetStackPreview } from "@/components/canvas/canvas-asset-stack-preview";
+import { isCanvasAssetStack } from "@/lib/canvas/canvas-asset-stack";
+import { assetVersionStats, currentAssetMembers } from "@/lib/canvas/canvas-asset-versions";
+import { CanvasAssetHistory } from "./canvas-asset-history";
 import { CanvasVideoPreviewImage } from "@/components/canvas/canvas-video-preview-image";
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import { FRAME_HEADER_HEIGHT, FRAME_PADDING, isCanvasFolderNode } from "@/lib/canvas/canvas-frame";
@@ -45,6 +49,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     onOpenTaskDetails,
     onRetryFailed,
     onAutoReview,
+    autoReviewNodes = EMPTY_DETACHED_NODES,
     onGeneratePlanAssets,
     planAssetsBusy = false,
     readOnly = false,
@@ -73,6 +78,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     onOpenTaskDetails?: (node: CanvasNodeData) => void;
     onRetryFailed?: (frame: CanvasNodeData, failedNodes: CanvasNodeData[]) => void;
     onAutoReview?: (frame: CanvasNodeData, bodyNodes: CanvasNodeData[]) => void;
+    autoReviewNodes?: CanvasNodeData[];
     onGeneratePlanAssets?: (targetNodeId: string) => void;
     planAssetsBusy?: boolean;
     readOnly?: boolean;
@@ -83,8 +89,12 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     const theme = canvasThemes[useActiveTheme()];
     const collapsed = Boolean(data.metadata?.frame?.collapsed);
     const folder = isCanvasFolderNode(data);
+    const assetStack = isCanvasAssetStack(data);
     const [editing, setEditing] = useState(false);
     const [hovered, setHovered] = useState(false);
+    const [historyOpen, setHistoryOpen] = useState(false);
+    const versionStats = useMemo(() => assetStack ? assetVersionStats(childNodes) : undefined, [assetStack, childNodes]);
+    const visibleChildren = useMemo(() => assetStack ? currentAssetMembers(childNodes) : childNodes, [assetStack, childNodes]);
     const [title, setTitle] = useState(data.title);
     const resizeCancelCleanup = useRef<(() => void) | null>(null);
     const resizeRef = useRef({
@@ -115,13 +125,13 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     };
 
     const childBounds = useMemo(() => {
-        if (!childNodes.length) return null;
-        const left = Math.min(...childNodes.map((node) => node.position.x));
-        const top = Math.min(...childNodes.map((node) => node.position.y));
-        const right = Math.max(...childNodes.map((node) => node.position.x + node.width));
-        const bottom = Math.max(...childNodes.map((node) => node.position.y + node.height));
+        if (!visibleChildren.length) return null;
+        const left = Math.min(...visibleChildren.map((node) => node.position.x));
+        const top = Math.min(...visibleChildren.map((node) => node.position.y));
+        const right = Math.max(...visibleChildren.map((node) => node.position.x + node.width));
+        const bottom = Math.max(...visibleChildren.map((node) => node.position.y + node.height));
         return { left, top, right, bottom };
-    }, [childNodes]);
+    }, [visibleChildren]);
 
     const handleResizeMove = useCallback(
         (event: MouseEvent) => {
@@ -199,15 +209,16 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     const linkedFolder = Boolean(data.metadata?.folder?.assetFolderId);
     const fullDetail = renderLOD === "full" || hovered || editing;
     const collection = data.metadata?.shortDrama?.role === "collection" ? data.metadata.shortDrama : undefined;
-    const progress = collection && !collection.assetGroup && !collection.mediaGroup && !collection.assetRevisionGroup ? episodeProgress(childNodes.filter((node) => collection.sourceNodeIds.includes(node.id)), collection.parameters?.episodeCount || childNodes.length) : undefined;
-    const mediaMembers = collection?.mediaGroup || collection?.assetRevisionGroup ? childNodes.filter((node) => collection.sourceNodeIds.includes(node.id)) : [];
+    const collectionMemberIds = useMemo(() => new Set(collection?.sourceNodeIds || []), [collection?.sourceNodeIds]);
+    const progress = collection && !collection.assetGroup && !collection.mediaGroup && !collection.assetRevisionGroup ? episodeProgress(childNodes.filter((node) => collectionMemberIds.has(node.id)), collection.parameters?.episodeCount || childNodes.length) : undefined;
+    const mediaMembers = collection?.mediaGroup || collection?.assetRevisionGroup ? childNodes.filter((node) => collectionMemberIds.has(node.id)) : [];
     const mediaComplete = mediaMembers.filter((node) => node.metadata?.status === "success" && (node.metadata.storageKey || node.metadata.content)).length;
     const mediaRunning = mediaMembers.filter((node) => node.metadata?.status === "loading").length;
     const mediaFailed = mediaMembers.filter((node) => node.metadata?.status === "error").length;
     const assetManifest = collection?.assetGroup ? taskAnchor || childNodes.find((node) => node.id === collection.assetGroup!.manifestId) : undefined;
     const planRoot = collection?.step === "story.plan" && !collection.planGroup;
     const assetCount = collection?.assetGroup ? planRoot ? productionPlanCanvasDocumentCount(data, childNodes, detachedNodes)
-        : childNodes.filter((node) => collection.sourceNodeIds.includes(node.id) && node.id !== collection.assetGroup!.manifestId && !isPlanPlaceholder(node)).length : 0;
+        : visibleChildren.filter((node) => node.id !== collection.assetGroup!.manifestId && !isPlanPlaceholder(node)).length : 0;
     const hasStoryLead = planRoot && [...childNodes, ...detachedNodes].some((node) => node.metadata?.shortDrama?.planSection === "story" && node.metadata.shortDrama.role === "document" && !isPlanPlaceholder(node));
     const assetManifestData = assetManifest?.metadata?.shortDrama;
     const planAssetAction = productionPlanAssetAction(data, productionRun);
@@ -229,25 +240,15 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
         : "");
     const failedNodes = useMemo(() => {
         if (readOnly || folder || !onRetryFailed) return [];
-        const scope = collection ? [...childNodes, ...detachedNodes].filter((node) => collection.sourceNodeIds.includes(node.id)) : childNodes;
+        const scope = assetStack ? visibleChildren : collection ? [...childNodes, ...detachedNodes].filter((node) => collectionMemberIds.has(node.id)) : childNodes;
         const manifestId = collection?.assetGroup?.manifestId;
         return scope.filter((node) => node.id !== manifestId && node.metadata?.status === "error");
-    }, [childNodes, collection, detachedNodes, folder, onRetryFailed, readOnly]);
-    const autoReviewNodes = useMemo(() => {
-        if (readOnly || folder || !onAutoReview || collection?.step !== ShortDramaStep.Body) return [];
-        if (collection.assetGroup || collection.mediaGroup || collection.assetRevisionGroup) return [];
-        return childNodes.filter((node) => {
-            if (!collection.sourceNodeIds.includes(node.id)) return false;
-            const workflow = node.metadata?.shortDrama;
-            const reviewing = workflow?.autoReview?.status === "auditing" || workflow?.autoReview?.status === "repairing";
-            return workflow?.role === "document" && Boolean(node.metadata?.content?.trim()) && node.metadata?.status !== "loading" && !reviewing;
-        });
-    }, [childNodes, collection, folder, onAutoReview, readOnly]);
+    }, [assetStack, visibleChildren, childNodes, collection, collectionMemberIds, detachedNodes, folder, onRetryFailed, readOnly]);
     const compactButtons = groupStatusButtonsCompact(data.width * scale);
-    const autoReviewButton = onAutoReview && autoReviewNodes.length > 0 ? <button type="button" aria-label={`一键自动诊断修复 ${autoReviewNodes.length} 集`} title="一键自动诊断修复：多轮诊断、修复、复检，仍有问题则带警告结束"
+    const autoReviewButton = !readOnly && !folder && collection?.step === ShortDramaStep.Body && onAutoReview && autoReviewNodes.length > 0 ? <button type="button" aria-label={`自动诊修未通过 ${autoReviewNodes.length} 集`} title="仅处理未通过、未诊断或需复检的正文，跳过当前版本已通过和执行中的分集"
         className="pointer-events-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
         style={{ color: theme.node.text, outlineColor: theme.frame.activeStroke }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onAutoReview(data, autoReviewNodes); }}>
-        <ShieldCheck className="size-3.5" aria-hidden="true" /><span className={compactButtons ? "sr-only" : undefined}>自动诊断修复 {autoReviewNodes.length}</span>
+        <ShieldCheck className="size-3.5" aria-hidden="true" /><span className={compactButtons ? "sr-only" : undefined}>诊修未通过 {autoReviewNodes.length}</span>
     </button> : null;
     const retryFailedButton = onRetryFailed && failedNodes.length > 0 ? <button type="button" aria-label={`一键重试 ${failedNodes.length} 个失败任务`} title="一键重试失败任务"
         className="pointer-events-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
@@ -303,7 +304,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                     boxShadow: !fullDetail || (folder && collapsed) ? "none" : isSelected ? `0 0 0 ${1 / Math.max(scale, 0.05)}px ${theme.frame.activeStroke}33, 0 24px 72px ${theme.spatial.shadow}` : `0 18px 54px ${theme.spatial.shadow}`,
                 }}
             >
-                {!fullDetail ? (
+                {!fullDetail && !(assetStack && collapsed) ? (
                     <div className="flex h-full items-center justify-center rounded-[var(--node-radius)]" style={{ background: theme.frame.fill, color: theme.node.text }}>
                         {data.title} · {childNodes.length}
                     </div>
@@ -327,7 +328,9 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                         type="button"
                         className="grid size-8 shrink-0 place-items-center rounded-md transition-colors hover:bg-black/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
                         style={{ outlineColor: theme.frame.activeStroke }}
-                        aria-label={collapsed ? "展开背板" : "折叠背板"}
+                        aria-label={assetStack ? collapsed ? "展开全部资产" : "收起资产" : collapsed ? "展开背板" : "折叠背板"}
+                        aria-expanded={!collapsed}
+                        title={assetStack ? collapsed ? "展开全部资产" : "收起资产" : collapsed ? "展开背板" : "折叠背板"}
                         onMouseDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                             event.stopPropagation();
@@ -368,16 +371,26 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                             {data.title}
                         </button>
                     )}
+                    {assetStack && !editing && !readOnly ? <button type="button" aria-label="重命名资产分组" title="重命名资产分组"
+                        className="grid size-7 shrink-0 place-items-center rounded hover:bg-black/5 focus-visible:outline focus-visible:outline-2 dark:hover:bg-white/10"
+                        style={{ outlineColor: theme.frame.activeStroke }} onMouseDown={event => event.stopPropagation()}
+                        onClick={event => { event.stopPropagation(); setEditing(true); }}><Pencil size={13} aria-hidden="true" /></button> : null}
                     <span className="ml-auto shrink-0 pr-1 text-[var(--fs-label)] tabular-nums" style={{ color: theme.node.muted }}>
-                        {collection?.assetRevisionGroup ? `${mediaMembers.length} 项资产` : collection?.mediaGroup ? `${mediaMembers.length} 张图片` : collection?.assetGroup?.kind === "bible" ? `${assetCount}/${collection.assetGroup.sections?.length || 2} 项规范` : collection?.assetGroup ? `${planRoot ? hasStoryLead ? `总纲 + ${Math.max(0, assetCount - 1)} 份规范` : `${assetCount} 份方案文稿` : `${assetCount} 项资产`}` : collection && !collapsed ? `${collection.parameters?.episodeCount || childNodes.length} 集 · ${collection.parameters?.minutesPerEpisode || "待定"} 分钟/集` : childNodes.length}
+                        {collection?.assetRevisionGroup ? `${mediaMembers.length} 项资产` : collection?.mediaGroup ? `${mediaMembers.length} 张图片` : collection?.assetGroup?.kind === "bible" ? `${assetCount}/${collection.assetGroup.sections?.length || 2} 项规范` : collection?.assetGroup ? `${planRoot ? hasStoryLead ? `总纲 + ${Math.max(0, assetCount - 1)} 份规范` : `${assetCount} 份方案文稿` : versionStats?.assets ? `${versionStats.completed}/${versionStats.assets} 项已完成` : `${assetCount} 项资产`}` : collection && !collapsed ? `${collection.parameters?.episodeCount || childNodes.length} 集 · ${collection.parameters?.minutesPerEpisode || "待定"} 分钟/集` : childNodes.length}
                     </span>
+                    {versionStats && versionStats.versions > versionStats.assets ? <button type="button" aria-label="查看资产历史版本" title={`资产 ${versionStats.assets} 项，共 ${versionStats.versions} 份文稿`}
+                        className="grid size-7 shrink-0 place-items-center rounded hover:bg-black/5 focus-visible:outline focus-visible:outline-2 dark:hover:bg-white/10"
+                        style={{ outlineColor: theme.frame.activeStroke }} onMouseDown={event => event.stopPropagation()}
+                        onClick={event => { event.stopPropagation(); setHistoryOpen(true); }}><History size={14} aria-hidden="true" /></button> : null}
                 </div>
+
+                {assetStack && collapsed ? <CanvasAssetStackPreview frame={data} children={childNodes} theme={theme} onOpen={() => onToggleCollapsed(data.id)} /> : null}
 
                 {collection?.assetGroup ? <div aria-label="资产分组状态" className="pointer-events-auto absolute inset-x-3 flex min-w-0 items-center gap-1.5 text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px", overflowWrap: "anywhere" }}>
                     {assetTaskWarning ? <TriangleAlert className="size-3.5 shrink-0" style={{ color: "var(--status-warning)" }} aria-label="内容待处理" /> : assetTaskFailed ? <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" /> : assetTaskComplete ? <Check className="size-3.5 shrink-0" aria-hidden="true" /> : assetTaskActive ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" aria-hidden="true" /> : null}
                     <span className="min-w-0 flex-1 truncate" style={assetTaskWarning ? { color: "var(--status-warning)" } : undefined} title={(assetTaskWarning ? assetManifest?.metadata?.generationWarning?.message : undefined) || assetManifest?.metadata?.errorDetails || assetTaskLabel}>{assetTaskLabel}</span>
                     {planGenerateButton}{retryFailedButton}
-                    {onOpenTaskDetails && (planRoot || (assetManifest && (assetTaskActive || assetTaskFailed || Boolean(assetManifestData?.productionAgent) || assetTaskComplete))) ? <button
+                    {onOpenTaskDetails && (assetStack || planRoot || (assetManifest && (assetTaskActive || assetTaskFailed || Boolean(assetManifestData?.productionAgent) || assetTaskComplete))) ? <button
                         type="button"
                         className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[var(--fs-label)] transition-colors hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 dark:hover:bg-white/10"
                         style={{ color: theme.node.text, outlineColor: theme.frame.activeStroke }}
@@ -400,7 +413,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                     {retryFailedButton}
                     {collectionDetails}
                 </div> : <>
-                    {collapsed ? <FramePreview nodes={childNodes.filter((node) => node.id !== collection?.assetGroup?.manifestId)} frame={data} theme={theme} /> : null}
+                    {collapsed && !assetStack ? <FramePreview nodes={childNodes.filter((node) => node.id !== collection?.assetGroup?.manifestId)} frame={data} theme={theme} /> : null}
                     {retryFailedButton ? <div aria-label="失败任务操作" className="pointer-events-none absolute inset-x-3 z-10 flex items-center text-[var(--fs-label)]" style={{ top: FRAME_HEADER_HEIGHT, color: theme.node.muted, lineHeight: "20px" }}>
                         <span className="truncate">失败 {failedNodes.length}</span>
                         {retryFailedButton}
@@ -409,6 +422,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                     </>
                 )}
             </CometCard>
+            {historyOpen ? <CanvasAssetHistory nodes={childNodes} onClose={() => setHistoryOpen(false)} /> : null}
             {!readOnly && !collapsed && isSelected && !data.metadata?.locked ? (
                 <>
                     <ResizeHandle corner="top-left" scale={scale} theme={theme} onMouseDown={startResize} />

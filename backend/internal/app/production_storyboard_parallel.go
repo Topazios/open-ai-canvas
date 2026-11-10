@@ -110,7 +110,7 @@ func applyStoryboardLayout(s *productionStoryboard, layouts []storyboardSceneLay
 			}
 		}
 	}
-	if s.Version != storyboardEpisodeVersion {
+	if !storyboardBatchMode(s) {
 		s.Version = storyboardLayoutVersion
 	}
 	s.ReviewHash = ""
@@ -167,7 +167,7 @@ func storyboardParallelPrerequisites(m productionManifest, key string) error {
 		return BadAuthRequest("镜头不属于当前规划版本")
 	}
 	for _, dependency := range plan.DependsOn {
-		if !storyboardShotDone(m, dependency) {
+		if !storyboardShotDone(m, dependency) && !storyboardPlannedContinuity(m, key, dependency) {
 			return BadAuthRequest("等待前置镜头：" + dependency)
 		}
 	}
@@ -210,7 +210,7 @@ func applyStoryboardExpansion(m productionManifest, doc map[string]any, sceneID 
 		return BadAuthRequest("该镜头已保存，不能被另一份结果覆盖")
 	}
 	if shot.Start != plan.Start || shot.End != plan.End || math.Abs(shot.Duration-plan.Duration) > 0.001 {
-		return BadAuthRequest("镜头详情必须沿用规划的原文范围和时长")
+		return cloudAgentFieldError("shots."+shot.ID, "planned_contract", fmt.Sprintf("镜头 %s 必须沿用 start=%d、end=%d、duration=%g；实际为 start=%d、end=%d、duration=%g。按当前规划重新安排本镜内容，不改变原文范围或时长", shot.ID, plan.Start, plan.End, plan.Duration, shot.Start, shot.End, shot.Duration))
 	}
 	// Reuse normal content validation with this slot's stable numeric offset.
 	index := 0
@@ -314,6 +314,14 @@ func projectStoryboardWorkRows(target map[string]any, state *cloudAgentRuntime) 
 	table, _ := meta["storyboard"].(map[string]any)
 	for _, row := range creationMaps(table["rows"]) {
 		work, exists := state.ProductionParallel[stringValue(row["shotCode"])]
+		if !exists {
+			for _, candidate := range state.ProductionParallel {
+				if cloudAgentContainsString(candidate.ShotIDs, stringValue(row["shotCode"])) {
+					work, exists = candidate, true
+					break
+				}
+			}
+		}
 		if !exists {
 			continue
 		}

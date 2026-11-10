@@ -18,17 +18,17 @@ brief：同版本制作约束只提炼一次，sourceIds覆盖给定规范，保
 plan：完整阅读当前集带编号正文，按真实场次或连续动作段规划。start/end顺序无遗漏无重叠覆盖全篇；每场填写目标、冲突、节奏、入场和出场状态、时长预算，assetIds为空，不写镜头详情。
 时长：每场预算必须能全部拆为shotTiming范围内的镜头，整集总长落在episodeTiming范围，不允许每场短尾或机械拆成碎镜头。先依据真实动作、对白、反应和节奏分配时间，再计算镜头数。不能靠等待、重复、删对白、把不同空间硬塞一镜或只修改秒数凑时长。planTimingIssue时只重新分配必要场次预算，保留已有场次ID与原文范围；合法的已有成果保留。
 layout：一次提交所有未完成场次的轻量镜头清单，确定总数和列表占位。每镜包含稳定sceneId-001编号、start/end/duration/goal/entry/exit/camera/dependsOn，覆盖正文且符合预算。保留已完成镜头的编号、范围和时长。入出状态及同场共同构图基准明确，依赖只能指向前序镜头。此阶段不写长对白或完整提示词。
-scene：同一集仅一个持久执行通道，连续补全plannedShots中的1至8镜，一次调用production_storyboard_submit。offset、expectedHash、编号、范围和时长直接沿用检查点，不根据已存数量猜测，不覆盖历史乱序完成的槽位；本场全部镜头补全才complete=true。充分利用一次提交处理当前批次，不自行改成逐镜expand或反复读取已有内容。长场可分多批持续保存。
+scene：仅当executionMode=episode时本集使用一个持久通道；scene并发模式则按服务端分配的镜头工作组执行，同场不同组可并发，严格遵守明确dependsOn。连续补全plannedShots并一次调用production_storyboard_submit。expectedHash、offset、编号、范围和时长沿用检查点；工作组允许乱序提交且互不覆盖。服务端核算完整度，complete字段不作为拒绝依据。
 每镜独立可制作，包含画面起落状态与动作全过程、景别机位运动、逐字对白、声音、连续性；不得用概述代替剧情和对白。连续动作、反应与对白可以组成同一镜头，切换主体、空间或动作转折才切镜。承接previousShot实际表演、服化、光线、轴线、站位与物件状态，并照顾nextPlannedShot的入口。assetIds从上下文availableAssets清单里选本镜实际使用的CHR-/SCN-/PRP-/AUD-（含-V状态号）编码，必须含本镜所在场景的SCN编码，同场次保持一致，清单没有则为空。系统按编号解析素材，不另遍历资产库或新建绑定任务。
 已有错误时：未完成场用production_storyboard_reset并说明具体问题，保留旧稿；已完成场用review指定repairSceneIds。canRebudget=true且返修要求改变场次预算时，先production_storyboard_plan保存完整新预算并保留场次ID和原文范围，再layout；不能直接提交与现有预算不符的镜头清单。若整集时长冲突无法仅靠返修场次解决，直接用plan统一重分配所有必要场次预算，无需再次review或用户许可；历史审查记录的局部返修范围不限制本次必要的整集重排。变更预算的场次保留旧镜头为PreviousShots占位并仅重做这些场次，绝不丢弃旧稿。只返修真正有问题的场次，不因固定措辞或格式标题反复重做。
-review：已直接提供当前集完整正文、全部镜头及简报，在一次审查中核对剧情、逐字对白、动作可执行性、时长、原文覆盖、空间构图与跨镜连续性。无需逐场重新读取。通过时提交当前hash、空repairSceneIds与具体结论；有真实矛盾时只返修对应场次。不伪称成片已经人工验收。
+review：已直接提供当前集完整正文、全部镜头及简报，在一次审查中核对剧情、逐字对白、动作可执行性、时长、原文覆盖、空间构图与跨镜连续性。无需逐场重新读取。通过时提交当前hash、空repairSceneIds、空repairShotIds与具体结论；局部内容缺陷只列repairShotIds并逐镜说明问题和修复方式，保留合格镜头；需要改范围、数量或时长时才列repairSceneIds，两者不能混用。不伪称成片已经人工验收。
 任务以检查点与内容校验完成为结束条件，真实调用正常计费。来源变化停止混用，目标删除不可复活。失败只修当前批次，保留已完成结果。
 ` + storyboardCompositionPolicy + `
 资产状态按本集正文的编号和来源落实；只有重大形态、结构或身份变化才引用变体编号，疲惫、受伤、污渍、湿润、开关灯、日夜天气、持物、开合、运行、位置和普通换装写入本镜的camera/continuity状态。沿用场景物理尺寸、地标、门窗与道具相对人体尺度，改变景别、焦距或视角只改变投影，不改变真实世界。普通状态有前态、触发和后态，延续至明确结束；重大形态变体还需独立参考图或独立资产码。只在camera/continuity中写本镜所需锚点，不读取全库。声音事件在sound列保留AUD编号和动作/说话人，不混进静态生图描述；人物情绪不更换声纹。前尾帧仅在场景状态、机位景别和动作接点兼容时直接复用为后首帧；明确切镜时保留身份和空间继承但另生成画面。
 `
 
 func storyboardRepairCanRebudget(s *productionStoryboard) bool {
-	if s.Version != storyboardEpisodeVersion || s.Review == "" || s.ReviewHash != "" {
+	if !storyboardBatchMode(s) || s.Review == "" || s.ReviewHash != "" {
 		return false
 	}
 	for _, scene := range s.Scenes {
@@ -67,7 +67,7 @@ func (s *Service) prepareStoryboardEpisode(ctx context.Context, userID, runID st
 		if err != nil {
 			return err
 		}
-		if m.Storyboard == nil || m.Storyboard.Version == storyboardEpisodeVersion {
+		if m.Storyboard == nil || storyboardBatchMode(m.Storyboard) {
 			return nil
 		}
 		waiting, changed := false, false
@@ -182,7 +182,7 @@ func storyboardEpisodeBatch(scene productionScene) (int, []productionShotOutline
 	return offset, batch
 }
 
-func applyStoryboardEpisodeBatch(m productionManifest, doc map[string]any, sceneID string, offset int, hash string, shots []productionShot, complete bool) error {
+func applyStoryboardEpisodeBatch(m productionManifest, doc map[string]any, sceneID string, offset int, hash string, shots []productionShot, complete bool, assignedWorkKey ...string) error {
 	index := -1
 	for i, scene := range m.Storyboard.Scenes {
 		if scene.ID == sceneID {
@@ -214,19 +214,43 @@ func applyStoryboardEpisodeBatch(m productionManifest, doc map[string]any, scene
 	if reused {
 		return nil
 	}
-	if scene.Complete || hash != storyboardSceneHash(scene) {
+	expectedHash := storyboardSceneHash(scene)
+	if m.Storyboard.Version == storyboardSceneVersion {
+		expectedHash = storyboardSubmissionHash(m, scene)
+	}
+	if scene.Complete || hash != expectedHash {
 		return BadAuthRequest("场次检查点已变化，请按最新plannedShots继续")
 	}
-	expectedOffset, plans := storyboardEpisodeBatch(scene)
-	if offset != expectedOffset || len(shots) > len(plans) {
-		return BadAuthRequest("只补全当前批次，不覆盖已保存镜头")
+	if m.Storyboard.Version == storyboardSceneVersion && m.Storyboard.AdaptiveWork {
+		key := sceneID
+		if len(assignedWorkKey) > 0 && assignedWorkKey[0] != "" {
+			key = assignedWorkKey[0]
+		}
+		group, assignedScene := storyboardWorkGroup(m, key)
+		if assignedScene == nil || assignedScene.ID != sceneID {
+			return BadAuthRequest("当前提交不属于已领取的工作组")
+		}
+		assigned := map[string]bool{}
+		for _, id := range group.ShotIDs {
+			assigned[id] = true
+		}
+		for _, shot := range shots {
+			if !assigned[shot.ID] {
+				return BadAuthRequest("提交镜头不属于当前工作组")
+			}
+		}
+	} else {
+		expectedOffset, plans := storyboardEpisodeBatch(scene)
+		if offset != expectedOffset || len(shots) > len(plans) {
+			return BadAuthRequest("只补全当前批次，不覆盖已保存镜头")
+		}
 	}
 	for i := 0; i < index; i++ {
-		if !m.Storyboard.Scenes[i].Complete {
+		if m.Storyboard.Version != storyboardSceneVersion && !m.Storyboard.Scenes[i].Complete {
 			return BadAuthRequest("先完成前场，保留实际镜头连续性")
 		}
 	}
-	if complete != (len(scene.Shots)+len(shots) == len(scene.Layout)) {
+	if (m.Storyboard.Version != storyboardSceneVersion || !m.Storyboard.AdaptiveWork) && complete != (len(scene.Shots)+len(shots) == len(scene.Layout)) {
 		return BadAuthRequest("complete应仅在当前场全部镜头保存时为true")
 	}
 	// Copy the slice before applying any slot, so the whole batch is atomic.

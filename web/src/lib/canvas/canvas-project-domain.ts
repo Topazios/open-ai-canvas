@@ -1,3 +1,4 @@
+import { canvasOwnedDeletionIds } from "./canvas-document-integrity";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { layoutWorkflowImageGroups } from "./canvas-workflow-image-layout";
 import { PromptTemplateOperation } from "@/lib/prompts";
@@ -491,42 +492,7 @@ export function applyBatchPrimaryImage(root: CanvasNodeData, primary: CanvasNode
 }
 
 export function removeCanvasNodes(nodes: CanvasNodeData[], requestedIds: Set<string>) {
-    const removedIds = new Set(requestedIds);
-    // First pass: collect batch children
-    nodes.forEach((node) => {
-        if (requestedIds.has(node.id)) node.metadata?.batchChildIds?.forEach((childId) => removedIds.add(childId));
-    });
-    // A production plan container owns its standalone outline node, which has no parentId.
-    nodes.forEach((node) => {
-        const workflow = node.metadata?.shortDrama;
-        if (!requestedIds.has(node.id) || workflow?.step !== "story.plan" || workflow.role !== "collection") return;
-        const members = new Set(workflow.sourceNodeIds);
-        nodes.forEach((member) => {
-            if (!member.parentId && members.has(member.id) && member.metadata?.shortDrama?.planSection === "story" && member.metadata.shortDrama.role === "document") removedIds.add(member.id);
-        });
-    });
-    // Second pass: production plan containers own their children. Plain image groups only detach them.
-    const isPlanContainer = (node: CanvasNodeData) => {
-        const workflow = node.metadata?.shortDrama;
-        if (!workflow || workflow.mediaGroup) return false;
-        return (workflow.step === "story.plan" && workflow.role === "collection") || Boolean(workflow.planGroup);
-    };
-    const cascadeParents = new Set(nodes.filter((node) => removedIds.has(node.id) && isPlanContainer(node)).map((node) => node.id));
-    let changed = true;
-    while (changed) {
-        changed = false;
-        nodes.forEach((node) => {
-            if (!node.parentId || !cascadeParents.has(node.parentId) || removedIds.has(node.id)) return;
-            removedIds.add(node.id);
-            if (isPlanContainer(node)) cascadeParents.add(node.id);
-            changed = true;
-        });
-    }
-    // Third pass: collect storyboard frame bindings
-    nodes.forEach((node) => {
-        const binding = node.metadata?.storyboardFrame || node.metadata?.storyboardFramePlan;
-        if (binding && requestedIds.has(binding.scriptId)) removedIds.add(node.id);
-    });
+    const removedIds = canvasOwnedDeletionIds(nodes, requestedIds);
     const remainingNodes = nodes.filter((node) => !removedIds.has(node.id));
     const cleanedNodes = remainingNodes.map((node) => {
         let detached = node.parentId && removedIds.has(node.parentId) ? { ...node, parentId: undefined } : node;

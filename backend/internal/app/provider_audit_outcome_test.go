@@ -31,6 +31,9 @@ func TestRecordProviderRequestKeepsEvidenceBasedSeverityAndSources(t *testing.T)
 	}{
 		{"success", 200, `{"status":"completed"}`, nil, model.ApiCallStatusSucceeded, "", ""},
 		{"pending", providerRequestPendingStatus, "", nil, model.ApiCallStatusRunning, "", ""},
+		{"gateway-html", 504, `<html><h1>504 Gateway Time-out</h1><hr>openresty</html>`, providerHTTPError{StatusCode: 504}, model.ApiCallStatusWarning, "gateway", model.GatewayResponseUnconfirmed},
+		{"gateway-json", 524, `{"error":{"message":"timeout"}}`, providerHTTPError{StatusCode: 524}, model.ApiCallStatusWarning, "gateway", model.GatewayResponseUnconfirmed},
+		{"wrapped-local-timeout", 0, "", &net.OpError{Op: "read", Net: "tcp", Err: context.DeadlineExceeded}, model.ApiCallStatusWarning, "application", "upstream_timeout"},
 		{"http-failure", 503, `{"error":{"code":"service_failed","message":"provider unavailable"}}`, nil, model.ApiCallStatusFailed, "upstream", "service_failed"},
 		{"typed-http-no-status", 0, "", providerHTTPError{StatusCode: 429}, model.ApiCallStatusFailed, "upstream", ""},
 		{"typed-payload", 200, "", fmt.Errorf("request: %w", providerPayloadError{raw: "private-provider-text", message: "provider rejected"}), model.ApiCallStatusFailed, "upstream", ""},

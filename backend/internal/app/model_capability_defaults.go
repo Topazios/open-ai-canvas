@@ -96,7 +96,7 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 	text := &TextCapabilityConfig{Streaming: &streaming, ContextWindowTokens: 128000, MaxOutputTokens: 16384, References: TextReferenceConfig{PromptMaxChars: 32000}}
 	video := &VideoCapabilityConfig{
 		References:        VideoReferenceConfig{PromptMaxChars: DefaultVideoPromptMaxChars, MinImages: 0, MaxImages: 9, MaxImageBytes: 30 * 1024 * 1024, MaxVideos: 0, MaxVideoBytes: 0, MaxVideoDuration: 0, MaxAudios: 0, MaxAudioBytes: 0, MaxAudioDuration: 0},
-		Duration:          VideoDurationConfig{Selection: "range", Min: 1, Max: 15, Step: 1, Default: 6},
+		Duration:          VideoDurationConfig{Selection: "range", Min: 1, Step: 1, Default: 6},
 		Ratios:            []string{"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"},
 		DefaultRatio:      "16:9",
 		Resolutions:       []string{"480p", "720p", "1080p", "1440p", "2160p"},

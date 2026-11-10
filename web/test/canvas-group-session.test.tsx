@@ -129,6 +129,15 @@ function coordinatorFixture() {
     return { owner, manifest, targets };
 }
 
+test("container cancellation remains available while paused or awaiting cleanup", () => {
+    const { owner, manifest } = coordinatorFixture();
+    for (const [status, cleanupPending, cancellable] of [["waiting_user", false, true], ["failed", false, true], ["cancelled", true, true], ["cancelled", false, false], ["completed", false, false]] as const) {
+        const run = { id: "run", status, cleanupPending, production: { targetNodeId: manifest.id, paused: true } } as any;
+        const html = renderToStaticMarkup(<CanvasGroupTaskDetails node={owner} nodes={[owner, manifest]} submitting={false} onResume={() => {}} onRetry={() => {}} onCancel={() => {}} agentState={{ runs: [run], nodeErrors: {}, readErrors: {}, syncError: "", busy: {}, control: async () => {}, refresh: () => {} }} />);
+        expect(html.includes("取消任务")).toBe(cancellable);
+    }
+});
+
 test("owning group shows model dispatch and commentary before any artifact exists", () => {
     const { manifest, targets } = coordinatorFixture();
     expect(targets[0]).toMatchObject({ scoped: true, coordinator: true });

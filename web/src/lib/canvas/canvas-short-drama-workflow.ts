@@ -261,7 +261,7 @@ function bodyAuditRejected(body: CanvasNodeData, nodes: CanvasNodeData[]) {
     return !state.stale && state.report?.usability === "不通过";
 }
 
-export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], pipelineId: string, connections?: CanvasConnection[], options?: { allowStaleSourceLineage?: boolean }) {
+export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], pipelineId: string, connections?: CanvasConnection[], options?: { allowStaleSourceLineage?: boolean; storyPlanOnly?: boolean; planSourceIds?: ReadonlySet<string> }) {
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const endpoint = (id: string) => {
         const node = byId.get(id);
@@ -271,8 +271,9 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
     const branch = new Map<string, CanvasNodeData>();
     const visiting = new Set<string>();
     const visited = new Set<string>();
+    const outlinePlans = new Set<string>();
     const ordered: CanvasNodeData[] = [];
-    const visit = (id: string) => {
+    const visit = (id: string, storyPlanOnly = false, planSourceIds?: ReadonlySet<string>) => {
         if (visiting.has(id)) throw new Error("步骤依赖存在循环，请检查连线来源");
         if (visited.has(id)) return;
         const node = byId.get(id);
@@ -288,6 +289,44 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
         const parentData = nodeWorkflow(parent);
         const taskAnchor = !collection && data.assetKey === "$summary" && parentData?.assetGroup?.manifestId === id &&
             parentData.role === "collection" && parentData.pipelineId === pipelineId && parentData.step === data.step && parentData.sourceNodeIds.includes(id);
+        // Episode writing consumes the saved outline, not the mutable task
+        // summary shared by later inventory, guideline and asset jobs.
+        if (storyPlanOnly && collection && data.step === ShortDramaStep.Plan && data.planVersion === 5 && data.assetGroup && !data.planGroup) {
+            if (outlinePlans.has(id)) return;
+            const stories = data.sourceNodeIds.map(memberId => byId.get(memberId)).filter(member => nodeWorkflow(member)?.planSection === "story");
+            const story = stories[0];
+            if (node.type !== CanvasNodeType.Frame || stories.length !== 1 || !story || nodeWorkflow(story)?.pipelineId !== pipelineId || nodeWorkflow(story)?.step !== ShortDramaStep.Plan ||
+                nodeWorkflow(story)?.role !== "document" || (story.parentId && story.parentId !== id)) throw new Error("当前版本缺少唯一有效的故事总纲文稿，请先完成故事总纲与世界规则");
+            if (data.version !== undefined && nodeWorkflow(story)?.version !== data.version) throw new Error("故事总纲文稿与所选容器版本不一致，请重新选择来源");
+            if (story.metadata?.status !== "success" || !story.metadata.content?.trim() || nodeWorkflow(story)?.assetOutput || isPlanPlaceholder(story)) throw new Error("请先完成故事总纲与世界规则");
+            visiting.add(id);
+            visit(story.id);
+            visiting.delete(id); outlinePlans.add(id);
+            // Only completed documents from this plan enter the input snapshot.
+            // Pending optional work must neither block writing nor enter its hashes.
+            const members = new Set(data.sourceNodeIds);
+            for (const [kind, groupId] of Object.entries(data.planGroups || {})) {
+                const group = byId.get(groupId);
+                const groupData = nodeWorkflow(group);
+                if (groupData?.pipelineId !== pipelineId || groupData.planGroup?.rootFrameId !== id || groupData.planGroup.kind !== kind || groupData.role !== "collection") continue;
+                for (const memberId of groupData.sourceNodeIds) if (byId.get(memberId)?.parentId === groupId) members.add(memberId);
+            }
+            for (const memberId of members) {
+                if (planSourceIds && !planSourceIds.has(memberId)) continue;
+                const member = byId.get(memberId);
+                const source = nodeWorkflow(member);
+                if (!member || !source || memberId === story.id || source.pipelineId !== pipelineId || source.step !== ShortDramaStep.Plan || source.role !== "document" ||
+                    source.assetKey === "$summary" || (!source.planAsset && source.planSection !== "direction") ||
+                    (member.parentId !== id && nodeWorkflow(byId.get(member.parentId || ""))?.planGroup?.rootFrameId !== id) ||
+                    member.metadata?.status !== "success" || !member.metadata.content?.trim() || source.assetOutput || isPlanPlaceholder(member) ||
+                    !Object.entries(source.sourceSignatures).every(([sourceId, signature]) => {
+                        const input = byId.get(sourceId);
+                        return input && workflowSignatureMatches(input, signature);
+                    })) continue;
+                visit(memberId, true, planSourceIds);
+            }
+            return;
+        }
         if (collection && data.step === ShortDramaStep.Plan && data.assetGroup && !data.planGroup) {
             const manifest = byId.get(data.assetGroup.manifestId);
             if (data.planVersion === 5 && data.planReady !== true) throw new Error("请先等待故事总纲与世界观生成完成");
@@ -363,7 +402,7 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
                 (endpoint(edge.fromNodeId) === endpoint(sourceId) && endpoint(edge.toNodeId) === endpoint(id)))) throw new Error(`${node.title}的来源连线已移除，请恢复关联或重新生成`);
             const source = byId.get(sourceId);
             if (!options?.allowStaleSourceLineage && source && data.sourceSignatures[sourceId] && !workflowSignatureMatches(source, data.sourceSignatures[sourceId])) throw new Error(`${node.title}的前文已更新，请重新生成对应版本`);
-            visit(sourceId);
+            visit(sourceId, storyPlanOnly || data.step === ShortDramaStep.Episodes, data.step === ShortDramaStep.Episodes ? new Set(Object.keys(data.sourceSignatures)) : planSourceIds);
         }
         for (const [sourceId, signature] of Object.entries(data.sourceSignatures)) {
             const source = byId.get(sourceId);
@@ -377,7 +416,7 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
         }
         visiting.delete(id); visited.add(id); ordered.push(node);
     };
-    sourceIds.forEach(visit);
+    sourceIds.forEach(id => visit(id, options?.storyPlanOnly, options?.planSourceIds));
     // Expand sibling asset groups after their root has finished traversal, so
     // both direct plans and plans inherited through episode outlines retain assets.
     for (let index = 0; index < ordered.length; index++) {
@@ -389,7 +428,7 @@ export function workflowAncestors(sourceIds: string[], nodes: CanvasNodeData[], 
     return ordered;
 }
 
-export function workflowSources(stepId: ShortDramaStepId, pipelineId: string, nodes: CanvasNodeData[], sourceIds: string[], connections?: CanvasConnection[], sourceSteps?: ShortDramaStepId[]) {
+export function workflowSources(stepId: ShortDramaStepId, pipelineId: string, nodes: CanvasNodeData[], sourceIds: string[], connections?: CanvasConnection[], sourceSteps?: ShortDramaStepId[], sourceSignatures?: Record<string, string>) {
     if (stepId === ShortDramaStep.Shots) return storyboardGenerationSources(sourceIds, nodes, pipelineId);
     const step = shortDramaStep(stepId)!;
     const requires = sourceSteps || step.requires;
@@ -403,7 +442,7 @@ export function workflowSources(stepId: ShortDramaStepId, pipelineId: string, no
     // requiring every selected node to have a different persisted step id.
     if (sourceIds.some((id) => !allowed.some((required) => workflowSourceMatches(nodes.find((node) => node.id === id), required, nodes)))) throw new Error("请为每个前置步骤选择一个来源节点");
     if (sourceIds.some((id) => nodeWorkflow(nodes.find((node) => node.id === id))?.assetKey)) throw new Error("请选择完整的资产提示词分组容器");
-    const ancestors = workflowAncestors(sourceIds, nodes, pipelineId, connections, stepId === ShortDramaStep.Body ? { allowStaleSourceLineage: true } : undefined);
+    const ancestors = workflowAncestors(sourceIds, nodes, pipelineId, connections, stepId === ShortDramaStep.Body ? { allowStaleSourceLineage: true } : stepId === ShortDramaStep.Episodes ? { storyPlanOnly: true, planSourceIds: sourceSignatures && new Set(Object.keys(sourceSignatures)) } : undefined);
     const directEpisodes = new Set(sourceIds.map((id) => nodeWorkflow(nodes.find((node) => node.id === id))?.episodeNumber).filter((number) => number !== undefined));
     if (directEpisodes.size > 1) throw new Error("前置节点属于不同集，请选择同一集的来源");
     const episodes = new Set(ancestors.map((node) => nodeWorkflow(node)?.episodeNumber).filter((number) => number !== undefined));
@@ -428,22 +467,37 @@ export function defaultWorkflowSources(stepId: ShortDramaStepId, pipelineId: str
         selected = ids.length === 1 ? nodes.find((node) => node.id === ids[0]) : undefined;
     }
     let anchor = nodes.find((node) => node.id === selected?.parentId && (nodeWorkflow(node)?.assetGroup || nodeWorkflow(node)?.assetRevisionGroup)) || selected;
+    if (stepId === ShortDramaStep.Shots && nodeWorkflow(anchor)?.step === ShortDramaStep.Shots && nodeWorkflow(anchor)?.role === "collection") {
+        const data = nodeWorkflow(anchor)!;
+        const sourceCollections = (data.collectionSourceIds || []).map(id => nodes.find(node => node.id === id));
+        const bodyIds = nodes.filter(node => data.sourceNodeIds.includes(node.id) || node.parentId === anchor!.id)
+            .flatMap(node => nodeWorkflow(node)?.sourceNodeIds || []).filter(id => nodeWorkflow(nodes.find(node => node.id === id))?.step === ShortDramaStep.Body);
+        const candidates = nodes.filter(node => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === ShortDramaStep.Body && nodeWorkflow(node)?.role === "collection"
+            && bodyIds.length > 0 && bodyIds.every(id => nodeWorkflow(node)!.sourceNodeIds.includes(id)));
+        const body = sourceCollections.find(node => nodeWorkflow(node)?.step === ShortDramaStep.Body) || (candidates.length === 1 ? candidates[0] : undefined);
+        const scenes = sourceCollections.find(node => nodeWorkflow(node)?.step === ShortDramaStep.Scenes);
+        return [body?.id || "", scenes?.id || ""];
+    }
     if (stepId === ShortDramaStep.Shots && nodeWorkflow(anchor)?.step === ShortDramaStep.Body && nodeWorkflow(anchor)?.role !== "collection") {
         const bodyCollection = nodes.find((node) => nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === ShortDramaStep.Body && nodeWorkflow(node)?.role === "collection" && nodeWorkflow(node)?.sourceNodeIds.includes(anchor!.id));
         if (bodyCollection) anchor = bodyCollection;
     }
     let ancestors: CanvasNodeData[] = [];
     if (anchor && nodeWorkflow(anchor)?.pipelineId === pipelineId) {
-        try { ancestors = workflowAncestors([anchor.id], nodes, pipelineId); } catch { ancestors = [anchor]; }
+        try { ancestors = workflowAncestors([anchor.id], nodes, pipelineId, undefined, stepId === ShortDramaStep.Episodes ? { storyPlanOnly: true } : undefined); } catch { ancestors = [anchor]; }
     }
     return [...shortDramaStep(stepId)!.requires, ...(shortDramaStep(stepId)!.optionalRequires || [])].map((required) => {
-        const inherited = (nodeWorkflow(anchor)?.step === required && workflowSourceMatches(anchor, required, nodes) ? anchor : undefined) || ancestors.find((node) => nodeWorkflow(node)?.step === required && nodeWorkflow(node)?.role === "collection" && workflowSourceMatches(node, required, nodes)) || ancestors.find((node) => nodeWorkflow(node)?.step === required && workflowSourceMatches(node, required, nodes));
+        const outlinePlanIds = stepId === ShortDramaStep.Episodes && required === ShortDramaStep.Plan
+            ? new Set([nodeWorkflow(anchor)?.planGroup?.rootFrameId, ...[anchor, ...ancestors].flatMap(node => nodeWorkflow(node)?.sourceNodeIds || [])]) : undefined;
+        const outlinePlan = outlinePlanIds && nodes.find(node => outlinePlanIds.has(node.id) && nodeWorkflow(node)?.pipelineId === pipelineId && nodeWorkflow(node)?.step === required &&
+            nodeWorkflow(node)?.role === "collection" && !nodeWorkflow(node)?.planGroup);
+        const inherited = (nodeWorkflow(anchor)?.step === required && workflowSourceMatches(anchor, required, nodes) ? anchor : undefined) || outlinePlan || ancestors.find((node) => nodeWorkflow(node)?.step === required && nodeWorkflow(node)?.role === "collection" && workflowSourceMatches(node, required, nodes)) || ancestors.find((node) => nodeWorkflow(node)?.step === required && workflowSourceMatches(node, required, nodes));
         if (inherited) return inherited.id;
         let candidates = nodes.filter((node) => {
             const data = nodeWorkflow(node);
             if (data?.pipelineId !== pipelineId || !workflowSourceMatches(node, required, nodes) || data.assetKey || data.mediaGroup) return false;
             try {
-                const lineage = stepId === ShortDramaStep.Shots ? storyboardGenerationSources([node.id], nodes, pipelineId) : assetSheetKind(stepId) ? workflowAssetImageSources({ step: stepId, pipelineId, sourceNodeIds: [node.id] }, nodes) : workflowAncestors([node.id], nodes, pipelineId);
+                const lineage = stepId === ShortDramaStep.Shots ? storyboardGenerationSources([node.id], nodes, pipelineId) : assetSheetKind(stepId) ? workflowAssetImageSources({ step: stepId, pipelineId, sourceNodeIds: [node.id] }, nodes) : workflowAncestors([node.id], nodes, pipelineId, undefined, stepId === ShortDramaStep.Episodes ? { storyPlanOnly: true } : undefined);
                 return lineage.every((source) => !ancestors.some((other) => nodeWorkflow(other)?.role !== "collection" && nodeWorkflow(source)?.role !== "collection" && nodeWorkflow(other)?.step === nodeWorkflow(source)?.step && nodeWorkflow(other)?.assetKey === nodeWorkflow(source)?.assetKey && nodeWorkflow(other)?.episodeNumber === nodeWorkflow(source)?.episodeNumber && other.id !== source.id));
             } catch { return false; }
         });
@@ -480,10 +534,11 @@ export type WorkflowGenerationRequest = {
     imageShotId?: string;
     imageSettings?: { size: string; quality: string; transparentBackground: string };
     start: number; count: number; anchorId?: string;
+    appendCollectionId?: string;
     aggregate?: boolean;
 };
 
-export function workflowGenerationSources(request: Pick<WorkflowGenerationRequest, "step" | "pipelineId" | "sourceNodeIds" | "aggregate" | "assetRevisionSourceId" | "imageSubjectIds" | "auditRepairReportId"> & { screenplayAudit?: ShortDramaWorkflowData["screenplayAudit"]; screenplayRepair?: ShortDramaWorkflowData["screenplayRepair"]; assetImageSourceIds?: string[]; mediaSubjectId?: string; assetRevision?: ShortDramaWorkflowData["assetRevision"]; sourceSteps?: ShortDramaStepId[]; referenceSignatures?: Record<string, string> }, nodes: CanvasNodeData[], connections?: CanvasConnection[]) {
+export function workflowGenerationSources(request: Pick<WorkflowGenerationRequest, "step" | "pipelineId" | "sourceNodeIds" | "aggregate" | "assetRevisionSourceId" | "imageSubjectIds" | "auditRepairReportId"> & { screenplayAudit?: ShortDramaWorkflowData["screenplayAudit"]; screenplayRepair?: ShortDramaWorkflowData["screenplayRepair"]; assetImageSourceIds?: string[]; mediaSubjectId?: string; assetRevision?: ShortDramaWorkflowData["assetRevision"]; sourceSteps?: ShortDramaStepId[]; sourceSignatures?: Record<string, string>; referenceSignatures?: Record<string, string> }, nodes: CanvasNodeData[], connections?: CanvasConnection[]) {
     request = { ...request, sourceNodeIds: [...new Set(request.sourceNodeIds)] };
     if (request.step === ShortDramaStep.Shots) return storyboardGenerationSources(request.sourceNodeIds, nodes, request.pipelineId);
     validateWorkflowReferences(request.referenceSignatures, new Map(nodes.map((node) => [node.id, node])));
@@ -509,7 +564,7 @@ export function workflowGenerationSources(request: Pick<WorkflowGenerationReques
         return sources as CanvasNodeData[];
     }
     if (assetSheetKind(request.step)) return workflowAssetImageSources(request, nodes, connections);
-    if (!request.aggregate) return workflowSources(request.step, request.pipelineId, nodes, request.sourceNodeIds, connections, request.sourceSteps);
+    if (!request.aggregate) return workflowSources(request.step, request.pipelineId, nodes, request.sourceNodeIds, connections, request.sourceSteps, request.sourceSignatures);
     const source = nodeWorkflow(nodes.find((node) => node.id === request.sourceNodeIds[0]));
     if (request.sourceNodeIds.length !== 1 || source?.role !== "collection" || source.step !== request.step || request.step === ShortDramaStep.Body) throw new Error("请选择对应步骤的分集文稿容器，正文请先按集提取");
     return workflowAncestors(request.sourceNodeIds, nodes, request.pipelineId, connections);
@@ -632,6 +687,16 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
     const capability = step.mediaOutput || "text";
     if (!request.model) throw new Error("请选择文本模型");
     const sources = workflowGenerationSources(request, nodes, connections);
+    if (request.appendCollectionId) {
+        const target = nodes.find(node => node.id === request.appendCollectionId);
+        const data = nodeWorkflow(target);
+        if (step.id !== ShortDramaStep.Shots || data?.step !== step.id || data.pipelineId !== request.pipelineId || data.role !== "collection") throw new Error("追加目标已删除或不是当前流程的分镜容器");
+        const available = sources.filter(node => nodeWorkflow(node)?.step === ShortDramaStep.Body && nodeWorkflow(node)?.role === "document").map(node => nodeWorkflow(node)?.episodeNumber);
+        if (!Number.isInteger(request.start) || !Number.isInteger(request.count) || request.start < 1 || request.count < 1 || request.count > 200
+            || Array.from({ length: request.count }, (_, index) => request.start + index).some(episode => !available.includes(episode))) throw new Error("所选追加范围缺少对应正文，请先补齐正文");
+        const existingEpisodes = nodes.filter(node => data.sourceNodeIds.includes(node.id) || node.parentId === target!.id).map(node => nodeWorkflow(node)?.episodeNumber);
+        if (existingEpisodes.some(episode => episode !== undefined && episode >= request.start && episode < request.start + request.count)) throw new Error("所选集数已有分镜或生成任务，请选择尚未创建的集数；失败任务请使用重试入口");
+    }
     const mentionedAssets = resolveProductionAssetReferences(request.instruction, sources);
     const collections = request.sourceNodeIds.map((id) => nodes.find((node) => node.id === id)!).filter((node) => nodeWorkflow(node)?.role === "collection" && !nodeWorkflow(node)?.assetGroup && (step.id !== ShortDramaStep.Shots || nodeWorkflow(node)?.step === ShortDramaStep.Body));
     if (collections.length && !request.aggregate && step.scope !== "project") {
@@ -658,10 +723,11 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
                 }
                 return source.role === "collection" && !source.assetGroup ? source.sourceNodeIds.find((member) => nodeWorkflow(nodes.find((node) => node.id === member))?.episodeNumber === episode)! : id;
             }).filter(Boolean);
-            const generated = createWorkflowDocuments({ ...request, sourceNodeIds, anchorId: collections.at(-1)!.id }, result.nodes, result.connections, center, false);
+            const generated = createWorkflowDocuments({ ...request, appendCollectionId: undefined, sourceNodeIds, anchorId: collections.at(-1)!.id }, result.nodes, result.connections, center, false);
             result = { ...generated, created: [...result.created, ...generated.created] };
         }
-        const grouped = groupWorkflowDocuments(result.nodes, result.connections, result.created.map((node) => node.id), [...request.sourceNodeIds].sort());
+        if (request.appendCollectionId) workflowGroupingMembers(result.created.map(node => node.id), result.nodes, request.appendCollectionId);
+        const grouped = groupWorkflowDocuments(result.nodes, result.connections, result.created.map((node) => node.id), [...request.sourceNodeIds].sort(), request.appendCollectionId);
         return { ...grouped, created: result.created.map((node) => grouped.nodes.find((entry) => entry.id === node.id)!) };
     }
     const brief = workflowParameters(sources, request.globalSettings);
@@ -782,7 +848,8 @@ export function createWorkflowDocuments(request: WorkflowGenerationRequest, node
         connections: step.id === ShortDramaStep.Plan ? result.connections.filter((edge) => edge.toNodeId !== manifest.id) : result.connections };
     }
     if ((isBody || step.id === ShortDramaStep.Shots) && group) {
-        const grouped = groupWorkflowDocuments(result.nodes, result.connections, created.map((node) => node.id));
+        if (request.appendCollectionId) workflowGroupingMembers(created.map(node => node.id), result.nodes, request.appendCollectionId);
+        const grouped = groupWorkflowDocuments(result.nodes, result.connections, created.map((node) => node.id), [], request.appendCollectionId);
         return { ...grouped, created: created.map((node) => grouped.nodes.find((entry) => entry.id === node.id)!) };
     }
     for (const node of created) node.position = placeWorkflowFootprint(nodes, node, node.position, anchor);

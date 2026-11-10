@@ -5,13 +5,28 @@ import { productionAssetBaseCode, productionAssetCodes } from "../production-ass
 
 export function productionAssetDocuments(nodes: CanvasNodeData[]) {
     const assets = new Map<string, CanvasNodeData>();
+    const identities = new Map<string, string>();
+    const groups = new Map<string, CanvasNodeData[]>();
+    const seen = new Set<string>();
     for (const node of nodes) {
         const data = node.metadata?.shortDrama;
         const identity = data?.assetIdentity;
         if (!identity || node.type !== CanvasNodeType.Text || data?.assetKey === "$summary") continue;
+        if (seen.has(node.id)) continue;
+        seen.add(node.id);
+        if (identities.has(identity.code) && identities.get(identity.code) !== identity.id) throw new Error(`资产编码冲突：${identity.code}`);
+        identities.set(identity.code, identity.id);
+        const key = `${identity.code}:${data.step}`;
+        const group = groups.get(key);
+        if (group) group.push(node);
+        else groups.set(key, [node]);
+    }
+    for (const group of groups.values()) {
+        const adopted = group.filter(item => item.metadata?.shortDrama?.assetAdopted === true);
+        const identity = group[0].metadata!.shortDrama!.assetIdentity!;
+        if (group.length > 1 && adopted.length !== 1) throw new Error(`资产 ${identity.code} 引用了多个版本，请选择一个采用版本或固定来源文稿`);
+        const node = adopted[0] || group[0], data = node.metadata!.shortDrama!;
         const previous = assets.get(identity.code);
-        if (previous && previous.metadata?.shortDrama?.assetIdentity?.id !== identity.id) throw new Error(`资产编码冲突：${identity.code}`);
-        if (previous && previous.id !== node.id && previous.metadata?.shortDrama?.step === data.step) throw new Error(`资产 ${identity.code} 引用了多个版本，请统一来源`);
         if (!previous || data.step === "assets.reconcile" || previous.metadata?.shortDrama?.step === "story.plan") assets.set(identity.code, node);
     }
     return [...assets.values()];
@@ -31,8 +46,9 @@ export function productionAssetMentions(nodes: CanvasNodeData[]): CanvasResource
 }
 
 export function resolveProductionAssetReferences(prompt: string, sources: CanvasNodeData[], explicitCodes: string[] = [], renderContent?: (node: CanvasNodeData) => string, options: { allowMissing?: boolean } = {}) {
-    const documents = productionAssetDocuments(sources);
     const codes = [...new Set([...explicitCodes, ...productionAssetCodes(prompt, true)])];
+    const requestedBases = new Set(codes.map(productionAssetBaseCode));
+    const documents = productionAssetDocuments(sources.filter(node => requestedBases.has(node.metadata?.shortDrama?.assetIdentity?.code || "")));
     // With allowMissing, assets that are not generated yet become placeholders instead of errors.
     const missing: string[] = [];
     const references = codes.flatMap((code) => {

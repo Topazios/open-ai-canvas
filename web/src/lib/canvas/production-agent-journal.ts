@@ -70,6 +70,11 @@ function hiddenInternalEvent(event: AgentEvent) {
 }
 
 export function productionParallelSummary(progress?: AgentRun["production"]) {
+    if (progress?.executionMode === "scene") {
+        if (progress.validated) return "本集完整分镜校验通过";
+        const count = (status: string) => progress.parallelItems?.filter(item => item.status === status).length || 0;
+        return `${progress.phaseLabel || "场次并发制作"} · 已完成 ${progress.processedPages}/${progress.totalPages} 场 · 执行 ${count("running")} · 排队 ${count("queued")} · 等待前置 ${count("blocked")} · 已保存 ${progress.artifactCount}/${progress.shotTotal || 0} 镜 · 全局 Agent 并发上限 ${progress.concurrencyLimit ?? "--"}`;
+    }
     if (progress?.executionMode === "episode") {
         if (progress.validated) return "本集完整分镜校验通过";
         const statuses: Record<string, string> = { queued: "等待全局并发名额", running: "正在执行", succeeded: "正在校验保存", failed: "当前项未完成", cancelled: "已取消", preparing: "准备下一批", unknown: "正在核对状态" };
@@ -134,7 +139,7 @@ export function productionJournalRows(input: AgentEvent[], runId?: string, optio
         const local = localValidation(event);
         const external = productionEventExternalFailure(p);
         const hidden = hiddenInternalEvent(event);
-        const warning = false;
+        const warning = event.type === "production_scene_attempt_failed" || event.type === "production_coordinator_stopped";
         const retry = agentToolRetry(p) || agentToolRetry(p.result);
         // Validation receipts and legacy local stop events belong to the
         // current item and stay out of the user-facing execution journal.
@@ -217,6 +222,16 @@ export function productionJournalRows(input: AgentEvent[], runId?: string, optio
                     detail = [detail, agentToolErrorClassLabel(p), issue, field, guidance].filter(Boolean).join(" · ");
                 }
             }
+        } else if (event.type.startsWith("production_flow_")) {
+            title = ({ production_flow_planned: "工作范围已保存", production_flow_saved: "单元结果已保存", production_flow_aggregated: "拆分成果已汇总", production_flow_published: "成果已发布", production_flow_stopped: "主任务已暂停", production_flow_retry: "单元已重新领取" } as Record<string, string>)[event.type] || "制作阶段进展";
+            detail = typeof p.text === "string" ? p.text : "";
+        } else if (event.type === "production_coordinator_stopped") {
+            title = "整集任务已停止";
+            detail = [p.reason, p.text].filter(Boolean).join(" · ");
+        } else if (["production_scene_claimed", "production_scene_checkpoint", "production_scene_revoked", "production_scene_attempt_failed", "production_coordinator_claimed", "production_coordinator_recovered"].includes(event.type)) {
+            const assignment = p.assignment as { key?: string; sceneId?: string; generation?: number; saved?: number; total?: number; shotIds?: string[] } | undefined;
+            title = ({ production_scene_claimed: "镜头工作组任务已领取", production_scene_checkpoint: "镜头组内容已保存", production_scene_revoked: "旧镜头工作组任务已撤销", production_scene_attempt_failed: "本次镜头工作组生成未通过", production_coordinator_claimed: "主任务已接管", production_coordinator_recovered: "主任务已恢复" } as Record<string, string>)[event.type];
+            detail = [String(p.text || ""), assignment ? `${assignment.key || assignment.sceneId} · 场次 ${assignment.sceneId} · 执行代次 ${assignment.generation} · 已保存 ${assignment.saved}/${assignment.total} 镜` : `执行代次 ${p.generation}`, assignment?.shotIds?.join("、"), p.taskId ? `领取任务：${p.taskId}` : "", String(p.reason || "")].filter(Boolean).join("\n");
         } else if (["production_progress", "production_control", "run_failed", "run_completed", "run_cancelled", "unreadable_event", "model_failure_recovered"].includes(event.type)) {
             title = ({ production_progress: "保存进度", production_control: "调度操作", run_failed: "任务停止", run_completed: "任务完成", run_cancelled: "任务取消", unreadable_event: "记录不可读", model_failure_recovered: "" } as Record<string, string>)[event.type];
             detail = String(p.text || p.error || "");

@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { buildNodeGenerationInputs, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { isFrameNode } from "@/lib/canvas/canvas-frame";
+import { currentAssetMemberIds } from "@/lib/canvas/canvas-asset-versions";
+import { isCanvasAssetStack } from "@/lib/canvas/canvas-asset-stack";
 import { isStoryboardFrameRecord } from "@/lib/canvas/storyboard-frame-records";
 import { sameNodeSemanticData } from "@/lib/canvas/canvas-project-domain";
 import { canvasNodeRenderBudget, canvasNodeRenderPadding, CANVAS_MAX_RENDERED_CONNECTIONS, shouldReduceCanvasMediaEffects } from "@/lib/canvas/canvas-performance-mode";
@@ -100,6 +102,7 @@ export function useCanvasRenderModel({
         const batchRoots: CanvasNodeData[] = [];
         const batchMotionById = new Map<string, { x: number; y: number; index: number }>();
         const batchChildIndexByRootId = new Map<string, Map<string, number>>();
+        const currentAssets = currentAssetMemberIds(nodes);
 
         for (const node of nodes) {
             if (isStoryboardFrameRecord(node)) { renderHiddenNodeIds.add(node.id); continue; }
@@ -112,6 +115,7 @@ export function useCanvasRenderModel({
 
             if (rootId && collapsingBatchIds.has(rootId)) renderHiddenNodeIds.delete(node.id);
             const parent = node.parentId ? nodeById.get(node.parentId) : undefined;
+            if (parent && isCanvasAssetStack(parent) && !currentAssets.has(node.id)) renderHiddenNodeIds.add(node.id);
             if (parent && isFrameNode(parent)) {
                 const children = frameChildrenById.get(parent.id);
                 if (children) children.push(node);

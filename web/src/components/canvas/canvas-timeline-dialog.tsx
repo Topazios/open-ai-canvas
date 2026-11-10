@@ -14,7 +14,8 @@ import { CanvasTimelineRuler } from "./canvas-timeline-ruler";
 import { CanvasTimelinePreview } from "./canvas-timeline-preview";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
-import { buildTimelineFromNodes, isNodeInTimeline, syncTimelineSubtitleClips } from "@/lib/timeline/timeline-build";
+import { appendStoryboardToTimeline, buildTimelineFromNodes, isNodeInTimeline, syncTimelineSubtitleClips } from "@/lib/timeline/timeline-build";
+import { ShortDramaStep } from "@/lib/short-drama-steps";
 import { canPlaceAt, clampClipDurationByNeighbors, findNearestAvailablePlacement } from "@/lib/timeline/timeline-placement";
 import { computeSnap } from "@/lib/timeline/timeline-snap";
 import { DEFAULT_AUDIO_TRACK_ID, DEFAULT_VIDEO_TRACK_ID, normalizeTimelineProject } from "@/lib/timeline/timeline-tracks";
@@ -96,6 +97,7 @@ export function CanvasTimelineDialog({
     const moreBtnRef = useRef<HTMLSpanElement>(null);
 
     const initializedRef = useRef(false);
+    const fromStoryboard = node.metadata?.shortDrama?.step === ShortDramaStep.Shots;
 
     // 打开弹窗：优先复用项目时间线，否则从画布节点自动构建；播放头定位到触发节点片段。
     // 仅首次打开时构建草稿：素材上传/素材库插入会触发 nodes 变化，不能因此重建草稿丢弃编辑。
@@ -106,7 +108,8 @@ export function CanvasTimelineDialog({
         }
         if (initializedRef.current) return;
         initializedRef.current = true;
-        const base = timeline ? normalizeTimelineProject(timeline) : buildTimelineFromNodes(nodes);
+        const base = timeline ? normalizeTimelineProject(timeline) : fromStoryboard
+            ? appendStoryboardToTimeline(node, nodes, buildTimelineFromNodes([])) : buildTimelineFromNodes(nodes);
         const next = timeline ? syncTimelineSubtitleClips(base, nodes) : base;
         setDraft(next);
         setPlayheadMs(0);
@@ -115,7 +118,7 @@ export function CanvasTimelineDialog({
         setPreviewPlaying(false);
         const triggerClip = next.clips.find((clip) => clip.nodeId === node.id);
         if (triggerClip) setPlayheadMs(triggerClip.startMs);
-    }, [open, node.id, nodes, timeline]);
+    }, [open, node, nodes, timeline, fromStoryboard]);
 
     const pxPerMs = (BASE_PX_PER_SECOND / 1_000) * zoomLevel;
     const durationMs = Math.max(1_000, draft.durationMs);
@@ -628,8 +631,8 @@ export function CanvasTimelineDialog({
                 <Clapperboard className="size-4" />
             </span>
             <div className="min-w-0">
-                <div className="truncate text-[var(--fs-heading-lg)] font-semibold leading-6 tracking-[-0.02em]">多轨时间线</div>
-                <div className="truncate text-xs opacity-45">第二期 · 轨道编辑与素材编排</div>
+                <div className="truncate text-[var(--fs-heading-lg)] font-semibold leading-6">剪辑</div>
+                <div className="truncate text-xs opacity-45">{node.title}</div>
             </div>
         </div>
     );
@@ -650,6 +653,16 @@ export function CanvasTimelineDialog({
             flush
         >
             <div className="flex h-[min(76dvh,760px)] min-h-[min(420px,calc(100dvh-96px))] flex-col text-sm" style={{ color: theme.node.text }}>
+                {fromStoryboard ? <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2" style={{ borderColor: theme.toolbar.border }}>
+                    <span className="min-w-0 truncate">{node.title}</span>
+                    <Button size="small" icon={<Plus className="size-3.5" />} onClick={() => {
+                        const next = appendStoryboardToTimeline(node, nodes, draft);
+                        setDraft(next);
+                        const added = next.clips.length - draft.clips.length;
+                        if (added) message.success(`已添加 ${added} 个分镜视频`);
+                        else message.info("暂无可添加的视频，请先在分镜中完成视频生成");
+                    }}>添加分镜视频</Button>
+                </div> : null}
                 <div ref={toolbarRef} className="flex flex-nowrap items-center gap-2 overflow-hidden border-b px-4 py-3" style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}>
                     <span className="min-w-24 rounded-md border px-2 py-1 text-xs font-semibold tabular-nums" style={{ borderColor: theme.toolbar.border, background: theme.node.fill, color: theme.accent.primary }}>
                         {formatTimelineTime(playheadMs)}

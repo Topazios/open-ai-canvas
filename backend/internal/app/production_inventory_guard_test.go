@@ -46,12 +46,12 @@ func TestProductionInventoryGuardReportsDistinctReasons(t *testing.T) {
 	assets := []productionPlanAsset{{Key: "hero", Kind: "character", Name: "主角", Priority: 1, Episodes: []int{1}, Purpose: "承载行动", PlannedRange: "全剧"}}
 	absent := map[string]string{"environment": "无独立场景", "prop": "无剧情道具", "sound": "无独立复用声音"}
 
-	incomplete := fmt.Sprint(productionCall(t, s, run.ID, "production_plan_inventory", map[string]any{"storyHash": story["hash"], "assets": assets, "absent": absent, "complete": false}, true))
+	partial := productionCall(t, s, run.ID, "production_plan_inventory", map[string]any{"storyHash": story["hash"], "assets": assets, "absent": absent, "complete": false}, false)
 	missing := fmt.Sprint(productionCall(t, s, run.ID, "production_plan_inventory", map[string]any{"storyHash": story["hash"], "assets": assets, "absent": absent, "complete": true}, true))
 	unknown := fmt.Sprint(productionCall(t, s, run.ID, "production_plan_inventory", map[string]any{"storyHash": story["hash"], "assets": assets, "absent": absent, "complete": true, "unexpected": 1}, true))
 
-	if !strings.Contains(incomplete, "complete=true") {
-		t.Fatalf("incomplete message lost its reason: %s", incomplete)
+	if partial["inventoryComplete"] != false || partial["plannedAssets"] != float64(1) {
+		t.Fatalf("partial inventory was not saved: %v", partial)
 	}
 	if !strings.Contains(missing, "inventoryReview") {
 		t.Fatalf("missing-review message lost its reason: %s", missing)
@@ -59,10 +59,7 @@ func TestProductionInventoryGuardReportsDistinctReasons(t *testing.T) {
 	if !strings.Contains(missing, "episodeArchitecture/EP-001") || !strings.Contains(missing, "\"requirements\"") {
 		t.Fatalf("missing-review message does not list the sections to review or the entry shape: %s", missing)
 	}
-	if strings.Contains(missing, "complete=true") || strings.Contains(incomplete, "inventoryReview") {
-		t.Fatalf("messages are not distinct:\n%s\n%s", incomplete, missing)
-	}
-	if unknown == missing || unknown == incomplete {
+	if unknown == missing {
 		t.Fatalf("unknown-field error reuses another message: %s", unknown)
 	}
 }

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { CanvasEpisodeFrameGallery } from "@/components/canvas/canvas-episode-frame-gallery";
 import { createCanvasNode, createStoryboardRow } from "@/lib/canvas/canvas-project-domain";
 import { materializeStoryboardFrames, storyboardBoundaryFrames, storyboardFrameHash } from "@/lib/canvas/episode-storyboard-frames";
-import { storyboardFrameTrack, storyboardFrameTrackKey, storyboardFrameTrackLabel, storyboardFrameTrackSelection, storyboardFrameTrackTargets } from "@/lib/canvas/storyboard-frame-track";
+import { storyboardFrameTrack, storyboardFrameTrackKey, storyboardFrameTrackLabel, storyboardFrameTrackSelection, storyboardFrameTrackSlotCount, storyboardFrameTrackTargets } from "@/lib/canvas/storyboard-frame-track";
 import { storyboardFramePrerequisite, storyboardContinuitySnapshot } from "@/lib/canvas/storyboard-frame-continuity";
 import { storyboardFrameIsCurrent } from "@/lib/canvas/workflow-episode-storyboard";
 import { CanvasNodeType, StoryboardFrameKind, StoryboardStartFrameMode, type CanvasNodeData } from "@/types/canvas";
@@ -21,9 +21,11 @@ test("shared boundary placeholders appear once, in sequence, with both shot role
     expect(track.map(storyboardFrameTrackLabel)).toEqual(["首帧", "关键帧", "首尾帧", "关键帧", "首尾帧", "关键帧", "尾帧"]);
     expect(track[2].usages.map(usage => [usage.shot, usage.kind])).toEqual([["镜头 01", "end"], ["镜头 02", "start"]]);
     expect(track.filter(item => item.needsPlan)).toHaveLength(3);
-    expect(storyboardFrameTrackTargets(track, [], "boundary")).toHaveLength(4);
-    expect(storyboardFrameTrackTargets(track, [], "keyframes")).toHaveLength(3);
-    expect(storyboardFrameTrackTargets(track, [])).toHaveLength(7);
+    const all = track.map(item => item.id);
+    expect(storyboardFrameTrackTargets(track, all, "boundary")).toHaveLength(4);
+    expect(storyboardFrameTrackTargets(track, all, "keyframes")).toHaveLength(3);
+    expect(storyboardFrameTrackTargets(track, all)).toHaveLength(7);
+    expect(storyboardFrameTrackTargets(track, [])).toEqual([]);
 });
 
 test("scene changes and independent starts stay distinct, while camera changes share the boundary", () => {
@@ -47,7 +49,7 @@ test("frame selections resolve exact owner-frame pairs and never widen to every 
     const track = storyboardFrameTrack(f.rows, f.nodes);
     const selected = [storyboardFrameTrackKey(f.rows[1].id, "end")];
     const frameTargets = storyboardFrameTrackTargets(track, selected, "boundary");
-    expect(frameTargets).toEqual([{ rowId: f.rows[1].id, frameId: "end" }]);
+    expect(frameTargets).toEqual([{ rowId: f.rows[1].id, frameId: "end", sourcePromptHash: storyboardFrameHash(f.rows[1]) }]);
     expect(storyboardFrameTrackTargets(track, selected, "keyframes")).toEqual([]);
     const result = materializeStoryboardFrames(f.script, f.rows.map(row => ({ row, frames: storyboardBoundaryFrames(row) })), f.nodes, [], "image", settings, { frameTargets });
     expect(result.targets).toHaveLength(1);
@@ -129,6 +131,17 @@ test("gallery places per-frame selection above media and shows every consuming s
     expect(html).toContain("待生成");
     expect(html).not.toContain('disabled=""');
     expect(html.match(/class="canvas-episode-frame-tile-image"/g)).toHaveLength(3);
+    expect(html).not.toContain('class="canvas-storyboard-image-stack"');
+});
+
+test("gallery distinguishes unconfirmed image delivery from model failure", () => {
+    const f = fixture();
+    const result = materializeStoryboardFrames(f.script, [{ row: f.rows[0], frames: storyboardBoundaryFrames(f.rows[0]) }], f.nodes, [], "image", settings);
+    const nodes = result.nodes.map(node => result.targets.some(target => target.nodeId === node.id) ? { ...node, metadata: { ...node.metadata, status: "error" as const, taskStatus: "failed" as const, taskErrorCode: "gateway_response_unconfirmed" } } : node);
+    const row = nodes.find(node => node.id === f.script.id)!.metadata!.storyboard!.rows[0];
+    const html = renderToStaticMarkup(<CanvasEpisodeFrameGallery row={row} nodes={nodes} onPreview={() => {}} onManage={() => {}} />);
+    expect(html).toContain("结果未确认");
+    expect(html).not.toContain("生成失败");
 });
 
 test("planned keyframes occupy their time-ordered slots without hiding pending boundaries", () => {
@@ -140,8 +153,28 @@ test("planned keyframes occupy their time-ordered slots without hiding pending b
     const selected = [storyboardFrameTrackKey(row.id, "key-2")];
     expect(storyboardFrameTrackSelection(track, [storyboardFrameTrackKey(row.id, "key-plan")])).toEqual([storyboardFrameTrackKey(row.id, "key-1"), storyboardFrameTrackKey(row.id, "key-2")]);
     const frameTargets = storyboardFrameTrackTargets(track, selected, "keyframes");
-    expect(frameTargets).toEqual([{ rowId: row.id, frameId: "key-2" }]);
+    expect(frameTargets).toEqual([{ rowId: row.id, frameId: "key-2", sourcePromptHash: storyboardFrameHash(row) }]);
     const result = materializeStoryboardFrames(f.script, [{ row, frames: track.filter(item => item.frame.kind === StoryboardFrameKind.Key && !item.needsPlan).map(item => item.frame) }], f.nodes, [], "image", settings, { frameTargets });
     expect(result.targets).toHaveLength(1);
     expect(result.nodes.find(node => node.id === result.targets[0].nodeId)?.metadata?.storyboardFrame?.frameId).toBe("key-2");
+    const rowTrack = track.filter(item => item.rowId === row.id);
+    expect(storyboardFrameTrackSlotCount(rowTrack)).toBe(3);
+    const props = { row, nodes: [...f.nodes, plan], trackItems: rowTrack, selectedIds: selected, onPreview: () => {}, onManage: () => {}, onToggle: () => {}, onGenerate: () => {} };
+    const collapsed = renderToStaticMarkup(<CanvasEpisodeFrameGallery {...props} />);
+    expect(collapsed.match(/class="canvas-storyboard-image-stack"/g)).toHaveLength(1);
+    expect(collapsed.match(/class="canvas-episode-frame-tile-image"/g)).toHaveLength(2);
+    expect(collapsed).toContain("0/2 已生成");
+    expect(collapsed).toContain("ant-checkbox-indeterminate");
+    const expanded = renderToStaticMarkup(<CanvasEpisodeFrameGallery {...props} expanded />);
+    expect(expanded.match(/class="canvas-episode-frame-tile-image"/g)).toHaveLength(4);
+    expect(expanded).toContain("关键帧 3秒");
+    expect(expanded).toContain("关键帧 6秒");
+    expect(expanded).not.toContain('class="canvas-storyboard-image-stack"');
+});
+
+test("removed selections never fall back to generating the remaining timeline", () => {
+    const f = fixture();
+    const selected = [storyboardFrameTrackKey(f.rows[0].id, "key-plan")];
+    const track = storyboardFrameTrack(f.rows.slice(1), f.nodes);
+    expect(storyboardFrameTrackTargets(track, storyboardFrameTrackSelection(track, selected))).toEqual([]);
 });

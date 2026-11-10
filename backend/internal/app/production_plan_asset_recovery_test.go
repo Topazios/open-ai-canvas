@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -235,24 +236,30 @@ func TestProductionPlanExplicitGenerationRecoversDeletedCollections(t *testing.T
 				})
 				failPlanForAssetRecovery(t, s, runID)
 				run, state := productionRuntimeState(t, s, runID)
-				if _, _, _, err := productionLoad(s.repo, run, &state); err == nil {
-					t.Fatal("background work could revive a deleted collection")
+				_, missing, pendingDoc, err := productionLoad(s.repo, run, &state)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, work := range productionParallelReady(missing, pendingDoc, before) {
+					if productionPlanItem(missing, work.Key) != nil {
+						t.Fatal("missing container was admitted for generation")
+					}
 				}
 				keys := []string{kind}
 				if err := s.GenerateProductionPlanAssets("user", runID, keys); err != nil {
 					t.Fatal("explicit generation cannot recover deleted collections", err)
 				}
 				m, doc, rows := orderedPlanState(t, s, runID)
-				if len(m.Plan.Groups) != 0 || !productionPlanStandardsReady(m, doc, rows) {
-					t.Fatal("cleanup recreated groups or changed the saved standards")
+				if len(m.Plan.Groups) != len(keys) || !productionPlanStandardsReady(m, doc, rows) {
+					t.Fatal("admission did not publish selected targets or changed the saved standards")
 				}
 				for _, prior := range before {
 					if _, ok := planSection(prior.Key); ok && !productionPlanArtifactValid(m, doc, rows, prior.Key) {
 						t.Fatal("saved standards invalidated", prior.Key)
 					}
 				}
-				if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
-					t.Fatal("stopped unrelated checkpoints blocked collection creation", changed, err)
+				if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || changed {
+					t.Fatal("admission left incomplete or duplicate collection projections", changed, err)
 				}
 				m, doc, _ = orderedPlanState(t, s, runID)
 				if len(m.Plan.Groups) != len(keys) {
@@ -363,7 +370,7 @@ func TestProductionPlanExplicitGenerationReplacesEmptyChangedCollection(t *testi
 	if err := s.GenerateProductionPlanAssets("user", runID, []string{"character"}); err != nil {
 		t.Fatal("explicit generation should replace an empty changed group", err)
 	}
-	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
+	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || changed {
 		t.Fatal("missing character group was not recreated", changed, err)
 	}
 	m, doc, _ := orderedPlanState(t, s, runID)
@@ -391,14 +398,14 @@ func TestProductionPlanAssetGenerationRetiresChangedGroupAndPreservesChildren(t 
 		t.Fatalf("stale groups and unverified children must not block explicit asset generation: %v", err)
 	}
 	manifest, doc, _ := orderedPlanState(t, s, runID)
-	if manifest.Plan.Groups["character"] != "" || productionNode(doc, oldGroupID) == nil || productionNode(doc, "user-owned-child") == nil {
-		t.Fatal("recovery must detach the stale group binding while retaining its frame and child")
+	if manifest.Plan.Groups["character"] == oldGroupID || productionNode(doc, oldGroupID) == nil || productionNode(doc, "user-owned-child") == nil {
+		t.Fatal("admission must replace the stale binding while retaining its frame and child")
 	}
 	if productionNode(doc, "user-owned-child")["metadata"].(map[string]any)["content"] != userNode["metadata"].(map[string]any)["content"] {
 		t.Fatal("recovery changed user-owned content")
 	}
-	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
-		t.Fatalf("a fresh selected group should be created after recovery: changed=%v err=%v", changed, err)
+	if _, err := s.ensureProductionPlanGroups("user", runID); err != nil {
+		t.Fatal(err)
 	}
 	manifest, doc, _ = orderedPlanState(t, s, runID)
 	newGroupID := manifest.Plan.Groups["character"]
@@ -426,10 +433,10 @@ func TestProductionPlanAssetGenerationDoesNotAdoptConflictingRootGroup(t *testin
 		t.Fatalf("a conflicting root index must not block explicit asset generation: %v", err)
 	}
 	manifest, doc, _ := orderedPlanState(t, s, runID)
-	if manifest.Plan.Groups["character"] != "" || productionNode(doc, oldGroupID) == nil || productionNode(doc, conflictID) == nil {
+	if id := manifest.Plan.Groups["character"]; id == "" || id == oldGroupID || id == conflictID || productionNode(doc, oldGroupID) == nil || productionNode(doc, conflictID) == nil {
 		t.Fatal("recovery adopted or removed a pre-existing group")
 	}
-	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
+	if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || changed {
 		t.Fatalf("selected category should receive a fresh group: changed=%v err=%v", changed, err)
 	}
 	manifest, doc, _ = orderedPlanState(t, s, runID)
@@ -552,7 +559,7 @@ func TestProductionPlanAssetGenerationRecoversGroupBeforeSettlingCompletedCall(t
 		t.Fatal("the prior successful response was not settled before the retry batch")
 	}
 	manifest, doc, _ = orderedPlanState(t, s, runID)
-	if productionNode(doc, oldGroupID) != nil || manifest.Plan.Groups["character"] != "" {
+	if productionNode(doc, oldGroupID) != nil || manifest.Plan.Groups["character"] == "" || manifest.Plan.Groups["character"] == oldGroupID {
 		t.Fatal("stale group was revived while settling the completed response")
 	}
 }
@@ -700,7 +707,7 @@ func TestProductionPlanAssetRecoveryRejectsChangedOrRetainedNodesAtomically(t *t
 				afterJob, _ := s.repo.ProductionAgentJob("user", runID)
 				afterCanvas, _ := s.repo.CanvasProjectForUser("user", job.CanvasID)
 				afterRows, _ := s.repo.ProductionAgentArtifacts("user", runID)
-				if afterJob == nil || afterCanvas == nil || len(afterRows) < len(rows) {
+				if afterJob == nil || afterCanvas == nil || (change != "orphan" && len(afterRows) < len(rows)) {
 					t.Fatal("recovery discarded the plan, canvas content, or existing asset history")
 				}
 				return
@@ -767,15 +774,10 @@ func TestDeletedQueuedAssetPlaceholderIsNotRebuilt(t *testing.T) {
 }
 func TestProductionPlanAssetNeverFallsIntoPlanFrameWhileCollectionMissing(t *testing.T) {
 	for _, dropPlaceholders := range []bool{false, true} {
-		name := "keep_placeholders"
-		if dropPlaceholders {
-			name = "drop_placeholders"
-		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(fmt.Sprint(dropPlaceholders), func(t *testing.T) {
 			s, db, runID := readyPlanForAssetRecovery(t)
 			m, _, _ := orderedPlanState(t, s, runID)
 			oldGroup := m.Plan.Groups["environment"]
-			frameID := m.FrameID
 			productionEditCanvas(t, s, db, func(doc map[string]any) {
 				nodes := []map[string]any{}
 				for _, node := range creationMaps(doc["nodes"]) {
@@ -791,62 +793,26 @@ func TestProductionPlanAssetNeverFallsIntoPlanFrameWhileCollectionMissing(t *tes
 			if err := s.GenerateProductionPlanAssets("user", runID, []string{"environment"}); err != nil {
 				t.Fatal(err)
 			}
-			m, _, _ = orderedPlanState(t, s, runID)
-			if m.Plan.Groups["environment"] != "" {
-				t.Fatal("collection should stay missing until it is recreated", m.Plan.Groups)
-			}
-			res := productionCall(t, s, runID, "production_submit", map[string]any{
-				"key":          "environment",
-				"name":         "测试environment",
-				"expectedHash": productionDocumentTargetHash(mustPlanArtifacts(t, s, runID), "environment"),
-				"document":     orderedPlanDocument("environment", "environment"),
-				"factIds":      []string{},
-			}, true)
-			if res["error"] == nil {
-				t.Fatal("submit while the collection is missing must be refused", res)
-			}
-			_, doc, rows := orderedPlanState(t, s, runID)
-			for _, row := range rows {
-				if row.Key == "environment" {
-					t.Fatal("refused submit still left a receipt", row.NodeID)
-				}
-			}
-			for _, node := range creationMaps(doc["nodes"]) {
-				// Kept placeholders may still point at the deleted collection until it is
-				// recreated; the refused submit must never move anything into the plan frame.
-				if productionWorkflow(node)["assetKey"] == "environment" && node["parentId"] == frameID {
-					t.Fatal("environment node sits in the plan frame", node["id"], node["parentId"])
-				}
-			}
-			if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || !changed {
-				t.Fatal("collection was not recreated", changed, err)
-			}
-			m, _, _ = orderedPlanState(t, s, runID)
-			newGroup := m.Plan.Groups["environment"]
-			if newGroup == "" || newGroup == oldGroup {
-				t.Fatal("collection ID was not renewed", newGroup)
-			}
-			_, doc, _ = orderedPlanState(t, s, runID)
-			for _, node := range creationMaps(doc["nodes"]) {
-				workflow := productionWorkflow(node)
-				if workflow["assetKey"] == "environment" && node["parentId"] != newGroup {
-					t.Fatal("environment placeholder was not moved into the recreated collection", node["id"], node["parentId"])
-				}
-			}
-			submitOrderedPlan(t, s, runID, "environment", "environment", "测试environment")
-			m, doc, rows = orderedPlanState(t, s, runID)
-			for _, row := range rows {
-				if row.Key != "environment" {
-					continue
-				}
-				node := productionNode(doc, row.NodeID)
-				if node == nil || node["parentId"] != newGroup {
-					t.Fatal("environment node is not under the recreated collection", row.NodeID)
-				}
+			m, doc, rows := orderedPlanState(t, s, runID)
+			group := m.Plan.Groups["environment"]
+			if group == "" || group == oldGroup || !productionAssetTargetPresent(m, doc, "environment") {
+				t.Fatal("explicit retry must publish a new container and node before returning")
 			}
 			if productionNode(doc, oldGroup) != nil {
-				t.Fatal("deleted collection came back")
+				t.Fatal("old container was restored")
 			}
+			for _, node := range creationMaps(doc["nodes"]) {
+				if productionWorkflow(node)["assetKey"] == "environment" && node["parentId"] != group {
+					t.Fatal("asset fell into the plan or a missing group")
+				}
+			}
+			if len(productionParallelReady(m, doc, rows)) != 1 {
+				t.Fatal("requested asset cannot dispatch")
+			}
+			if changed, err := s.ensureProductionPlanGroups("user", runID); err != nil || changed {
+				t.Fatal("retry created incomplete projections", changed, err)
+			}
+			submitOrderedPlan(t, s, runID, "environment", "environment", "测试environment")
 		})
 	}
 }

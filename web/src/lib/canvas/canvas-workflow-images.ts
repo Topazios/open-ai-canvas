@@ -9,7 +9,7 @@ import { generationPromptFingerprint } from "../generation-error";
 import type { ImageCapabilityConfig } from "../model-capabilities";
 import { assetSheetKind, assetSheetImageSettings, assetSheetRatio, assetSheetPrompt } from "../asset-reference-sheet";
 import { assetSheetDimensions } from "../asset-sheet-dimensions";
-import { assetSheetReferenceContent, workflowAssetSheetContext } from "./canvas-asset-sheet-context";
+import { assetSheetReferenceContent, assetSheetReferenceSources, workflowAssetSheetContext } from "./canvas-asset-sheet-context";
 import { isStoryboardFrameStep, ShortDramaStep, shortDramaStep } from "../short-drama-steps";
 import { createCanvasNode } from "./canvas-project-domain";
 import { episodeStoryboardRows } from "./workflow-episode-storyboard";
@@ -124,7 +124,8 @@ export function createWorkflowImages(request: WorkflowGenerationRequest, nodes: 
         if (request.imageShotId && !selectedShot) throw new Error("所选镜头已变化，请重新选择");
         const imagePrompt = request.imagePrompt?.trim() || selectedShot?.prompt;
         if (step.stage === "storyboard" && !imagePrompt) throw new Error("请选择镜头或填写本次画面的镜头编号与提示词");
-        const resolved = resolveProductionAssetReferences([imagePrompt, request.instruction].filter(Boolean).join("\n"), sharedAncestors, selectedShot?.assetKeys,
+        const referenceSources = sheetKind ? assetSheetReferenceSources(sharedAncestors, subject.id) : sharedAncestors;
+        const resolved = resolveProductionAssetReferences([imagePrompt, request.instruction].filter(Boolean).join("\n"), referenceSources, selectedShot?.assetKeys,
             sheetKind ? (node) => assetSheetReferenceContent(node, subject.id) : undefined);
         const ancestors = sheetKind ? [...new Map([...workflowGenerationSources({ ...request, imageSubjectIds: [subject.id] }, nodes, connections), ...resolved.nodes].map((node) => [node.id, node])).values()] : sharedAncestors;
         for (const id of request.sourceNodeIds) {
@@ -195,7 +196,7 @@ export function createWorkflowImages(request: WorkflowGenerationRequest, nodes: 
                 sourceSignatures: Object.fromEntries(ancestors.map((node) => [node.id, workflowSignature(node)])),
                 ...(sheetKind ? { assetImageSourceIds: ancestors.map((node) => node.id) } : {}),
                 referenceSignatures: Object.fromEntries(references.map((node) => [node.id, assetMediaSignature(node)])),
-                ...(sheetKind && sheetContext ? { assetSheet: { version: 5 as const, kind: sheetKind, size: imageSettings!.size, code: data.assetIdentity?.code, title: [subject.title, planState].filter(Boolean).join(" · "), dimensions: assetSheetDimensions(subject.metadata!.content || "", sheetKind), styleSignatures: sheetContext.styleSignatures, promptFingerprint: generationPromptFingerprint(prompt) } } : {}),
+                ...(sheetKind && sheetContext ? { assetSheet: { version: 6 as const, kind: sheetKind, size: imageSettings!.size, code: data.assetIdentity?.code, title: [subject.title, planState].filter(Boolean).join(" · "), dimensions: assetSheetDimensions(subject.metadata!.content || "", sheetKind), styleSignatures: sheetContext.styleSignatures, promptFingerprint: generationPromptFingerprint(prompt) } } : {}),
                 episodeNumber: episode, version, operationId: createClientId(), submission: "planned",
                 parameters: { episodeCount: parameters.episodeCount, minutesPerEpisode: parameters.minutesPerEpisode, instruction: request.instruction, ...(parameters.globalSettings ? { globalSettings: { ...parameters.globalSettings } } : {}) } },
         });

@@ -2,6 +2,8 @@ import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { nodeSizeFromRatio } from "./canvas-node-size";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { isStoryboardFrameRecord } from "./storyboard-frame-records";
+import { ASSET_STACK_HEIGHT, ASSET_STACK_WIDTH, isCanvasAssetStack, orderAssetStackMembers } from "./canvas-asset-stack";
+import { currentAssetMembers } from "./canvas-asset-versions";
 
 export const WORKFLOW_IMAGE_GRID = { size: 280, columns: 3, gapX: 24, gapY: 48, padding: 24, top: 88 } as const;
 // The story outline spans the full row above the specification cards (mirrors productionLayoutPlanGroup on the backend).
@@ -62,6 +64,7 @@ export function groupGridMetrics(frame: CanvasNodeData, members: CanvasNodeData[
 }
 
 function orderedMembers(frame: CanvasNodeData, members: CanvasNodeData[]) {
+    if (isCanvasAssetStack(frame)) return orderAssetStackMembers(frame, currentAssetMembers(visibleMembers(frame, members)));
     const order = new Map((frame.metadata?.frame?.gridOrder || frame.metadata?.shortDrama?.sourceNodeIds || frame.metadata?.referenceAssetNodeIds || []).map((id, index) => [id, index]));
     return visibleMembers(frame, members).sort((a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity) ||
         (a.metadata?.shortDrama?.episodeNumber ?? Infinity) - (b.metadata?.shortDrama?.episodeNumber ?? Infinity));
@@ -78,7 +81,8 @@ export function layoutCanvasGridGroups(nodes: CanvasNodeData[], groupIds?: Reado
     for (const frame of nodes) {
         if (!isGridFrame(frame) || frame.metadata?.locked || (groupIds && !groupIds.has(frame.id))) continue;
         const members = orderedMembers(frame, byParent.get(frame.id) || []);
-        if (!members.length || members.some(node => node.metadata?.locked || node.type === CanvasNodeType.Frame)) continue;
+        const stack = isCanvasAssetStack(frame);
+        if ((!members.length && !stack) || members.some(node => node.metadata?.locked || node.type === CanvasNodeType.Frame)) continue;
         const grid = groupGridMetrics(frame, members);
         const cards = grid.lead ? members.filter(node => node !== grid.lead) : members;
         if (grid.lead) {
@@ -99,10 +103,13 @@ export function layoutCanvasGridGroups(nodes: CanvasNodeData[], groupIds?: Reado
                 ...(image ? { metadata: { ...node.metadata, manualSize: true, freeResize: false } } : {}) });
         });
         const settings = frame.metadata?.frame;
-        const width = settings?.collapsed ? frame.width : grid.width, height = settings?.collapsed ? frame.height : grid.height;
-        if (frame.width === width && frame.height === height && settings?.expandedWidth === grid.width && settings.expandedHeight === grid.height) continue;
+        const collapsed = stack ? settings?.assetStackExpanded !== true : settings?.collapsed || false;
+        const width = collapsed ? stack ? ASSET_STACK_WIDTH : frame.width : grid.width;
+        const height = collapsed ? stack ? ASSET_STACK_HEIGHT : frame.height : grid.height;
+        if (frame.width === width && frame.height === height && settings?.collapsed === collapsed &&
+            (!stack || settings.assetStackExpanded === !collapsed) && settings?.expandedWidth === grid.width && settings.expandedHeight === grid.height) continue;
         patches.set(frame.id, { ...frame, width, height, metadata: { ...frame.metadata,
-            frame: { ...settings, collapsed: settings?.collapsed || false, expandedWidth: grid.width, expandedHeight: grid.height } } });
+            frame: { ...settings, collapsed, ...(stack ? { assetStackExpanded: !collapsed } : {}), expandedWidth: grid.width, expandedHeight: grid.height } } });
     }
     return patches.size ? nodes.map(node => patches.get(node.id) || node) : nodes;
 }

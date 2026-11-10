@@ -285,10 +285,8 @@ type HTTPError struct {
 
 func (e HTTPError) Error() string {
 	switch e.StatusCode {
-	case 524:
-		return "上游网关超时（524）：模型请求可能仍在服务端执行并产生费用，请勿立即重试，请先到供应商后台核对任务或账单"
-	case http.StatusGatewayTimeout:
-		return "上游网关超时（504）：模型请求可能仍在服务端执行并产生费用，请勿立即重试，请先到供应商后台核对任务或账单"
+	case 524, http.StatusGatewayTimeout:
+		return fmt.Sprintf("请求链路返回 HTTP %d，未收到生成结果，不能据此认定模型生成失败；模型可能已完成，也可能仍在服务端执行并产生费用。请勿立即重试，请先核对任务或账单", e.StatusCode)
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return "模型服务拒绝了请求，请检查模型和参数"
 	case http.StatusUnauthorized, http.StatusForbidden:

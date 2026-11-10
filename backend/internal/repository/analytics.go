@@ -135,6 +135,7 @@ func (r *Repository) projectAPICallLogStatuses(logs []model.ApiCallLog, filter A
 			logs[index].ErrorSource = "upstream"
 		}
 		logs[index].Status = logs[index].DisplayStatus()
+		logs[index].ProjectGatewayTimeout()
 	}
 	return nil
 }
@@ -145,6 +146,7 @@ func (r *Repository) historicalAPICallProviderFailures(filter AnalyticsFilter, i
 	query := r.apiCallLogQuery(filter).Model(&model.ApiCallLog{}).
 		Where("("+apiCallLogDisplayStatusSQL+") = ?", model.ApiCallStatusWarning).
 		Where("COALESCE(api_call_logs.error_source, '') = ''")
+	query = query.Where("COALESCE(api_call_logs.status_code, 0) NOT IN (504, 524)")
 	if ids != nil {
 		query = query.Where("api_call_logs.id IN ?", ids)
 	}
@@ -165,6 +167,7 @@ func (r *Repository) historicalAPICallProviderFailures(filter AnalyticsFilter, i
 // stored structured facts only, so historical warnings participate in paging
 // and export filters without rewriting their original audit receipts.
 const apiCallLogDisplayStatusSQL = `CASE
+ WHEN api_call_logs.status <> 'running' AND api_call_logs.status_code IN (504, 524) THEN 'warning'
  WHEN COALESCE(api_call_logs.error_source, '') NOT IN ('', 'content') THEN api_call_logs.status
  WHEN api_call_logs.status = 'running' OR COALESCE(api_call_logs.status_code, 0) < 200 OR api_call_logs.status_code >= 300 THEN api_call_logs.status
  WHEN COALESCE(api_call_logs.provider_status, '') IN ('failed', 'cancelled', 'canceled', 'expired') THEN 'failed'

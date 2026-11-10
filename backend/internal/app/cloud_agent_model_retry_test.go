@@ -42,6 +42,8 @@ func TestCloudAgentModelTaskTransientFailure(t *testing.T) {
 	}{
 		{name: "responses SSE overload", status: 200, code: "server_error", message: overload, want: true},
 		{name: "server error without message", status: 200, code: "server_error", want: true},
+		{name: "responses upstream unavailable event", status: 200, code: "upstream_error", message: "Upstream service temporarily unavailable", want: true},
+		{name: "upstream event cannot override permanent error", status: 200, code: "upstream_error", message: "invalid_api_key"},
 		{name: "overload code", status: 200, code: "overloaded_error", want: true},
 		{name: "unavailable code", status: 200, code: "service_unavailable", want: true},
 		{name: "stream unavailable after successful headers", status: 200, code: "unavailable", message: "Service is temporarily unavailable.", want: true},

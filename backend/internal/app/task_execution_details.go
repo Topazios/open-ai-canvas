@@ -183,6 +183,11 @@ func (s *Service) TaskExecutionDetails(userID, id string) (*TaskExecutionDetails
 			label = "归并结果 · " + strings.TrimPrefix(key, "merge-")
 		} else if key == "outline-spine" {
 			label = "锁定全剧分集主线"
+		} else if strings.HasPrefix(key, "outline-spine-") {
+			var start, end int
+			if _, err := fmt.Sscanf(key, "outline-spine-%d-%d", &start, &end); err == nil {
+				label = fmt.Sprintf("锁定第 %d–%d 集主线", start, end)
+			}
 		} else if key == "body-final" {
 			label = "扩写本集正文"
 		} else if key == "body-expand" {

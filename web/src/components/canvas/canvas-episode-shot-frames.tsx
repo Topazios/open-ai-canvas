@@ -8,6 +8,7 @@ import { storyboardFrameGenerationConfig } from "@/lib/canvas/storyboard-frame-m
 import { shotKeyframes, storyboardDisplayFrames, storyboardFrameLabels } from "@/lib/canvas/episode-storyboard-frames";
 import { storyboardPreviousFrameSource } from "@/lib/canvas/workflow-episode-storyboard";
 import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
+import { generationResultUnconfirmed } from "@/lib/generation-task-display";
 import { storyboardFramePrerequisite } from "@/lib/canvas/storyboard-frame-continuity";
 import { CanvasGenerationTaskDetails } from "@/pages/canvas/canvas-generation-task-details";
 import { StoryboardStartFrameMode, type CanvasNodeData, type StoryboardRow } from "@/types/canvas";
@@ -28,7 +29,7 @@ export function CanvasEpisodeShotFrames({ script, row, rows, nodes, previewOpen 
     const theme = canvasThemes[useActiveTheme()];
     const config = useEffectiveConfig(), textConfig = storyboardFrameGenerationConfig(config, script, "text"), imageConfig = storyboardFrameGenerationConfig(config, script, "image");
     const [preparing, setPreparing] = useState(false), [detailsId, setDetailsId] = useState<string>();
-    const { frames: extracted, plan, error } = shotKeyframes(row, nodes);
+    const { frames: extracted, plan, error, complete } = shotKeyframes(row, nodes);
     const previous = storyboardPreviousFrameSource(row, rows);
     const frames = storyboardDisplayFrames(row, nodes);
     const frameGroups = [
@@ -58,6 +59,7 @@ export function CanvasEpisodeShotFrames({ script, row, rows, nodes, previewOpen 
                 {plan?.metadata?.taskId ? <Button type="text" icon={<Info size={15} />} onClick={() => setDetailsId(plan.id)}>提取详情</Button> : null}
             </div>
             {running ? <p role="status" className="text-sm">{plan?.metadata?.taskStage || "正在提取当前镜头关键帧"}</p> : null}
+            {complete && !extracted.length && !running ? <p role="status" className="text-sm">无需中间关键帧，使用首尾帧即可。</p> : null}
             {error || plan?.metadata?.status === "error" ? <p role="alert" className="text-sm" style={{ color: theme.accent.danger }}>{error || plan?.metadata?.errorDetails || "提取失败，可以重新提取"}</p> : null}
             {frames.length ? <div className="space-y-4">{frameGroups.filter(group => group.frames.length).map(group => <section key={group.label} aria-label={group.label}>
                 <h3 className="text-sm font-medium">{group.label}</h3>
@@ -74,7 +76,7 @@ export function CanvasEpisodeShotFrames({ script, row, rows, nodes, previewOpen 
                 const dependency = image && !ready ? storyboardFramePrerequisite(image, nodes) : undefined;
                 return <article key={frame.id} className="flex flex-wrap gap-3 border-b py-3" style={{ borderColor: theme.node.stroke }}>
                     <div className="min-w-0 flex-1"><strong className="text-sm">{storyboardFrameLabels[frame.kind]} · {frame.timeSeconds} 秒{frame.sharedFrom ? " · 复用上一镜尾帧" : ""}</strong><p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5">{frame.prompt}</p><div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                        <span>{ready ? "已生成" : dependency && !dependency.ready ? dependency.reason : image?.metadata?.status === "error" ? "生成失败" : isCanvasNodeGenerating(image) ? image?.metadata?.taskStage || "生成中" : "待生成"}</span>
+                        <span>{ready ? "已生成" : dependency && !dependency.ready ? dependency.reason : image?.metadata?.status === "error" ? generationResultUnconfirmed(image.metadata.taskErrorCode) ? "结果未确认" : "生成失败" : isCanvasNodeGenerating(image) ? image?.metadata?.taskStage || "生成中" : "待生成"}</span>
                         {image?.metadata?.taskId ? <Button type="text" size="small" icon={<Info size={14} />} onClick={() => setDetailsId(image.id)}>详情</Button> : null}
                         {image?.metadata?.status === "error" ? <Button type="text" size="small" icon={<RefreshCw size={14} />} onClick={() => onRetry(image)}>重试</Button> : null}
                     </div>{image?.metadata?.status === "error" && image.metadata.errorDetails ? <p role="alert" className="mt-2 whitespace-pre-wrap break-words text-xs" style={{ color: theme.accent.danger }}>{image.metadata.errorDetails}</p> : null}</div>

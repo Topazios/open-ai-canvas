@@ -23,7 +23,7 @@ import { CanvasEpisodeFrameGallery } from "./canvas-episode-frame-gallery";
 import { CanvasEpisodeAssetReferences } from "./canvas-episode-asset-references";
 import { CanvasImagePreview } from "./canvas-image-preview";
 import { storyboardFrameLabels, type StoryboardFrameGenerationOptions } from "@/lib/canvas/episode-storyboard-frames";
-import { storyboardFrameTrack, storyboardFrameTrackSelection, storyboardFrameTrackTargets, type StoryboardFrameTrackItem } from "@/lib/canvas/storyboard-frame-track";
+import { storyboardFrameTrack, storyboardFrameTrackSelection, storyboardFrameTrackSlotCount, storyboardFrameTrackTargets, type StoryboardFrameTrackItem } from "@/lib/canvas/storyboard-frame-track";
 import "./canvas-episode-storyboard.css";
 
 const VideoPlayer = lazy(() => import("@/components/video-player").then((module) => ({ default: module.VideoPlayer })));
@@ -123,7 +123,7 @@ export function CanvasEpisodeStoryboard({
             if (progress.paused) return "本集已暂停";
             return `${progress.phaseLabel || "本集连续补全中"}${progress.currentItem ? ` · ${progress.currentItem}` : ""} · ${({ queued: "等待全局并发名额", running: "正在执行", succeeded: "正在校验保存", failed: "等待重试", cancelled: "已取消", preparing: "准备下一批" } as Record<string, string>)[progress.episodeTaskStatus || "preparing"] || "正在核对状态"}`;
         }
-        const work = detailStates.get(row.shotCode || "");
+        const work = detailStates.get(progress?.executionMode === "scene" ? row.sceneId || "" : row.shotCode || "");
         if (work)
             return {
                 queued: "排队中 · 等待全局 Agent 并发名额",
@@ -135,6 +135,7 @@ export function CanvasEpisodeStoryboard({
                 error: "镜头详情生成失败",
                 warning: "待检查",
                 unknown: "正在核对镜头任务状态",
+                blocked: "等待前置场次镜头完成",
             }[work.status];
         return row.detailStatus === "queued" ? "镜头详情已调度" : row.detailStatus === "retrying" ? "镜头详情重试中" : row.detailStatus === "error" ? "镜头详情生成失败" : "等待生成镜头详情";
     };
@@ -279,7 +280,7 @@ export function CanvasEpisodeStoryboard({
             setPreparingFrames(undefined);
         }
     };
-    const generateFrame = (item: StoryboardFrameTrackItem) => void generateFrames({ regenerate: true, frameTargets: [{ rowId: item.rowId, frameId: item.frame.id }] });
+    const generateFrame = (item: StoryboardFrameTrackItem) => void generateFrames({ regenerate: true, frameTargets: storyboardFrameTrackTargets([item], [item.id]) });
     // One action for the current selection: checked shots generate videos, checked frames generate images.
     const selectedVideoIds = selectedRows.length ? targetItems.filter((item) => !item.active && !item.assetError).map((item) => item.row.id) : [];
     const selectedFrameTargets = selectedFrameIds.length ? frameTargets : [];
@@ -306,7 +307,7 @@ export function CanvasEpisodeStoryboard({
         detailReady ? active ? video?.metadata?.taskStage || "生成中" : failed ? "生成失败" : ready ? "已完成" : "待生成" : detailLabel(row);
     const frameWidth = compact ? 88 : 112;
     const frameGap = compact ? 6 : 8;
-    const gridColumns = `${compact ? 88 : 112}px ${items.map(item => `${Math.max(compact ? 112 : 192, frameTrack.filter(frame => frame.rowId === item.row.id).length * (frameWidth + frameGap) + frameGap)}px`).join(" ")}`;
+    const gridColumns = `${compact ? 88 : 112}px ${items.map(item => `${Math.max(compact ? 112 : 192, storyboardFrameTrackSlotCount(frameTrack.filter(frame => frame.rowId === item.row.id)) * (frameWidth + frameGap) + frameGap)}px`).join(" ")}`;
     return (
         <section className="canvas-episode-timeline box-border flex size-full min-h-0 flex-col overflow-hidden px-3 pb-2 pt-8" style={{ color: theme.node.text, background: theme.node.fill, "--timeline-surface": theme.node.fill, "--timeline-selected": theme.node.activeStroke } as CSSProperties} aria-label="分集视频分镜时间线" data-canvas-no-zoom data-canvas-wheel-scroll onPointerDown={blurOnBlankPointer} onMouseDown={stop} onWheel={handleWheel} onKeyDown={stop} onDoubleClick={stop}>
             <header className="canvas-episode-toolbar flex shrink-0 flex-wrap items-center gap-2 border-b pb-2" style={{ borderColor: theme.node.stroke }}>

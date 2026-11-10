@@ -2277,7 +2277,7 @@ func TestXAIVideoPluginUsesReferenceImagesForReferenceOperation(t *testing.T) {
 		ReferenceImages: []providerMedia{
 			{ID: "character", DataURL: testReferenceImageDataURL},
 		},
-		Metadata: map[string]interface{}{"videoEditOperation": "reference_to_video", "videoStartFrameNodeId": "character"},
+		Metadata: map[string]interface{}{"videoEditOperation": "reference_to_video"},
 	})
 	if body["image"] != nil {
 		t.Fatalf("image = %#v", body["image"])
@@ -2517,7 +2517,7 @@ func TestProtocolRequestPreservesVideoImageIDsAndRoles(t *testing.T) {
 		ReferenceImages: []providerMedia{{ID: "character", URL: "https://example.com/character.png"}},
 		Metadata:        map[string]interface{}{"videoEditOperation": "reference_to_video", "videoStartFrameNodeId": "character"},
 	})
-	if request.Images[0].Role != "reference_image" {
+	if request.Images[0].Role != "first_frame" {
 		t.Fatalf("reference operation image = %#v", request.Images[0])
 	}
 }

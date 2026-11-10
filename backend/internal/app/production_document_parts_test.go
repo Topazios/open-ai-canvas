@@ -45,9 +45,10 @@ func finishDocumentPart(t *testing.T, s *Service, db *gorm.DB, runID string, wor
 	t.Helper()
 	m, _, _ := orderedPlanState(t, s, runID)
 	fields := map[string]string{}
+	baseline := orderedPlanDocument(work.Key, productionPlanKind(m, work.Key))
 	for _, section := range productionPlanDocumentSectionsForSchema(work.Key, productionPlanKind(m, work.Key), work.DocumentParts.SchemaVersion) {
 		if cloudAgentContainsString(work.DocumentParts.Pending[0], section.Key) {
-			fields[section.Key] = section.Title + "：明确的制作设计；与选题和本版规范一致。"
+			fields[section.Key] = baseline[section.Key]
 		}
 	}
 	args := map[string]any{"key": work.Key, "name": work.Name, "document": fields, "factIds": []string{}, "expectedHash": work.DocumentParts.ExpectedHash}
@@ -117,6 +118,40 @@ func TestProductionDocumentPartsRecoverParallelAndRestart(t *testing.T) {
 	_, state = productionRuntimeState(t, s, runID)
 	if len(state.ProductionParallel) != 0 || !agentHasEventWithReason(state, "model_failure_recovered", "production_document_output_limit") {
 		t.Fatal("split work or recovery explanation was lost")
+	}
+}
+
+func TestProductionLargeStoryRebalancesExistingCheckpointBeforeRetry(t *testing.T) {
+	s, db, runID := parallelPlanFixture(t)
+	productionEditCanvas(t, s, db, func(doc map[string]any) {
+		productionWorkflow(productionNode(doc, "group"))["parameters"].(map[string]any)["episodeCount"] = 120
+	})
+	run, state := productionRuntimeState(t, s, runID)
+	m, doc, artifacts := orderedPlanState(t, s, runID)
+	m.Plan.StoryStructureVersion = 1
+	schema := productionPlanDocumentSchemaVersion(m.Plan.Version)
+	sections := productionPlanDocumentSectionsForSchema("story", productionPlanKind(m, "story"), schema)
+	fields := make([]string, 0, len(sections))
+	for _, section := range sections {
+		fields = append(fields, section.Key)
+	}
+	work := productionParallelWork{
+		Key: "story", Name: "故事总纲",
+		Dependencies: productionParallelDependencyHash(m, artifacts, "story"),
+		DocumentParts: &productionDocumentParts{
+			SchemaVersion: schema,
+			ExpectedHash:  productionDocumentTargetHash(artifacts, "story"),
+			Fields:        map[string]string{},
+			Pending:       [][]string{fields},
+		},
+	}
+	if err := s.enqueueProductionParallel(run, &state, m, doc, artifacts, work); err != nil {
+		t.Fatal(err)
+	}
+	_, state = productionRuntimeState(t, s, runID)
+	queued := state.ProductionParallel["story"]
+	if queued.DocumentParts == nil || len(queued.DocumentParts.Pending) < 2 || len(queued.DocumentParts.Pending[0]) > 3 {
+		t.Fatalf("existing large-story checkpoint was not rebalanced: %+v", queued.DocumentParts)
 	}
 }
 

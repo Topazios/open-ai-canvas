@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,7 @@ func productionEpisodeArchitectureFixture(count int) string {
 	}
 	for episode := 1; episode <= count; episode++ {
 		rows = append(rows, strings.Join([]string{
-			"EP-" + map[int]string{1: "001", 2: "002", 3: "003"}[episode],
+			fmt.Sprintf("EP-%03d", episode),
 			"完成本集剧情任务", "承接前集状态", "角色目标与具体阻力", "作出关键选择并采取行动",
 			"行动产生结果与相应代价", "信息和关系发生有依据的变化", "状态变化依据已写明",
 			"本集行动获得阶段性收束", "下一集承接当前未决行动", "内容覆盖符合已定单集时长",

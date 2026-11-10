@@ -29,6 +29,12 @@ export function groupSessionMembers(group: CanvasNodeData, nodes: CanvasNodeData
 export type GroupSessionTarget = { key: string; id: string; kind: "task" | "agent"; nodeId: string; scoped?: boolean; coordinator?: boolean };
 export type GroupSessionSnapshot = { kind: "task"; detail: TaskExecutionDetails } | { kind: "agent"; run: AgentRun };
 
+export function latestGroupAgentRun(snapshot?: AgentRun, listed?: AgentRun) {
+    if (!snapshot) return listed;
+    if (!listed || listed.id !== snapshot.id) return snapshot;
+    return Date.parse(listed.updatedAt) > Date.parse(snapshot.updatedAt) ? listed : snapshot;
+}
+
 export function groupSessionTargets(members: CanvasNodeData[], group?: CanvasNodeData, nodes: CanvasNodeData[] = members) {
     const targets = new Map<string, GroupSessionTarget>();
     for (const node of members) {
@@ -49,10 +55,15 @@ export function groupSessionTargets(members: CanvasNodeData[], group?: CanvasNod
 }
 
 export function groupMemberState(node: CanvasNodeData, snapshot?: GroupSessionSnapshot, coordinator?: GroupSessionSnapshot, parallelStatus?: string) {
-    if (isPlanPlaceholder(node)) {
+    if (isPlanPlaceholder(node) && !snapshot) {
+        if (coordinator?.kind === "agent") {
+            if (coordinator.run.status === "cancelled") return "已取消";
+            if (coordinator.run.production?.paused || coordinator.run.status === "waiting_user") return "已暂停";
+        }
         // 受控任务已经失败或被拒绝时，没保存的文档不会再启动，不能继续显示排队中。
         const stopped = coordinator?.kind === "agent" && ["failed", "rejected"].includes(coordinator.run.status);
         if (stopped) return "未启动";
+        if (coordinator?.kind === "agent" && coordinator.run.production?.flow && !parallelStatus) return "待写入";
         // 占位节点自己没有任务记录，用容器并行明细里对应条目的状态。
         if (parallelStatus === "running") return "执行中";
         if (parallelStatus === "error" || parallelStatus === "failed") return "执行失败";

@@ -44,10 +44,12 @@ test("first and last frame prompts use current shot and different static moments
 
 test("keyframes accept multiple chronological static moments and reject invalid or invented assets", () => {
     const row = { ...fixture().rows[0], videoMotionPrompt: "CHR-0001推门走进房间", assetKeys: ["CHR-0001"] };
-    const valid = JSON.stringify({ frames: [{ timeSeconds: 0, prompt: "CHR-0001正要推门" }, { timeSeconds: 8, prompt: "CHR-0001已经进门" }] });
+    const valid = JSON.stringify({ frames: [{ timeSeconds: 2, prompt: "CHR-0001正在推门" }, { timeSeconds: 8, prompt: "CHR-0001已经进门" }] });
     expect(parseStoryboardKeyframes(valid, row).map(frame => frame.id)).toEqual(["key-1", "key-2"]);
     expect(parseStoryboardKeyframes("```json\n" + valid + "\n```", row)).toHaveLength(2);
-    for (const frames of [[], [{ timeSeconds: 11, prompt: "画面" }], [{ timeSeconds: 1, prompt: "画面" }, { timeSeconds: 1, prompt: "同一时间" }], [{ timeSeconds: 2, prompt: "CHR-9999出现" }], Array.from({ length: 9 }, (_, i) => ({ timeSeconds: i, prompt: "画面" }))]) expect(() => parseStoryboardKeyframes(JSON.stringify({ frames }), row)).toThrow();
+    expect(parseStoryboardKeyframes(JSON.stringify({ frames: [{ timeSeconds: 0, prompt: "首帧重复" }, { timeSeconds: 5, prompt: "中间转折" }, { timeSeconds: 10, prompt: "尾帧重复" }] }), row).map(frame => frame.prompt)).toEqual(["中间转折"]);
+    expect(parseStoryboardKeyframes('{"frames":[]}', row)).toEqual([]);
+    for (const frames of [[{ timeSeconds: 11, prompt: "画面" }], [{ timeSeconds: 1, prompt: "画面" }, { timeSeconds: 1, prompt: "同一时间" }], [{ timeSeconds: 2, prompt: "CHR-9999出现" }], Array.from({ length: 9 }, (_, i) => ({ timeSeconds: i, prompt: "画面" }))]) expect(() => parseStoryboardKeyframes(JSON.stringify({ frames }), row)).toThrow();
     expect(() => parseStoryboardKeyframes("null", row)).toThrow();
     expect(storyboardKeyframePrompt(row)).toContain(row.videoMotionPrompt);
 });

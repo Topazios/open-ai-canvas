@@ -434,6 +434,22 @@ export function autoReviewPassed(report: ScreenplayAuditReport) {
     return autoReviewBlockingCount(report) === 0;
 }
 
+// 容器计数、确认范围和执行前复核共用当前报告，不能按历史通过标记或正文生成完成数判断。
+export function screenplayAutoReviewCandidates(bodies: CanvasNodeData[], nodes: CanvasNodeData[], settings?: ShortDramaGlobalSettings, running: ReadonlySet<string> = new Set()) {
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    const seen = new Set<string>();
+    return bodies.flatMap(candidate => {
+        const body = byId.get(candidate.id);
+        if (!body || seen.has(body.id)) return [];
+        seen.add(body.id);
+        const data = nodeWorkflow(body);
+        if (data?.step !== ShortDramaStep.Body || data.role !== "document" || !body.metadata?.content?.trim()) return [];
+        if (running.has(body.id) || body.metadata.status === "loading" || data.submission === "unknown" || data.autoReview?.status === "auditing" || data.autoReview?.status === "repairing") return [];
+        const { report, stale } = screenplayAuditState(latestBodyAudit(body, nodes), nodes, settings);
+        return report && !stale && autoReviewPassed(report) ? [] : [body];
+    });
+}
+
 export function autoReviewRoundFromReport(report: ScreenplayAuditReport, round: number, now = new Date().toISOString()): AutoReviewRound {
     const blocking = autoReviewBlockingCount(report);
     return {

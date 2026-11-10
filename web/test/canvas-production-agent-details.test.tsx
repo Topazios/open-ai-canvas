@@ -22,6 +22,46 @@ function renderDetails(production: Partial<NonNullable<AgentRun["production"]>> 
     return renderToStaticMarkup(<CanvasProductionAgentDetails node={node} state={state} />);
 }
 
+test("inventory reconciliation is available for stopped plans and hidden during active generation", () => {
+    expect(renderDetails({ inventoryReconcileAvailable: true }, "waiting_user")).toContain("重新核对总表");
+    expect(renderDetails({ inventoryReconcileAvailable: true }, "completed")).toContain("重新核对总表");
+    expect(renderDetails({ inventoryReconcileAvailable: true }, "running")).not.toContain("重新核对总表");
+    expect(renderDetails({ inventoryReconcileAvailable: false }, "waiting_user")).not.toContain("重新核对总表");
+});
+
+test("paused and waiting production runs retain cancellation without starting another attempt", () => {
+    for (const status of ["waiting_user", "waiting_approval", "failed", "rejected"] as const) {
+        expect(renderDetails({ paused: true }, status)).toContain("取消任务");
+    }
+    for (const status of ["completed", "cancelled"] as const) {
+        expect(renderDetails({}, status)).not.toContain("取消任务");
+    }
+});
+
+test("staged plan shows saved unit progress and manual retry without claiming story completed", () => {
+    const html = renderDetails({ flow: { root: "story", stage: "第2集详细规划", total: 8, saved: 6, accepted: 5, running: 0, repair: 0, held: 1, lastProgressAt: "2026-11-07T00:00:00Z", units: [{ id: "u", key: "flow/story/episode/0002", name: "第2集详细规划", stage: "detail", status: "held", generation: 3, attempts: 3, issues: [{ layer: "schema", rule: "missing_text", target: "storyText", message: "缺少行动过程", action: "补充选择及后果", severity: "blocking" }] }] } }, "waiting_user");
+    expect(html).toContain("已暂停");
+    expect(html).toContain("等待手动继续");
+    expect(html).toContain("已保存 6/8");
+    expect(html).toContain("补充选择及后果");
+    expect(html).toContain("重试此步骤");
+    expect(html).not.toContain("故事总纲已完成 · 等待启动");
+});
+
+test("output cap shows its actual reason without claiming a root document was skipped", () => {
+    const html = renderDetails({ parallelItems: [{ key: "story", name: "故事总纲", status: "warning", severity: "warning", code: "output_limit_exceeded", phase: "content", message: "章节 facts 达到输出上限，已停止自动重试" }] }, "failed");
+    expect(html).toContain("章节 facts 达到输出上限");
+    expect(html).not.toContain("未通过本地校验");
+    expect(html).not.toContain("已跳过此项");
+    expect(html).toContain("可在对应任务中重试");
+});
+
+test("only abandoned work is described as skipped", () => {
+    const html = renderDetails({ parallelItems: [{ key: "visual", name: "视觉规范", status: "warning", severity: "warning", abandoned: true, message: "仍有必填章节缺失" }] });
+    expect(html).toContain("视觉规范：仍有必填章节缺失");
+    expect(html).toContain("已跳过此项");
+});
+
 test("parallel plan progress separates public documents, assets and in-flight names", () => {
     const html = renderDetails({ documentTotal: 5, documentCount: 4, assetTotal: 50, assetCount: 18, inventoryComplete: true, concurrencyLimit: 3, concurrentItems: ["主角", "渡口", "相机"] });
     expect(html).toContain("方案文档 4/5 · 资产 18/50");
@@ -131,4 +171,14 @@ test("waiting user checkpoints keep a visible resume control", () => {
     const html = renderDetails({ paused: true, phase: ProductionPlanPhase.Validation }, "waiting_user");
     expect(html).toContain("已暂停");
     expect(html).toContain("继续任务");
+});
+
+test("unfinished storyboards always expose manual coordinator retry", () => {
+    for (const status of ["running", "queued", "failed", "cancelled", "waiting_user"] as const) {
+        const html = renderDetails({ workKind: "storyboard", executionMode: "scene" }, status);
+        expect(html).toContain("重试主任务");
+        expect(html).not.toContain("继续任务");
+    }
+    expect(renderDetails({ workKind: "storyboard" }, "completed")).not.toContain("重试主任务");
+    expect(renderDetails({ workKind: "plan" }, "failed")).not.toContain("重试主任务");
 });

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createCanvasNode } from "../src/lib/canvas/canvas-project-domain";
 import { createWorkflowDocuments, workflowBodyTaskInput, workflowGenerationSources, workflowAncestors, workflowSignature, nodeWorkflow } from "../src/lib/canvas/canvas-short-drama-workflow";
-import { autoReviewOutdated, autoReviewPassed, autoReviewRoundFromReport, autoReviewStalled, selectedAuditBodies, parseScreenplayAuditReport, screenplayAuditState, screenplayReportMarkdown, auditContextNodes, latestBodyAudit, screenplayAuditChecks, screenplayBodySignature, type ScreenplayAuditReport } from "../src/lib/canvas/workflow-screenplay-audit";
+import { autoReviewOutdated, autoReviewPassed, autoReviewRoundFromReport, autoReviewStalled, selectedAuditBodies, parseScreenplayAuditReport, screenplayAuditState, screenplayReportMarkdown, auditContextNodes, latestBodyAudit, screenplayAuditChecks, screenplayBodySignature, screenplayAutoReviewCandidates, type ScreenplayAuditReport } from "../src/lib/canvas/workflow-screenplay-audit";
 import { buildGenerationTaskNodeResult } from "../src/lib/canvas/canvas-generation-task-sync";
 import { deriveShortDramaProgress } from "../src/lib/canvas/canvas-short-drama";
 import { ShortDramaStep as S, activeShortDramaSteps, nextShortDramaSteps } from "../src/lib/short-drama-steps";
@@ -11,6 +11,7 @@ import { defaultShortDramaSettings } from "../src/lib/short-drama-settings";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { CanvasScreenplayAuditPanel, CanvasScreenplayNodeContent } from "../src/components/canvas/canvas-screenplay-audit";
+import { CanvasFrameNode } from "../src/components/canvas/canvas-frame-node";
 import { buildCanvasCustomNodeScopes } from "../src/pages/canvas/use-canvas-scoped-node-renderers";
 import { retryWorkflowGeneration } from "../src/services/workflow-generation-retry";
 import { defaultConfig } from "../src/stores/use-config-store";
@@ -284,7 +285,8 @@ test("正文节点 exposes repair while its inline report is current and hides i
     expect(renderToStaticMarkup(createElement(CanvasScreenplayNodeContent, props))).toContain("修复正文");
     f.body.metadata!.content += "手动改稿";
     const html = renderToStaticMarkup(createElement(CanvasScreenplayNodeContent, props));
-    expect(html).toContain("诊断待复检");
+    expect(html).toContain("当前版本待复检");
+    expect(html).toContain("复检当前版本");
     expect(html).not.toContain("修复正文");
 });
 
@@ -489,6 +491,183 @@ test("an interrupted auto review offers a retry entry without asking for manual 
 function withAutoReview(f: ReturnType<typeof fixture>, status: "settled" | "manual", rounds: ReturnType<typeof autoReviewRoundFromReport>[]) {
     f.body.metadata = { ...f.body.metadata, shortDrama: { ...nodeWorkflow(f.body)!, autoReview: { status, round: rounds.length, maxRounds: 3, startedAt: "t", finishedAt: "t2", stopReason: "连续两轮阻塞数没有下降", rounds } } };
 }
+
+function passedReviewFixture() {
+    const f = fixture();
+    const value = report(f);
+    value.quality = "有条件通过";
+    value.usability = "有条件通过";
+    value.checks = value.checks.map(check => ({ ...check, verdict: "通过", note: "当前正文已满足该项验收要求。" }));
+    value.findings[0].certainty = "待核实风险";
+    value.findings[0].title = "关系说明可进一步清晰";
+    value.summary = "正文关键行动已展开，可以进入后续制作。";
+    const data = nodeWorkflow(f.body)!;
+    data.screenplayAudit = { ...data.screenplayAudit!, report: value, reportSignature: canonicalize(value), reportMarkdown: screenplayReportMarkdown(value) };
+    f.body.metadata!.status = "success";
+    const first = autoReviewRoundFromReport(report(f), 1, "2026-11-04T00:47:21.687Z");
+    first.result = "repaired";
+    const last = autoReviewRoundFromReport(value, 2, "2026-11-04T00:58:28.224Z");
+    data.autoReview = { status: "passed", round: 2, maxRounds: 4, startedAt: "2026-11-04T00:47:21.687Z", finishedAt: "2026-11-04T00:58:28.224Z", bodySignature: screenplayBodySignature(f.body), rounds: [first, last] };
+    return f;
+}
+
+function renderReviewFrame(bodies: ReturnType<typeof fixture>["body"][], nodes: ReturnType<typeof fixture>["nodes"]) {
+    const frame = createCanvasNode(CanvasNodeType.Frame, { x: 0, y: 0 }, {
+        shortDrama: { pipelineId: "p", step: S.Body, stage: "story", role: "collection", sourceNodeIds: bodies.map(body => body.id), sourceSignatures: {}, parameters: { episodeCount: bodies.length } },
+    });
+    const noop = () => {};
+    return renderToStaticMarkup(createElement(CanvasFrameNode, {
+        data: frame, childNodes: bodies, autoReviewNodes: screenplayAutoReviewCandidates(bodies, nodes), scale: 1, isSelected: false, isDropTarget: false,
+        onMouseDown: noop, onResize: noop, onToggleCollapsed: noop, onFolderStyleChange: noop, onTitleChange: noop, onContextMenu: noop, onAutoReview: noop,
+    }));
+}
+
+test("a twelve-episode container counts only the nine bodies that have not passed", () => {
+    const fixtures = Array.from({ length: 12 }, (_, index) => {
+        if (index < 3) return passedReviewFixture();
+        const f = fixture(); complete(f); withAutoReview(f, "manual", []); return f;
+    });
+    const bodies = fixtures.map(f => f.body);
+    const nodes = fixtures.flatMap(f => f.nodes);
+    const before = canonicalize(nodes);
+    expect(screenplayAutoReviewCandidates(bodies, nodes).map(body => body.id)).toEqual(bodies.slice(3).map(body => body.id));
+    const html = renderReviewFrame(bodies, nodes);
+    expect(html).toContain('aria-label="自动诊修未通过 9 集"');
+    expect(html).toContain("诊修未通过 9");
+    expect(html).not.toContain("自动诊断修复 12");
+    expect(canonicalize(nodes)).toBe(before);
+});
+
+test("a fully passed collection offers no batch review action", () => {
+    const fixtures = [passedReviewFixture(), passedReviewFixture()];
+    const bodies = fixtures.map(f => f.body), nodes = fixtures.flatMap(f => f.nodes);
+    expect(screenplayAutoReviewCandidates(bodies, nodes)).toEqual([]);
+    expect(renderReviewFrame(bodies, nodes)).not.toContain("自动诊修未通过");
+});
+
+test("batch review includes stale passes after body, context or global settings changes", () => {
+    const edited = passedReviewFixture();
+    edited.body.metadata!.content += "新正文";
+    expect(screenplayAutoReviewCandidates([edited.body], edited.nodes).map(body => body.id)).toEqual([edited.body.id]);
+    const context = passedReviewFixture();
+    context.outline.metadata!.content += "新的集纲约束";
+    expect(screenplayAutoReviewCandidates([context.body], context.nodes).map(body => body.id)).toEqual([context.body.id]);
+    const settings = passedReviewFixture();
+    expect(screenplayAutoReviewCandidates([settings.body], settings.nodes, defaultShortDramaSettings()).map(body => body.id)).toEqual([settings.body.id]);
+});
+
+test("batch review excludes active, empty, uncertain and non-body candidates", () => {
+    const fixtures = Array.from({ length: 7 }, () => fixture());
+    fixtures[0].body.metadata!.status = "loading";
+    fixtures[1].body.metadata!.shortDrama!.autoReview = { status: "auditing", round: 1, maxRounds: 4, startedAt: "t", rounds: [] };
+    fixtures[2].body.metadata!.shortDrama!.autoReview = { status: "repairing", round: 1, maxRounds: 4, startedAt: "t", rounds: [] };
+    fixtures[3].body.metadata!.content = "  ";
+    fixtures[4].body.metadata!.shortDrama!.submission = "unknown";
+    fixtures[5].body.metadata!.shortDrama!.step = S.Episodes;
+    const bodies = fixtures.map(f => f.body), nodes = fixtures.flatMap(f => f.nodes);
+    expect(screenplayAutoReviewCandidates(bodies, nodes, undefined, new Set([bodies[6].id]))).toEqual([]);
+});
+
+test("batch revalidation resolves latest nodes, deduplicates ids and skips deleted nodes", () => {
+    const f = passedReviewFixture();
+    const outdatedSnapshot = { ...f.body, metadata: { ...f.body.metadata, status: "error" as const } };
+    expect(screenplayAutoReviewCandidates([outdatedSnapshot], f.nodes)).toEqual([]);
+    expect(screenplayAutoReviewCandidates([f.body], [])).toEqual([]);
+    const pending = fixture();
+    expect(screenplayAutoReviewCandidates([pending.body, pending.body], pending.nodes).map(body => body.id)).toEqual([pending.body.id]);
+});
+
+test("a queued episode that passes before execution is skipped on revalidation", () => {
+    const f = fixture(); complete(f);
+    const queued = screenplayAutoReviewCandidates([f.body], f.nodes);
+    expect(queued).toHaveLength(1);
+    const value = nodeWorkflow(f.body)!.screenplayAudit!.report!;
+    value.usability = "有条件通过";
+    value.findings[0].certainty = "创作建议";
+    nodeWorkflow(f.body)!.screenplayAudit!.reportSignature = canonicalize(value);
+    expect(screenplayAutoReviewCandidates(queued, f.nodes)).toEqual([]);
+});
+
+test("a current passed body shows success and records without a repeat audit or repair action", () => {
+    const f = passedReviewFixture();
+    const html = renderToStaticMarkup(createElement(CanvasScreenplayNodeContent, {
+        node: f.body, nodes: f.nodes, onEdit: () => {}, onReport: () => {}, onAudit: () => {}, onRepair: () => {}, onResume: () => {},
+    }));
+    expect(html).toContain("审核通过");
+    expect(html).toContain("诊修记录");
+    expect(html).not.toContain("重新审核");
+    expect(html).not.toContain("再次诊断");
+    expect(html).not.toContain("修复正文");
+    expect(html).not.toContain("重试自动修复");
+});
+
+test("passed details lead with the current conclusion and keep all history collapsed", () => {
+    const f = passedReviewFixture();
+    const html = renderToStaticMarkup(createElement(CanvasScreenplayAuditPanel, {
+        node: f.body, nodes: f.nodes, onClose: () => {}, onRepair: () => {}, onReaudit: () => {}, onBody: () => {},
+    }));
+    expect(html).toContain("无需重复诊断");
+    expect(html).toContain("更多诊断操作");
+    const header = html.slice(html.indexOf("<header"), html.indexOf("</header>"));
+    expect(header).not.toContain("重新审核");
+    expect(header).not.toContain("修复正文");
+    expect(html).not.toMatch(/<details[^>]*\sopen(?:=|\s|>)/);
+    expect(html.indexOf("当前正文诊断结论")).toBeLessThan(html.indexOf("诊断摘要"));
+    expect(html.indexOf("诊断摘要")).toBeLessThan(html.indexOf("自动诊断修复记录"));
+    expect(html).toContain("参考建议与待核实项 · 不影响审核通过");
+    expect(html).toContain("关系说明可进一步清晰");
+    expect(html).not.toContain("2026-11-04T00:");
+    expect(html.indexOf("第2轮")).toBeLessThan(html.indexOf("第1轮"));
+});
+
+test("an edited body cannot present a historical pass as the current conclusion", () => {
+    const f = passedReviewFixture();
+    f.body.metadata!.content += "正文修改";
+    const props = { node: f.body, nodes: f.nodes, onClose: () => {}, onRepair: () => {}, onReaudit: () => {}, onBody: () => {} };
+    const panel = renderToStaticMarkup(createElement(CanvasScreenplayAuditPanel, props));
+    const conclusion = panel.slice(panel.indexOf('aria-label="当前正文诊断结论"'), panel.indexOf("</section>"));
+    expect(conclusion).toContain("当前版本待复检");
+    expect(conclusion).not.toContain("审核通过");
+    expect(panel).toContain("旧版本记录");
+    expect(panel).toContain("复检当前版本");
+    const node = renderToStaticMarkup(createElement(CanvasScreenplayNodeContent, { ...props, onEdit: () => {}, onReport: () => {}, onAudit: () => {} }));
+    expect(node).not.toContain("审核通过");
+    expect(node).toContain("当前版本待复检");
+});
+
+test("changed audit settings invalidate a passed badge even when the body is unchanged", () => {
+    const f = passedReviewFixture();
+    const settings = defaultShortDramaSettings();
+    const html = renderToStaticMarkup(createElement(CanvasScreenplayNodeContent, {
+        node: f.body, nodes: f.nodes, settings, onEdit: () => {}, onReport: () => {}, onAudit: () => {}, onRepair: () => {},
+    }));
+    expect(html).toContain("当前版本待复检");
+    expect(html).not.toContain("审核通过");
+});
+
+test("a valid new diagnosis takes precedence over an outdated auto review history", () => {
+    const f = passedReviewFixture();
+    nodeWorkflow(f.body)!.autoReview!.bodySignature = "previous-body-signature";
+    const html = renderToStaticMarkup(createElement(CanvasScreenplayAuditPanel, {
+        node: f.body, nodes: f.nodes, onClose: () => {}, onRepair: () => {}, onReaudit: () => {}, onBody: () => {},
+    }));
+    expect(html).toContain("审核通过");
+    expect(html).toContain("旧版本记录");
+    expect(html).not.toContain("当前版本待复检");
+    expect(html).not.toContain("复检当前版本");
+});
+
+test("a running recheck cannot retain a passed badge or offer another submission", () => {
+    const f = passedReviewFixture();
+    f.body.metadata!.status = "loading";
+    const html = renderToStaticMarkup(createElement(CanvasScreenplayNodeContent, {
+        node: f.body, nodes: f.nodes, onEdit: () => {}, onReport: () => {}, onAudit: () => {}, onRepair: () => {},
+    }));
+    expect(html).toContain("诊断中");
+    expect(html).not.toContain("审核通过");
+    expect(html).not.toContain("自动审核已通过");
+    expect(html).not.toContain('aria-label="诊断"');
+});
 
 test("a settled auto review shows remaining items and a retry entry without manual wording", () => {
     const f = fixture(); complete(f);

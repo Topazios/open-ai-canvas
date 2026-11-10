@@ -4,7 +4,7 @@ import { commitCanvasGenerationResult } from "@/lib/canvas/canvas-generation-res
 import { selectCanvasVisibleNodes } from "@/lib/canvas/canvas-node-visibility";
 import { buildCanvasSpatialIndex, canvasNodeBounds } from "@/lib/canvas/canvas-spatial-index";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import { markCanvasTaskRecoveryUnconfirmed, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-task-state";
+import { canvasNodeNeedsTaskRecovery, markCanvasTaskRecoveryUnconfirmed, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-task-state";
 
 const image = (id: string, x = 0): CanvasNodeData => ({ id, type: CanvasNodeType.Image, title: id, position: { x, y: 0 }, width: 20, height: 20, metadata: { taskId: `task-${id}`, status: "loading" } });
 
@@ -32,6 +32,22 @@ describe("canvas synchronous editor state", () => {
 });
 
 describe("canvas generation node commits", () => {
+    test("recovery distinguishes saved placeholders, live submissions and an interrupted receipt", () => {
+        const workflow = { pipelineId: "p", stage: "assets" as const, step: "assets.environment_references", role: "document" as const, sourceNodeIds: [], sourceSignatures: {} };
+        const placeholder = { ...image("a"), metadata: { status: "loading" as const, shortDrama: { ...workflow, submission: "planned" as const } } };
+        expect(canvasNodeNeedsTaskRecovery(placeholder)).toBe(false);
+        expect(canvasNodeNeedsTaskRecovery({ ...placeholder, metadata: { ...placeholder.metadata, shortDrama: { ...workflow, submission: "rejected" } } })).toBe(false);
+        const posting = { ...placeholder, metadata: { ...placeholder.metadata, shortDrama: { ...workflow, submission: "submitting" as const } } };
+        expect(canvasNodeNeedsTaskRecovery(posting, true)).toBe(false);
+        // A new page has no local submission owner: the same saved marker must be discovered.
+        expect(canvasNodeNeedsTaskRecovery(posting)).toBe(true);
+        const bound = image("a");
+        expect(canvasNodeNeedsTaskRecovery(bound)).toBe(true);
+        expect(canvasNodeNeedsTaskRecovery({ ...bound, metadata: { ...bound.metadata, status: "success" } })).toBe(false);
+        expect(canvasNodeNeedsTaskRecovery({ ...bound, metadata: { ...bound.metadata, shortDrama: { ...workflow, materializedTaskId: "task-a" } } })).toBe(false);
+        expect(canvasNodeNeedsTaskRecovery({ ...placeholder, metadata: { ...placeholder.metadata, agentGenerationContinuation: { status: "pending" } } } as CanvasNodeData)).toBe(true);
+    });
+
     test("task lookup errors preserve unknown state and cannot undo success or a new binding", () => {
         const pending = image("a");
         expect(markCanvasTaskRecoveryUnconfirmed(pending, "task-a", "network unavailable").metadata).toMatchObject({ status: "loading", taskId: "task-a", errorDetails: "network unavailable" });

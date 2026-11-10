@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"infinite-canvas/backend/internal/canvas/integrity"
 	"slices"
 	"time"
 
@@ -50,131 +51,12 @@ func canvasDocumentNodeIDs(payload string) ([]string, error) {
 	return ids, nil
 }
 
-func filterCanvasDeletionReceipts(payload string, receipts []model.CanvasNodeDeletionReceipt) (string, error) {
-	if len(receipts) == 0 {
-		return payload, nil
-	}
-	var document map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(payload), &document); err != nil {
-		return "", err
-	}
-	var nodes []map[string]json.RawMessage
-	if err := json.Unmarshal(document["nodes"], &nodes); err != nil {
-		return "", err
-	}
-	type identity struct {
-		id, parent string
-		cascade    bool
-	}
-	identities := make([]identity, len(nodes))
-	index := make(map[string]int, len(nodes))
-	for i, node := range nodes {
-		var base struct {
-			ID       string `json:"id"`
-			ParentID string `json:"parentId"`
-			Metadata struct {
-				ShortDrama struct {
-					Step       string          `json:"step"`
-					Role       string          `json:"role"`
-					MediaGroup json.RawMessage `json:"mediaGroup"`
-					PlanGroup  json.RawMessage `json:"planGroup"`
-				} `json:"shortDrama"`
-			} `json:"metadata"`
-		}
-		encoded, err := json.Marshal(node)
-		if err != nil {
-			return "", err
-		}
-		if err := json.Unmarshal(encoded, &base); err != nil {
-			return "", err
-		}
-		workflow := base.Metadata.ShortDrama
-		mediaGroup := len(workflow.MediaGroup) > 0 && string(workflow.MediaGroup) != "null" && string(workflow.MediaGroup) != "false"
-		planGroup := len(workflow.PlanGroup) > 0 && string(workflow.PlanGroup) != "null" && string(workflow.PlanGroup) != "false"
-		identities[i] = identity{id: base.ID, parent: base.ParentID, cascade: !mediaGroup && ((workflow.Step == "story.plan" && workflow.Role == "collection") || planGroup)}
-		index[base.ID] = i
-	}
+func filterCanvasDeletionReceipts(payload string, receipts []model.CanvasNodeDeletionReceipt) (string, []string, error) {
 	deleted := make(map[string]bool, len(receipts))
-	cascadeDeleted := make(map[string]bool, len(receipts))
 	for _, receipt := range receipts {
 		deleted[receipt.NodeID] = true
 	}
-	for _, item := range identities {
-		if deleted[item.id] && item.cascade {
-			cascadeDeleted[item.id] = true
-		}
-	}
-	for changed := true; changed; {
-		changed = false
-		for _, item := range identities {
-			_, exists := index[item.parent]
-			if exists && cascadeDeleted[item.parent] && !deleted[item.id] {
-				deleted[item.id] = true
-				cascadeDeleted[item.id] = true
-				changed = true
-			}
-		}
-	}
-	kept := make([]map[string]json.RawMessage, 0, len(nodes))
-	for i, node := range nodes {
-		if deleted[identities[i].id] {
-			continue
-		}
-		if deleted[identities[i].parent] {
-			delete(node, "parentId")
-		}
-		var metadata map[string]json.RawMessage
-		if raw := node["metadata"]; len(raw) > 0 {
-			if err := json.Unmarshal(raw, &metadata); err != nil {
-				return "", err
-			}
-			if rawWorkflow := metadata["shortDrama"]; len(rawWorkflow) > 0 {
-				var workflow map[string]json.RawMessage
-				if err := json.Unmarshal(rawWorkflow, &workflow); err != nil {
-					return "", err
-				}
-				var sources []string
-				if rawSources := workflow["sourceNodeIds"]; len(rawSources) > 0 {
-					if err := json.Unmarshal(rawSources, &sources); err == nil {
-						filtered := make([]string, 0, len(sources))
-						for _, id := range sources {
-							if !deleted[id] {
-								filtered = append(filtered, id)
-							}
-						}
-						workflow["sourceNodeIds"], _ = json.Marshal(filtered)
-					}
-				}
-				metadata["shortDrama"], _ = json.Marshal(workflow)
-			}
-			node["metadata"], _ = json.Marshal(metadata)
-		}
-		kept = append(kept, node)
-	}
-	var connections []map[string]json.RawMessage
-	if raw := document["connections"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &connections); err != nil {
-			return "", err
-		}
-	}
-	keptConnections := make([]map[string]json.RawMessage, 0, len(connections))
-	for _, edge := range connections {
-		var endpoints struct {
-			From string `json:"fromNodeId"`
-			To   string `json:"toNodeId"`
-		}
-		encoded, _ := json.Marshal(edge)
-		if err := json.Unmarshal(encoded, &endpoints); err != nil {
-			return "", err
-		}
-		if !deleted[endpoints.From] && !deleted[endpoints.To] {
-			keptConnections = append(keptConnections, edge)
-		}
-	}
-	document["nodes"], _ = json.Marshal(kept)
-	document["connections"], _ = json.Marshal(keptConnections)
-	encoded, err := json.Marshal(document)
-	return string(encoded), err
+	return integrity.CleanJSON(payload, deleted)
 }
 
 func (r *Repository) CanvasProjectMetadata(userID, id string) (*model.CanvasProject, error) {
@@ -233,14 +115,14 @@ func (r *Repository) SaveCanvasWithSnapshot(project *model.CanvasProject, snapsh
 		if err := New(tx).UpsertCanvasProject(&next); err != nil {
 			return err
 		}
-		ids, err := canvasDocumentNodeIDs(project.PayloadJSON)
-		if err != nil {
-			return err
-		}
 		// Only an explicit history restore can intentionally bring tombstoned node
 		// IDs back. A normal client save may contain stale nodes from an in-flight
 		// refresh and must not remove the fence before filtering them below.
 		if reason == "before_restore" {
+			ids, err := canvasDocumentNodeIDs(project.PayloadJSON)
+			if err != nil {
+				return err
+			}
 			if len(ids) > 0 {
 				if err := tx.Where("user_id = ? AND canvas_id = ? AND node_id IN ?", project.UserID, project.ID, ids).Delete(&model.CanvasNodeDeletionReceipt{}).Error; err != nil {
 					return err
@@ -251,14 +133,24 @@ func (r *Repository) SaveCanvasWithSnapshot(project *model.CanvasProject, snapsh
 		if err := tx.Where("user_id = ? AND canvas_id = ?", project.UserID, project.ID).Find(&receipts).Error; err != nil {
 			return err
 		}
-		if len(receipts) > 0 {
-			filtered, err := filterCanvasDeletionReceipts(project.PayloadJSON, receipts)
+		{
+			filtered, removed, err := filterCanvasDeletionReceipts(project.PayloadJSON, receipts)
 			if err != nil {
 				return err
 			}
-			next.PayloadJSON = filtered
-			if err := tx.Model(&model.CanvasProject{}).Where("id = ? AND user_id = ? AND revision = ?", project.ID, project.UserID, next.Revision).Update("payload_json", filtered).Error; err != nil {
+			if _, err := New(tx).AddCanvasNodeDeletionReceipts(project.UserID, project.ID, removed); err != nil {
 				return err
+			}
+			next.PayloadJSON = filtered
+			if filtered != project.PayloadJSON {
+				refs := map[string]struct{}{}
+				if err := assets.CollectOwnedDocumentReferences(filtered, refs); err != nil {
+					return err
+				}
+				currentResourceIDs = assets.SortedIDs(refs)
+				if err := tx.Model(&model.CanvasProject{}).Where("id = ? AND user_id = ? AND revision = ?", project.ID, project.UserID, next.Revision).Update("payload_json", filtered).Error; err != nil {
+					return err
+				}
 			}
 		}
 		capture := false

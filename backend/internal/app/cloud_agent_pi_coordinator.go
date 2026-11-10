@@ -182,6 +182,19 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 	if s == nil || s.repo == nil {
 		return
 	}
+	if !errors.Is(cause, context.Canceled) {
+		if handled, err := s.holdProductionFlow(userID, runID, "主任务停止，成果已保留："+cloudAgentSafeToolError(cause)); handled && err == nil {
+			return
+		}
+	}
+	var expectations []storyboardRecoveryExpectation
+	var coordinatorFailure storyboardCoordinatorFailure
+	if errors.As(cause, &coordinatorFailure) {
+		expectations = append(expectations, storyboardRecoveryExpectation{Generation: coordinatorFailure.generation})
+	}
+	if handled, err := s.recoverStoryboardCoordinator(userID, runID, cloudAgentSafeToolError(cause), false, expectations...); handled && err == nil {
+		return
+	}
 	defer s.projectProductionAgentStatus(userID, runID)
 	diagnostic := taskExecutionDiagnosticFromError(cause)
 	if diagnostic == nil || (diagnostic.ErrorSource != "upstream" && diagnostic.ErrorSource != "network") {
@@ -191,6 +204,9 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 				return
 			}
 			err = s.repo.MutateCloudAgent(userID, runID, run.Revision, func(current *model.CloudAgentExecution, repo *repository.Repository) error {
+				if cloudAgentRunTerminal(current.Status) {
+					return nil
+				}
 				state, decodeErr := cloudAgentDecode(current)
 				if decodeErr != nil {
 					return decodeErr
@@ -233,6 +249,11 @@ func (s *Service) failPiRunner(runID, userID string, cause error) {
 					}
 				}
 				if warning := generationRunWarning(repo, &state, runID); warning != nil && !externalFailure {
+					if deterministicFailure && !activeTaskLive && current.Status != "waiting_user" {
+						message := cloudAgentUserFailureMessage(runID, cause)
+						current.Status, current.FailureMessage, state.LastError = "failed", message, message
+						warning["message"], warning["error"] = message, message
+					}
 					state.event(runID, "run_failed", warning)
 					return cloudAgentSave(current, &state)
 				}
@@ -348,9 +369,49 @@ func (s *Service) recoverCloudAgentPiRunners() {
 }
 
 // runCloudAgentPiSession 核心会话管理
-func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID string) error {
+func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID string) (resultErr error) {
 	if err := s.initializeProductionAgent(userID, runID); err != nil {
 		return fmt.Errorf("initialize production: %w", err)
+	}
+	if _, err := s.promoteStoryboardScenes(userID, runID); err != nil {
+		return err
+	}
+	generation, err := s.claimStoryboardCoordinator(userID, runID)
+	if err != nil {
+		return err
+	}
+	if generation > 0 {
+		defer func() {
+			if resultErr != nil && !errors.Is(resultErr, context.Canceled) {
+				resultErr = storyboardCoordinatorFailure{generation: generation, cause: resultErr}
+			}
+		}()
+		parent := ctx
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(context.WithValue(ctx, storyboardCoordinatorKey{}, generation))
+		defer cancel()
+		defer s.releaseStoryboardCoordinator(userID, runID, generation)
+		finished := make(chan struct{})
+		defer func() { cancel(); <-finished }()
+		go func() {
+			defer close(finished)
+			ticker := time.NewTicker(20 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := s.renewStoryboardCoordinator(ctx, userID, runID); err != nil && !errors.Is(err, repository.ErrCreationConflict) {
+						if parent.Err() == nil && !errors.Is(err, context.Canceled) {
+							_, _ = s.recoverStoryboardCoordinator(userID, runID, err.Error(), false, storyboardRecoveryExpectation{Generation: generation})
+						}
+						cancel()
+						return
+					}
+				}
+			}
+		}()
 	}
 	// 1. 加载运行状态
 	task, state, err := s.cloudAgentTask(userID, runID)
@@ -401,7 +462,14 @@ func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID stri
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		return fmt.Errorf("create session dir: %w", err)
 	}
-	sessionFile := filepath.Join(sessionDir, runID+".jsonl")
+	sessionName := runID
+	if generation > 0 {
+		sessionName = fmt.Sprintf("%s-g%d", runID, generation)
+	}
+	sessionFile := filepath.Join(sessionDir, sessionName+".jsonl")
+	if generation > 0 {
+		defer os.Remove(sessionFile)
+	}
 
 	// 5. 构建完整的 Pi 请求（核心重构）
 	request, err := s.buildEnhancedPiRequest(ctx, EnhancedPiRequestParams{
@@ -431,20 +499,44 @@ func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID stri
 	var pausedForApproval atomic.Bool
 	err = runCloudAgentPi(ctx, request, cloudAgentPiBridge{
 		Model: func(callCtx context.Context, payload map[string]json.RawMessage) (any, error) {
-			return s.cloudAgentPiModel(callCtx, userID, runID, payload)
+			owned, cancel := context.WithCancel(callCtx)
+			owned = context.WithValue(owned, storyboardSessionKey{}, true)
+			defer cancel()
+			stop := context.AfterFunc(ctx, cancel)
+			defer stop()
+			if generation > 0 {
+				owned = context.WithValue(owned, storyboardCoordinatorKey{}, generation)
+			}
+			if err := s.checkStoryboardCoordinator(owned, userID, runID); err != nil {
+				return nil, err
+			}
+			return s.cloudAgentPiModel(owned, userID, runID, payload)
 		},
 		Tool: func(callCtx context.Context, payload map[string]json.RawMessage) (any, error) {
-			result, err := s.cloudAgentPiTool(callCtx, userID, runID, payload)
+			owned, cancel := context.WithCancel(callCtx)
+			defer cancel()
+			stop := context.AfterFunc(ctx, cancel)
+			defer stop()
+			if generation > 0 {
+				owned = context.WithValue(owned, storyboardCoordinatorKey{}, generation)
+			}
+			result, err := s.cloudAgentPiTool(owned, userID, runID, payload)
 			if paused, ok := result.(map[string]any); ok && paused["pause"] == true {
 				pausedForApproval.Store(true)
 			}
 			return result, err
 		},
 		Event: func(callCtx context.Context, payload map[string]json.RawMessage) (any, error) {
+			if generation > 0 {
+				return s.storyboardCoordinatorEvent(ctx, userID, runID, payload)
+			}
 			return s.cloudAgentPiEvent(callCtx, userID, runID, payload)
 		},
 	})
 	if err != nil {
+		return err
+	}
+	if err := s.checkStoryboardCoordinator(ctx, userID, runID); err != nil {
 		return err
 	}
 
@@ -462,11 +554,11 @@ func (s *Service) runCloudAgentPiSession(ctx context.Context, userID, runID stri
 	}
 
 	// 9. 完成运行
-	return s.completeCloudAgentPiRun(userID, runID)
+	return s.completeCloudAgentPiRun(userID, runID, generation)
 }
 
 // completeCloudAgentPiRun 完成运行
-func (s *Service) completeCloudAgentPiRun(userID, runID string) error {
+func (s *Service) completeCloudAgentPiRun(userID, runID string, generations ...int) error {
 	for attempt := 0; attempt < 4; attempt++ {
 		run, err := s.repo.CloudAgent(userID, runID)
 		if err != nil {
@@ -481,6 +573,9 @@ func (s *Service) completeCloudAgentPiRun(userID, runID string) error {
 		state, err := cloudAgentDecode(run)
 		if err != nil {
 			return err
+		}
+		if len(generations) > 0 && generations[0] > 0 && state.StoryboardCoordinator.Generation != generations[0] {
+			return context.Canceled
 		}
 
 		// 检查是否有未完成的任务

@@ -45,10 +45,12 @@ export function canvasTaskPresentation(task: GenerationTask, tasks: readonly Gen
     const map = /^map-(\d+)$/.exec(context.batchKey || "");
     const merge = /^merge-(\d+)-(\d+)$/.exec(context.batchKey || "");
     const outlineRange = /^outline-range-(\d+)-(\d+)$/.exec(context.batchKey || "");
+    const outlineSpine = /^outline-spine-(\d+)-(\d+)$/.exec(context.batchKey || "");
     if (map) work = `材料提取 · 第 ${Number(map[1]) + 1} 批`;
     else if (merge) work = `跨集归并 · 第 ${Number(merge[1]) + 1} 轮 · 第 ${Number(merge[2]) + 1} 批`;
     else if (context.batchKey === "shared-facts-v1") work = "共享正文解析";
     else if (context.batchKey === "outline-spine") work = "锁定全剧分集主线";
+    else if (outlineSpine) work = `锁定第 ${outlineSpine[1]}–${outlineSpine[2]} 集主线`;
     else if (outlineRange) work = `生成第 ${outlineRange[1]}–${outlineRange[2]} 集集纲`;
     else if (context.batchKey?.startsWith("outline-context-")) work = "整理集纲所需故事要点";
     else if (context.batchKey === "body-final") work = "扩写本集正文";

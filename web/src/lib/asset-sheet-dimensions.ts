@@ -1,20 +1,55 @@
 import type { AssetSheetKind } from "./asset-reference-sheet";
+import { documentSections } from "./asset-sheet-material";
+
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const lengthUnit = "(?:毫米|厘米|千米|米|mm|cm|km|m)(?![a-zA-Z²2])";
+const massUnit = "(?:千克|公斤|克|kg|g|斤)(?![a-zA-Z])";
+const amount = (units: string) => new RegExp(`(?:约\\s*)?\\d+(?:\\.\\d+)?\\s*${units}`, "iu");
+
+// Read actual table cells before prose. A row label is never allowed to consume
+// the next row's value; optional design/source annotations are not part of it.
+export function assetSpecificationValue(content: string, labels: string[]) {
+    const text = content.replace(/\*\*|`/g, "");
+    const key = `(?:${labels.map(escaped).join("|")})(?:\\s*[（(][^）)\\n]{0,32}[）)])?`;
+    const rowLabel = new RegExp(`^${key}$`, "iu");
+    for (const line of text.split(/\r?\n/)) {
+        if (line.trim().startsWith("|")) {
+            const cells = line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+            if (cells.length >= 2 && rowLabel.test(cells[0])) return cells[1];
+        }
+    }
+    return new RegExp(`(?:^|[\\s；;，,。])${key}\\s*[:：]\\s*([^；;。\\n|]{1,160})`, "imu").exec(text)?.[1].trim() || "";
+}
+
+export function assetSheetSpecificationContent(content: string, kind: AssetSheetKind) {
+    const titles = kind === "character" ? ["年龄感、体型、面部与辨识特征"] : kind === "environment" ? ["空间布局、尺度与固定陈设"] : ["道具形状、尺寸、比例与辨识特征"];
+    const section = documentSections(content).find(({ title }) => titles.includes(title));
+    return section ? section.lines.slice(1).join("\n") : content;
+}
 
 export function assetSheetDimensions(content: string, kind: AssetSheetKind) {
-    const text = content.replace(/[*]/g, "").replace(/\s+/g, " ");
-    const units = "(?:毫米|厘米|米|mm|cm|m|千克|公斤|kg|斤)";
-    const amount = "(?:约\\s*)?\\d+(?:\\.\\d+)?\\s*" + units;
-    const matches = (pattern: RegExp) => [...text.matchAll(pattern)].map((match) => match[0].trim());
-    if (kind === "character") return [...new Set([
-        ...matches(new RegExp("(?:身高|height)\\s*[:：]?\\s*" + amount, "giu")),
-        ...matches(new RegExp("(?:体重|weight)\\s*[:：]?\\s*" + amount, "giu")),
-        ...matches(new RegExp("(?:三围|胸围|腰围|臀围|肩宽)\\s*[:：]?\\s*" + amount + "(?:\\s*[/、,，×xX]\\s*" + amount + "){0,2}", "giu")),
-    ])].slice(0, 6);
-    return [...new Set([
-        ...matches(new RegExp("(?:长|长度|length)\\s*[:：]?\\s*" + amount, "giu")),
-        ...matches(new RegExp("(?:宽|宽度|width)\\s*[:：]?\\s*" + amount, "giu")),
-        ...matches(new RegExp("(?:净高|层高|高度|高|height)\\s*[:：]?\\s*" + amount, "giu")),
-        ...matches(/(?:面积|占地面积|建筑面积|area)\s*[:：]?\s*\d+(?:\.\d+)?\s*(?:平方米|平米|m²|㎡)/giu),
-        ...matches(new RegExp("(?:直径|跨度|depth)\\s*[:：]?\\s*" + amount, "giu")),
-    ])].slice(0, 8);
+    const text = assetSheetSpecificationContent(content, kind).replace(/[*]/g, "");
+    const result: string[] = [];
+    const add = (label: string, aliases: string[], units = lengthUnit) => {
+        const value = assetSpecificationValue(text, [label, ...aliases]);
+        const numeric = amount(units).exec(value)?.[0]
+            || new RegExp(`(?:${[label, ...aliases].map(escaped).join("|")})\\s*[:：]?\\s*(${amount(units).source})`, "iu").exec(text)?.[1];
+        if (numeric) result.push(`${label}：${numeric}`);
+    };
+    if (kind === "character") {
+        add("身高", ["净身高", "height"]);
+        add("体重", ["weight"], massUnit);
+        for (const label of ["肩宽", "胸围", "腰围", "臀围"]) add(label, []);
+        const triple = assetSpecificationValue(text, ["三围"]);
+        if (/\d+(?:\.\d+)?\s*(?:mm|cm|厘米|毫米)?\s*[/、,，×xX]\s*\d+(?:\.\d+)?\s*(?:mm|cm|厘米|毫米)?\s*[/、,，×xX]\s*\d+(?:\.\d+)?\s*(?:mm|cm|厘米|毫米)/iu.test(triple)) result.push(`三围：${triple}`);
+    } else {
+        add("长", ["长度", "length"]);
+        add("宽", ["宽度", "width"]);
+        add("高", ["净高", "层高", "高度", "height"]);
+        add("直径", ["跨度", "depth"]);
+        add("面积", ["占地面积", "建筑面积", "area"], "(?:平方米|平米|m²|m2|㎡)");
+        const combined = assetSpecificationValue(text, ["长宽高", "长×宽×高", "外形尺寸", "空间尺寸"]);
+        if (!["长：", "宽：", "高："].every((prefix) => result.some((entry) => entry.startsWith(prefix))) && /\d/u.test(combined) && amount(lengthUnit).test(combined)) result.push(`长×宽×高：${combined}`);
+    }
+    return result;
 }

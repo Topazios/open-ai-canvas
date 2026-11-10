@@ -5,7 +5,7 @@ import { App } from "antd";
 import { applyGenerationTaskResultToNodes, generationTaskCanReloadResource, generationTaskNodeId } from "@/lib/canvas/canvas-generation-task-sync";
 import { commitCanvasGenerationResult } from "@/lib/canvas/canvas-generation-result";
 import { reconcileImageBatchRoot } from "@/lib/canvas/canvas-image-batch-retry";
-import { markCanvasTaskRecoveryUnconfirmed } from "@/lib/canvas/canvas-task-state";
+import { canvasNodeNeedsTaskRecovery, markCanvasTaskRecoveryUnconfirmed } from "@/lib/canvas/canvas-task-state";
 import { applyCanvasGenerationTaskNodeEffect, isCanvasGenerationDurableAckError } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskNode, ensureCanvasNodeAsset, retryCanvasAssetSyncAfterRateLimit } from "@/services/project-asset-sync";
 import { listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeCanvasGenerationTasks, subscribeGenerationTasks, type GenerationTask, type TaskLog } from "@/services/api/task-center";
@@ -34,6 +34,7 @@ type UseCanvasGenerationOptions = {
     // 任务首次绑定到节点后立即落盘，避免用户在创建任务后关闭页面时，
     // 节点仍停留在浏览器内存而无法在下次打开画布时按 taskId 恢复。
     persistTaskBinding?: () => Promise<void>;
+    submissionNodeIdsRef?: { current: Set<string> };
 };
 
 const NODE_STATUS_LOADING = "loading" as const;
@@ -198,7 +199,7 @@ export async function recoverCanvasGenerationTaskNode(input: {
     }
 }
 
-export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded, nodes, nodesRef, setNodes, persistTaskBinding }: UseCanvasGenerationOptions) {
+export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded, nodes, nodesRef, setNodes, persistTaskBinding, submissionNodeIdsRef }: UseCanvasGenerationOptions) {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
@@ -385,38 +386,39 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
     const recoverInterruptedGenerationTasks = useCallback(
         async (startedProjectId: string, signal: AbortSignal, isCurrentProject: () => boolean) => {
             if (!isCurrentProject()) return;
-            const recoveryNodes = nodesRef.current.filter((node) => {
-				if (node.metadata?.shortDrama?.productionAgent) return false;
-                const pendingAgentContinuation = node.metadata?.agentGenerationContinuation?.status === "pending";
-                if (!pendingAgentContinuation && node.metadata?.taskId && node.metadata.shortDrama?.materializedTaskId === node.metadata.taskId) return false;
-                const aggregateBatchRoot = node.metadata?.isBatchRoot && node.metadata.batchChildIds?.length;
-                if (aggregateBatchRoot && !pendingAgentContinuation) return false;
-                return pendingAgentContinuation || node.metadata?.status === NODE_STATUS_LOADING || node.metadata?.errorDetails === "页面刷新后生成已中断，请重新生成。" || Boolean(node.metadata?.taskId && node.metadata.status !== NODE_STATUS_SUCCESS);
-            });
+            const needsRecovery = (node: CanvasNodeData) => canvasNodeNeedsTaskRecovery(node, Boolean(submissionNodeIdsRef?.current.has(node.id) || generationRequestsRef.current.has(node.id)));
+            const recoveryNodes = nodesRef.current.filter(needsRecovery);
             const needsDiscovery = recoveryNodes.some((node) => !node.metadata?.taskId && !node.metadata?.agentGenerationContinuation?.taskId);
             let projectTasks: GenerationTask[] = [];
+            let discoveryAvailable = false;
             if (needsDiscovery) {
                 try {
                     projectTasks = (await listGenerationTasks(100, { projectId: startedProjectId }, undefined, signal))
                         .filter((task) => task.projectId === startedProjectId && task.type.startsWith("canvas_"));
+                    discoveryAvailable = true;
                 } catch (error) {
                     if (!isCurrentProject() || (error instanceof Error && error.name === "AbortError")) return;
                     // 发现接口失败不影响已有 taskId 的精确恢复，也不是“查无任务”的证据。
                     message.warning({ key: `canvas-task-recovery:${startedProjectId}`, content: "任务列表暂不可用，未绑定任务的节点状态尚未确认；已绑定任务继续恢复。", duration: 6 });
                 }
-                if (isCurrentProject() && recoveryNodes.some((node) => !node.metadata?.taskId && !node.metadata?.agentGenerationContinuation?.taskId && !projectTasks.some((task) => generationTaskNodeId(task) === node.id))) {
+                if (discoveryAvailable && isCurrentProject() && recoveryNodes.some((snapshot) => {
+                    const node = nodesRef.current.find((item) => item.id === snapshot.id);
+                    return node && needsRecovery(node) && !node.metadata?.taskId && !node.metadata?.agentGenerationContinuation?.taskId && !projectTasks.some((task) => generationTaskNodeId(task) === node.id);
+                })) {
                     message.warning({ key: `canvas-task-recovery:${startedProjectId}`, content: "部分节点未在最近任务中找到，已保留原状态。请到任务中心核对结果，勿重复提交。", duration: 6 });
                 }
             }
             if (!isCurrentProject()) return;
             await Promise.all(
-                recoveryNodes.map(async (node) => {
+                recoveryNodes.map(async (snapshot) => {
+                    const node = nodesRef.current.find((item) => item.id === snapshot.id);
+                    if (!node || !needsRecovery(node)) return;
                     const discoveredTask = projectTasks.find((task) => generationTaskNodeId(task) === node.id);
                     const taskId = node.metadata?.taskId || node.metadata?.agentGenerationContinuation?.taskId || discoveredTask?.id;
                     if (!taskId) {
-                        if (!isCurrentProject()) return;
+                        if (!isCurrentProject() || !discoveryAvailable) return;
                         setNodes((current) =>
-                            isCurrentProject() ? current.map((item) => (item.id === node.id ? markCanvasTaskRecoveryUnconfirmed(item, undefined, "最近任务中未找到对应记录，状态尚未确认；请到任务中心核对，勿重复提交。") : item)) : current,
+                            isCurrentProject() ? current.map((item) => (item.id === node.id && needsRecovery(item) ? markCanvasTaskRecoveryUnconfirmed(item, undefined, "最近任务中未找到对应记录，状态尚未确认；请到任务中心核对，勿重复提交。") : item)) : current,
                         );
                         return;
                     }
@@ -477,7 +479,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     : current,
             );
         },
-        [applyGenerationTaskResult, bindGenerationTask, message, nodesRef, observeSubscribedGenerationTask, setNodes],
+        [applyGenerationTaskResult, bindGenerationTask, message, nodesRef, observeSubscribedGenerationTask, setNodes, submissionNodeIdsRef],
     );
 
     useEffect(() => {

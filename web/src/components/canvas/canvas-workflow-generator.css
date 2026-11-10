@@ -42,13 +42,18 @@
 .production-agent-journal-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
 .production-agent-tasks { display: grid; gap: 0; min-width: 0; }
 .production-agent-task { border-bottom: 1px solid var(--border); min-width: 0; }
-.production-agent-task > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 0; list-style: none; cursor: pointer; }
+.production-agent-task > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 40px; padding: 6px 0; list-style: none; cursor: pointer; }
+.production-agent-task > summary > .ant-btn { flex-shrink: 0; }
 .production-agent-task > summary::-webkit-details-marker { display: none; }
 .production-agent-task > summary:hover { color: var(--foreground); }
 .production-agent-task > summary svg { flex-shrink: 0; color: var(--muted-foreground); }
 .production-agent-task[open] > summary .production-agent-chevron { transform: rotate(90deg); }
 .production-agent-task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .production-agent-task-state { flex-shrink: 0; color: var(--muted-foreground); font-size: var(--fs-label); }
+.production-agent-scene-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; padding: 12px 0 8px; }
+.production-agent-scene-summary > .production-agent-task-title { flex: 1 1 180px; white-space: normal; overflow-wrap: anywhere; }
+.production-agent-scene-summary > .ant-btn { flex-shrink: 0; }
+.production-agent-scene-progress { flex-basis: 100%; order: 1; }
 .production-agent-task-body { display: grid; gap: 12px; min-width: 0; margin: 4px 0 12px 6px; padding: 4px 0 4px 16px; border-left: 1px solid var(--border); }
 .production-agent-task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .production-agent-task-params { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; margin: 0; }
@@ -56,6 +61,19 @@
 .production-agent-task-params dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .production-agent-task-params .production-agent-prompt { grid-column: 1 / -1; }
 .production-agent-history { justify-self: center; }
+.production-flow-progress { display: grid; gap: 8px; min-width: 0; }
+.production-flow-stage { min-width: 0; border-bottom: 1px solid var(--border); }
+.production-flow-stage > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto 48px minmax(72px, auto); align-items: center; gap: 6px 12px; padding: 10px 0; cursor: pointer; }
+.production-flow-stage-name { min-width: 0; overflow-wrap: anywhere; }
+.production-flow-count, .production-flow-percent { font-variant-numeric: tabular-nums; }
+.production-flow-count, .production-flow-status { color: var(--muted-foreground); }
+.production-flow-percent { text-align: right; }
+.production-flow-stage > summary > progress { grid-column: 1 / -1; width: 100%; height: 5px; accent-color: var(--primary); }
+.production-flow-stage-body, .production-flow-blockers { display: grid; gap: 12px; min-width: 0; padding: 8px 0 12px; }
+.production-flow-unit { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.production-flow-unit-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.production-flow-unit-heading > span:first-child { flex: 1 1 180px; }
+.production-flow-unit-heading > .ant-btn { flex-shrink: 0; }
 .production-agent-journal { min-width: 0; }
 .production-agent-event { padding: 6px 0; }
 .production-agent-event > summary > span, .production-agent-event-line > span { flex: 1; min-width: 0; }
@@ -70,6 +88,10 @@
 .production-agent-commentary table { width: 100%; table-layout: fixed; }
 .production-agent-commentary th, .production-agent-commentary td { overflow-wrap: anywhere; }
 @media (max-width: 480px) {
+    .production-flow-stage > summary { grid-template-columns: minmax(0, 1fr) 48px; }
+    .production-flow-percent { grid-column: 2; grid-row: 1; }
+    .production-flow-count { grid-column: 1; }
+    .production-flow-status { grid-column: 2; grid-row: 2; text-align: right; }
     .production-agent-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
     .production-agent-actions > .ant-btn:last-child { justify-self: end; }
     .production-agent-parameters dl, .production-agent-task-params { grid-template-columns: 1fr; }
